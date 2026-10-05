@@ -188,6 +188,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
+    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     STRICT_SCOPE_FILTER_KEY,
@@ -281,6 +282,7 @@ _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
 _PERMITTED_WALK_CHUNK = 100
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
+_LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
 
 # Each inlined permission lookup gives this rule 16 loop orders to try, and the
@@ -293,6 +295,11 @@ _APP_CHILDREN_QUERY_OPTIONS = {"optimizer": {"rules": ["-interchange-adjacent-en
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
     return bool(_WRITE_CONFLICT_RE.search(str(exc)))
+
+
+def _is_lock_timeout(exc: Exception) -> bool:
+    """ArangoDB errorNum 18: a transaction's collection locks were not granted within its lockTimeout."""
+    return bool(_LOCK_TIMEOUT_RE.search(str(exc)))
 
 
 EDGE_COLLECTIONS = [
@@ -7213,6 +7220,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing orgId, skipping queued duplicate update")
                 return 0
 
+            extraction_status = promoted_duplicate_extraction_status(
+                new_indexing_status, ref_record
+            )
+            if extraction_status is None:
+                self.logger.info(
+                    "Record %s is indexed but its enrichment has not ended; its queued duplicates wait",
+                    record_id,
+                )
+                return 0
+
             # Find all queued duplicate records directly from RECORDS collection
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
@@ -7265,15 +7282,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 record_key = doc.get("_key") or doc.get("id")
                 if not record_key:
                     continue
-
-                # Map indexing status to extraction status
-                # For EMPTY status, extraction status should also be EMPTY, not FAILED
-                if new_indexing_status == ProgressStatus.COMPLETED.value:
-                    extraction_status = ProgressStatus.COMPLETED.value
-                elif new_indexing_status == ProgressStatus.EMPTY.value:
-                    extraction_status = ProgressStatus.EMPTY.value
-                else:
-                    extraction_status = ProgressStatus.FAILED.value
 
                 dup_update = {
                     "id": record_key,
@@ -8882,7 +8890,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return await self.delete_google_drive_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
             elif connector_name == Connectors.GOOGLE_MAIL.value:
                 return await self.delete_gmail_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
-            elif connector_name == Connectors.OUTLOOK.value:
+            elif connector_name in (Connectors.OUTLOOK.value, Connectors.OUTLOOK_INDIVIDUAL.value):
                 return await self.delete_outlook_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
             elif connector_name == Connectors.LOCAL_FS.value:
                 return await self.delete_local_fs_record(record_id, user_id, record, transaction, soft_delete=soft_delete, delete_source=delete_source)
@@ -14060,6 +14068,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 read, write, exclusive=exclusive, lock_timeout_seconds=_PURGE_LOCK_TIMEOUT_SECONDS
             )
         except Exception as exc:
+            if not (_is_lock_timeout(exc) or _is_write_conflict(exc)):
+                raise
             raise GraphLockUnavailableError(f"Could not lock {exclusive} for the purge: {exc}") from exc
 
     async def get_purgeable_trashed_records(
@@ -15702,10 +15712,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(f"✅ Deleted Outlook record {record_id} with {len(attachment_ids)} attachments")
 
+            connector_name = record.get("connectorName") or Connectors.OUTLOOK.value
             payload = await self._create_deleted_record_event_payload(record, mail_record)
             event_data = None
             if payload:
-                payload["connectorName"] = Connectors.OUTLOOK.value
+                payload["connectorName"] = connector_name
                 payload["origin"] = OriginTypes.CONNECTOR.value
                 event_data = {
                     "eventType": "deleteRecord",
@@ -15716,7 +15727,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return {
                 "success": True,
                 "record_id": record_id,
-                "connector": Connectors.OUTLOOK.value,
+                "connector": connector_name,
                 "attachments_deleted": len(attachment_ids),
                 "eventData": event_data,
             }
@@ -15953,8 +15964,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> None:
-        """Delete KB-specific edges."""
-        kb_edge_collections = self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"]
+        """Delete every edge touching a KB record, as the folder delete and Neo4j's DETACH DELETE do.
+
+        Enrichment links a record to taxonomy nodes (belongsToCategory, belongsToTopic, ...)
+        that the fixed KB list never named; left in place they point at a record that is gone.
+        """
+        kb_edge_collections = list(dict.fromkeys([
+            *self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"],
+            *await self._get_all_edge_collections(),
+        ]))
 
         edge_deletion_query = """
         FOR edge IN @@edge_collection

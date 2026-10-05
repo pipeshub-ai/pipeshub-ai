@@ -152,11 +152,6 @@ def _source_permission(entity_type: EntityType, **kw: str) -> Permission:
     return Permission(type=PermissionType.READ, entity_type=entity_type, **kw)
 
 
-class LeakedAccess(AssertionError):
-    """Raised only by the final check of the strict-xfail test, so a failed
-    setup step there is reported as a failure rather than as the known gap."""
-
-
 @pytest.mark.asyncio(loop_scope="session")
 class TestSharesThatGrantNothing:
     async def test_domain_anyone_and_link_shares_reach_nobody(
@@ -204,19 +199,6 @@ class TestSharesThatGrantNothing:
         assert_cannot_reach(people.colleague, note, "after domain, anyone and link shares")
         assert_chat_does_not_cite(people.colleague, note, "after domain, anyone and link shares")
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=LeakedAccess,
-        reason=(
-            "The read path still honours 'anyone' nodes: check_record_access_with_details "
-            "on Neo4j and ArangoDB, and the accessible-records query on Neo4j ('Path 8'), "
-            "grant everyone in the org a record that has an Anyone node for it. Nothing "
-            "writes those nodes today (the processor's ANYONE branch is commented out and "
-            "process_file_permissions has no caller), so only data written by an older "
-            "version reaches it, but it contradicts the decision that 'anyone' shares "
-            "grant no access."
-        ),
-    )
     async def test_an_anyone_node_left_from_older_data_reaches_nobody(
         self, graph_provider, pipeshub_client: PipeshubClient, people: People, note: Note,
     ) -> None:
@@ -235,11 +217,10 @@ class TestSharesThatGrantNothing:
         )
         try:
             status = open_status(people.colleague, note.record_id)
-            if status == 200:
-                raise LeakedAccess(
-                    "A colleague with no share opened the note because an 'anyone' node "
-                    "exists for it."
-                )
+            assert status != 200, (
+                "A colleague with no share opened the note because an 'anyone' node "
+                "exists for it."
+            )
             assert status in NO_ACCESS_STATUSES, f"opening the note returned HTTP {status}"
         finally:
             await graph_provider.delete_nodes([anyone_id], CollectionNames.ANYONE.value)

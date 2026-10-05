@@ -969,7 +969,7 @@ class TestOpenSearchFilterBuilder:
 # Phase 3 regression: OpenSearch correctness + auth seam
 # ===========================================================================
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 
 def _make_os_service():

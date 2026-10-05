@@ -21,7 +21,7 @@ from app.connectors.core.thread_pool import (
 )
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole, NotificationOutcome
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
 from app.sources.client.resilience import ResiliencePolicy
@@ -505,6 +505,72 @@ class BaseConnector(ABC):
         recipient_roles: list[NotificationRecipientRole] | None = None,
     ) -> None:
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
+        prepared = self._prepare_notification(
+            type, severity, title, message, payload, recipient_user_ids, recipient_roles
+        )
+        if isinstance(prepared, NotificationOutcome):
+            return
+        svc, publish_kwargs = prepared
+
+        async def _run() -> None:
+            await svc.publish_notification(**publish_kwargs)
+
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(_run())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except RuntimeError:
+            # No running loop (e.g. sync tests) — skip scheduling
+            self.logger.debug("notify skipped: no running asyncio loop for connector: %s, connector id: %s", self.connector_name, self.connector_id)
+
+    async def notify_and_wait(
+        self,
+        type: NotificationType,  # noqa: A002 - the same keywords as notify()
+        severity: NotificationSeverity,
+        title: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        recipient_user_ids: list[str] | None = None,
+        recipient_roles: list[NotificationRecipientRole] | None = None,
+    ) -> NotificationOutcome:
+        """Like ``notify``, but waits for the broker and says what happened.
+
+        For a caller that records a notice as delivered: only SENT means it was.
+        A notice that failed to publish does not hold back the next attempt.
+        """
+        key = self._notification_key(title, message)
+        reservation_before = self._notification_cache.get(key)
+        prepared = self._prepare_notification(
+            type, severity, title, message, payload, recipient_user_ids, recipient_roles
+        )
+        if isinstance(prepared, NotificationOutcome):
+            return prepared
+        svc, publish_kwargs = prepared
+        try:
+            published = await svc.publish_notification(**publish_kwargs) is True
+        except Exception as e:
+            self.logger.warning("Notification \"%s\" was not published for connector %s: %s", title, self.connector_id, e)
+            published = False
+        if published:
+            return NotificationOutcome.SENT
+        # The suppression check reserved this notice's backoff before publishing.
+        if reservation_before is None:
+            self._notification_cache.pop(key, None)
+        else:
+            self._notification_cache[key] = reservation_before
+        return NotificationOutcome.FAILED
+
+    def _prepare_notification(
+        self,
+        notification_type: NotificationType,
+        severity: NotificationSeverity,
+        title: str,
+        message: str,
+        payload: dict[str, Any] | None,
+        recipient_user_ids: list[str] | None,
+        recipient_roles: list[NotificationRecipientRole] | None,
+    ) -> NotificationOutcome | tuple[NotificationService, dict[str, Any]]:
         svc = self._notification_service
         if not svc or not self.created_by:
             self.logger.debug(
@@ -516,12 +582,12 @@ class BaseConnector(ABC):
                 self.created_by,
                 bool(self._notification_service),
             )
-            return
+            return NotificationOutcome.SKIPPED
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
 
         if self._suppress_notification(title, message, severity):
-            return
-        
+            return NotificationOutcome.SUPPRESSED
+
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
         if payload and "redirect_link" in payload:
             redirect_link = payload["redirect_link"]
@@ -534,35 +600,28 @@ class BaseConnector(ABC):
                 ids.append(self.last_synced_by)
             recipient_user_ids = ids
 
-        async def _run() -> None:
-            await svc.publish_notification(
-                org_id=str(org_id),
-                origin=NotificationOrigin.CONNECTOR,
-                type=type,
-                severity=severity,
-                title=title,
-                message=message,
-                payload=payload,
-                redirect_link=redirect_link,
-                recipient_user_ids=recipient_user_ids,
-                recipient_roles=recipient_roles,
-            )
+        return svc, {
+            "org_id": str(org_id),
+            "origin": NotificationOrigin.CONNECTOR,
+            "type": notification_type,
+            "severity": severity,
+            "title": title,
+            "message": message,
+            "payload": payload,
+            "redirect_link": redirect_link,
+            "recipient_user_ids": recipient_user_ids,
+            "recipient_roles": recipient_roles,
+        }
 
-        try:
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(_run())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-        except RuntimeError:
-            # No running loop (e.g. sync tests) — skip scheduling
-            self.logger.debug("notify skipped: no running asyncio loop for connector: %s, connector id: %s", self.connector_name, self.connector_id)
+    def _notification_key(self, title: str, message: str) -> str:
+        return f"{self.connector_id}:{title}:{message}"
 
     def _suppress_notification(self, title: str, message: str, severity: NotificationSeverity) -> bool:
 
         if severity in [NotificationSeverity.INFO, NotificationSeverity.SUCCESS]:
             return False
 
-        key = f"{self.connector_id}:{title}:{message}"
+        key = self._notification_key(title, message)
         now = get_epoch_timestamp_in_ms()
 
         if key in self._notification_cache:

@@ -22,22 +22,13 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import PropertyMock
 from uuid import uuid4
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
-from app.connectors.sources.atlassian.jira_cloud.connector import (
-    BATCH_PROCESSING_SIZE,
-    DEFAULT_MAX_RESULTS,
-    ISSUE_SEARCH_FIELDS,
-    JiraConnector,
-)
+from app.config.constants.arangodb import MimeTypes, OriginTypes, RecordRelations
 from app.models.entities import (
     AppRole,
-    AppUser,
-    AppUserGroup,
     FileRecord,
     RecordGroupType,
-    RecordType,
     TicketRecord,
 )
 

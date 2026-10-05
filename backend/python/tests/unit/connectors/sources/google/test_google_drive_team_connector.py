@@ -4674,6 +4674,38 @@ class TestFolderScopeReconciliation:
         conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-1")
         conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
 
+    @pytest.mark.parametrize("parents", [None, []], ids=["no-parents-field", "empty-parents"])
+    @pytest.mark.asyncio
+    async def test_file_shared_with_a_user_who_cannot_see_its_folder_is_kept(self, parents) -> None:
+        """The sharee's changes feed reports a shared file without the parent they cannot
+        see; that is not a move out of scope, and the owner's copy must survive it."""
+        existing = _make_existing_record(
+            record_id="rec-1", external_record_id="f1", parent_external_record_id="folder-a"
+        )
+        conn = _make_connector(existing_record=existing)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+
+        meta = _make_file_metadata(file_id="f1", parents=parents)
+        items = await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        assert items == []
+        conn.data_entities_processor.on_record_deleted.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_folder_shared_with_a_user_who_cannot_see_its_parent_keeps_its_subtree(self) -> None:
+        existing = _make_existing_record(
+            record_id="rec-folder", external_record_id="folder-b", parent_external_record_id="folder-a"
+        )
+        existing.mime_type = MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        conn = _make_connector(existing_record=existing)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+
+        meta = _make_file_metadata(file_id="folder-b", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value)
+        await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_untracked_item_out_of_scope_deletes_nothing(self):
         conn = _make_connector(existing_record=None)

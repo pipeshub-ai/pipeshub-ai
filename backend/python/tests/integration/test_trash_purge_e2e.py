@@ -378,7 +378,6 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
             await graph.client.execute_query("CALL db.awaitIndexes(300)")
         flag = AsyncMock(return_value=True)
         monkeypatch.setattr(processor_module, "is_soft_delete_enabled", flag)
-        monkeypatch.setattr(purge_module, "is_soft_delete_enabled", flag)
         monkeypatch.setattr(processor_module, "notify_kb_records_changed", AsyncMock())
         suffix = uuid.uuid4().hex[:10]
         processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
@@ -966,9 +965,22 @@ async def test_a_run_that_loses_its_lease_resumes_from_its_cursor(
         assert await world.stored(name) is None, name
 
 
-async def test_with_the_trash_off_nothing_happens(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_with_the_trash_turned_off_what_is_in_it_still_goes(world: _World) -> None:
+    """Turning the trash off makes new deletes hard deletes; the trash still empties on schedule."""
+    await world.trash("upload", "restored")
+    world.kv.values[PLATFORM_SETTINGS_KEY]["featureFlags"]["ENABLE_SOFT_DELETE"] = False
+
+    assert await world.tick(13) == Outcome.FINISHED
+    assert (await world.stored("upload"))["isDeleted"] is True, "the retention still holds"
+
+    assert await world.tick(15) == Outcome.FINISHED
+    assert await world.stored("upload") is None and await world.stored("restored") is None
+    assert sorted(world.broker.deleted_record_ids()) == sorted([world.ids["upload"], world.ids["restored"]])
+
+
+async def test_the_purge_setting_turned_off_pauses_it(world: _World) -> None:
     await world.trash("upload")
-    monkeypatch.setattr(purge_module, "is_soft_delete_enabled", AsyncMock(return_value=False))
+    world.kv.values[PLATFORM_SETTINGS_KEY]["softDeletePurge"]["enabled"] = False
 
     assert await world.tick(30) == Outcome.DISABLED
 
@@ -1240,3 +1252,22 @@ async def test_without_its_index_the_purge_waits_and_the_walk_still_answers(
     assert await graph.is_trash_walk_index_ready() is True
     assert await world.tick(15) == Outcome.FINISHED
     assert await world.stored("upload") is None
+
+
+async def test_a_purge_that_cannot_take_its_lock_says_so(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ArangoDB: a sync transaction holding the collections makes the purge's exclusive lock time out."""
+    if isinstance(world.graph, Neo4jProvider):
+        pytest.skip("Neo4j takes no collection locks; its lock races are covered by the link tests")
+    from app.services.graph_db.arango import arango_http_provider as arango_module
+    monkeypatch.setattr(arango_module, "_PURGE_LOCK_TIMEOUT_SECONDS", 1)
+    await world.trash("upload")
+    held = await _arango_sync_tx(world, f"FOR r IN {RECORDS} LIMIT 0 RETURN r", {})
+    try:
+        with pytest.raises(GraphLockUnavailableError):
+            await world.graph.purge_trashed_records(
+                [world.ids["upload"]], world.org_id, get_epoch_timestamp_in_ms() + DAY_MS
+            )
+    finally:
+        await world.graph.http_client.abort_transaction(held)
+    assert (await world.stored("upload"))["isDeleted"] is True
+

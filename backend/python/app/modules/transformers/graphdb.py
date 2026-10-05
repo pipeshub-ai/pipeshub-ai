@@ -74,6 +74,8 @@ class GraphDBTransformer(Transformer):
                         "id": record_id,
                         "extractionStatus": "FAILED",
                         "lastExtractionTimestamp": timestamp,
+                        # Kept through enrichment for stale recovery to age; enrichment has ended.
+                        "processingStartedAt": None,
                         "isDirty": False,
                         "virtualRecordId": virtual_record_id,
                     }
@@ -578,6 +580,7 @@ class GraphDBTransformer(Transformer):
                     "id": record_id,
                     "extractionStatus": "COMPLETED",
                     "lastExtractionTimestamp": timestamp,
+                    "processingStartedAt": None,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                 }
