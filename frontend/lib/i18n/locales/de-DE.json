@@ -2175,6 +2175,24 @@
         "confirm": "Bestätigen",
         "cancel": "Abbrechen"
       },
+      "stopSync": {
+        "label": "Synchronisierung stoppen",
+        "labelFull": "Vollständige Synchronisierung stoppen",
+        "stopping": "Wird gestoppt…"
+      },
+      "stopSyncConfirm": {
+        "title": "Laufende Synchronisierung stoppen?",
+        "titleFull": "Laufende vollständige Synchronisierung stoppen?",
+        "message": "Bereits synchronisierte Datensätze bleiben erhalten, der Rest dieses Laufs wird jedoch abgebrochen. Das Beenden kann einen Moment dauern. Sie können die Synchronisierung danach erneut starten.",
+        "confirm": "Synchronisierung stoppen",
+        "confirmFull": "Vollständige Synchronisierung stoppen"
+      },
+      "fullSync": {
+        "disabledTooltip": "Stoppen Sie die laufende Synchronisierung, bevor Sie eine vollständige Synchronisierung starten"
+      },
+      "sync": {
+        "disabledTooltip": "Stoppen Sie zuerst die laufende vollständige Synchronisierung"
+      },
       "fullSyncConfirm": {
         "title": "Vollständige Synchronisation starten?",
         "message": "Überschreibt und synchronisiert alle Daten von Grund auf neu; langsamer als die normale Synchronisation. Verwenden Sie die vollständige Synchronisation, wenn Inhalte fehlen, doppelt vorhanden sind oder nicht mit der Quelle übereinstimmen. Für routinemäßige Updates nutzen Sie stattdessen Synchronisieren.",
@@ -2357,6 +2375,8 @@
           "syncingTooltip": "Dieser Konnektor synchronisiert neue und aktualisierte Inhalte.",
           "fullSyncing": "Vollständige Synchronisierung läuft",
           "fullSyncingTooltip": "Dieser Konnektor führt eine vollständige Neusynchronisierung von der Quelle durch.",
+          "queued": "In Warteschlange",
+          "queuedTooltip": "Wartet auf einen freien Synchronisierungsplatz. Die Synchronisierung startet automatisch, sobald einer frei wird.",
           "removing": "Entfernen",
           "removingTooltip": "Diese Instanz wird gelöscht."
         }

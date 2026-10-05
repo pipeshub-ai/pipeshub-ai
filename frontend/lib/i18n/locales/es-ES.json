@@ -2191,6 +2191,24 @@
         "confirm": "Confirmar",
         "cancel": "Cancelar"
       },
+      "stopSync": {
+        "label": "Detener sincronización",
+        "labelFull": "Detener sincronización completa",
+        "stopping": "Deteniendo…"
+      },
+      "stopSyncConfirm": {
+        "title": "¿Detener la sincronización en curso?",
+        "titleFull": "¿Detener la sincronización completa en curso?",
+        "message": "Los registros ya sincronizados se conservan, pero el resto de esta ejecución se abandona. La sincronización puede tardar un momento en detenerse. Puede volver a iniciarla después.",
+        "confirm": "Detener sincronización",
+        "confirmFull": "Detener sincronización completa"
+      },
+      "fullSync": {
+        "disabledTooltip": "Detenga la sincronización en curso antes de iniciar una sincronización completa"
+      },
+      "sync": {
+        "disabledTooltip": "Detenga primero la sincronización completa en curso"
+      },
       "fullSyncConfirm": {
         "title": "¿Iniciar sincronización completa?",
         "message": "Sobrescribe y vuelve a sincronizar todos los datos desde cero; es más lento que la sincronización normal. Use la sincronización completa cuando falte contenido, esté duplicado o no coincida con el origen. Para actualizaciones rutinarias, use Sincronizar.",
@@ -2373,6 +2391,8 @@
           "syncingTooltip": "Este conector está sincronizando contenido nuevo y actualizado.",
           "fullSyncing": "Sincronización completa en curso",
           "fullSyncingTooltip": "Este conector está ejecutando una resincronización completa desde el origen.",
+          "queued": "En cola",
+          "queuedTooltip": "Esperando un hueco libre de sincronización. Empezará automáticamente cuando haya uno disponible.",
           "removing": "Eliminando",
           "removingTooltip": "Esta instancia se está eliminando."
         }

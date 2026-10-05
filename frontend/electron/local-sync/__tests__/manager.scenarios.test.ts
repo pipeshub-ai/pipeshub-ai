@@ -153,6 +153,32 @@ test('Live edits reach the server only when it pulls', async () => {
   await manager.shutdown();
 });
 
+const GLOB_LIKE_FOLDER_NAMES = ['Docs [2024]', 'Reports {2024,2025}', ...(process.platform === 'win32' ? [] : ['a*b'])];
+
+for (const folderName of GLOB_LIKE_FOLDER_NAMES) {
+  test(`Live edits are reported for a sync root named "${folderName}"`, async () => {
+    const { manager, syncRoot: parent } = setup();
+    const syncRoot = path.join(parent, folderName);
+    await fsp.mkdir(syncRoot);
+    await manager.start({ connectorId: 'c-1', connectorName: 'Glob-like root', rootPath: syncRoot });
+    try {
+      await sleep(700);
+
+      await fsp.writeFile(path.join(syncRoot, 'q1.txt'), 'hello');
+      await sleep(2500);
+
+      const { events } = await drainRun(manager, 'c-1', 'run-1');
+      assert.equal(
+        events.filter((e) => e.type === 'CREATED' && e.path === 'q1.txt').length,
+        1,
+        `expected exactly one CREATED q1.txt, got ${JSON.stringify(events)}`,
+      );
+    } finally {
+      await manager.shutdown();
+    }
+  });
+}
+
 test('Create, content change, rename, move and delete all reach one pull', async () => {
   const { manager, syncRoot } = setup();
   await seedAllChangeFiles(syncRoot);

@@ -228,7 +228,7 @@ class TestThisRepo(unittest.TestCase):
         """Every ai_agents test costs model calls; the nightly runs them, a PR must not."""
         workflow = balance.WORKFLOW.read_text(encoding="utf-8")
         line = balance._MATRIX_LINE.search(workflow).group(0)
-        pr_list = line.split("github.event_name == 'pull_request_target' && ", 1)[1].split("'", 2)[1]
+        pr_list = line.split("github.event_name == 'pull_request' && ", 1)[1].split("'", 2)[1]
         self.assertNotIn("ai_agents", pr_list)
         self.assertIn("ai_agents", balance.matrix_solo_shards(workflow))
 

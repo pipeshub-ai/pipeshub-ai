@@ -98,6 +98,26 @@ class SyncTaskManager:
         self.logger.info(f"{self._label} task started for {key}")
         return task
 
+    def request_stop(self, key: str) -> bool:
+        """
+        Cancel the task for `key` without awaiting its unwind.
+
+        Safe to call from an HTTP handler or a serial consumer loop: a task
+        stuck in a blocking call cannot be interrupted until it yields, so
+        awaiting it (as cancel_sync does) could hang the caller for an
+        unbounded time. The task's own cleanup still runs when the cancellation
+        lands, and _on_task_done removes it from the registry — is_running()
+        stays True until it has fully stopped.
+
+        Returns True if a running task was cancelled, False if none was.
+        """
+        task = self._tasks.get(key)
+        if task is None or task.done():
+            return False
+        self.logger.info(f"Stop requested for {self._label.lower()} task {key}")
+        task.cancel()
+        return True
+
     async def cancel_sync(self, key: str) -> None:
         """
         Cancel and await the task for the given key, if one is running.
@@ -140,6 +160,14 @@ class SyncTaskManager:
             return_exceptions=True,
         )
 
+    def request_stop_by_prefix(self, prefix: str) -> int:
+        """
+        Non-awaiting counterpart to cancel_by_prefix; returns how many were
+        cancelled. See request_stop for why the unwind is not awaited.
+        """
+        keys = [k for k in self._tasks if k.startswith(prefix)]
+        return sum(1 for k in keys if self.request_stop(k))
+
     async def cancel_all(self) -> None:
         """
         Cancel all running tasks. Intended to be called at application shutdown.
@@ -156,6 +184,19 @@ class SyncTaskManager:
         )
 
         self.logger.info(f"All {self._label.lower()} tasks cancelled")
+
+    def deregister(self, key: str, task: Optional[asyncio.Task]) -> None:
+        """Forget a task while it is still unwinding.
+
+        Called when its lease ends, which is the moment the sync stops counting
+        as running: the body has finished, the status is written and the lease is
+        released, so a request arriving now is entitled to start. Left registered,
+        it would decline the very resync its own finalizer is handing back —
+        which is exactly what the old `ignore_local_task` flag existed to work
+        around.
+        """
+        if task is not None and self._tasks.get(key) is task:
+            del self._tasks[key]
 
     def is_running(self, key: str) -> bool:
         """
@@ -198,7 +239,9 @@ class SyncTaskManager:
             self.logger.info(f"{self._label} task for {key} completed successfully")
 
 
-# Module-level singletons — import and use these everywhere.
-# Separate registries: reindex must never cancel an in-flight sync.
-sync_task_manager = SyncTaskManager(label="Sync")
+# Sync tasks are owned by the SyncCoordinator, which holds its own instance so
+# a task's lifetime matches the lease that admitted it. Reindex has no lease
+# and its keys are per-request composites rather than connector ids, so it
+# keeps a separate registry here — and separate is the point: reindex must
+# never cancel an in-flight sync.
 reindex_task_manager = SyncTaskManager(label="Reindex")

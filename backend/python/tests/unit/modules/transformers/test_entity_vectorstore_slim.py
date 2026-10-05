@@ -3,6 +3,7 @@ membership merging, and org-scoped search (KG Clean Rebuild plan, Phase 8).
 """
 from __future__ import annotations
 
+import contextlib
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -349,6 +350,7 @@ class TestConcurrentMergeIsSerialised:
         import asyncio
 
         active = {"n": 0, "max": 0}
+        both_writing = asyncio.Event()
 
         vector_db_service = MagicMock()
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
@@ -357,7 +359,13 @@ class TestConcurrentMergeIsSerialised:
         async def _upsert_points(collection_name, points) -> None:
             active["n"] += 1
             active["max"] = max(active["max"], active["n"])
-            await asyncio.sleep(0.01)
+            if active["n"] == 2:
+                both_writing.set()
+            # Wait for the other writer rather than sleeping a fixed time: a
+            # loaded runner can finish one write before the other starts. If
+            # the lock serialised them, the second never arrives.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(both_writing.wait(), timeout=2)
             active["n"] -= 1
 
         vector_db_service.upsert_points = AsyncMock(side_effect=_upsert_points)

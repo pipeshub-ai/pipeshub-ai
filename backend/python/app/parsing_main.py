@@ -336,7 +336,8 @@ async def health_check() -> JSONResponse:
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.
-            content["resource_governor"] = {"error": str(stats_error)}
+            container.logger().warning("Resource governor stats failed: %s", stats_error)
+            content["resource_governor"] = {"error": "unavailable"}
     return JSONResponse(content=content)
 
 

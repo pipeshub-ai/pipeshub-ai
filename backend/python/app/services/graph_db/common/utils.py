@@ -166,6 +166,8 @@ class PermittedEntityRows(EntityCandidateRows):
     ) -> "PermittedEntityRows":
         """Build from query hits shaped ``{"pos": int, "row": dict}``, where
         ``pos`` is the hit's index in the window."""
+        if limit <= 0:
+            return cls(capped=capped, window_size=window_size, examined=0)
         ordered = sorted(
             (h for h in hits if h and isinstance(h.get("row"), dict)),
             key=lambda h: int(h.get("pos") or 0),

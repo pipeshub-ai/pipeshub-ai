@@ -281,12 +281,12 @@ class TestTier2:
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
             EntityRecord(entity_id="k-legal", entity_type=EntityType.CATEGORY, name="Legal", org_id="acme"),
         ])
-        from app.modules.entity_resolution.models import MergeDecisions
+        from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
 
         get_llm = AsyncMock(return_value=(MagicMock(name="llm"), {}))
-        # A successful (empty) answer: after a failed call the client is
-        # rebuilt on purpose (test_resolver_model_call_and_winner_check), so reuse is about success.
-        invoke = AsyncMock(return_value=MergeDecisions())
+        # A usable answer: after a failed or empty one the client is rebuilt on
+        # purpose (test_resolver_model_call_and_winner_check), so reuse is about success.
+        invoke = AsyncMock(return_value=MergeDecisions(decisions=[MergeDecision(i=0, same=False)]))
         with patch("app.modules.entity_resolution.resolver.get_llm_for_role", new=get_llm), patch(
             "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",
             new=invoke,

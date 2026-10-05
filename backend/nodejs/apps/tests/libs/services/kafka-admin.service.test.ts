@@ -2,7 +2,12 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { Kafka } from 'kafkajs';
-import { KafkaAdminService, REQUIRED_KAFKA_TOPICS, ensureKafkaTopicsExist } from '../../../src/libs/services/kafka-admin.service';
+import {
+  KafkaAdminService,
+  REQUIRED_KAFKA_TOPICS,
+  REQUIRED_TOPICS,
+  ensureKafkaTopicsExist,
+} from '../../../src/libs/services/kafka-admin.service';
 import { createMockLogger } from '../../helpers/mock-logger';
 
 describe('KafkaAdminService', () => {
@@ -29,7 +34,7 @@ describe('KafkaAdminService', () => {
   describe('REQUIRED_KAFKA_TOPICS', () => {
     it('should have expected topics', () => {
       expect(REQUIRED_KAFKA_TOPICS).to.be.an('array');
-      const topicNames = REQUIRED_KAFKA_TOPICS.map(t => t.topic);
+      const topicNames = REQUIRED_KAFKA_TOPICS.map((t) => t.topic);
       expect(topicNames).to.include('record-events');
       expect(topicNames).to.include('entity-events');
       expect(topicNames).to.include('ai-config-events');
@@ -71,7 +76,7 @@ describe('KafkaAdminService', () => {
     });
 
     it('should skip creation when all topics exist', async () => {
-      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map(t => t.topic));
+      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map((t) => t.topic));
       const config = { brokers: ['localhost:9092'] };
       const service = new KafkaAdminService(config, mockLogger);
       await service.ensureTopicsExist(REQUIRED_KAFKA_TOPICS);
@@ -115,12 +120,14 @@ describe('KafkaAdminService', () => {
       const service = new KafkaAdminService(config, mockLogger);
       try {
         await service.ensureTopicsExist();
-      } catch (_e) { /* expected */ }
+      } catch (_e) {
+        /* expected */
+      }
       expect(mockAdmin.disconnect.calledOnce).to.be.true;
     });
 
     it('should handle disconnect error gracefully', async () => {
-      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map(t => t.topic));
+      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map((t) => t.topic));
       mockAdmin.disconnect.rejects(new Error('disconnect failed'));
       const config = { brokers: ['localhost:9092'] };
       const service = new KafkaAdminService(config, mockLogger);
@@ -167,7 +174,6 @@ describe('KafkaAdminService', () => {
       expect(createCall.topics[0].numPartitions).to.equal(3);
       expect(createCall.topics[0].replicationFactor).to.equal(2);
     });
-
   });
 
   describe('listTopics', () => {
@@ -204,21 +210,28 @@ describe('KafkaAdminService', () => {
     it('should pass custom topics', async () => {
       mockAdmin.listTopics.resolves([]);
       const kafkaConfig = { brokers: ['localhost:9092'] };
-      const customTopics = [{ topic: 'custom-topic', numPartitions: 3, replicationFactor: 2 }];
+      const customTopics = [
+        { topic: 'custom-topic', numPartitions: 3, replicationFactor: 2 },
+      ];
       await ensureKafkaTopicsExist(kafkaConfig, mockLogger, customTopics);
       const createCall = mockAdmin.createTopics.firstCall.args[0];
       expect(createCall.topics[0]!.topic).to.equal('custom-topic');
     });
 
     it('should pass ssl and sasl config', async () => {
-      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map(t => t.topic));
+      mockAdmin.listTopics.resolves(REQUIRED_KAFKA_TOPICS.map((t) => t.topic));
       const kafkaConfig = {
         brokers: ['localhost:9092'],
         ssl: true,
-        sasl: { mechanism: 'plain' as const, username: 'user', password: 'pass' },
+        sasl: {
+          mechanism: 'plain' as const,
+          username: 'user',
+          password: 'pass',
+        },
       };
       await ensureKafkaTopicsExist(kafkaConfig, mockLogger);
       // Should complete without error
     });
   });
+
 });

@@ -15,6 +15,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.query_transform import setup_query_transformation
+from app.utils.user_messages import action_failed
 
 if TYPE_CHECKING:
     from app.containers.query import QueryAppContainer
@@ -64,9 +65,9 @@ async def search(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 )-> JSONResponse :
     """Perform semantic search across documents"""
+    container = request.app.container
+    logger = container.logger()
     try:
-        container = request.app.container
-        logger = container.logger()
         llm = await resolve_llm_for_search(request, retrieval_service)
 
         # Extract KB IDs from filters if present
@@ -113,8 +114,11 @@ async def search(
 
         return JSONResponse(status_code=custom_status_code, content=results)
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.error("Search failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
 
 
 @router.get("/health", dependencies=[Depends(deny_service_tokens)])
