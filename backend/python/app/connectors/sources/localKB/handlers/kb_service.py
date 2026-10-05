@@ -28,7 +28,7 @@ from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import is_live_record
-from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
+from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH, RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1662,6 +1662,8 @@ class KnowledgeBaseService:
             if err:
                 return err
             if is_live_record(record):
+                if self._owes_restore_reindex(record):
+                    return await self._requeue_restored_file(record_id, kb_id, user_role)
                 return {
                     "success": True,
                     "code": 200,
@@ -1711,16 +1713,21 @@ class KnowledgeBaseService:
                 and item["record"].get("indexingStatus") != ProgressStatus.AUTO_INDEX_OFF.value
             ]
             to_reindex = set(reindex_ids)
+            now = get_epoch_timestamp_in_ms()
+            # Written with the restore itself: the re-index is published after it
+            # commits, and if that publish is lost the marker is what lets a retry
+            # or the stranded sweep queue the file again.
+            owed = {
+                "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                "queuedAtTimestamp": now,
+                RESTORED_AT_FIELD: now,
+            }
             items = [
                 {
                     "id": item["record"]["_key"],
                     "name": item["record"].get("recordName"),
                     "trashedExternalRecordId": item["record"].get("trashedExternalRecordId"),
-                    "set": (
-                        {"indexingStatus": ProgressStatus.NOT_STARTED.value}
-                        if item["record"]["_key"] in to_reindex
-                        else {}
-                    ),
+                    "set": dict(owed) if item["record"]["_key"] in to_reindex else {},
                 }
                 for item in members
             ]
@@ -1737,6 +1744,34 @@ class KnowledgeBaseService:
         except Exception as e:
             self.logger.error("❌ Failed to restore record %s: %s", record_id, e, exc_info=True)
             return {"success": False, "code": 500, "reason": action_failed("restore this item")}
+
+    @staticmethod
+    def _owes_restore_reindex(record: dict) -> bool:
+        return bool(record.get(RESTORED_AT_FIELD)) and (
+            record.get("indexingStatus") == ProgressStatus.NOT_STARTED.value
+        )
+
+    async def _requeue_restored_file(self, record_id: str, kb_id: str, user_role: str | None) -> dict:
+        """A retried restore of a file that is back but whose re-index never went out."""
+        if user_role not in RESTORE_FILE_ROLES:
+            return {
+                "success": False,
+                "code": 403,
+                "reason": (
+                    "You need edit access to this collection to restore this item. Ask the "
+                    "collection's owner to restore it, or to give you edit access."
+                ),
+            }
+        processor = await self.processor_for_kb(kb_id)
+        response = await self._finish_restore(processor, None, [], {}, [record_id])
+        response["message"] = (
+            "This item was already restored but isn't searchable yet, and we couldn't queue it for "
+            "indexing. Try again in a few minutes."
+            if response.get("reindexPending")
+            else "This item was already restored but wasn't searchable yet. It's now queued for "
+            "indexing and will show up in search once that finishes."
+        )
+        return response
 
     @staticmethod
     def _trashed_parent_refusal(name: str, members: list[dict], member_ids: set[str]) -> dict | None:
@@ -1835,7 +1870,7 @@ class KnowledgeBaseService:
     async def _finish_restore(
         self,
         processor: "DataSourceEntitiesProcessor",
-        batch_id: str,
+        batch_id: str | None,
         members: list[dict],
         renames: dict[str, str],
         reindex_ids: list[str],
