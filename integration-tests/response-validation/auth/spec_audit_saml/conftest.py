@@ -14,9 +14,14 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
 
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
-from saml_audit_support import SamlClient  # noqa: E402
+from saml_audit_support import SamlClient, saml_strategy_registered  # noqa: E402
 
 
 @pytest.fixture(scope="session")
 def saml_client(pipeshub_client: PipeshubClient) -> SamlClient:
     return SamlClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def saml_configured(saml_client: SamlClient) -> bool:
+    return saml_strategy_registered(saml_client)
