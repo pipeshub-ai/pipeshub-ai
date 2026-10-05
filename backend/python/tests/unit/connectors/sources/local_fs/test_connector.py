@@ -2856,7 +2856,6 @@ class TestEventDateFilters:
 
     def _filter(self, key, start, end):
         from app.connectors.core.registry.filters import (
-            DatetimeOperator,
             Filter,
             FilterType,
         )

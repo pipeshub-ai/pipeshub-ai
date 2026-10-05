@@ -64,7 +64,7 @@ vi.mock('@/chat/components/chat-panel/expansion-panels/chat-input-overlay-panel'
 }));
 
 vi.mock('@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel', () => ({
-  getReasoningEffortLabel: (_t: unknown, effort: string) => `Effort ${effort}`,
+  getAppliedReasoningEffortLabel: (_t: unknown, { picked }: { picked: string | null }) => `Effort ${picked}`,
   ModelSelectorPanel: ({ onModelSelect }: { onModelSelect: (m: unknown) => void }) => (
     <button
       type="button"

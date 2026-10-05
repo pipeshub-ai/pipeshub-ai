@@ -104,7 +104,7 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
-from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
@@ -3863,16 +3863,7 @@ def _apply_confluence_optional_jira_scope(
     scopes: list[str],
 ) -> list[str]:
     """Add or remove read:jira-user based on Confluence Cloud includeJiraScope."""
-    normalized = (connector_type or "").replace(" ", "").upper()
-    if normalized != Connectors.CONFLUENCE.value:
-        return scopes
-    jira_scope = "read:jira-user"
-    enabled = include_jira_scope_enabled(auth_config.get("includeJiraScope"))
-    if enabled:
-        if jira_scope in scopes:
-            return scopes
-        return [*scopes, jira_scope]
-    return [scope for scope in scopes if scope != jira_scope]
+    return apply_confluence_jira_scope(connector_type, auth_config, scopes)
 
 
 # Set by the server: which org a linked OAuth app belongs to (worked out from the app

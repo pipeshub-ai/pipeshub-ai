@@ -179,12 +179,56 @@ another model, or one written before this field existed, even when its text
 is unchanged. Indexing therefore repairs whatever a pass missed. The first
 rebuild after an upgrade re-embeds every entity point once.
 
-When the dimension differs, the indexing service drops and recreates the
-collection on start, and the passes refill it. Until it does, the query and
-connector services fail entity calls with the mismatch, retrying
-initialisation every 30 seconds. Points of legacy nodes without an org are
-not projected, so after a recreate they return only when their records are
-reindexed.
+Every service's entity store follows a model change without a restart. It
+checks the embedding config on each call against `ConfigurationService`'s
+cache, which the change notification clears, and reads the stored config at
+least once a minute in case a notification is missed. A config that cannot be
+read keeps the current model. On a change the store rebuilds its client, so
+the next write, search and rebuild tick use the new model and the marker
+moves.
+
+Writes are also checked against the stored config, not only the cache: just
+before it upserts, each written batch re-reads the config from the key-value
+store, as the records path does per record. A batch embedded with a model
+the stored config no longer names is refused, and so is one whose model
+changed in this process while it was embedding. This covers an indexing
+replica that missed the notification and still holds the old model while
+another has already recreated the collection. If that re-read fails, the
+write is refused as well, because the store cannot tell whether the
+collection now belongs to another model. Searches and initialisation keep
+the current model on a failed read. The passes write a refused entity again.
+
+A store checks the collection against its new model: the collection's
+dimension, and the model recorded on one stored point. The collection does
+not match when the dimension differs, or when the dimension is the same but
+that point was embedded by another model. At the same dimension, the old
+vectors would otherwise answer new-model queries with no error. Points from
+before `metadata.embeddingModel` existed are not counted as a mismatch; they
+are re-embedded in place.
+
+- Only the rebuild leader drops and recreates a collection that does not
+  match, at the start of a tick while it holds `entity_index_rebuild:leader`.
+  The passes then refill it. Two replicas dropping in turn would lose the
+  points the first one had refilled.
+- While the rebuild loop waits between ticks, it checks the configured model
+  every 5 seconds (a cache read) and ends the wait on a change. When the
+  change notification reaches the leader, it recreates within seconds of the
+  switch, even when nothing is being indexed. If the notification is missed,
+  the leader sees the change only at its next stored-config read, up to a
+  minute later.
+- Every other store fails entity calls with the mismatch (`The indexing
+  service recreates it`). That includes the query and connector services and
+  the other indexing replicas. The retry is driven by calls, not a timer: for
+  30 seconds after a failed initialisation, entity calls fail without
+  retrying, and the first call after that tries again.
+  After a restart that finds a mismatched collection, entity writes fail
+  until the leader's first tick, which comes after a 60-second startup grace.
+- If the stored point cannot be read, the switch fails, and the first entity
+  call more than 30 seconds later tries again. The store does not adopt the
+  new model on an unread collection.
+
+Points of legacy nodes without an org are not projected, so after a recreate
+they return only when their records are reindexed.
 
 The rebuild runs on one indexing replica at a time (Redis leader
 `entity_index_rebuild:leader`), one page per tick. It resumes from the cursor

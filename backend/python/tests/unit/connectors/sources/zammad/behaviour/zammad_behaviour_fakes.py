@@ -11,6 +11,7 @@ values Neo4j cannot hold as a node property.
 
 from __future__ import annotations
 
+import json
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -36,6 +37,20 @@ def iso(epoch_ms: int) -> str:
 
 def epoch_ms(day: int) -> int:
     return int(T0.timestamp() * 1000) + day * 86_400_000
+
+
+class FakeHttpResponse:
+    """What the HTTP client hands ``ZammadDataSource``: a status and a JSON body."""
+
+    def __init__(self, status: int, body: object) -> None:
+        self.status = status
+        self._body = body
+
+    def text(self) -> str:
+        return json.dumps(self._body)
+
+    def json(self) -> object:
+        return self._body
 
 
 @dataclass
@@ -119,18 +134,23 @@ class FakeZammad:
         """Indexed tickets a search query matches, newest updated_at first, then highest id."""
         group = int(re.search(r"group_id:(\d+)", query).group(1))
         id_range = re.search(r"\bid:\[(\d+) TO (\d+|\*)\]", query)
+        # Elasticsearch range syntax: ``[`` and ``]`` are inclusive, ``}`` is exclusive.
         bounds = {
-            (field_name, side): datetime.fromisoformat(value.replace("Z", "+00:00"))
-            for field_name, side, value in (
-                [(m.group(1), "after", m.group(2)) for m in re.finditer(r"(\w+)_at:\[(\S+) TO \*\]", query)]
-                + [(m.group(1), "before", m.group(2)) for m in re.finditer(r"(\w+)_at:\[\* TO (\S+)\]", query)]
+            (field_name, side): (datetime.fromisoformat(value.replace("Z", "+00:00")), bracket == "}")
+            for field_name, side, value, bracket in (
+                [(m.group(1), "after", m.group(2), "]")
+                 for m in re.finditer(r"(\w+)_at:\[(\S+) TO \*\]", query)]
+                + [(m.group(1), "before", m.group(2), m.group(3))
+                   for m in re.finditer(r"(\w+)_at:\[\* TO ([^\s\]}]+)([\]}])", query)]
             )
         }
 
         def matches(ticket: dict[str, Any]) -> bool:
-            for (field_name, side), bound in bounds.items():
+            for (field_name, side), (bound, exclusive) in bounds.items():
                 value = datetime.fromisoformat(ticket[f"{field_name}_at"].replace("Z", "+00:00"))
-                if (side == "after" and value < bound) or (side == "before" and value > bound):
+                if side == "after" and value < bound:
+                    return False
+                if side == "before" and (value >= bound if exclusive else value > bound):
                     return False
             return True
 

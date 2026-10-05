@@ -218,13 +218,4 @@ async def scenario_adapter(
 @pytest.mark.google_drive_workspace
 class TestDriveWorkspaceScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Google Drive Workspace"
-    KNOWN_BUGS = {
-        "filter_change": FILTER_KEEPS_EXCLUDED_ITEM,
-        "incr_delete": (
-            "A file deleted from My Drive keeps its record and its vectors: the changes "
-            "feed reports it as removed, and sources/google/drive/team/connector.py "
-            "(the `if is_removed:` branch of the user changes loop, ~line 2548) only calls "
-            "delete_permission_from_record for that user. Nothing deletes the record; only "
-            "the Shared Drive loop (~line 3144) marks removed items is_deleted."
-        ),
-    }
+    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}

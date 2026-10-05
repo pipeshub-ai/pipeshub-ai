@@ -23,8 +23,6 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 )
 from app.models.entities import FileRecord, RecordType
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, OriginTypes
-from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 
 
 # ---------------------------------------------------------------------------
