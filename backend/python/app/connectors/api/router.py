@@ -147,6 +147,7 @@ from app.utils.filename_utils import upload_extension
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import (
+    SALESFORCE_LOGIN_URL_ERROR,
     check_salesforce_login_url_setting,
     extract_oauth_error_message,
     get_oauth_config,
@@ -3899,7 +3900,7 @@ def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | 
     try:
         check_salesforce_login_url_setting(connector_type, settings)
     except ValueError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=SALESFORCE_LOGIN_URL_ERROR) from e
 
 
 async def _link_to_shared_oauth_app(

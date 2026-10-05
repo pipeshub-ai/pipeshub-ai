@@ -410,8 +410,7 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
     const jsonRoutes = KB_ROUTES.filter((r) => r.forwards && !r.form && !r.pattern.startsWith('/stream'))
 
     it('covers every route that answers in JSON', () => {
-      expect(jsonRoutes).to.have.length(24)
-      expect(jsonRoutes).to.have.length(25)
+      expect(jsonRoutes).to.have.length(26)
     })
 
     it("never shows a connector service traceback, address or stack", async () => {
