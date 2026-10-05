@@ -1241,6 +1241,51 @@ class TestAlreadyIndexed:
         assert len(events) == 2
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event_type", [EventTypes.NEW_RECORD.value, EventTypes.REINDEX_RECORD.value])
+    async def test_a_cut_short_enrichment_is_resumed_and_then_promotes_its_duplicates(self, event_type) -> None:
+        """Indexed, enrichment IN_PROGRESS: the handler enriching it was cancelled.
+
+        Acknowledging the redelivery would leave the enrichment unfinished and
+        every duplicate parked behind it QUEUED for good.
+        """
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+            "origin": OriginTypes.UPLOAD.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(side_effect=lambda *_a, **_k: dict(record))
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+
+        async def enrichment_finishes(*_a, **_k) -> AsyncGenerator:
+            record["extractionStatus"] = ProgressStatus.COMPLETED.value
+            async for event in _async_gen_events([
+                {"event": "parsing_complete", "data": {"record_id": "r1"}},
+                {"event": "indexing_complete", "data": {"record_id": "r1"}},
+            ]):
+                yield event
+
+        handler.event_processor.on_event = MagicMock(side_effect=enrichment_finishes)
+        payload = {
+            "recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1",
+            "mimeType": "application/pdf", "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
+            await _collect_events(handler, event_type, payload)
+
+        handler.event_processor.on_event.assert_called_once()
+        gp.update_queued_duplicates_status.assert_awaited_once_with(
+            "r1", ProgressStatus.COMPLETED.value, "vr1"
+        )
+
+
 # ===================================================================
 # Connector active/inactive checks
 # ===================================================================

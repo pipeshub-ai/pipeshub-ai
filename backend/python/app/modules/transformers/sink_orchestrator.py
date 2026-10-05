@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -17,7 +17,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.image_description import ImageDescriber, harvest_descriptions
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
-from app.modules.transformers.transformer import TransformContext, Transformer
+from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS, TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -427,20 +427,29 @@ class SinkOrchestrator(Transformer):
         await self.image_describer.annotate(containers, inherited=inherited)
 
     async def _update_indexing_status(self, ctx: TransformContext) -> None:
-        """Mark indexingStatus=COMPLETED without touching extractionStatus."""
+        """Mark indexingStatus=COMPLETED.
+
+        With ``ENRICHMENT_FOLLOWS`` set, the same write marks extractionStatus
+        IN_PROGRESS and keeps ``processingStartedAt``: no reader may see the
+        record indexed with its enrichment not yet started, which a duplicate
+        would copy as finished, and stale recovery ages a stuck enrichment by
+        that timestamp. Enrichment clears it when it ends.
+        """
         record = ctx.record
         timestamp = get_epoch_timestamp_in_ms()
+        status: dict[str, Any] = {
+            "id": record.id,
+            "virtualRecordId": record.virtual_record_id,
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "lastIndexTimestamp": timestamp,
+            "isDirty": False,
+        }
+        if ctx.settings.get(ENRICHMENT_FOLLOWS):
+            status["extractionStatus"] = ProgressStatus.IN_PROGRESS.value
+        else:
+            status["processingStartedAt"] = None
         await self.graph_provider.batch_upsert_nodes(
-            [
-                {
-                    "id": record.id,
-                    "virtualRecordId": record.virtual_record_id,
-                    "indexingStatus": ProgressStatus.COMPLETED.value,
-                    "processingStartedAt": None,
-                    "lastIndexTimestamp": timestamp,
-                    "isDirty": False,
-                }
-            ],
+            [status],
             CollectionNames.RECORDS.value,
         )
         record.record_status = ProgressStatus.COMPLETED

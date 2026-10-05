@@ -1058,7 +1058,16 @@ class RecordEventHandler(BaseEventService):
             # anyway, so it opts out rather than the guard being relaxed for
             # everyone: without this, reindex reports success while doing nothing.
             force_reindex = bool(payload.get("forceReindex"))
-            if (not force_reindex) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            # Indexed but with enrichment still IN_PROGRESS means the handler
+            # that was enriching it was cut short: this delivery holds the
+            # record (its lease, or this process's claim on it), so nothing
+            # else is enriching it. Running it again
+            # finishes the enrichment, which is what lets its queued duplicates
+            # be promoted; acknowledging it here would leave them parked.
+            enrichment_cut_short = (
+                doc.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+            )
+            if (not force_reindex) and (not enrichment_cut_short) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

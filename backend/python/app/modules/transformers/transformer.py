@@ -9,6 +9,11 @@ class ReconciliationContext(BaseModel):
     blocks_to_index_ids: Optional[Set[str]] = None  # None means index all
     block_ids_to_delete: Optional[Set[str]] = None  # None means delete none
 
+#: ``TransformContext.settings`` key: enrichment runs right after indexing in
+#: the same handler, so the indexed write also marks extraction IN_PROGRESS.
+ENRICHMENT_FOLLOWS = "enrichment_follows"
+
+
 class TransformContext(BaseModel):
     record: Record
     settings: Dict[str, Any] = {}

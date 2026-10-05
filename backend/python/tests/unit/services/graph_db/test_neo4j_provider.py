@@ -2523,7 +2523,7 @@ class TestDuplicateAndSyncOperations:
         self, neo4j_provider: Neo4jProvider
     ):
         neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[[{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}}], []]
+            side_effect=[[{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "extractionStatus": "COMPLETED"}}], []]
         )
         await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED")
         call = neo4j_provider.client.execute_query.await_args_list[1]
@@ -2536,7 +2536,7 @@ class TestDuplicateAndSyncOperations:
     ):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "sizeInBytes": 12}}],
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "sizeInBytes": 12, "extractionStatus": "COMPLETED"}}],
                 [{"record": {"id": "rec-2"}}, {"record": {"id": "rec-3"}}],
             ]
         )
@@ -2593,6 +2593,19 @@ class TestDuplicateAndSyncOperations:
         empty_payload = neo4j_provider.batch_update_nodes.await_args_list[1].args[0]
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
         assert empty_payload[-1]["duplicateReconcilePending"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("primary_extraction", ["IN_PROGRESS", None])
+    async def test_queued_duplicates_wait_while_the_primarys_enrichment_has_not_ended(
+        self, neo4j_provider: Neo4jProvider, primary_extraction: str | None
+    ) -> None:
+        primary = {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "extractionStatus": primary_extraction}
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"record": primary}], [{"record": {"id": "rec-2"}}]])
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1") == 0
+
+        neo4j_provider.batch_update_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("primary_extraction", ["FAILED", "NOT_STARTED"])

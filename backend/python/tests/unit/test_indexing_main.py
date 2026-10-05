@@ -869,6 +869,73 @@ class TestRecoverInProgressRecords:
 # ---------------------------------------------------------------------------
 # start_kafka_consumers (indexing)
 # ---------------------------------------------------------------------------
+class TestRecoverCutShortEnrichment:
+    """An indexed record whose enrichment never ended holds its duplicates QUEUED.
+
+    Its start time is kept through enrichment, so it ages like any stale record;
+    it stays searchable and is republished so the handler finishes it.
+    """
+
+    @staticmethod
+    def _graph(records) -> tuple[MagicMock, dict]:
+        gp = MagicMock()
+        by_key = {r["_key"]: r for r in records}
+
+        async def paginated(*_a, filters=None, **_k) -> list[dict]:
+            (field, value), = (filters or {}).items()
+            return [dict(r) for r in by_key.values() if r.get(field) == value]
+
+        async def get_document(doc_id, collection, **_k) -> dict | None:
+            row = by_key.get(doc_id) if collection == CollectionNames.RECORDS.value else None
+            return dict(row) if row else None
+
+        async def update_node(doc_id, _collection, fields) -> bool:
+            by_key[doc_id].update(fields)
+            return True
+
+        gp.get_documents_paginated = AsyncMock(side_effect=paginated)
+        gp.get_document = AsyncMock(side_effect=get_document)
+        gp.update_node = AsyncMock(side_effect=update_node)
+        gp.get_nodes_by_filters = AsyncMock(return_value=[])
+        return gp, by_key
+
+    @staticmethod
+    def _twin(started_at) -> dict:
+        return {
+            "_key": "twin", "recordName": "q3.pdf", "orgId": "org-1", "origin": "UPLOAD",
+            "virtualRecordId": "vr-1", "version": 0,
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "parsingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+            "processingStartedAt": started_at,
+        }
+
+    async def test_a_stale_one_is_republished_and_stays_searchable(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp, rows = self._graph([self._twin(0)])
+
+        await recover_in_progress_records(container, gp)
+
+        producer = container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
+        assert producer.send_event.await_args.kwargs["payload"]["recordId"] == "twin"
+        assert rows["twin"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert rows["twin"]["processingStartedAt"] > 0, "kept off the next scans while the event waits"
+
+    async def test_a_live_enrichment_is_left_alone(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp, rows = self._graph([self._twin(get_epoch_timestamp_in_ms())])
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_not_awaited()
+        assert rows["twin"]["extractionStatus"] == ProgressStatus.IN_PROGRESS.value
+
+
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 

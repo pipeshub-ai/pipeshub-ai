@@ -4275,7 +4275,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_duplicate_lookup_is_scoped_to_reference_org(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100, "extractionStatus": "COMPLETED"}],
             [],
         ]
         await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
@@ -4295,7 +4295,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_queued_duplicates_found_and_updated(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100, "extractionStatus": "COMPLETED"}],  # reference
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(

@@ -32,6 +32,7 @@ from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
+from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.events.dedup import DedupDecision, DuplicateMatch, is_finished, select_duplicate
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
@@ -474,16 +475,19 @@ class EventProcessor:
             ctx, self.logger, self.sink_orchestrator
         )
 
+        defer_extraction = (
+            ctx.settings.get("defer_extraction")
+            or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
+        )
+        if not defer_extraction:
+            ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
+
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
         self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
         await self.sink_orchestrator.index(ctx)
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
-        defer_extraction = (
-            ctx.settings.get("defer_extraction")
-            or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
-        )
         if defer_extraction:
             await self.update_record_fields(
                 record_doc,
@@ -493,10 +497,6 @@ class EventProcessor:
                 "📨 Deferring graph enrichment for record %s", record_id
             )
         else:
-            await self.update_record_fields(
-                record_doc,
-                {"extractionStatus": ProgressStatus.IN_PROGRESS.value},
-            )
             try:
                 departments = await self.graph_provider.get_departments(org_id)
                 semantic_metadata = await self.extraction_client.classify(
@@ -537,6 +537,7 @@ class EventProcessor:
                     {
                         "extractionStatus": ProgressStatus.FAILED.value,
                         "reason": ENRICHMENT_FAILED,
+                        "processingStartedAt": None,
                     },
                 )
 

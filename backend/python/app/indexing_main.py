@@ -91,6 +91,15 @@ async def get_initialized_container() -> IndexingAppContainer:
                 setattr(get_initialized_container, "initialized", True)
     return container
 
+def _enrichment_cut_short(record: dict[str, Any]) -> bool:
+    """Indexed, with an enrichment that has not ended (and nothing else in flight)."""
+    return (
+        record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and record.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+        and record.get("parsingStatus") != ProgressStatus.IN_PROGRESS.value
+    )
+
+
 async def recover_in_progress_records(
     app_container: IndexingAppContainer,
     graph_provider: IGraphDBProvider,
@@ -199,8 +208,16 @@ async def recover_in_progress_records(
                     f"Failed to persist recovery status for record {record_id}"
                 )
 
-        async def process_single_record(record: dict[str, Any]) -> bool | None:
-            """Reset one stuck record and re-queue it, with semaphore control."""
+        async def process_single_record(
+            record: dict[str, Any], *, resume_enrichment: bool = False
+        ) -> bool | None:
+            """Reset one stuck record and re-queue it, with semaphore control.
+
+            ``resume_enrichment``: the record is indexed and only its enrichment
+            was cut short. It stays searchable; the republished event re-runs it
+            (the handler does not skip an indexed record whose enrichment is
+            IN_PROGRESS), and its completion promotes its queued duplicates.
+            """
             async with semaphore:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
@@ -233,12 +250,18 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
-                    if latest_record is None or not (
-                        latest_record.get("indexingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                        or latest_record.get("parsingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                    ):
+                    if latest_record is None:
+                        still_stuck = False
+                    elif resume_enrichment:
+                        # Stale again, not merely cut short: a redelivery that
+                        # is enriching it now has refreshed processingStartedAt.
+                        still_stuck = _enrichment_cut_short(latest_record) and is_stale(latest_record)
+                    else:
+                        still_stuck = (
+                            latest_record.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value
+                            or latest_record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value
+                        )
+                    if not still_stuck:
                         results["skipped"] += 1
                         return True
                     record = latest_record
@@ -318,14 +341,22 @@ async def recover_in_progress_records(
                         event_type = EventTypes.NEW_RECORD.value
                         logger.debug(f"Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
-                    reset_fields = {
-                        "parsingStatus": ProgressStatus.NOT_STARTED.value,
-                        "indexingStatus": ProgressStatus.QUEUED.value,
-                        "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "processingStartedAt": None,
-                        "reason": RECOVERY_REQUEUED,
-                    }
+                    if resume_enrichment:
+                        # A fresh start time keeps the next scans off it while
+                        # the event waits; if the event is lost it ages out again.
+                        reset_fields = {
+                            "processingStartedAt": get_epoch_timestamp_in_ms(),
+                            "reason": RECOVERY_REQUEUED,
+                        }
+                    else:
+                        reset_fields = {
+                            "parsingStatus": ProgressStatus.NOT_STARTED.value,
+                            "indexingStatus": ProgressStatus.QUEUED.value,
+                            "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                            "processingStartedAt": None,
+                            "reason": RECOVERY_REQUEUED,
+                        }
 
                     async def publish_recovery_event() -> None:
                         nonlocal published
@@ -443,7 +474,7 @@ async def recover_in_progress_records(
             except (TypeError, ValueError):
                 return True
 
-        for status_field in ("indexingStatus", "parsingStatus"):
+        for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
             offset = 0
             while True:
                 if (
@@ -465,6 +496,7 @@ async def recover_in_progress_records(
                 if not page:
                     break
 
+                resume_enrichment = status_field == "extractionStatus"
                 candidates = [
                     record
                     for record in page
@@ -474,10 +506,14 @@ async def recover_in_progress_records(
                         and record.get("indexingStatus")
                         == ProgressStatus.IN_PROGRESS.value
                     )
+                    and (not resume_enrichment or _enrichment_cut_short(record))
                 ]
 
                 outcomes = await asyncio.gather(
-                    *(process_single_record(record) for record in candidates)
+                    *(
+                        process_single_record(record, resume_enrichment=resume_enrichment)
+                        for record in candidates
+                    )
                 )
                 total_records += sum(outcome is not None for outcome in outcomes)
                 removed_from_result = sum(outcome is True for outcome in outcomes)

@@ -227,6 +227,21 @@ class TestApplyEmptyMetadataPath:
 # ---------------------------------------------------------------------------
 class TestApplyNonEmpty:
     @pytest.mark.asyncio
+    async def test_the_index_phase_is_told_enrichment_follows(self, pipeline, sink_orchestrator) -> None:
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
+        ctx = _make_ctx(record)
+        seen: dict = {}
+
+        async def index(c: TransformContext) -> None:
+            seen.update(c.settings)
+
+        sink_orchestrator.index = AsyncMock(side_effect=index)
+
+        await pipeline.apply(ctx)
+
+        assert seen.get("enrichment_follows") is True
+
+    @pytest.mark.asyncio
     async def test_non_empty_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
         record = _make_record(blocks=[_valid_text_block()], block_groups=[])
         ctx = _make_ctx(record)

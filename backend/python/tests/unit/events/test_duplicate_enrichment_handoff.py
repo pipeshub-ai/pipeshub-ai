@@ -19,6 +19,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.events.events import EventProcessor
+from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
 )
@@ -65,12 +66,21 @@ class RecordsStore:
             if k != record_key and r.get("md5Checksum") == md5_checksum and r.get("orgId") == org_id
         ]
 
+    async def batch_upsert_nodes(self, rows: list[dict[str, Any]], collection: str) -> bool:
+        assert collection == CollectionNames.RECORDS.value
+        for row in rows:
+            self.records[row["id"]].update({k: v for k, v in row.items() if k != "id"})
+        return True
+
     async def copy_document_relationships(self, source: str, target: str) -> bool:
         self.copied_relationships.append((source, target))
         return True
 
     def promote_queued_duplicates(self, record_id: str, new_status: str, reason: str | None = None) -> int:
         primary = self.records[record_id]
+        extraction = promoted_duplicate_extraction_status(new_status, primary)
+        if extraction is None:
+            return 0
         queued = [
             r for k, r in self.records.items()
             if k != record_id and r.get("indexingStatus") == QUEUED
@@ -80,7 +90,7 @@ class RecordsStore:
             record.update({
                 "indexingStatus": new_status,
                 "virtualRecordId": primary.get("virtualRecordId"),
-                "extractionStatus": promoted_duplicate_extraction_status(new_status, primary),
+                "extractionStatus": extraction,
                 **({"reason": reason} if reason else {}),
             })
         return len(queued)
@@ -109,7 +119,7 @@ def add_twin(store: RecordsStore, processor: EventProcessor, extraction: str, **
         "indexingStatus": COMPLETED,
         "virtualRecordId": "vr-twin",
         "extractionStatus": extraction,
-        "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+        "processingStartedAt": get_epoch_timestamp_in_ms(),
         **fields,
     })
 
@@ -161,7 +171,7 @@ class TestTwinStillEnriching:
 
     async def test_an_abandoned_enrichment_is_not_waited_on(self, store, processor) -> None:
         add_twin(store, processor, IN_PROGRESS)
-        store.records["twin"]["lastIndexTimestamp"] = 0
+        store.records["twin"]["processingStartedAt"] = 0
 
         decision = await dedup(store, processor)
 
@@ -212,3 +222,48 @@ class TestTwinFinishesWhileTheDuplicateIsQueued:
         assert store.records["dup"]["indexingStatus"] == COMPLETED
         assert store.records["dup"]["extractionStatus"] == COMPLETED
         assert store.copied_relationships == [("twin", "dup")]
+
+
+def sink_over(store: RecordsStore) -> SinkOrchestrator:
+    return SinkOrchestrator(
+        graphdb=AsyncMock(), blob_storage=AsyncMock(), vector_store=AsyncMock(),
+        graph_provider=store, logger=MagicMock(), config_service=MagicMock(),
+    )
+
+
+def twin_being_indexed(store: RecordsStore, processor: EventProcessor) -> MagicMock:
+    store.add("twin", **{
+        "md5Checksum": md5_of(processor),
+        "indexingStatus": IN_PROGRESS,
+        "extractionStatus": NOT_STARTED,
+        "processingStartedAt": get_epoch_timestamp_in_ms(),
+    })
+    ctx = MagicMock()
+    ctx.record.id = "twin"
+    ctx.record.virtual_record_id = "vr-twin"
+    return ctx
+
+
+class TestTheIntervalBetweenIndexingAndEnrichment:
+    async def test_a_duplicate_arriving_then_gets_the_twins_later_enrichment(self, store, processor) -> None:
+        ctx = twin_being_indexed(store, processor)
+        ctx.settings = {"enrichment_follows": True}
+        await sink_over(store)._update_indexing_status(ctx)
+
+        await dedup(store, processor)
+
+        store.records["twin"].update(extractionStatus=COMPLETED, processingStartedAt=None)
+        store.promote_queued_duplicates("twin", COMPLETED)
+        assert store.records["dup"]["indexingStatus"] == COMPLETED
+        assert store.records["dup"]["extractionStatus"] == COMPLETED
+
+    async def test_deferred_enrichment_is_copied_as_not_started_straight_away(self, store, processor) -> None:
+        ctx = twin_being_indexed(store, processor)
+        ctx.settings = {}
+        await sink_over(store)._update_indexing_status(ctx)
+
+        decision = await dedup(store, processor)
+
+        assert decision.skip_indexing is True
+        assert store.records["dup"]["indexingStatus"] == COMPLETED
+        assert store.records["dup"]["extractionStatus"] == NOT_STARTED

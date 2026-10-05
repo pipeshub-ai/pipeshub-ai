@@ -126,20 +126,27 @@ DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
 
 def promoted_duplicate_extraction_status(
     new_indexing_status: str, primary: Mapping[str, Any]
-) -> str:
-    """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished.
+) -> str | None:
+    """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished,
+    or None while the primary's enrichment has not ended, so the duplicates stay QUEUED.
 
     The duplicate shares the primary's enrichment, so an indexed primary lends
-    its own outcome: FAILED when enrichment failed, NOT_STARTED when deferred.
+    its own outcome: COMPLETED, FAILED, or NOT_STARTED when enrichment was
+    deliberately deferred (an inline enrichment is IN_PROGRESS from the same
+    write that marks the primary indexed). IN_PROGRESS or no status at all
+    means the enrichment was cut short; its recovery promotes them later.
     """
     if new_indexing_status == ProgressStatus.COMPLETED.value:
         primary_status = primary.get("extractionStatus")
-        if primary_status and primary_status != ProgressStatus.IN_PROGRESS.value:
-            return primary_status
-        return ProgressStatus.COMPLETED.value
+        if primary_status in _UNFINISHED_EXTRACTION:
+            return None
+        return primary_status
     if new_indexing_status == ProgressStatus.EMPTY.value:
         return ProgressStatus.EMPTY.value
     return ProgressStatus.FAILED.value
+
+
+_UNFINISHED_EXTRACTION = frozenset({None, "", ProgressStatus.IN_PROGRESS.value, ProgressStatus.QUEUED.value})
 
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:

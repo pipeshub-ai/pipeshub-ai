@@ -7120,6 +7120,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Record {record_id} missing orgId, skipping queued duplicate update")
                 return 0
 
+            extraction_status = promoted_duplicate_extraction_status(
+                new_indexing_status, ref_record
+            )
+            if extraction_status is None:
+                self.logger.info(
+                    "Record %s is indexed but its enrichment has not ended; its queued duplicates wait",
+                    record_id,
+                )
+                return 0
+
             # Find all queued duplicate records directly from RECORDS collection
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
@@ -7172,10 +7182,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 record_key = doc.get("_key") or doc.get("id")
                 if not record_key:
                     continue
-
-                extraction_status = promoted_duplicate_extraction_status(
-                    new_indexing_status, ref_record
-                )
 
                 dup_update = {
                     "id": record_key,

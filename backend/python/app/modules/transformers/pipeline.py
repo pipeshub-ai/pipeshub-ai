@@ -7,7 +7,11 @@ from app.modules.reconciliation.service import ReconciliationMetadata, Reconcili
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from app.modules.transformers.transformer import (
+    ENRICHMENT_FOLLOWS,
+    ReconciliationContext,
+    TransformContext,
+)
 from app.utils.logger import create_logger
 
 
@@ -182,7 +186,9 @@ class IndexingPipeline:
                 )
 
             # Phase 1: Index (VectorStore + BlobStorage)
-            # Document becomes searchable after this call.
+            # Document becomes searchable after this call. Deferral is still a
+            # stub that enriches inline, so enrichment always follows here.
+            ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
             await self._index(ctx)
 
             # Phase 2: Enrich (DocumentExtraction + GraphDB)

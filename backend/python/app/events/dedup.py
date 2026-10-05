@@ -88,10 +88,11 @@ def _is_in_progress(record: Mapping[str, Any], enrichment_live_after_ms: int | N
         return False
     if enrichment_live_after_ms is None:
         return True
-    # A handler cannot outlive the stale-recovery window, so an enrichment
-    # older than that was abandoned; waiting on it would park this record for good.
-    indexed_at = record.get("lastIndexTimestamp")
-    return isinstance(indexed_at, (int, float)) and indexed_at >= enrichment_live_after_ms
+    # processingStartedAt is kept through enrichment, and stale recovery resumes
+    # an enrichment older than the same window. Rows from before that, with no
+    # start time, were abandoned; waiting on them would park this record for good.
+    started_at = record.get("processingStartedAt")
+    return isinstance(started_at, (int, float)) and started_at >= enrichment_live_after_ms
 
 
 def select_duplicate(
@@ -127,8 +128,8 @@ def select_duplicate(
     never be repaired.
 
     A twin that is indexed but still enriching counts as in flight, so this
-    record waits for its final ``extractionStatus``. One whose enrichment
-    began before ``enrichment_live_after_ms`` (epoch ms) is ignored.
+    record waits for its final ``extractionStatus``. One whose handler started
+    before ``enrichment_live_after_ms`` (epoch ms), or has no start time, is ignored.
     """
     candidates = [d for d in duplicates if d]
     if not candidates:

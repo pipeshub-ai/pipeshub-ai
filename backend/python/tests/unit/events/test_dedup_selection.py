@@ -185,7 +185,7 @@ class TestATwinStillEnriching:
 
     @staticmethod
     def _enriching(indexed_at: int) -> dict:
-        return {**_rec("twin", COMPLETED, DRIVE), "extractionStatus": IN_PROGRESS, "lastIndexTimestamp": indexed_at}
+        return {**_rec("twin", COMPLETED, DRIVE), "extractionStatus": IN_PROGRESS, "processingStartedAt": indexed_at}
 
     def test_is_waited_on_not_reused(self) -> None:
         match = select_duplicate([self._enriching(5_000)], DRIVE, _resolver, enrichment_live_after_ms=1_000)
