@@ -53,23 +53,67 @@ class DuplicateMatch:
     waited on."""
 
 
-def _is_processed(record: Mapping[str, Any]) -> bool:
+def _indexed_while_enriching(record: Mapping[str, Any]) -> bool:
+    """Searchable already, but its handler is still running enrichment.
+
+    ``indexingStatus`` turns COMPLETED before enrichment starts, and the copy
+    taken from such a twin would carry an ``extractionStatus`` of IN_PROGRESS
+    that nothing ever finalises: the twin's completion only promotes QUEUED
+    duplicates.
+    """
+    return (
+        record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and bool(record.get("virtualRecordId"))
+        and record.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+    )
+
+
+def is_finished(record: Mapping[str, Any]) -> bool:
     status = record.get("indexingStatus")
     if status == ProgressStatus.EMPTY.value:
         # An EMPTY record genuinely produced no vectors, so it is "done" —
         # reusing it means this record is empty too, not that it was indexed.
         return True
-    return bool(record.get("virtualRecordId")) and status == ProgressStatus.COMPLETED.value
+    return (
+        bool(record.get("virtualRecordId"))
+        and status == ProgressStatus.COMPLETED.value
+        and not _indexed_while_enriching(record)
+    )
 
 
-def _is_in_progress(record: Mapping[str, Any]) -> bool:
-    return record.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value
+def _is_in_progress(record: Mapping[str, Any], enrichment_live_after_ms: int | None) -> bool:
+    if record.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
+        return True
+    if not _indexed_while_enriching(record):
+        return False
+    if enrichment_live_after_ms is None:
+        return True
+    # processingStartedAt is kept through enrichment, and stale recovery resumes
+    # an enrichment older than the same window. Rows from before that, with no
+    # start time, were abandoned; waiting on them would park this record for good.
+    started_at = record.get("processingStartedAt")
+    return isinstance(started_at, (int, float)) and started_at >= enrichment_live_after_ms
+
+
+def will_promote_queued_copies(record: Mapping[str, Any], enrichment_live_after_ms: int | None) -> bool:
+    """Whether a twin still has processing ahead whose completion promotes QUEUED copies.
+
+    In flight as ``select_duplicate`` sees it, or QUEUED itself: a retry was
+    scheduled for it, or it waits on a third copy whose completion promotes
+    every QUEUED copy of the content.
+    """
+    return (
+        record.get("indexingStatus") == ProgressStatus.QUEUED.value
+        or _is_in_progress(record, enrichment_live_after_ms)
+    )
 
 
 def select_duplicate(
     duplicates: Iterable[Mapping[str, Any]],
     current_collection: str | None,
     resolve_collection: Callable[[Mapping[str, Any]], str | None],
+    *,
+    enrichment_live_after_ms: int | None = None,
 ) -> DuplicateMatch | None:
     """Pick the duplicate whose state determines this record's handling.
 
@@ -95,6 +139,10 @@ def select_duplicate(
     be resolved; such a record is treated as belonging elsewhere, so the
     conservative branch (index anyway) is taken rather than a skip that can
     never be repaired.
+
+    A twin that is indexed but still enriching counts as in flight, so this
+    record waits for its final ``extractionStatus``. One whose handler started
+    before ``enrichment_live_after_ms`` (epoch ms), or has no start time, is ignored.
     """
     candidates = [d for d in duplicates if d]
     if not candidates:
@@ -111,7 +159,11 @@ def select_duplicate(
         target.append(record)
 
     for pool, same_collection in ((same, True), (other, False)):
-        for predicate, is_processed in ((_is_processed, True), (_is_in_progress, False)):
+        predicates = (
+            (is_finished, True),
+            (lambda r: _is_in_progress(r, enrichment_live_after_ms), False),
+        )
+        for predicate, is_processed in predicates:
             # Within a pool, finished beats in-flight; across pools, same
             # collection beats other. Hence pool first, status second.
             match = next((r for r in pool if predicate(r)), None)

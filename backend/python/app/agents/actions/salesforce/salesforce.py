@@ -123,6 +123,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
+from app.connectors.sources.salesforce.common.auth_fields import salesforce_login_url_field
 from app.sources.client.salesforce.salesforce import SalesforceClient, SalesforceResponse
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
 
@@ -167,6 +168,7 @@ logger = logging.getLogger(__name__)
                     max_length=2048,
                     is_secret=False,
                 ),
+                salesforce_login_url_field(),
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App"),
             ],

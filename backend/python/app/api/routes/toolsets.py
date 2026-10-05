@@ -32,6 +32,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
 )
+from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.edition_containers import ConnectorAppContainer
@@ -56,7 +57,11 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
-from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from app.utils.oauth_config import (
+    check_salesforce_login_url_setting,
+    extract_oauth_error_message,
+    get_oauth_config,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import not_found
 
@@ -680,6 +685,8 @@ async def _build_oauth_config(
 
     if "tenantId" in auth_config:
         config["tenantId"] = auth_config["tenantId"]
+    if auth_config.get(AuthFieldKeys.LOGIN_URL):
+        config[AuthFieldKeys.LOGIN_URL] = auth_config[AuthFieldKeys.LOGIN_URL]
 
     if "additionalParams" in auth_config:
         config["additionalParams"] = auth_config["additionalParams"]
@@ -790,6 +797,11 @@ async def _create_or_update_toolset_oauth_config(
     Create or update an OAuth config for a toolset type.
     Returns the OAuth config _id.
     """
+    try:
+        check_salesforce_login_url_setting(toolset_type, auth_config)
+    except ValueError as e:
+        raise InvalidAuthConfigError(str(e)) from e
+
     try:
         oauth_configs = await _get_oauth_configs_for_type(toolset_type, config_service)
 
