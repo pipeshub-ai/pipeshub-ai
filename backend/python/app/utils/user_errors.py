@@ -73,6 +73,15 @@ CONNECTOR_OFF = (
     "again (or ask your admin to), and the file will be indexed."
 )
 CONNECTOR_REMOVED = "The connector this file came from was removed, so the file won't be indexed."
+ENRICHMENT_STOPPED_CONNECTOR_OFF = (
+    "This file is searchable, but its connector was turned off before PipesHub finished "
+    "adding extra details such as its topics and categories. Turn the connector on again "
+    "and Reindex the file to add them."
+)
+ENRICHMENT_STOPPED_CONNECTOR_REMOVED = (
+    "This file is searchable, but the connector it came from was removed before PipesHub "
+    "finished adding extra details such as its topics and categories."
+)
 FOLDER_NOTHING_TO_INDEX = "Folders have no content of their own to index."
 ENRICHMENT_FAILED = (
     "This file is searchable, but PipesHub couldn't add extra details such as its "

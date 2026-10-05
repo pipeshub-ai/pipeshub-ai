@@ -271,12 +271,18 @@ async def recover_in_progress_records(
                         f"🔄 Recovering stale record: {record_name} (ID: {record_id})"
                     )
 
-                    # Check if connector is disabled or deleted
+                    # Check if connector is disabled or deleted. Not for a
+                    # resumed enrichment: the record is searchable, and these
+                    # branches would turn it AUTO_INDEX_OFF and strand its
+                    # QUEUED copies. The republished event reaches the
+                    # handler, which ends the enrichment and releases them.
                     connector_id = record.get("connectorId")
                     origin = record.get("origin")
-                    if connector_id and origin == OriginTypes.CONNECTOR.value:
+                    if connector_id and origin == OriginTypes.CONNECTOR.value and not resume_enrichment:
+                        # A failed read must not look like a deleted connector;
+                        # raising leaves the row for the next pass.
                         connector_instance = await graph_provider.get_document(
-                            connector_id, CollectionNames.APPS.value
+                            connector_id, CollectionNames.APPS.value, raise_on_error=True
                         )
                         if not connector_instance:
                             logger.info(

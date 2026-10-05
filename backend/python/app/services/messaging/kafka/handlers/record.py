@@ -64,6 +64,8 @@ from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
+    ENRICHMENT_STOPPED_CONNECTOR_OFF,
+    ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
     FOLDER_NOTHING_TO_INDEX,
     RETRIES_EXHAUSTED,
     RETRY_SCHEDULED,
@@ -426,6 +428,30 @@ class RecordEventHandler(BaseEventService):
             payload=payload,
             key=str(record_id),
         )
+
+    async def _end_enrichment_without_running(self, record_id: str, reason: str) -> None:
+        """Give up a cut-short enrichment that will not be resumed, keeping the record indexed.
+
+        NOT_STARTED is the status deferred enrichment ends in, which promotion
+        treats as final, so the QUEUED copies are released with it and enrich
+        on their own reindex. FAILED would report an error that never happened,
+        and AUTO_INDEX_OFF would be copied onto copies whose connectors are on.
+        """
+        self.logger.info("Ending the cut-short enrichment of record %s without running it: %s", record_id, reason)
+        updated = await self.event_processor.graph_provider.update_node(
+            record_id,
+            CollectionNames.RECORDS.value,
+            {
+                "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                "processingStartedAt": None,
+                "reason": reason,
+            },
+        )
+        if not updated:
+            raise IndexingError(
+                f"Could not end the enrichment of record {record_id}",
+                details={"record_id": record_id},
+            )
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -1100,6 +1126,24 @@ class RecordEventHandler(BaseEventService):
                         # like a deleted connector.
                         raise_on_error=True,
                     )
+                    resuming_indexed = (
+                        enrichment_cut_short
+                        and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                    )
+                    if resuming_indexed and (
+                        not connector_instance or not connector_instance.get("isActive", False)
+                    ):
+                        # Stays searchable: only the enrichment is given up. Its
+                        # end lets the finally block promote the QUEUED copies.
+                        await self._end_enrichment_without_running(
+                            record_id,
+                            ENRICHMENT_STOPPED_CONNECTOR_OFF
+                            if connector_instance
+                            else ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
+                        )
+                        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        return
                     if not connector_instance:
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
