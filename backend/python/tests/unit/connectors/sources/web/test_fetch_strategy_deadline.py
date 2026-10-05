@@ -278,3 +278,231 @@ async def test_a_scraper_given_up_on_is_closed_only_once_its_request_ends(
         scraper.release.set()
     assert await asyncio.to_thread(scraper.closed.wait, 5)
     assert scraper.closed_mid_request is False
+
+
+# -- HTTPS ------------------------------------------------------------------
+
+
+def _https_pin(port: int) -> PublicTarget:
+    return PublicTarget(scheme="https", host="site.test", port=port, addresses=(ipaddress.ip_address("127.0.0.1"),))
+
+
+@pytest.fixture
+def slow_handshake() -> Iterator[Trickle]:
+    """Takes the ClientHello, then answers with a TLS record a byte every 50ms, never finishing it."""
+    import socket
+
+    state = Trickle(port=0)
+    listener = socket.create_server(("127.0.0.1", 0))
+    state.port = listener.getsockname()[1]
+
+    def serve(conn: socket.socket) -> None:
+        with conn:
+            try:
+                conn.recv(65536)
+                conn.sendall(b"\x16\x03\x03\x40\x00")  # a handshake record of 16 KB
+                for _ in range(600):
+                    conn.sendall(b"\x02")
+                    time.sleep(0.05)
+            except OSError:
+                state.hung_up.set()
+
+    def accept() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            state.requests += 1
+            threading.Thread(target=serve, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        yield state
+    finally:
+        listener.close()
+
+
+async def test_a_cloudscraper_tls_handshake_that_trickles_ends_at_requests_timeout(
+    slow_handshake: Trickle, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CPython gives the whole handshake the socket's timeout (urllib3's connect timeout) as one
+    # deadline, so a byte every 50ms doesn't keep it going. It ends before the hop deadline would.
+    monkeypatch.setattr(fetch_strategy, "_hop_deadline", lambda timeout: 30.0, raising=False)
+    _resolve_to(monkeypatch, _https_pin(slow_handshake.port))
+    url = f"https://site.test:{slow_handshake.port}/page"
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(
+        _hops_cloudscraper(_walk(url), 1, logging.getLogger("test_deadline")), 10,
+    )
+
+    assert result is None
+    # Held for the whole timeout, not refused at once: the handshake really waited on the trickle.
+    assert 0.9 < time.monotonic() - started < 3
+    assert slow_handshake.requests == 1
+    assert slow_handshake.hung_up.wait(3)
+
+
+def test_curl_ends_a_tls_handshake_that_trickles_at_its_own_timeout(slow_handshake: Trickle) -> None:
+    # CURLOPT_TIMEOUT covers the whole transfer, the handshake included.
+    from curl_cffi.requests import Session
+
+    from app.utils.url_fetcher import _curl_pinned_request
+
+    pin = _https_pin(slow_handshake.port)
+    url, options = _curl_pinned_request(f"https://site.test:{slow_handshake.port}/", pin)
+    session = Session(impersonate="chrome", timeout=1, trust_env=False)
+    session.curl_options = options
+    started = time.monotonic()
+    try:
+        with pytest.raises(Exception, match="(?i)timed? ?out"):
+            fetch_strategy._curl_hop(session, threading.Lock(), url, {}, 1, None, pin)
+    finally:
+        session.close()
+    assert time.monotonic() - started < 5
+    assert slow_handshake.hung_up.wait(3)
+
+
+@dataclass
+class Certificates:
+    ca: str
+    site: tuple[str, str]  # certificate and key for site.test
+    other: tuple[str, str]  # for other.test, from the same authority
+
+
+@pytest.fixture(scope="module")
+def certificates(tmp_path_factory: pytest.TempPathFactory) -> Certificates:
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    folder = tmp_path_factory.mktemp("tls")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test authority")])
+    ca_cert = (
+        x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.KeyUsage(
+            digital_signature=True, content_commitment=False, key_encipherment=False, data_encipherment=False,
+            key_agreement=False, key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False,
+        ), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    ca_path = folder / "ca.pem"
+    ca_path.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+
+    def leaf(host: str) -> tuple[str, str]:
+        key = ec.generate_private_key(ec.SECP256R1())
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)]))
+            .issuer_name(ca_name).public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1)).not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+            .sign(ca_key, hashes.SHA256())
+        )
+        cert_path, key_path = folder / f"{host}.pem", folder / f"{host}.key"
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+        ))
+        return str(cert_path), str(key_path)
+
+    return Certificates(ca=str(ca_path), site=leaf("site.test"), other=leaf("other.test"))
+
+
+@pytest.fixture
+def https_site(certificates: Certificates, request: pytest.FixtureRequest) -> Iterator[int]:
+    """An HTTPS page at ``/page``, with the certificate the test names (site.test by default)."""
+    import ssl
+
+    cert, key = getattr(certificates, getattr(request, "param", "site"))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(BODY)))
+            self.end_headers()
+            self.wfile.write(BODY)
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield server.server_port
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+BODY = b"<html><body>Over TLS</body></html>"
+
+
+def _trust(monkeypatch: pytest.MonkeyPatch, ca: str) -> None:
+    import cloudscraper
+
+    real = cloudscraper.create_scraper
+
+    def create(**kwargs: object) -> object:
+        scraper = real(**kwargs)
+        scraper.verify = ca
+        return scraper
+
+    monkeypatch.setattr(cloudscraper, "create_scraper", create)
+
+
+async def test_a_cloudscraper_https_page_is_fetched_with_its_certificate_checked(
+    https_site: int, certificates: Certificates, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _trust(monkeypatch, certificates.ca)
+    _resolve_to(monkeypatch, _https_pin(https_site))
+
+    result = await asyncio.wait_for(
+        _hops_cloudscraper(_walk(f"https://site.test:{https_site}/page"), 5, logging.getLogger("test_deadline")), 10,
+    )
+
+    assert result is not None
+    assert (result.status_code, result.content_bytes) == (200, BODY)
+
+
+@pytest.mark.parametrize("https_site", ["other"], indirect=True)
+async def test_a_cloudscraper_https_page_with_another_hosts_certificate_is_refused(
+    https_site: int, certificates: Certificates, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _trust(monkeypatch, certificates.ca)
+    _resolve_to(monkeypatch, _https_pin(https_site))
+
+    result = await asyncio.wait_for(
+        _hops_cloudscraper(_walk(f"https://site.test:{https_site}/page"), 5, logging.getLogger("test_deadline")), 10,
+    )
+
+    assert result is None
+
+
+async def test_a_cloudscraper_https_page_from_an_unknown_authority_is_refused(
+    https_site: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _resolve_to(monkeypatch, _https_pin(https_site))
+
+    result = await asyncio.wait_for(
+        _hops_cloudscraper(_walk(f"https://site.test:{https_site}/page"), 5, logging.getLogger("test_deadline")), 10,
+    )
+
+    assert result is None
