@@ -2628,8 +2628,52 @@ class TestProcessedTwinAttachOrdering:
         assert gp.update_node.await_args.args == (
             "r1", "records", {"virtualRecordId": "vr-own", "summaryDocumentId": "sum-own"},
         )
-        # Nothing reached the points, so there is nothing to recompute.
-        assert sync.await_count == 1
+        # A sync that raised may already have written some points, so the
+        # VRID is recomputed once the identity is back.
+        assert [c.args for c in sync.await_args_list] == [("vr-1",), ("vr-1",)]
+
+    @pytest.mark.asyncio
+    async def test_an_identity_write_whose_answer_is_lost_is_restored(self):
+        """The write may have landed. Left alone, the record would keep the
+        twin's VRID, and a later reindex of it would overwrite the twin's vectors."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
+        writes = []
+
+        async def _update(key, collection, fields):
+            writes.append(fields)
+            if fields.get("virtualRecordId") == "vr-1":
+                raise RuntimeError("connection reset")
+            return True
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with pytest.raises(RuntimeError, match="connection reset"):
+                await ep._check_duplicate_by_md5(b"x", _copy(virtualRecordId="vr-own"))
+
+        assert writes[-1] == {"virtualRecordId": "vr-own", "summaryDocumentId": None}
+        # The sync never started, so no point can carry this record.
+        sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_resync_is_reported_apart_from_the_restored_identity(self):
+        """With the vector store down the identity is still put back; the log
+        must not say it was not."""
+        ep, logger, _, gp = _make_event_processor()
+        steps, _, _ = _record_attach(ep, gp, [[_twin()]])
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.update_node.await_args.args[2] == {"virtualRecordId": None, "summaryDocumentId": None}
+        assert logger.error.call_count == 1
+        assert "Could not re-sync VRID" in logger.error.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_a_failed_status_write_restores_identity_and_membership(self):
@@ -2745,7 +2789,8 @@ class TestProcessedTwinAttachOrdering:
 
         with patch.object(
             ep, "sync_vector_membership", new_callable=AsyncMock,
-            side_effect=[IndexingError("qdrant down"), None],
+            # Fails, the restore's re-sync, then the retry's.
+            side_effect=[IndexingError("qdrant down"), None, None],
         ):
             with pytest.raises(IndexingError, match="qdrant down"):
                 await ep._check_duplicate_by_md5(b"x", doc)

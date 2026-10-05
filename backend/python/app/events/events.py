@@ -1015,22 +1015,25 @@ class EventProcessor:
         await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
 
         await self._copy_twin_edges(twin, doc)
-        self._require_persisted(
-            await self.update_record_fields(
-                doc,
-                {
-                    "virtualRecordId": vrid,
-                    "summaryDocumentId": twin.get("summaryDocumentId"),
-                },
-            ),
-            "Failed to persist duplicate record fields",
-            doc,
-        )
-        synced = False
+        sync_attempted = False
         try:
+            # Inside the try: a write whose answer is lost has still landed.
+            self._require_persisted(
+                await self.update_record_fields(
+                    doc,
+                    {
+                        "virtualRecordId": vrid,
+                        "summaryDocumentId": twin.get("summaryDocumentId"),
+                    },
+                ),
+                "Failed to persist duplicate record fields",
+                doc,
+            )
             if vrid:
+                # Set first: a sync that raises or is cancelled may already
+                # have written some of the points.
+                sync_attempted = True
                 await self.sync_vector_membership(vrid)
-                synced = True
             self._require_persisted(
                 await self.update_record_fields(
                     doc,
@@ -1055,7 +1058,7 @@ class EventProcessor:
             # keep its connectorId on that VRID's points, and a later reindex
             # of it would overwrite the twin's vectors.
             await self._restore_identity_after_failed_attach(
-                target_key, prior_identity, vrid if synced else None
+                target_key, prior_identity, vrid if sync_attempted else None
             )
             raise
 
@@ -1063,7 +1066,7 @@ class EventProcessor:
         self,
         record_key: str,
         prior_identity: dict[str, Any],
-        synced_vrid: str | None,
+        attached_vrid: str | None,
     ) -> None:
         """Best effort: the event is already failing, and its retry redoes the attach."""
         try:
@@ -1081,14 +1084,25 @@ class EventProcessor:
                 record_key, CollectionNames.RECORDS.value, prior_identity
             ):
                 raise IndexingError("record no longer exists")
-            if synced_vrid:
-                await self.sync_vector_membership(synced_vrid)
         except Exception as e:
             self.logger.error(
                 "Could not restore the previous content identity of %s after a failed "
                 "duplicate attach; it may still hold VRID %s until its retry: %s",
                 record_key,
-                prior_identity.get("virtualRecordId"),
+                attached_vrid,
+                e,
+            )
+            return
+        if not attached_vrid:
+            return
+        try:
+            await self.sync_vector_membership(attached_vrid)
+        except Exception as e:
+            self.logger.error(
+                "Could not re-sync VRID %s after a failed duplicate attach; its points may "
+                "still list %s until its retry or the next sync of that VRID: %s",
+                attached_vrid,
+                record_key,
                 e,
             )
 
