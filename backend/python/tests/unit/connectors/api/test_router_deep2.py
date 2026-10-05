@@ -1398,7 +1398,7 @@ class TestDeleteConnectorInstanceDeep:
         graph_provider = AsyncMock()
         graph_provider.check_connector_in_use = AsyncMock(return_value=[])
 
-        async def send(topic: str, message: dict) -> None:
+        async def send(topic: str, message: dict, **_: str) -> None:
             if message["eventType"].endswith(".delete"):
                 raise RuntimeError("broker down")
 
@@ -1420,6 +1420,33 @@ class TestDeleteConnectorInstanceDeep:
             {"status": None, "updatedAtTimestamp": 1000},
             {"status": "DELETING", "updatedAtTimestamp": 1000},
         )
+
+    async def test_a_failed_delete_cleanup_keeps_the_publish_error(self) -> None:
+        from app.connectors.api.router import delete_connector_instance
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", extra={"isActive": True})
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
+            return_value=instance
+        )
+        graph_provider = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
+        graph_provider.update_node_fields_if_match = AsyncMock(side_effect=RuntimeError("db down"))
+
+        async def send(topic: str, message: dict, **_: str) -> None:
+            if message["eventType"].endswith(".delete"):
+                raise RuntimeError("broker down")
+
+        req.app.container.messaging_producer.send_message = AsyncMock(side_effect=send)
+
+        with patch(_BETA_PATCH, new_callable=AsyncMock), \
+             patch("app.connectors.api.router._validate_connector_deletion_permissions"), \
+             patch(_TIMESTAMP_PATCH, return_value=1000):
+            with pytest.raises(HTTPException) as exc_info:
+                await delete_connector_instance("c1", req, graph_provider=graph_provider)
+
+        assert exc_info.value.status_code == 500
+        assert str(exc_info.value.__cause__) == "broker down"
 
 
 # ===========================================================================

@@ -8102,12 +8102,15 @@ async def delete_connector_instance(
         except Exception:
             # Nothing will delete it, so it must not stay in DELETING; but only
             # clear the mark this request set, not a newer delete's.
-            await graph_provider.update_node_fields_if_match(
-                connector_id,
-                CollectionNames.APPS.value,
-                {"status": None, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
-                {"status": "DELETING", "updatedAtTimestamp": deleting_at},
-            )
+            try:
+                await graph_provider.update_node_fields_if_match(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {"status": None, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                    {"status": "DELETING", "updatedAtTimestamp": deleting_at},
+                )
+            except Exception:
+                logger.exception(f"Could not clear DELETING for connector {connector_id}")
             raise
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
 
