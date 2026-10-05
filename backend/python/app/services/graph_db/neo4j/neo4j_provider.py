@@ -21,7 +21,7 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Request
-from neo4j.exceptions import TransientError
+from neo4j.exceptions import ClientError, TransientError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -217,6 +217,47 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 _PURGE_LOCK = "purgeLock"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
+# The purge walk's index, created by ensure_schema; it holds only the trash.
+_PURGE_WALK_INDEX = "record_org_deleted_at"
+_PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
+_INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+
+
+def _purge_walk_query(hint: str) -> str:
+    """One page of an org's trash: two seeks in index order, each cut at the page.
+
+    The rest of the cursor's timestamp, then later ones; one OR over both read
+    the whole trash of every org per page, and one folder delete gives thousands
+    of records the same timestamp. Hinted: with the id constraint and real data
+    the planner picked the id or the deletedAtTimestamp index instead, from run
+    to run. The id existence predicate is what lets the hint apply to the second
+    seek. The connector check runs after the LIMIT, so a deleting connector's
+    rows still move the cursor.
+    """
+    return f"""
+    CALL {{
+        MATCH (r:Record) {hint}
+        WHERE r.orgId = $org_id AND r.deletedAtTimestamp = $after_ts AND r.id > $after_key
+          AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
+        RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
+        UNION ALL
+        MATCH (r:Record) {hint}
+        WHERE r.orgId = $org_id AND r.deletedAtTimestamp > $lower AND r.deletedAtTimestamp <= $cutoff
+          AND r.id IS NOT NULL
+          AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
+        RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
+    }}
+    WITH r ORDER BY r.deletedAtTimestamp, r.id LIMIT $limit
+    OPTIONAL MATCH (app:App {{id: r.connectorId}})
+    OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+    WITH r, app, head(collect(t)) AS t
+    RETURN properties(r) AS rec, properties(t) AS type_doc,
+           coalesce(app.status, '') = $deleting AS skip,
+           EXISTS {{
+               MATCH (r)-[c:RECORD_RELATION]->(:Record) WHERE c.relationshipType IN $containment
+           }} AS held
+    ORDER BY r.deletedAtTimestamp, r.id
+    """
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -249,6 +290,8 @@ class Neo4jProvider(IGraphDBProvider):
         self.client: Neo4jClient | None = None
         self.validator = NodeSchemaValidator()
         self.accessible_records_cache = accessible_records_cache
+        # Set while the purge walk runs without its hinted index, so that is logged once.
+        self._purge_walk_hint_missing = False
 
 
     # ==================== Connection Management ====================
@@ -12083,52 +12126,39 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict[str, Any]:
         """See ``IGraphDBProvider.get_purgeable_trashed_records``."""
         after_ts, after_key = after if after else (None, None)
-        # Two seeks on record_org_deleted_at (orgId, deletedAtTimestamp, id), each
-        # in index order and cut at the page: the rest of the cursor's timestamp,
-        # then later ones. One OR over both read the whole trash of every org per
-        # page; one folder delete gives thousands of records the same timestamp.
-        # The connector check runs after the LIMIT, so a deleting connector's
-        # rows still move the cursor.
-        rows = await self.client.execute_query(
-            """
-            CALL {
-                MATCH (r:Record)
-                WHERE $after_ts IS NOT NULL
-                  AND r.orgId = $org_id AND r.deletedAtTimestamp = $after_ts AND r.id > $after_key
-                  AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
-                RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
-                UNION ALL
-                MATCH (r:Record)
-                WHERE r.orgId = $org_id AND r.deletedAtTimestamp > $lower AND r.deletedAtTimestamp <= $cutoff
-                  AND r.id IS NOT NULL
-                  AND r.isDeleted = true AND coalesce(r.purgeAttempts, 0) < $max_attempts
-                RETURN r ORDER BY r.orgId, r.deletedAtTimestamp, r.id LIMIT $limit
-            }
-            WITH r ORDER BY r.deletedAtTimestamp, r.id LIMIT $limit
-            OPTIONAL MATCH (app:App {id: r.connectorId})
-            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
-            WITH r, app, head(collect(t)) AS t
-            RETURN properties(r) AS rec, properties(t) AS type_doc,
-                   coalesce(app.status, '') = $deleting AS skip,
-                   EXISTS {
-                       MATCH (r)-[c:RECORD_RELATION]->(:Record) WHERE c.relationshipType IN $containment
-                   } AS held
-            ORDER BY r.deletedAtTimestamp, r.id
-            """,
-            parameters={
-                "org_id": org_id,
-                # Below every timestamp on the first page, so a record trashed at 0 is read.
-                "lower": after_ts if after_ts is not None else -1,
-                "cutoff": deleted_before,
-                "after_ts": after_ts,
-                "after_key": after_key,
-                "max_attempts": max_attempts,
-                "limit": limit,
-                "deleting": APP_STATUS_DELETING,
-                "containment": list(_CONTAINMENT_RELATIONS),
-            },
-            txn_id=transaction,
-        )
+        # Below every timestamp on the first page, so a record trashed at 0 is read.
+        lower = after_ts if after_ts is not None else -1
+        parameters = {
+            "org_id": org_id,
+            "lower": lower,
+            "cutoff": deleted_before,
+            # With no cursor yet, the first seek asks for a timestamp no record has.
+            "after_ts": after_ts if after_ts is not None else lower - 1,
+            "after_key": after_key or "",
+            "max_attempts": max_attempts,
+            "limit": limit,
+            "deleting": APP_STATUS_DELETING,
+            "containment": list(_CONTAINMENT_RELATIONS),
+        }
+        try:
+            rows = await self.client.execute_query(
+                _purge_walk_query(_PURGE_WALK_HINT), parameters=parameters, txn_id=transaction
+            )
+            self._purge_walk_hint_missing = False
+        except ClientError as exc:
+            # Raised only where the server sets dbms.cypher.hints_error; elsewhere a
+            # missing or building index is a notification and the plan goes without it.
+            if exc.code != _INDEX_NOT_FOUND:
+                raise
+            if not self._purge_walk_hint_missing:
+                self.logger.warning(
+                    "The purge's index %s is not ready; walking the trash without it until it is: %s",
+                    _PURGE_WALK_INDEX, exc,
+                )
+                self._purge_walk_hint_missing = True
+            rows = await self.client.execute_query(
+                _purge_walk_query(""), parameters=parameters, txn_id=transaction
+            )
         rows = rows or []
         records = [
             await self._trash_purge_row(row["rec"], row.get("type_doc"))
@@ -12140,6 +12170,14 @@ class Neo4jProvider(IGraphDBProvider):
             "held": sum(1 for row in rows if row.get("held") and not row.get("skip")),
             "next": (last["deletedAtTimestamp"], last["id"]) if last else None,
         }
+
+    async def is_trash_walk_index_ready(self) -> bool:
+        """See ``IGraphDBProvider.is_trash_walk_index_ready``."""
+        rows = await self.client.execute_query(
+            "SHOW INDEXES YIELD name, state WHERE name = $name RETURN state",
+            parameters={"name": _PURGE_WALK_INDEX},
+        )
+        return bool(rows) and rows[0].get("state") == "ONLINE"
 
     async def purge_trashed_records(
         self,

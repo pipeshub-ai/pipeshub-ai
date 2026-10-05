@@ -900,6 +900,16 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating collection: {str(e)}")
             return False
 
+    async def get_index_names(self, collection_name: str) -> set[str]:
+        """Names of the indexes on a collection. Raises when they cannot be read."""
+        url = f"{self.base_url}/_db/{self.database}/_api/index?collection={collection_name}"
+        session = await self._get_session()
+        async with session.get(url) as resp:
+            if resp.status != HttpStatusCode.OK.value:
+                raise Exception(f"Could not list the indexes of {collection_name}: {await resp.text()}")
+            body = await resp.json()
+        return {index.get("name") for index in body.get("indexes", []) if index.get("name")}
+
     async def ensure_persistent_index(
         self,
         collection_name: str,

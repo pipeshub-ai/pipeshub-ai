@@ -381,6 +381,7 @@ class TestAbstractMethodInventory:
         "get_records_in_delete_batch",
         "restore_records",
         "get_purgeable_trashed_records",
+        "is_trash_walk_index_ready",
         "purge_trashed_records",
         "record_purge_failure",
         "get_trash_purge_stats",

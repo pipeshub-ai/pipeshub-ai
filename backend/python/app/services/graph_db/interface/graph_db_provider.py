@@ -4459,6 +4459,15 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def is_trash_walk_index_ready(self) -> bool:
+        """Whether the index ``get_purgeable_trashed_records`` walks is built and usable.
+
+        Without it the walk still answers correctly, but reads the whole trash for
+        every page, so the purge waits for it instead. A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def purge_trashed_records(
         self,
         record_ids: list[str],
