@@ -507,3 +507,72 @@ async def test_a_cloudscraper_https_page_from_an_unknown_authority_is_refused(
     )
 
     assert result is None
+
+
+# -- The fetch pool and session cleanup --------------------------------------
+
+
+async def test_a_request_waiting_for_a_fetch_thread_is_not_given_up_on_for_the_wait(
+    trickle: Trickle, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The only thread is busy with a live body for longer than the deadline; the deadline counts
+    # from when the second request starts, not from when it was queued.
+    _resolve_to(monkeypatch, _loopback(trickle.port))
+    url = f"http://127.0.0.1:{trickle.port}/steady"
+    logger = logging.getLogger("test_deadline")
+
+    first = asyncio.create_task(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger))
+    await asyncio.sleep(0.2)
+    second = asyncio.create_task(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger))
+    results = await asyncio.wait_for(asyncio.gather(first, second), 15)
+
+    for result in results:
+        assert result is not None
+        assert (result.status_code, len(result.content_bytes)) == (200, STEADY_CHUNK * STEADY_CHUNKS)
+    assert trickle.requests == 2
+
+
+async def test_a_request_given_up_on_while_queued_is_never_sent(
+    trickle: Trickle, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(fetch_strategy, "_MAX_QUEUE_WAIT", 0.5, raising=False)
+    _resolve_to(monkeypatch, _loopback(trickle.port))
+    url = f"http://127.0.0.1:{trickle.port}/steady"
+    logger = logging.getLogger("test_deadline")
+    caplog.set_level(logging.WARNING)
+
+    first = asyncio.create_task(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger))
+    await asyncio.sleep(0.2)
+    queued = await asyncio.wait_for(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger), 10)
+    assert queued is None
+    assert "waiting for a free fetch thread" in caplog.text
+
+    assert (await asyncio.wait_for(first, 10)) is not None
+    assert await _thread_is_free(one_fetch_thread)
+    assert trickle.requests == 1
+
+
+async def test_a_session_whose_request_ends_late_is_still_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import curl_cffi.requests
+
+    session = _WedgedSession()
+    monkeypatch.setattr(curl_cffi.requests, "Session", lambda **_: session)
+    monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", ["chrome"])
+    monkeypatch.setattr(fetch_strategy, "_hop_deadline", lambda timeout: DEADLINE, raising=False)
+    _resolve_to(monkeypatch, PublicTarget(
+        scheme="http", host="site.test", port=80, addresses=(ipaddress.ip_address("93.184.215.14"),),
+    ))
+
+    try:
+        result = await asyncio.wait_for(
+            _hops_curl_cffi(_walk("http://site.test/"), 5, logging.getLogger("test_deadline")), 10,
+        )
+        assert result is None
+        # Well past any wait the close might make for the request.
+        await asyncio.sleep(3 * DEADLINE)
+        assert not session.closed.is_set()
+    finally:
+        session.release.set()
+    assert await asyncio.to_thread(session.closed.wait, 5), "the session was never closed"
+    assert session.closed_mid_request is False

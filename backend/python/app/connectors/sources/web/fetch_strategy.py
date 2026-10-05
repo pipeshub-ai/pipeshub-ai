@@ -54,6 +54,7 @@ from app.utils.url_fetcher import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
+    from contextlib import AbstractContextManager
 
 # ---------------------------------------------------------------------------
 # Unified response wrapper
@@ -78,6 +79,10 @@ def _hop_deadline(timeout: float) -> float:
 # rate a body at the 100 MB size cap takes under 2 hours.
 _MIN_BODY_RATE = 16 * 1024  # bytes a second
 
+
+# How long a request may wait for a free fetch thread before it is given up on. Waiting isn't a
+# fault of the site, so this only stops a crawl from waiting forever on a pool that never frees up.
+_MAX_QUEUE_WAIT = 600
 
 # Blocking requests run here rather than in the loop's default executor. A request that wedges
 # keeps its thread past its deadline, and must not take one of the threads that DNS lookups and
@@ -285,7 +290,8 @@ class _HopWatch:
     request's thread to stop."""
 
     def __init__(self) -> None:
-        self.started = time.monotonic()
+        self.queued_at = time.monotonic()
+        self.started: float | None = None
         self.body_started: float | None = None
         self.received = 0
         self._stopped = threading.Event()
@@ -295,6 +301,13 @@ class _HopWatch:
     @property
     def stopped(self) -> bool:
         return self._stopped.is_set()
+
+    def begin(self) -> None:
+        """Called by the fetch thread before the request is sent: its deadline counts from here."""
+        with self._lock:
+            if self._stopped.is_set():
+                raise _Abandoned
+            self.started = time.monotonic()
 
     def hold(self, sock: socket.socket) -> None:
         """The socket a stop shuts, which ends any read blocked on it."""
@@ -321,6 +334,9 @@ class _HopWatch:
 
     def overdue(self, now: float, timeout: float) -> str | None:
         """Why to give up on the request now, or None to keep waiting."""
+        if self.started is None:
+            waited = now - self.queued_at
+            return f"{waited:.0f} seconds waiting for a free fetch thread" if waited > _MAX_QUEUE_WAIT else None
         if self.body_started is None:
             deadline = _hop_deadline(timeout)
             return f"{deadline:g} seconds without an answer" if now - self.started > deadline else None
@@ -369,7 +385,12 @@ async def _hop_in_thread(
     hop is told to stop, and TimeoutError is raised, which the strategies handle as a request
     that timed out."""
     watch = _HopWatch()
-    running = asyncio.get_running_loop().run_in_executor(_FETCH_THREADS, functools.partial(hop, watch=watch))
+
+    def run() -> _Hop:
+        watch.begin()
+        return hop(watch=watch)
+
+    running = asyncio.get_running_loop().run_in_executor(_FETCH_THREADS, run)
     check_every = min(1.0, _hop_deadline(timeout) / 8)
     try:
         while not running.done():
@@ -377,7 +398,7 @@ async def _hop_in_thread(
             reason = None if running.done() else watch.overdue(time.monotonic(), timeout)
             if reason is not None:
                 watch.stop()
-                running.cancel()  # drops the request if it is still queued for a thread
+                running.cancel()  # drops it if still queued; if a thread just took it, begin() refuses
                 logger.warning("⚠️ [%s] Gave up on %s after %s", strategy, url, reason)
                 raise TimeoutError(reason)
     except asyncio.CancelledError:
@@ -504,7 +525,7 @@ async def _hops_aiohttp(
 
 
 def _sync_hop(
-    client: _RequestsLike, busy: threading.Lock, url: str, headers: dict, timeout: int,
+    client: _RequestsLike, busy: AbstractContextManager[object], url: str, headers: dict, timeout: int,
     max_bytes: int | None, watch: _HopWatch | None = None,
 ) -> _Hop:
     """One GET on a cloudscraper scraper, redirects not followed.
@@ -543,7 +564,7 @@ def _read_sync_hop(
 
 
 def _curl_hop(
-    session: _RequestsLike, busy: threading.Lock, url: str, headers: dict, timeout: int,
+    session: _RequestsLike, busy: AbstractContextManager[object], url: str, headers: dict, timeout: int,
     max_bytes: int | None, pin: PublicTarget, watch: _HopWatch | None = None,
 ) -> _Hop:
     """One GET on a curl_cffi Session, redirects not followed. The answer must have come from
@@ -598,16 +619,41 @@ def _curl_hop(
     return _Hop(status_code, hop_headers, bytes(body))
 
 
-def _close_when_idle(session: _RequestsLike, busy: threading.Lock, wait: float) -> None:
-    # A request wedged past its deadline still holds ``busy``: its session is left open, not
-    # freed under it, and this thread goes back to the pool.
-    if not busy.acquire(timeout=wait):
-        return
-    try:
+class _SessionGuard:
+    """Entered while a request runs on a session; closes the session once none does.
+
+    ``close_when_idle`` never waits: with a request running, the close is left to that request's
+    exit, however late it comes. The close always runs under the guard's lock, so no request
+    can start on the session while it is being closed, and none starts after it is asked for.
+    """
+
+    def __init__(self, session: _RequestsLike) -> None:
+        self._session = session
+        self._lock = threading.Lock()
+        self._running = False
+        self._close_wanted = False
+
+    def __enter__(self) -> None:
+        with self._lock:
+            if self._close_wanted:
+                raise _Abandoned
+            self._running = True
+
+    def __exit__(self, *_: object) -> None:
+        with self._lock:
+            self._running = False
+            if self._close_wanted:
+                self._close()
+
+    def close_when_idle(self) -> None:
+        with self._lock:
+            self._close_wanted = True
+            if not self._running:
+                self._close()
+
+    def _close(self) -> None:
         with contextlib.suppress(Exception):
-            session.close()
-    finally:
-        busy.release()
+            self._session.close()
 
 
 async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
@@ -625,14 +671,14 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
     for profile in random.sample(_CURL_PROFILES, min(3, len(_CURL_PROFILES))):
         # No environment proxy: it would resolve the host again, past the pin.
         session = Session(impersonate=profile, timeout=timeout, trust_env=False)
-        # Held while a request runs on the session's curl handle, so it is never closed under one.
-        busy = threading.Lock()
+        # Entered while a request runs on the session's curl handle, so it is never closed under one.
+        busy = _SessionGuard(session)
         # curl keeps a host's connection open across hops, so a host keeps its first address.
         pins: dict[tuple[str, int], PublicTarget] = {}
 
         async def get(
             url: str, headers: dict, pin: PublicTarget | None,
-            session: Any = session, busy: threading.Lock = busy,  # noqa: ANN401
+            session: Any = session, busy: _SessionGuard = busy,  # noqa: ANN401
             pins: dict[tuple[str, int], PublicTarget] = pins,
         ) -> _Hop:
             if pin is None:
@@ -650,9 +696,8 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
         except Exception:
             continue  # TLS error, connection reset -> next profile, from the start of the chain
         finally:
-            # Off the event loop: a cancelled crawl can leave a request about to start on this
-            # session, and the close waits for it to end.
-            loop.run_in_executor(_FETCH_THREADS, _close_when_idle, session, busy, _hop_deadline(timeout))
+            # Off the event loop, as before: freeing curl's handle is a call into libcurl.
+            loop.run_in_executor(_FETCH_THREADS, busy.close_when_idle)
     logger.warning(f"⚠️ [curl_cffi(h2=True)] All profiles exhausted for {walk.url}")
     return None
 
@@ -686,8 +731,8 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
     except Exception:
         return None
     tls_adapter = scraper.adapters["https://"]
-    # Held while a request runs on the scraper, so it is never closed under one.
-    busy = threading.Lock()
+    # Entered while a request runs on the scraper, so it is never closed under one.
+    busy = _SessionGuard(scraper)
 
     async def get(url: str, headers: dict, pin: PublicTarget | None) -> _Hop:
         if pin is None:
@@ -704,9 +749,7 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
         logger.warning(f"⚠️ [cloudscraper] Failed for {walk.url}")
         return None
     finally:
-        asyncio.get_running_loop().run_in_executor(
-            _FETCH_THREADS, _close_when_idle, scraper, busy, _hop_deadline(timeout),
-        )
+        asyncio.get_running_loop().run_in_executor(_FETCH_THREADS, busy.close_when_idle)
 
 
 # ---------------------------------------------------------------------------
