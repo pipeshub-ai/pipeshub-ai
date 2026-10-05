@@ -1,6 +1,7 @@
 """Unit tests for Google client module."""
 
 import logging
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -704,6 +705,29 @@ class TestBuildFromServicesEnterprise:
     @pytest.mark.asyncio
     @patch("app.sources.client.google.google.build")
     @patch("app.sources.client.google.google.service_account")
+    async def test_delegated_scopes_replace_the_service_defaults(
+        self, mock_sa, mock_build, logger, mock_config_service
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"connectorScope": "team", "adminEmail": "admin@co.com"}}
+        )
+        mock_sa.Credentials.from_service_account_info.return_value = MagicMock()
+
+        await GoogleClient.build_from_services(
+            service_name="drive",
+            logger=logger,
+            config_service=mock_config_service,
+            is_individual=False,
+            connector_instance_id="inst-1",
+            delegated_scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        )
+
+        call_kwargs = mock_sa.Credentials.from_service_account_info.call_args.kwargs
+        assert call_kwargs["scopes"] == ["https://www.googleapis.com/auth/drive.readonly"]
+
+    @pytest.mark.asyncio
+    @patch("app.sources.client.google.google.build")
+    @patch("app.sources.client.google.google.service_account")
     async def test_enterprise_with_user_email(
         self, mock_sa, mock_build, logger, mock_config_service
     ):
@@ -937,6 +961,41 @@ class TestBuildFromServicesIndividualScopeEdgeCases:
 # ---------------------------------------------------------------------------
 # build_from_toolset - edge cases
 # ---------------------------------------------------------------------------
+
+
+class TestGmailToolsetRefreshScopes:
+    @pytest.mark.asyncio
+    @patch("app.sources.client.google.google.build")
+    @patch("app.sources.client.google.google.Credentials")
+    async def test_refresh_asks_for_exactly_what_the_user_consented_to(
+        self, mock_credentials_cls, mock_build, logger, mock_config_service
+    ) -> None:
+        # google-auth sends these scopes on every refresh, and Google answers
+        # invalid_scope if one of them was not on the consent screen.
+        from app.agents.actions.google.gmail.gmail import Gmail
+
+        consented = Gmail._toolset_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]["scopes"]
+        # Importing the real routes module alone trips a circular import.
+        toolsets_routes = MagicMock()
+        toolsets_routes.get_oauth_credentials_for_toolset = AsyncMock(
+            return_value={"clientId": "cid", "clientSecret": "csec"}
+        )
+        with patch.dict(sys.modules, {"app.api.routes.toolsets": toolsets_routes}):
+            await GoogleClient.build_from_toolset(
+                toolset_config={
+                    "isAuthenticated": True,
+                    "credentials": {"access_token": "at", "refresh_token": "rt"},
+                    "auth": {},
+                },
+                service_name="gmail",
+                logger=logger,
+                config_service=mock_config_service,
+                version="v1",
+            )
+
+        refresh_scopes = mock_credentials_cls.call_args.kwargs["scopes"]
+        assert sorted(refresh_scopes) == sorted(consented)
+        assert "https://www.googleapis.com/auth/gmail.compose" not in refresh_scopes
 
 
 class TestBuildFromToolsetEdgeCases:

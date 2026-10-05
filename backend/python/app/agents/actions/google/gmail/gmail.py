@@ -36,6 +36,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
+from app.connectors.sources.google.common.scopes import GOOGLE_SERVICE_SCOPES
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
@@ -202,11 +203,7 @@ class GetUserProfileInput(BaseModel):
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "https://www.googleapis.com/auth/gmail.send",
-                    "https://www.googleapis.com/auth/gmail.readonly",
-                    "https://www.googleapis.com/auth/gmail.modify"
-                ]
+                agent=list(GOOGLE_SERVICE_SCOPES["gmail"]),
             ),
             token_access_type="offline",
             additional_params={
