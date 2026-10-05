@@ -13,11 +13,10 @@ file that was already in the trash. A second file sits outside the folder.
   what they reach.
 - A sync of an item the user deleted leaves it in the trash.
 - A UI/API delete by the KB owner goes to the trash as a USER delete, and
-  takes exactly what that backend's hard delete removes: a folder alone, a
-  mail with its direct attachments on Arango and alone on Neo4j.
+  takes a folder alone, or a mail with its direct attachments, on both
+  backends.
 - An Outlook sync delete (by external id) goes to the trash as a CONNECTOR
-  delete and takes exactly what that backend's hard delete removes: the
-  message with its direct attachments on Arango, the message alone on Neo4j.
+  delete and takes the message with its direct attachments, on both backends.
 - A move onto an external id a trashed record holds keeps the trash entry: it
   gives the id up (kept in ``trashedExternalRecordId``) and no ``deleteRecord``
   is published.
@@ -94,6 +93,8 @@ DRIVE_NAMES = ("drive_file", "drive_child")
 # A mail with a direct attachment, an attachment of that attachment, and a PARENT_CHILD child.
 MAIL_NAMES = ("mail", "mail_attachment", "mail_attachment_attachment", "mail_child")
 OUTLOOK_NAMES = ("outlook_mail", "outlook_attachment", "outlook_attachment_attachment")
+# Neo4j's hard delete takes a mail's direct attachments once #3879 is merged in; before, the mail alone.
+NEO4J_HARD_DELETE_TAKES_ATTACHMENTS = hasattr(Neo4jProvider, "_attachments_to_delete")
 
 
 class _Producer:
@@ -535,10 +536,14 @@ async def test_an_api_folder_delete_takes_the_folder_alone(world: _World, soft: 
     assert before - await _visible(world, names) == {"folder"}
 
 
+def _takes_attachments(w: _World, soft: bool) -> bool:
+    return soft or isinstance(w.graph, ArangoHTTPProvider) or NEO4J_HARD_DELETE_TAKES_ATTACHMENTS
+
+
 @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
-async def test_an_api_mail_delete_takes_what_the_hard_delete_takes(world: _World, soft: bool) -> None:
-    """Arango's mail delete also removes the direct attachments; Neo4j's removes the mail alone."""
-    expected = {"mail", "mail_attachment"} if isinstance(world.graph, ArangoHTTPProvider) else {"mail"}
+async def test_an_api_mail_delete_takes_the_mail_and_its_direct_attachments(world: _World, soft: bool) -> None:
+    """Never the attachment's own attachment or a PARENT_CHILD child, which the hard delete keeps."""
+    expected = {"mail", "mail_attachment"} if _takes_attachments(world, soft) else {"mail"}
     before = await _visible(world, MAIL_NAMES)
     result = await world.graph.delete_record(world.ids["mail"], world.user_id, world.org_id, soft_delete=soft)
     assert result["success"] is True, result
@@ -546,13 +551,13 @@ async def test_an_api_mail_delete_takes_what_the_hard_delete_takes(world: _World
 
 
 @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
-async def test_an_outlook_sync_delete_takes_what_the_hard_delete_takes(
+async def test_an_outlook_sync_delete_takes_the_message_and_its_direct_attachments(
     world: _World, monkeypatch: pytest.MonkeyPatch, soft: bool,
 ) -> None:
-    """Outlook deletes by external id; Arango's hard path also removes direct attachments, Neo4j's does not."""
+    """Outlook deletes by external id, and the trash takes what Arango's hard path removes."""
     _flag(monkeypatch, soft)
     expected = (
-        {"outlook_mail", "outlook_attachment"} if isinstance(world.graph, ArangoHTTPProvider) else {"outlook_mail"}
+        {"outlook_mail", "outlook_attachment"} if _takes_attachments(world, soft) else {"outlook_mail"}
     )
     before = await _visible(world, OUTLOOK_NAMES)
     await world.processor.delete_record_by_external_id(
