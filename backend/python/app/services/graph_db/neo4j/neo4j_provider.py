@@ -8021,9 +8021,14 @@ class Neo4jProvider(IGraphDBProvider):
                 if DeleteSource(delete_source) is DeleteSource.USER:
                     deleter = await self.get_user_by_user_id(user_id) or {}
                     deleted_by = deleter.get("id") or deleter.get("_key")
-                # The record alone: the hard delete below removes only this vertex.
+                # What the hard delete removes: the record and its direct attachments, as on
+                # ArangoDB. One statement marks them all with one batch, so a restore of the
+                # mail brings its attachments back with it.
+                trash_ids = [record_id]
+                if is_live_record(record):
+                    trash_ids += await self._direct_attachment_ids(record_id, org_id, transaction)
                 result = await self.soft_delete_records(
-                    [record_id],
+                    trash_ids,
                     record.get("connectorId") or "",
                     delete_source=DeleteSource(delete_source).value,
                     batch_id=str(uuid.uuid4()),
@@ -11809,6 +11814,20 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
+
+    async def _direct_attachment_ids(
+        self, record_id: str, org_id: str, transaction: str | None
+    ) -> list[str]:
+        rows = await self.client.execute_query(
+            """
+            MATCH (:Record {id: $record_id})-[e:RECORD_RELATION]->(a:Record)
+            WHERE e.relationshipType = 'ATTACHMENT' AND a.orgId = $org_id
+            RETURN DISTINCT a.id AS id
+            """,
+            parameters={"record_id": record_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return [row["id"] for row in rows or []]
 
     async def soft_delete_records(
         self,
