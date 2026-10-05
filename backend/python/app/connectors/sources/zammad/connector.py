@@ -1053,9 +1053,10 @@ class ZammadConnector(BaseConnector):
         if last_sync_time:
             modified_after = max(modified_after, last_sync_time) if modified_after else last_sync_time
         # ``until`` is the next window's ``last_sync_time``. Both round down to the same second,
-        # so it is exclusive: otherwise tickets stamped in that second match both windows.
+        # so it is exclusive: otherwise tickets stamped in that second match both windows. It is
+        # compared to the user's inclusive bound by second too, as the query states both.
         before_bracket = "]"
-        if until and (not modified_before or until < modified_before):
+        if until and (not modified_before or until // 1000 <= modified_before // 1000):
             modified_before, before_bracket = until, "}"
 
         def _iso(epoch_ms: int) -> str:

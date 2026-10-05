@@ -393,6 +393,56 @@ async def test_a_burst_resumed_beside_a_window_edge_in_its_own_second_is_not_rea
     assert _checkpoint(world, "Support") > burst_at + 60_000
 
 
+async def test_a_burst_on_a_modified_before_filter_that_a_window_edge_lands_on_is_read_once(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user's inclusive bound must not keep the second of an edge that sits on it in the window before."""
+    _search_window(world, monkeypatch, 60)
+    edge = epoch_ms(5)
+    # A window from edge - MIN_SPLIT_WINDOW_MS to now is split once, at edge.
+    _clock(monkeypatch, edge + MIN_SPLIT_WINDOW_MS)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    world.zammad.add_ticket(1200, 1, day=5, minute=1)
+    writes: list[str] = []
+    record_writes = world.db.on_new_records
+
+    async def counted(records_with_permissions: list) -> None:
+        writes.extend(r.external_record_id for r, _ in records_with_permissions)
+        await record_writes(records_with_permissions)
+
+    world.db.on_new_records = counted
+    world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
+
+    await world.save_filters({"modified": {
+        "operator": "is_between", "value": {"start": edge - MIN_SPLIT_WINDOW_MS, "end": edge}, "type": "datetime",
+    }})
+    assert _group_point(world, "Support").get("burst_next_id") == 1100
+
+    world.zammad.fail_search = lambda _query: False
+    world.zammad.search_queries.clear()
+    await world.sync()
+
+    burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
+    assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    burst = [w for w in writes if 1000 <= int(w) < 1150]
+    assert sorted(burst) == sorted(str(t) for t in range(1000, 1150)), "every ticket in the burst is read once"
+    assert "1200" not in world.db.external_ids()
+    assert _group_point(world, "Support").get("burst_next_id") == 0
+
+
+async def test_a_window_edge_later_in_the_second_of_the_modified_before_filter_is_still_exclusive(
+    world: World,
+) -> None:
+    """A burst resume's edge comes from the clock, so it can share a second with the filter yet lie after it."""
+    edge = epoch_ms(5)
+    world.connector._date_filter_bounds = lambda key: (None, edge) if key.value == "modified" else (None, None)
+
+    query = world.connector._build_ticket_search_query(1, edge - 60_000, until=edge + 500)
+
+    assert query.endswith("updated_at:[* TO 2026-01-06T00:00:00Z}")
+
+
 async def test_a_window_past_the_search_window_is_split_after_one_probe_not_after_paging_to_its_end(
     world: World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
