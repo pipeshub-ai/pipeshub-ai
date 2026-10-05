@@ -626,6 +626,16 @@ class DataSourceEntitiesProcessor:
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
+        # A group kept only for the trash that the source has again. Taking it back
+        # writes the group, which waits for a purge deleting it; recordGroupId and
+        # the link come in later statements that the purge's lock does not cover.
+        if (
+            record_group is not None
+            and record_group.is_deleted_at_source
+            and not await tx_store.take_back_kept_record_group(record_group.id)
+        ):
+            record_group = None
+
         if record_group is None:
             # Create a new record group
             record_group = RecordGroup(

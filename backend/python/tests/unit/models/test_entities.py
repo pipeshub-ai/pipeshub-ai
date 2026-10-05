@@ -1543,6 +1543,13 @@ class TestRecordGroup:
         assert arango["isDeletedAtSource"] is False
         assert arango["deletedAtSourceTimestamp"] is None
 
+    def test_a_record_group_read_back_says_whether_it_is_kept_for_the_trash(self) -> None:
+        from app.models.entities import RecordGroup
+        doc = {"_key": "rg-1", "groupName": "Team", "connectorName": "DRIVE", "connectorId": "c", "groupType": "DRIVE"}
+        assert RecordGroup.from_arango_base_record_group(doc).is_deleted_at_source is False
+        kept = RecordGroup.from_arango_base_record_group({**doc, "isDeletedAtSource": True})
+        assert kept.is_deleted_at_source is True
+
     def test_from_arango_base_record_group(self):
         from app.models.entities import RecordGroup, RecordGroupType
         doc = {

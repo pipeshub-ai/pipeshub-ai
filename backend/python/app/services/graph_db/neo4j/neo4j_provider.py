@@ -222,6 +222,8 @@ _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 _PURGE_WALK_INDEX = "record_org_deleted_at"
 _PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
 _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+# A write that waited for a node's lock while another transaction deleted it.
+_ENTITY_NOT_FOUND = "Neo.ClientError.Statement.EntityNotFound"
 
 
 def _purge_walk_query(hint: str) -> str:
@@ -12353,6 +12355,31 @@ class Neo4jProvider(IGraphDBProvider):
             "stuck": int(row.get("stuck") or 0),
             "oldestDeletedAt": row.get("oldest"),
         }
+
+    async def take_back_kept_record_group(self, group_id: str, transaction: str | None = None) -> bool:
+        """See ``IGraphDBProvider.take_back_kept_record_group``."""
+        try:
+            await self.client.execute_query(
+                """
+                MATCH (g:RecordGroup {id: $id})
+                SET g.isDeletedAtSource = false, g.deletedAtSourceTimestamp = null
+                """,
+                parameters={"id": group_id},
+                txn_id=transaction,
+            )
+        except ClientError as exc:
+            if exc.code != _ENTITY_NOT_FOUND:
+                raise
+        # Looked up again, in a statement of its own: a write that waited for the
+        # purge's lock completes and reports its row even when the purge deleted the
+        # node meanwhile. Once the write is done, a group still here keeps: the purge
+        # deletes only a marked group, and checks the mark under the same lock.
+        rows = await self.client.execute_query(
+            "MATCH (g:RecordGroup {id: $id}) RETURN g.id AS id",
+            parameters={"id": group_id},
+            txn_id=transaction,
+        )
+        return bool(rows)
 
     async def purge_trash_kept_record_groups(
         self,

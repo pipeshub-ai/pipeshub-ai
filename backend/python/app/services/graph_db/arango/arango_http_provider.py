@@ -14321,6 +14321,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "oldestDeletedAt": row.get("oldest"),
         }
 
+    async def take_back_kept_record_group(self, group_id: str, transaction: str | None = None) -> bool:
+        """See ``IGraphDBProvider.take_back_kept_record_group``."""
+        rows = await self.execute_query(
+            """
+            FOR g IN @@groups
+                FILTER g._key == @id
+                UPDATE g WITH { isDeletedAtSource: false, deletedAtSourceTimestamp: null } IN @@groups
+                RETURN NEW._key
+            """,
+            bind_vars={"id": group_id, "@groups": CollectionNames.RECORD_GROUPS.value},
+            transaction=transaction,
+        ) or []
+        return bool(rows)
+
     async def purge_trash_kept_record_groups(
         self,
         org_id: str,
