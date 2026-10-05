@@ -62,7 +62,9 @@ import pytest
 
 from helper.connector_visibility import search_connector_as, search_connector_as_admin
 from helper.cross_store import RecordFootprint, assert_fully_deleted
+from helper.delete_footprint import envelope_location
 from helper.graph_provider_utils import async_poll_until, wait_for_sync_completion
+from helper.mongo_store import records_folder
 from helper.record_access import access_matches, record_access_status, wait_for_record_access
 from helper.second_user import NO_ACCESS_STATUSES
 from helper.storage_incremental import restart_sync
@@ -213,10 +215,20 @@ def new_token() -> str:
     return f"mx{uuid.uuid4().hex[:10]}"
 
 
+def body_marker(token: str) -> str:
+    """Words only an item's body holds.
+
+    Adapters name items after the bare token, and many connectors index the name
+    with the body (a page's heading, a table's DDL), so the bare old token stays
+    in the vectors of an item whose body was replaced.
+    """
+    return f"The {token} review"
+
+
 def item_text(role: Role, token: str) -> str:
     return (
         f"Scenario matrix {role.value} note {token}. "
-        f"The {token} review covers the quarterly budget, hiring plan and launch city."
+        f"{body_marker(token)} covers the quarterly budget, hiring plan and launch city."
     )
 
 
@@ -470,6 +482,24 @@ class MatrixRun:
                 f"({state})."
             ) from exc
 
+    async def footprint(self, item: SourceItem, view: RecordView) -> tuple[RecordFootprint, str]:
+        """Where ``item``'s content is filed, read before it leaves, and which backend holds it.
+
+        Indexing files a connector's records under the connector's own folder, not
+        the flat ``records/<vrid>`` one, so the folder is read from MongoDB: guessing
+        it would check a folder that never held anything and pass.
+        """
+        assert self.mongo is not None, "the filter check reads where the record was filed from MongoDB"
+        assert view.virtual_record_id, f"{item.record_name!r} has no virtual record id to check"
+        prefix, vendor = await envelope_location(
+            self.mongo, self.org_id, view.virtual_record_id,
+            within=records_folder(self.org_id, self.connector_id),
+        )
+        return RecordFootprint(
+            record_name=item.record_name, virtual_record_id=view.virtual_record_id,
+            org_id=self.org_id, storage_prefix=prefix, connector_id=self.connector_id,
+        ), vendor
+
     async def texts(self, virtual_record_id: str) -> list[str]:
         return await self.vector.content_texts(virtual_record_id)
 
@@ -512,6 +542,14 @@ class MatrixRun:
                 f"{self.adapter.source}: the vectors of {item.record_name!r} never matched its "
                 f"source text within {timeout}s ({detail})."
             ) from exc
+
+    async def wait_content_replaced(
+        self, item: SourceItem, timeout: int = INDEX_TIMEOUT_SEC,
+    ) -> RecordView:
+        """Wait until an edited item's vectors hold its new body and none of its old one."""
+        return await self.wait_vectors_hold(
+            item, item.token, absent=[body_marker(item.extra["old_token"])], timeout=timeout,
+        )
 
     def _search(self, query: str, as_user: "SecondUser | None"):
         if as_user is None:
@@ -721,8 +759,7 @@ class ConnectorScenarioMatrix:
         await run.mutate_round()
         before = run.added[Role.CONTENT]
         item = run.item(Role.CONTENT)
-        old_token = item.extra["old_token"]
-        view = await run.wait_vectors_hold(item, item.token, absent=[old_token])
+        view = await run.wait_content_replaced(item)
         assert view.changed_since(before), (
             f"{run.adapter.source}: the record's version and revision did not move after the edit"
         )
@@ -865,11 +902,9 @@ class ConnectorScenarioMatrix:
         run = scenario_run
         await run.add_round()
         excluded = run.item(Role.FILTERED)
-        before = run.added[Role.FILTERED]
         kept = [run.item(Role.KEEP)]
-        vrid = before.virtual_record_id or ""
-        prefix = f"{run.org_id}/PipesHub/records/{vrid}"
-        vendor = (await run.mongo.storage_vendor_under_path(prefix) if run.mongo else None) or "local"
+        # Read now, not from the add round: the full sync before this may have re-indexed it.
+        footprint, vendor = await run.footprint(excluded, await run.wait_indexed(excluded))
 
         async def body() -> None:
             await run.adapter.apply_filters(await run.adapter.exclusion_filter(excluded, kept))
@@ -879,13 +914,11 @@ class ConnectorScenarioMatrix:
         # Graph by name, so wait on the record first: the other stores follow its delete.
         await run.wait_gone(excluded)
         await assert_fully_deleted(
-            RecordFootprint(
-                record_name=excluded.record_name, virtual_record_id=vrid,
-                org_id=run.org_id, connector_id=run.connector_id,
-            ),
-            run.graph, run.vector, run.blob, run.mongo, storage_vendor=vendor,
+            footprint, run.graph, run.vector, run.blob, run.mongo, storage_vendor=vendor,
         )
-        await run.wait_search(excluded.text, vrid, expect=False, as_user=run.adapter.owner)
+        await run.wait_search(
+            excluded.text, footprint.virtual_record_id, expect=False, as_user=run.adapter.owner,
+        )
         keep = run.item(Role.KEEP)
         await _admin_can_find(run, keep, await run.wait_indexed(keep))
 

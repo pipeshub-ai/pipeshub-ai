@@ -161,33 +161,8 @@ async def scenario_adapter(
         bookstack_source.delete_role(role_id)
 
 
-# Page deletions are in the audit log, but the handler that would apply them
-# is commented out, so no sync ever removes a deleted page's record.
-_DELETE_BUG = (
-    "BookStack deletions never reach the index: _sync_records_incremental fetches the "
-    "page_delete audit events and then skips them (the _handle_page_delete_event call "
-    "is commented out, sources/bookstack/connector.py:1945-1950)"
-)
-_KNOWN_BUGS = {"incr_delete": _DELETE_BUG, "filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
-
-# A page shared with a role is a Role -> Record PERMISSION edge. The record page
-# accepts Group or Role there (neo4j_provider._check_record_permissions), but
-# search's Neo4j query only follows User -> Group -> Record (path 3 of
-# _get_virtual_ids_for_connector, `g:Group`), so the sharee can open the page and
-# never finds it. The ArangoDB query follows any PERMISSION hop and finds it.
-if os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").strip().lower() == "neo4j":
-    _KNOWN_BUGS["incr_update_permissions"] = (
-        "on Neo4j, search never returns a record shared with a role: "
-        "Neo4jProvider._get_virtual_ids_for_connector path 3 matches only "
-        "(user)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(record) (neo4j_provider.py:4681-4687), "
-        "while the record page (_check_record_permissions, neo4j_provider.py:9589-9591) and "
-        "ArangoDB's query accept a Role too, so the BookStack sharee can open the page but "
-        "search leaves it out"
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.bookstack
 class TestBookStackScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "BookStack"
-    KNOWN_BUGS = _KNOWN_BUGS
+    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}

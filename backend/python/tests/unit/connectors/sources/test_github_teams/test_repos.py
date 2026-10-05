@@ -1030,6 +1030,20 @@ class TestPruneDeletedPaths:
         assert any("Could not prune" in str(call) and "rec-old" in str(call)
                    for call in sync.logger.error.call_args_list)
 
+    async def test_with_the_trash_on_a_record_already_in_it_is_not_reported(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync._list_code_records_by_path = _inventory({"a.py": "rec-a", "b.py": "rec-b"}, {"old.py": "rec-old"})
+        c.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "softDeleted": True,
+            "failed_records": [{"record_id": "rec-old", "reason": "Not found, already deleted, or outside this connector"}],
+        })
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        assert not any("Could not prune" in str(call) for call in sync.logger.error.call_args_list)
+
     async def test_a_trashed_record_on_a_live_records_path_does_not_hide_it(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)

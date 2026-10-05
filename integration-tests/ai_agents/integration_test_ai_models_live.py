@@ -36,13 +36,14 @@ from ai_agents.support import (
 from helper.agui_run import RunTrace
 from helper.clients.conversations_client import ConversationsClient
 from helper.clients.kb_client import KBClient
-from helper.indexing_progress import wait_until_finished
+from helper.indexing_progress import wait_until_enriched, wait_until_finished
 
 pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.ai_models]
 
 # Node refuses a new chat's query past this many characters (es_validators.ts).
 _QUERY_MAX_CHARS = 100_000
 _PROVIDER_NAMES = {"azureOpenAI": "Azure OpenAI", "ollama": "Ollama"}
+_ENRICHMENT_TIMEOUT = 300
 
 
 def _entry(models: list[dict[str, Any]], model_key: str) -> dict[str, Any]:
@@ -123,13 +124,6 @@ class TestHealthCheck:
         assert "key" in message.lower(), f"the message does not point at the key: {message}"
         assert "Traceback" not in message and len(message) < 1500, message
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Product bug: a wrong provider key comes back as HTTP 500, a server fault, although the "
-            "admin's input is what is wrong (app/api/routes/health.py maps every provider error to 500)."
-        ),
-    )
     def test_a_bad_key_is_a_client_error_not_a_server_error(self, bad_key_response) -> None:
         resp, _stored = bad_key_response
         assert 400 <= resp.status_code < 500, f"{resp.status_code} {error_message(resp)}"
@@ -189,14 +183,6 @@ class TestDefaultModelSwitch:
     def test_a_chat_without_a_model_answers_after_the_switch(self, unpinned_chat: RunTrace) -> None:
         assert unpinned_chat.finished and not unpinned_chat.error, unpinned_chat.describe()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Product bug: a chat that names no model saves an empty modelInfo, so neither the "
-            "conversation nor its answer says which model (the new default) produced it "
-            "(Node extractModelInfo copies only what the request sent)."
-        ),
-    )
     def test_the_conversation_records_the_default_model_it_used(
         self, unpinned_chat: RunTrace, it_model: ItModel
     ) -> None:
@@ -230,6 +216,7 @@ class TestIndexingAndQueryModels:
     ) -> None:
         # The stack records no trace of which model indexed a record, so this checks the
         # assigned model does the work end to end (a broken one would fail extraction).
+        # Extraction finishes after the record is already searchable, so it gets its own wait.
         token = uuid.uuid4().hex[:8]
         upload = kb_client.upload_file(
             it_document["kb_id"], f"indexing-role-{token}.md",
@@ -240,10 +227,8 @@ class TestIndexingAndQueryModels:
         try:
             final = asyncio.run(wait_until_finished(kb_client, [record_id]))
             assert final.get(record_id) == "COMPLETED", final
-            record = kb_client.get_record(record_id)
-            data = record.get("record") or record.get("data", {}).get("record") or record
-            if isinstance(data, dict) and "extractionStatus" in data:
-                assert data["extractionStatus"] in ("COMPLETED", None), data.get("extractionStatus")
+            extraction = asyncio.run(wait_until_enriched(kb_client, record_id, timeout=_ENRICHMENT_TIMEOUT))
+            assert extraction == "COMPLETED", f"extraction with the indexing model ended {extraction}"
         finally:
             kb_client.delete_record(record_id)
 
@@ -277,13 +262,6 @@ class TestContextLength:
         message = error_message(resp)
         assert "maximum length" in message.lower() or "100000" in message.replace(",", ""), message
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Product bug: a follow-up message has no length limit (addMessageBodySchema in "
-            "es_validators.ts), so a query a new chat refuses at 100,000 characters goes to the model."
-        ),
-    )
     def test_an_over_long_follow_up_is_refused_like_a_first_message(
         self, conversations_client: ConversationsClient, pinned_chat: RunTrace, it_model: ItModel
     ) -> None:
