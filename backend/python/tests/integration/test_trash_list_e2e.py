@@ -15,10 +15,13 @@ the KB's own ``DataSourceEntitiesProcessor`` with ``ENABLE_SOFT_DELETE`` on.
   restore.
 - Live records, a record marked deleted without a timestamp, and other orgs
   are never listed; a restored item leaves the list.
-- A folder of a few hundred deleted files beside one deleted file: the file
-  organizer's list holds only the file, paging keeps its totals, and on Neo4j
-  the reads cost a fixed number of database hits per record in the trash
-  (PROFILE). Reading every batch member for every record cost about 277,000
+- A folder of a few hundred deleted files, a multi-select delete of 40 files,
+  another of two, and one deleted file: the file organizer's list holds only
+  the file, paging keeps its rows and totals, and every read costs a fixed
+  amount per record in the trash: Neo4j PROFILE database hits, and ArangoDB
+  profile index scans with no full scan. On Neo4j no statement holds more than
+  a few KB, as batches are paged before any root is read; collecting every
+  root first held 19 KB here and 160 KB with 400 selected files. Reading every batch member for every record cost about 277,000
   hits for 302 records; ``TRASH_LIST_BIG_FOLDER_FILES`` changes the size.
 
 Needs Docker services. A backend whose env var is set but cannot be reached
@@ -54,13 +57,19 @@ EARLIER = 1_790_000_000_000
 LATER = EARLIER + 60_000
 # A deleted folder big enough that reading its files once per file shows.
 BIG_FOLDER_FILES = int(os.environ.get("TRASH_LIST_BIG_FOLDER_FILES", "300"))
-# The Neo4j reads a file organizer's first page may cost, per record in the trash.
+# The Neo4j reads a page may cost, per record in the trash.
 MAX_DB_HITS_PER_TRASHED_RECORD = 40
+# The ArangoDB index entries a page may read, per record in the trash.
+MAX_ARANGO_INDEX_SCANS_PER_TRASHED_RECORD = 12
+# A multi-select delete of loose files beside the big folder.
+MULTI_SELECT_FILES = int(os.environ.get("TRASH_LIST_MULTI_SELECT_FILES", "40"))
+# Memory one Neo4j statement of the list may hold, whatever the number of items in the trash.
+MAX_NEO4J_STATEMENT_MEMORY_BYTES = 8 * 1024
 
 
-async def _trash_at(w: _World, name: str, when: int) -> None:
-    """Trash *name* with its subtree, then pin the batch's time so the order is certain."""
-    await w.trash(name)
+async def _trash_at(w: _World, name: str, when: int, *together: str) -> None:
+    """Trash *name* (and *together*, in the same action) with their subtrees, then pin the batch's time."""
+    await w.trash(name, *together)
     batch = (await w.stored(name))["deleteBatchId"]
     for key in w.ids:
         doc = await w.stored(key)
@@ -183,8 +192,8 @@ def _db_hits(plan: dict) -> int:
     return int(plan.get("dbHits", 0)) + sum(_db_hits(child) for child in plan.get("children", []))
 
 
-async def _neo4j_db_hits(graph: Neo4jProvider, monkeypatch: pytest.MonkeyPatch, call) -> tuple[object, int]:
-    """Run *call*, then PROFILE every statement it sent and add up their database hits."""
+async def _neo4j_db_hits(graph: Neo4jProvider, monkeypatch: pytest.MonkeyPatch, call) -> tuple[object, int, int]:
+    """Run *call*, then PROFILE every statement it sent: its result, their database hits, and the most memory one held."""
     sent: list[tuple[str, dict]] = []
     original = graph.client.execute_query
 
@@ -195,12 +204,66 @@ async def _neo4j_db_hits(graph: Neo4jProvider, monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(graph.client, "execute_query", recording)
     result = await call()
     monkeypatch.setattr(graph.client, "execute_query", original)
-    hits = 0
+    hits = memory = 0
     async with graph.client.driver.session(database=graph.client.database) as session:
         for query, parameters in sent:
             summary = await (await session.run(f"PROFILE {query}", parameters)).consume()
             hits += _db_hits(summary.profile)
-    return result, hits
+            memory = max(memory, int(summary.profile.get("args", {}).get("GlobalMemory") or 0))
+    return result, hits, memory
+
+
+async def _seed_loose_files(w: _World, prefix: str, files: int) -> list[str]:
+    """*files* files at the collection root, named ``{prefix}_{i}``."""
+    names = [f"{prefix}_{i}" for i in range(files)]
+    for name in names:
+        w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
+    await w.graph.batch_upsert_records([restore_suite._file(w, name) for name in names])
+    await restore_suite._link_to_kb(w, tuple(names))
+    return names
+
+
+async def _arango_scans(graph: object, monkeypatch: pytest.MonkeyPatch, call) -> tuple[object, int, int]:
+    """Run *call*, then profile every query it sent; return its result and the full and index scans."""
+    sent: list[tuple[str, dict]] = []
+    original = graph.execute_query
+
+    async def recording(query, bind_vars=None, transaction=None, timeout_seconds=None) -> list | None:
+        sent.append((query, bind_vars or {}))
+        return await original(query, bind_vars=bind_vars, transaction=transaction, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(graph, "execute_query", recording)
+    result = await call()
+    monkeypatch.setattr(graph, "execute_query", original)
+    client = graph.http_client
+    session = await client._get_session()
+    full = index = 0
+    for query, bind_vars in sent:
+        async with session.post(
+            f"{client.base_url}/_db/{client.database}/_api/cursor",
+            json={"query": query, "bindVars": bind_vars, "batchSize": 1000, "options": {"profile": 1}},
+        ) as resp:
+            body = await resp.json()
+        stats = body["extra"]["stats"]
+        full += stats["scannedFull"]
+        index += stats["scannedIndex"]
+    return result, full, index
+
+
+async def _bounded(graph: object, monkeypatch: pytest.MonkeyPatch, trashed: int, call) -> dict:
+    """Run *call* and check its reads cost a fixed amount per record in the trash."""
+    if isinstance(graph, Neo4jProvider):
+        result, hits, memory = await _neo4j_db_hits(graph, monkeypatch, call)
+        assert hits <= MAX_DB_HITS_PER_TRASHED_RECORD * trashed, f"{hits} database hits for {trashed} records in the trash"
+        # Paging the batches before reading any root keeps the trash's roots out of memory.
+        assert memory <= MAX_NEO4J_STATEMENT_MEMORY_BYTES, f"a statement held {memory} bytes"
+        return result
+    result, full, index = await _arango_scans(graph, monkeypatch, call)
+    assert full == 0, f"{full} documents read by a full collection scan"
+    assert index <= MAX_ARANGO_INDEX_SCANS_PER_TRASHED_RECORD * trashed, (
+        f"{index} index entries read for {trashed} records in the trash"
+    )
+    return result
 
 
 async def test_a_large_deleted_folder_does_not_slow_a_page_or_hide_a_loose_file(
@@ -213,27 +276,36 @@ async def test_a_large_deleted_folder_does_not_slow_a_page_or_hide_a_loose_file(
             await graph.client.execute_query(statement)
         await graph.client.execute_query("CALL db.awaitIndexes(300)")
     await _seed_big_folder(seeded, BIG_FOLDER_FILES)
+    many = await _seed_loose_files(seeded, "many", MULTI_SELECT_FILES)
+    pair = await _seed_loose_files(seeded, "pair", 2)
     await _trash_at(seeded, "solo", EARLIER)
-    await _trash_at(seeded, "big", LATER)
+    await _trash_at(seeded, many[0], EARLIER + 60_000, *many[1:])
+    await _trash_at(seeded, pair[0], EARLIER + 120_000, *pair[1:])
+    await _trash_at(seeded, "big", EARLIER + 180_000)
+    trashed = 1 + MULTI_SELECT_FILES + 2 + BIG_FOLDER_FILES + 1
+    first_of = {name: min(seeded.ids[n] for n in group) for name, group in (("many", many), ("pair", pair))}
 
-    async def organizer_page() -> dict:
-        return await graph.list_trashed_records(seeded.kb_id, seeded.org_id, single_file_batches_only=True)
-
-    if isinstance(graph, Neo4jProvider):
-        organizer, hits = await _neo4j_db_hits(graph, monkeypatch, organizer_page)
-        trashed = BIG_FOLDER_FILES + 2
-        assert hits <= MAX_DB_HITS_PER_TRASHED_RECORD * trashed, (
-            f"{hits} database hits for {trashed} records in the trash"
-        )
-    else:
-        organizer = await organizer_page()
+    organizer = await _bounded(graph, monkeypatch, trashed, lambda: graph.list_trashed_records(
+        seeded.kb_id, seeded.org_id, single_file_batches_only=True,
+    ))
     assert (_ids(organizer), organizer["total"]) == ([seeded.ids["solo"]], 1)
 
-    first = await graph.list_trashed_records(seeded.kb_id, seeded.org_id, skip=0, limit=1)
-    second = await graph.list_trashed_records(seeded.kb_id, seeded.org_id, skip=1, limit=1)
-    assert (_ids(first), first["total"]) == ([seeded.ids["big"]], 2)
-    assert first["items"][0]["batchSize"] == BIG_FOLDER_FILES + 1
-    assert (_ids(second), second["total"]) == ([seeded.ids["solo"]], 2)
+    first = await _bounded(graph, monkeypatch, trashed, lambda: graph.list_trashed_records(
+        seeded.kb_id, seeded.org_id, skip=0, limit=2,
+    ))
+    second = await _bounded(graph, monkeypatch, trashed, lambda: graph.list_trashed_records(
+        seeded.kb_id, seeded.org_id, skip=2, limit=2,
+    ))
+    assert (_ids(first), first["total"]) == ([seeded.ids["big"], first_of["pair"]], 4)
+    assert (_ids(second), second["total"]) == ([first_of["many"], seeded.ids["solo"]], 4)
+    big, two = first["items"]
+    lots, solo = second["items"]
+    assert (big["rootCount"], big["batchSize"], big["otherRootNames"]) == (1, BIG_FOLDER_FILES + 1, [])
+    assert (two["rootCount"], two["batchSize"], len(two["otherRootNames"])) == (2, 2, 1)
+    by_key = sorted(many, key=lambda n: seeded.ids[n])
+    assert (lots["rootCount"], lots["batchSize"]) == (MULTI_SELECT_FILES, MULTI_SELECT_FILES)
+    assert lots["otherRootNames"] == [f"{name}.pdf" for name in by_key[1:4]]
+    assert (solo["rootCount"], solo["batchSize"]) == (1, 1)
 
 
 async def test_a_multi_select_delete_is_one_row_and_restores_exactly_what_it_says(seeded: _World) -> None:

@@ -12038,27 +12038,37 @@ class Neo4jProvider(IGraphDBProvider):
             "skip": max(skip, 0),
             "limit": limit,
         }
-        # One row per delete batch, as restore brings a batch back whole: its first
-        # root (by id) stands for it, and the others are counted and named.
+        # One row per delete batch, as restore brings a batch back whole. Batches are
+        # aggregated and paged first, holding no roots; only a page's batches then
+        # read their first root (by id) and the names of a few others.
         rows = await self.client.execute_query(
             f"""
             {_TRASH_BATCH_ROOTS}
-            WITH r ORDER BY r.id
-            WITH r.deleteBatchId AS batch, max(r.deletedAtTimestamp) AS deleted_at, collect(r) AS roots
+            WITH r.deleteBatchId AS batch, max(r.deletedAtTimestamp) AS deleted_at,
+                 min(r.id) AS first_id, count(r) AS root_count
             ORDER BY deleted_at DESC, batch DESC SKIP $skip LIMIT $limit
-            WITH batch, deleted_at, roots, head(roots) AS r
+            MATCH (r:Record {{id: first_id}})
             OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
             WHERE rel.relationshipType IN $containment
-            WITH batch, deleted_at, roots, r, head(collect(p)) AS p
+            WITH batch, deleted_at, root_count, r, head(collect(p)) AS p
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
-            WITH batch, deleted_at, roots, r, p, head(collect(t)) AS t
+            WITH batch, deleted_at, root_count, r, p, head(collect(t)) AS t
             OPTIONAL MATCH (u:User {{id: r.deletedByUserId}})
-            WITH batch, deleted_at, roots, r, p, t, head(collect(u)) AS u
+            WITH batch, deleted_at, root_count, r, p, t, head(collect(u)) AS u
             RETURN properties(r) AS rec,
                    p.id AS parent_id, p.recordName AS parent_name, p.isDeleted AS parent_deleted,
                    t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
-                   size(roots) AS root_count,
-                   [x IN roots[1..(1 + $names)] | x.recordName] AS other_names,
+                   root_count,
+                   CASE WHEN root_count < 2 THEN [] ELSE COLLECT {{
+                       MATCH (x:Record {{deleteBatchId: batch}})
+                       WHERE x.id <> r.id AND x.isDeleted = true AND x.connectorId = $connector_id
+                         AND NOT EXISTS {{
+                             MATCH (xp:Record)-[xrel:RECORD_RELATION]->(x)
+                             WHERE xrel.relationshipType IN $containment
+                               AND xp.isDeleted = true AND xp.deleteBatchId = batch
+                         }}
+                       RETURN x.recordName ORDER BY x.id LIMIT $names
+                   }} END AS other_names,
                    COUNT {{
                        MATCH (x:Record {{deleteBatchId: batch}})
                        WHERE x.isDeleted = true AND x.connectorId = $connector_id

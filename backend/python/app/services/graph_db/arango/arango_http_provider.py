@@ -14032,18 +14032,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "@record_relations": CollectionNames.RECORD_RELATIONS.value,
             "@is_of_type": CollectionNames.IS_OF_TYPE.value,
         }
-        # One row per delete batch, as restore brings a batch back whole: its first
-        # root (by key) stands for it, and the others are counted and named.
+        # One row per delete batch, as restore brings a batch back whole. Batches are
+        # aggregated and paged first, holding no roots; only a page's batches then
+        # read their first root (by key) and the names of a few others.
         rows = await self.execute_query(
             f"""
             {_TRASH_BATCH_ROOTS}
                 COLLECT batch = r.deleteBatchId
-                    AGGREGATE deleted_at = MAX(r.deletedAtTimestamp)
-                    INTO roots = {{ key: r._key, name: r.recordName }}
+                    AGGREGATE deleted_at = MAX(r.deletedAtTimestamp), first_key = MIN(r._key),
+                        root_count = COUNT(1)
                 SORT deleted_at DESC, batch DESC
                 LIMIT @skip, @limit
-                LET ordered = (FOR root IN roots SORT root.key RETURN root)
-                LET r = DOCUMENT(@@records, ordered[0].key)
+                LET r = DOCUMENT(@@records, first_key)
+                LET other_names = root_count < 2 ? [] : (
+                    FOR x IN @@records
+                        FILTER x.deleteBatchId == batch AND x.deleteBatchId != null
+                        FILTER x._key != first_key AND x.isDeleted == true AND x.connectorId == @connector_id
+                        LET in_batch_parent = FIRST(
+                            FOR e IN @@record_relations
+                                FILTER e._to == x._id AND e.relationshipType IN @containment
+                                LET xp = DOCUMENT(e._from)
+                                FILTER xp != null AND xp.isDeleted == true AND xp.deleteBatchId == batch
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER in_batch_parent == null
+                        SORT x._key
+                        LIMIT @names
+                        RETURN x.recordName
+                )
                 LET parent = FIRST(
                     FOR e IN @@record_relations
                         FILTER e._to == r._id AND e.relationshipType IN @containment
@@ -14069,8 +14086,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     isFile: t.isFile,
                     fileMimeType: t.mimeType,
                     sizeInBytes: t.sizeInBytes,
-                    rootCount: LENGTH(ordered),
-                    otherRootNames: SLICE(ordered, 1, @names)[*].name,
+                    rootCount: root_count,
+                    otherRootNames: other_names,
                     batchSize: LENGTH(
                         FOR x IN @@records
                             FILTER x.deleteBatchId == batch AND x.deleteBatchId != null
