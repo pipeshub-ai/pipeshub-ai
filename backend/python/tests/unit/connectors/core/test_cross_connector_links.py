@@ -59,7 +59,7 @@ def _tx_store(at_address: list[dict] | None = None, holders: list[str] | None = 
     tx.get_record_by_external_id = AsyncMock(return_value=None)
     tx.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx.delete_edges_by_relationship_types = AsyncMock(return_value=0)
-    tx.batch_upsert_record_relations = AsyncMock()
+    tx.batch_upsert_node_relations = AsyncMock()
     tx.batch_upsert_records = AsyncMock()
     tx.get_records_by_weburls = AsyncMock(return_value=at_address or [])
     tx.get_records_linking_to_weburls = AsyncMock(return_value=holders or [])
@@ -110,7 +110,7 @@ def _saved_ids(tx: AsyncMock) -> set[str]:
 
 def _edges(tx: AsyncMock) -> list[dict]:
     out = []
-    for call in tx.batch_upsert_record_relations.await_args_list:
+    for call in tx.batch_upsert_node_relations.await_args_list:
         out.extend(call.args[0])
     return out
 

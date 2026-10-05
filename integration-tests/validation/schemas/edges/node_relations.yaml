@@ -1,5 +1,5 @@
-name: record_relations_edge
-description: RecordRelations edge document (matches Arango recordRelations collection).
+name: node_relations_edge
+description: NodeRelations edge document (matches Arango nodeRelations collection).
 fields:
   relationshipType:
     required: false

@@ -154,7 +154,7 @@ async def seeded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
         cleanup.push_async_callback(remove)
         for record in records.values():
             assert await graph.batch_upsert_nodes([record.to_arango_base_record()], CollectionNames.RECORDS.value)
-        await graph.batch_upsert_record_relations([
+        await graph.batch_upsert_node_relations([
             {
                 "_from": f"{CollectionNames.RECORDS.value}/{ids[holder]}",
                 "_to": f"{CollectionNames.RECORDS.value}/{ids[child]}",
@@ -238,7 +238,7 @@ async def test_issue_sites_are_read_from_the_orgs_jira_tickets(seeded: _Graph) -
 async def test_address_links_in_both_directions_and_only_by_address(seeded: _Graph) -> None:
     ids = seeded.ids
     rel = CollectionNames.RECORDS.value
-    await seeded.graph.batch_upsert_record_relations([
+    await seeded.graph.batch_upsert_node_relations([
         {"_from": f"{rel}/{ids['message']}", "_to": f"{rel}/{ids['pr']}",
          "relationshipType": RecordRelations.LINKED_TO.value, "matchedBy": "url", "constraintName": ""},
         {"_from": f"{rel}/{ids['pr']}", "_to": f"{rel}/{ids['ticket']}",
@@ -263,7 +263,7 @@ async def test_address_links_in_both_directions_and_only_by_address(seeded: _Gra
 async def test_address_links_count_records_not_edges(seeded: _Graph) -> None:
     ids = seeded.ids
     rel = CollectionNames.RECORDS.value
-    await seeded.graph.batch_upsert_record_relations([
+    await seeded.graph.batch_upsert_node_relations([
         {"_from": f"{rel}/{ids[source]}", "_to": f"{rel}/{ids['ticket']}",
          "relationshipType": RecordRelations.LINKED_TO.value, "matchedBy": matched, "constraintName": tag}
         for source, matched, tag in (("message", "url", ""), ("message", "key", "dup"), ("pr", "key", ""))

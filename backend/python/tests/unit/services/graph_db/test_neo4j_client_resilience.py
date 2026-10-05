@@ -286,6 +286,35 @@ class TestExplicitTransactions:
         assert not client.explicit_transactions
 
     @pytest.mark.asyncio
+    async def test_one_call_can_ask_for_a_real_transaction_with_the_flag_off(self, ensure_db) -> None:
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client(transaction_timeout=42.0)
+            await client.connect()
+            txn = await client.begin_transaction([], [], explicit=True)
+            await client.execute_query("CREATE (n)", txn_id=txn)
+            await client.commit_transaction(txn)
+            plain = await client.begin_transaction([], [])
+            await client.abort_transaction(plain)
+
+        asked, default = driver.sessions[-2], driver.sessions[-1]
+        assert asked.transactions[0].timeout == 42.0
+        assert asked.ran == []  # the statement ran inside the transaction, not on the session
+        default.begin_transaction.assert_not_awaited()
+        assert not client.explicit_transactions
+
+    @pytest.mark.asyncio
+    async def test_one_call_can_decline_the_transaction_with_the_flag_on(self, ensure_db) -> None:
+        driver = _driver([])
+        with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):
+            client = _client(explicit_transactions=True)
+            await client.connect()
+            txn = await client.begin_transaction([], [], explicit=False)
+            await client.abort_transaction(txn)
+
+        driver.sessions[-1].begin_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_queries_run_inside_the_open_transaction(self, ensure_db) -> None:
         driver = _driver([])
         with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=driver):

@@ -1,6 +1,13 @@
 name: graph_record
 description: Base Record from graph (matches Record.model_dump mode=json).
 fields:
+  access_rule:
+    required: false
+    type: string
+    enum:
+      - OPEN
+      - STRICT
+      - RESTRICTED
   block_containers:
     type: object
     required: false
