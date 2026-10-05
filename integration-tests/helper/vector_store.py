@@ -172,28 +172,31 @@ class VectorStoreProbe:
         self,
         condition: qmodels.FieldCondition,
         must_not: list[qmodels.FieldCondition] | None = None,
+        *,
+        collection: str | None = None,
     ) -> int:
-        """Total points matching a condition across every collection.
+        """Total points matching a condition across every collection, or only ``collection``.
 
         Retried once on a fresh client: the probe is shared by a whole session,
         and its pooled connection does not survive the vector database
         restarting under it. A second failure is a real one.
         """
         try:
-            return await self._count_matching_once(condition, must_not)
+            return await self._count_matching_once(condition, must_not, collection)
         except Exception as exc:  # noqa: BLE001 - re-raised below if a new client fails too
             logger.info("Reconnecting to the vector database after: %s", exc)
             await self.close()
-            return await self._count_matching_once(condition, must_not)
+            return await self._count_matching_once(condition, must_not, collection)
 
     async def _count_matching_once(
         self,
         condition: qmodels.FieldCondition,
         must_not: list[qmodels.FieldCondition] | None = None,
+        collection: str | None = None,
     ) -> int:
         client = await self._conn()
         total = 0
-        for name in await self.collections():
+        for name in [collection] if collection else await self.collections():
             try:
                 result = await client.count(
                     collection_name=name,
@@ -289,12 +292,13 @@ class VectorStoreProbe:
                     break
         return texts
 
-    async def count_for_connector(self, connector_id: str) -> int:
+    async def count_for_connector(self, connector_id: str, *, collection: str | None = None) -> int:
         return await self._count_matching(
             qmodels.FieldCondition(
                 key="connectorIds",
                 match=qmodels.MatchValue(value=connector_id),
-            )
+            ),
+            collection=collection,
         )
 
     async def count_for_org(self, org_id: str) -> int:

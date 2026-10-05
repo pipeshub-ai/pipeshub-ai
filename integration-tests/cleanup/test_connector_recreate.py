@@ -34,7 +34,10 @@ async def _snapshot(graph_provider, vector_store, connector_id: str, files: list
         "graph": await fp.graph_footprint_of_connector(graph_provider, connector_id),
         "summary": await graph_provider.graph_summary(connector_id),
         "record_count": await graph_provider.count_records(connector_id),
-        "points": await vector_store.count_for_connector(connector_id),
+        # Records only: entity points are shared taxonomy nodes whose connector
+        # membership is written after enrichment and shrunk asynchronously when a
+        # connector is deleted, so their count says nothing about re-indexing.
+        "points": await vector_store.count_for_connector(connector_id, collection="records"),
         "points_per_file": {
             name: await vector_store.count_content_chunks(r.virtual_record_id)
             for name, r in records.items()
