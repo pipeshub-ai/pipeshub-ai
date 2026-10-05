@@ -440,6 +440,27 @@ async def test_nothing_goes_before_the_retention(world: _World) -> None:
     assert await world.stored("upload") is None
 
 
+async def test_a_record_trashed_at_timestamp_zero_goes_on_the_first_page(world: _World) -> None:
+    await world.trash("upload")
+    if isinstance(world.graph, Neo4jProvider):
+        await world.graph.client.execute_query(
+            "MATCH (r:Record {id: $id}) SET r.deletedAtTimestamp = 0", parameters={"id": world.ids["upload"]}
+        )
+    else:
+        await world.graph.http_client.execute_aql(
+            f"UPDATE @key WITH {{ deletedAtTimestamp: 0 }} IN {RECORDS}", {"key": world.ids["upload"]}
+        )
+    stats = await world.graph.get_trash_purge_stats(world.org_id)
+    assert (stats["trashed"], stats["oldestDeletedAt"]) == (1, 0)
+
+    page = await world.graph.get_purgeable_trashed_records(world.org_id, world.now)
+    assert [row["id"] for row in page["records"]] == [world.ids["upload"]]
+
+    assert await world.tick(15) == Outcome.FINISHED
+    assert await world.stored("upload") is None
+    assert (await world.graph.get_trash_purge_stats(world.org_id))["trashed"] == 0
+
+
 async def test_a_restored_record_is_never_purged(world: _World) -> None:
     await world.trash("restored")
     batch = (await world.stored("restored"))["deleteBatchId"]
