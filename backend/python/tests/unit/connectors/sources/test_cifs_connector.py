@@ -655,12 +655,18 @@ class TestCifsConnectorSync:
 
 class TestCifsConnectorStreamAndFilters:
     async def test_sharing_violation_maps_to_stream_error(self, cifs_connector):
-        ds = FakeNetworkShareDataSource()
+        ds = FakeNetworkShareDataSource(stats={(SHARE, "a.doc"): _entry("a.doc", file_id=5)})
         ds.read_file = MagicMock(side_effect=OSError("STATUS_SHARING_VIOLATION"))
         cifs_connector.data_source = ds
         with pytest.raises(HTTPException) as exc:
             await cifs_connector.stream_record(_file_record(ext_id=f"{SHARE}/a.doc", revision="r"))
         assert exc.value.status_code == 500
+
+    async def test_file_deleted_at_the_source_is_a_404(self, cifs_connector):
+        cifs_connector.data_source = FakeNetworkShareDataSource(stats={(SHARE, "a.doc"): None})
+        with pytest.raises(HTTPException) as exc:
+            await cifs_connector.stream_record(_file_record(ext_id=f"{SHARE}/a.doc", revision="r"))
+        assert exc.value.status_code == 404
 
     async def test_list_shares_drops_ipc_and_admin(self, cifs_connector):
         cifs_connector.data_source = FakeNetworkShareDataSource(

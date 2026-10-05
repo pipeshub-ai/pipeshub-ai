@@ -241,6 +241,75 @@ class TestShareWalkerRenames:
         assert f"{SHARE}/b.txt" not in _ids(upserts)
 
 
+class TestShareWalkerLinkedFolders:
+    """Samba lists a followed directory symlink as a plain folder with the target's file id."""
+
+    async def test_second_path_to_a_walked_folder_is_not_walked(self):
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [
+                    _entry("policies", is_directory=True, file_id=3),
+                    _entry("link-to-policies", is_directory=True, file_id=3),
+                ],
+                (SHARE, "policies"): [_entry("leave.txt", file_id=4)],
+                (SHARE, "link-to-policies"): [_entry("leave.txt", file_id=4)],
+            }
+        )
+        result, upserts, moves = await _walk(ds)
+        assert result.complete is True
+        assert moves == []
+        assert _ids(upserts) == {f"{SHARE}/policies", f"{SHARE}/policies/leave.txt"}
+        assert (SHARE, "link-to-policies") not in ds.list_calls
+        assert f"{SHARE}/link-to-policies" not in result.seen
+
+    async def test_link_listed_before_its_recorded_target_does_not_take_the_record(self):
+        target = _entry("policies", is_directory=True, file_id=3)
+        link = _entry("a-link", is_directory=True, file_id=3)
+        rev = revision_id(SHARE, target, "policies")
+        stored = _stored(f"{SHARE}/policies", rev, "kept")
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, ""): [link, target], (SHARE, "a-link"): [_entry("leave.txt", file_id=4)]},
+            stats={(SHARE, "policies"): target},
+        )
+        result, upserts, moves = await _walk(
+            ds,
+            existing_by_id={stored.external_record_id: stored},
+            existing_by_revision={rev: stored},
+        )
+        assert moves == []
+        assert (SHARE, "a-link") not in ds.list_calls
+        assert f"{SHARE}/a-link" not in result.seen
+        ids = {r.external_record_id: r.id for batch in upserts for r, _perms in batch}
+        assert ids[f"{SHARE}/policies"] == "kept"
+
+    async def test_renamed_folder_is_still_a_move(self):
+        renamed = _entry("policies-2026", is_directory=True, file_id=3)
+        rev = revision_id(SHARE, renamed, "policies-2026")
+        stored = _stored(f"{SHARE}/policies", rev, "kept")
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, ""): [renamed]}, stats={(SHARE, "policies"): None}
+        )
+        result, _upserts, moves = await _walk(ds, existing_by_revision={rev: stored})
+        [(old_ext_id, record, _perms)] = [move for batch in moves for move in batch]
+        assert (old_ext_id, record.id) == (f"{SHARE}/policies", "kept")
+        assert (SHARE, "policies-2026") in ds.list_calls
+        assert f"{SHARE}/policies-2026" in result.seen
+
+    async def test_folders_sharing_an_inode_number_on_two_filesystems_are_both_walked(self):
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [
+                    _entry("disk-a", is_directory=True, file_id=3, created_time=OLD, last_write_time=OLD),
+                    _entry("disk-b", is_directory=True, file_id=3),
+                ],
+                (SHARE, "disk-a"): [_entry("a.txt", file_id=4)],
+                (SHARE, "disk-b"): [_entry("b.txt", file_id=5)],
+            }
+        )
+        result, _upserts, _moves = await _walk(ds)
+        assert {f"{SHARE}/disk-a/a.txt", f"{SHARE}/disk-b/b.txt"} <= result.seen
+
+
 class TestShareWalker:
     async def test_reparse_file_is_upserted_and_directory_reparse_is_not_walked(self):
         ds = FakeNetworkShareDataSource(

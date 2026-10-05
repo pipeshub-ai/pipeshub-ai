@@ -295,6 +295,19 @@ class TestSmbConnectorConnection:
         assert client._registered is False
 
 
+    def test_every_call_carries_the_credentials_for_a_reconnect(self):
+        from app.sources.client.smb.smb import SmbClient
+
+        client = SmbClient(server="h", username="u", password="p", domain="CORP", port=4450)
+        client._registered = True
+        with patch.object(client, "_smbclient") as smbclient:
+            smbclient.return_value.scandir.return_value.__enter__.return_value = []
+            client.list_directory(SHARE, "")
+        kwargs = smbclient.return_value.scandir.call_args.kwargs
+        assert (kwargs["username"], kwargs["password"], kwargs["port"]) == ("CORP\\u", "p", 4450)
+        assert kwargs["connection_cache"] is client.connection_cache()
+
+
 class TestSmbConnectorSync:
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_creates_groups_walks_and_prunes(self, mock_filters, smb_connector, mock_processor):
@@ -324,6 +337,20 @@ class TestSmbConnectorSync:
         mock_processor.get_records_by_record_type.assert_not_awaited()
         mock_processor.on_record_deleted.assert_not_awaited()
         smb_connector.record_sync_point.update_sync_point.assert_not_awaited()
+        assert smb_connector.notify.await_args.kwargs["title"] == "Sync could not read the share"
+        assert SHARE in smb_connector.notify.await_args.kwargs["message"]
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_one_unreadable_subfolder_does_not_notify(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(
+            tree={(SHARE, ""): [_entry("locked", is_directory=True, file_id=5)]},
+            fail_dirs={(SHARE, "locked")},
+        )
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+        smb_connector.notify.assert_not_awaited()
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_existing_id(self, mock_filters, smb_connector, mock_processor):
@@ -596,7 +623,7 @@ class TestSmbConnectorSync:
 
 class TestSmbConnectorStreamAndFilters:
     async def test_sharing_violation_raises_stream_error_not_raw_oserror(self, smb_connector):
-        ds = FakeNetworkShareDataSource()
+        ds = FakeNetworkShareDataSource(stats={(SHARE, "locked.docx"): _entry("locked.docx", file_id=5)})
         ds.read_file = MagicMock(side_effect=OSError("STATUS_SHARING_VIOLATION"))
         smb_connector.data_source = ds
         record = _file_record(ext_id=f"{SHARE}/locked.docx", revision="r")
@@ -604,6 +631,17 @@ class TestSmbConnectorStreamAndFilters:
             await smb_connector.stream_record(record)
         assert not isinstance(exc.value, OSError)
         assert exc.value.status_code == 500
+
+    async def test_file_deleted_at_the_source_is_a_404_naming_the_connector(self, smb_connector):
+        ds = FakeNetworkShareDataSource(stats={(SHARE, "gone.txt"): None})
+        ds.read_file = MagicMock()
+        smb_connector.data_source = ds
+        record = _file_record(ext_id=f"{SHARE}/gone.txt", revision="r")
+        with pytest.raises(HTTPException) as exc:
+            await smb_connector.stream_record(record)
+        assert exc.value.status_code == 404
+        assert "no longer exists" in exc.value.detail
+        ds.read_file.assert_not_called()
 
     async def test_directory_is_not_downloadable(self, smb_connector):
         smb_connector.data_source = FakeNetworkShareDataSource()

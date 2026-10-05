@@ -10,6 +10,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     not_downloadable,
+    not_found_at_source,
     to_stream_error,
 )
 from app.connectors.core.base.sync_point.sync_point import (
@@ -245,7 +246,8 @@ async def walk_shares(
     indexing_filters: FilterCollection,
     record_sync_point: SyncPoint,
     prune: bool,
-) -> None:
+) -> list[str]:
+    """Walk and reconcile ``shares``. Returns the shares where nothing could be listed."""
     walker = make_walker(
         data_source=data_source,
         processor=processor,
@@ -260,6 +262,7 @@ async def walk_shares(
     )
     seen: set[str] = set()
     complete = True
+    unreadable: list[str] = []
     folder_scope = FolderScope.from_filters(sync_filters)
     for share_name in shares:
         if not share_name:
@@ -270,6 +273,8 @@ async def walk_shares(
             )
             seen |= result.seen
             complete = complete and result.complete
+            if not result.complete and result.seen == {share_name}:
+                unreadable.append(share_name)
             if result.complete:
                 await clean_up_scope(
                     processor,
@@ -287,6 +292,7 @@ async def walk_shares(
                 )
         except Exception:
             complete = False
+            unreadable.append(share_name)
             logger.exception("Error syncing share %s", share_name)
     if prune and complete:
         await prune_unseen(processor, connector_id, seen, logger)
@@ -294,6 +300,7 @@ async def walk_shares(
         logger.warning(
             "Some listings failed; not removing records that were not seen this sync"
         )
+    return unreadable
 
 
 def io_share_and_path(record: Record) -> tuple[str, str] | None:
@@ -340,6 +347,10 @@ async def stream_file(
         )
     share_name, file_path = path_info
     try:
+        # read_file opens the file on its first chunk, after this function has
+        # returned, where a missing file becomes a generic 500.
+        if await data_source.stat(share_name, file_path) is None:
+            raise not_found_at_source(display_name)
         return create_stream_record_response(
             data_source.read_file(share_name, file_path),
             filename=record.record_name,

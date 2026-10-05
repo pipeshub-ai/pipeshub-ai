@@ -308,7 +308,7 @@ class SmbConnector(BaseConnector):
             creator_email=self.creator_email,
             description_prefix="SMB share",
         )
-        await walk_shares(
+        unreadable = await walk_shares(
             data_source=self.data_source,
             processor=self.data_entities_processor,
             mapper=self.mapper,
@@ -325,6 +325,17 @@ class SmbConnector(BaseConnector):
             record_sync_point=self.record_sync_point,
             prune=prune,
         )
+        if unreadable:
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Sync could not read the share",
+                message=(
+                    f"Nothing could be listed in {', '.join(unreadable)}. "
+                    "Check that the server is reachable and the account still has access."
+                ),
+                payload={"connectorId": self.connector_id, "connectorName": Connectors.SMB.value},
+            )
 
     def handle_webhook_notification(self, notification: dict) -> None:
         raise NotImplementedError("SMB change notify is not a webhook strategy")

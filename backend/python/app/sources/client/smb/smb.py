@@ -100,7 +100,14 @@ class SmbClient(IClient):
         self._registered = False
 
     def _kwargs(self) -> dict[str, Any]:
-        return {"connection_cache": self._connection_cache, "port": self.port}
+        # smbprotocol keeps credentials only inside the live session. After the
+        # server drops the connection it opens a new one from these arguments.
+        return {
+            "connection_cache": self._connection_cache,
+            "port": self.port,
+            "username": self.username,
+            "password": self.password,
+        }
 
     def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
         self.register()

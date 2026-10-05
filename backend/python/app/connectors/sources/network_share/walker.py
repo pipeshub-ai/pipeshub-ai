@@ -31,6 +31,7 @@ from app.models.entities import FileRecord, Record
 from app.models.permission import Permission
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from logging import Logger
 
     from app.config.constants.arangodb import Connectors
@@ -83,6 +84,7 @@ class ShareWalker:
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
         pending_moves: list[tuple[MoveDecision, DirectoryEntry, str, list[Permission]]] = []
         seen_file_ids: set[int] = set()
+        walked_dirs: dict[int, tuple[str, datetime | None, datetime | None]] = {}
         chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
 
         async def flush() -> None:
@@ -93,6 +95,33 @@ class ShareWalker:
             if moves:
                 await self.flush_moves(moves)
                 moves = []
+
+        async def second_path_of(
+            entry: DirectoryEntry,
+            ext_id: str,
+            existing_by_id: Record | None,
+            existing_by_revision: Record | None,
+        ) -> str | None:
+            # Samba follows a directory symlink on the server and lists it as a
+            # plain folder with the target's file id. A folder has one path, so a
+            # second path with that id is a link. The timestamps guard against two
+            # filesystems under one share reusing an inode number.
+            first = walked_dirs.get(entry.file_id)
+            if first is not None:
+                path, created, written = first
+                if (created, written) == (entry.created_time, entry.last_write_time):
+                    return path
+                return None
+            if existing_by_id is not None or existing_by_revision is None:
+                return None
+            known_id = existing_by_revision.external_record_id
+            if not known_id or known_id == ext_id or not known_id.startswith(f"{share}/"):
+                return None
+            # A renamed folder has the same id at a new path too; its old path is gone.
+            at_known = await self.data_source.stat(share, known_id[len(share) + 1 :])
+            if at_known is not None and at_known.is_directory and at_known.file_id == entry.file_id:
+                return known_id
+            return None
 
         async def handle_entry(entry: DirectoryEntry, parent_dir: str) -> str | None:
             nonlocal max_ts
@@ -123,11 +152,6 @@ class ShareWalker:
                 return None
 
             ext_id = f"{share}/{nfc_path}"
-            seen.add(ext_id)
-            if entry.last_write_time is not None:
-                ts = int(entry.last_write_time.timestamp() * 1000)
-                max_ts = max(max_ts, ts)
-
             existing_by_id = await self.get_by_external_id(ext_id)
             existing_by_revision = None
             skip_revision_lookup = (
@@ -139,6 +163,22 @@ class ShareWalker:
                 existing_by_revision = await self.get_by_revision(
                     revision_id(share, entry, nfc_path)
                 )
+
+            if entry.is_directory and usable_file_id(entry.file_id):
+                same_as = await second_path_of(entry, ext_id, existing_by_id, existing_by_revision)
+                if same_as is not None:
+                    self.logger.warning(
+                        "Not walking %s: it is the same folder as %s (a link on the server)",
+                        ext_id,
+                        same_as,
+                    )
+                    return None
+                walked_dirs[entry.file_id] = (ext_id, entry.created_time, entry.last_write_time)
+
+            seen.add(ext_id)
+            if entry.last_write_time is not None:
+                ts = int(entry.last_write_time.timestamp() * 1000)
+                max_ts = max(max_ts, ts)
 
             decision = self.mapper.classify(
                 entry=entry,
