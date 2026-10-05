@@ -1856,7 +1856,7 @@ function KnowledgeBasePageContent() {
   const softDeleteEnabled = useFeatureFlagsStore(selectSoftDeleteEnabled);
   const showRecentlyDeleted =
     softDeleteEnabled && !isAllRecordsMode && !!nodeId && !!selectedKbId &&
-    canOpenRecentlyDeleted(tableData?.permissions?.role);
+    canOpenRecentlyDeleted(tableData?.permissions?.collectionRole);
   const handleRecentlyDeletedClick = useCallback(() => {
     if (!selectedKbId) return;
     router.push(`/knowledge-base/recently-deleted?kbId=${encodeURIComponent(selectedKbId)}`);

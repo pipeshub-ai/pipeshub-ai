@@ -853,12 +853,38 @@ class KnowledgeHubService:
                 canEdit=perm_data.get('canEdit', False),
                 canDelete=perm_data.get('canDelete', False),
                 canManagePermissions=perm_data.get('canManagePermissions', False),
+                collectionRole=await self._collection_role(user_key, org_id, parent_id, parent_type),
             )
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get permissions: {str(e)}")
             self.logger.error(traceback.format_exc())
             # Return None on error (no permission granted)
+            return None
+
+    async def _collection_role(
+        self, user_key: str, org_id: str, parent_id: str | None, parent_type: str | None,
+    ) -> str | None:
+        """The user's role on the collection a node is in, from the same check restore uses.
+
+        The context role ranks record permissions inside a folder, which has no
+        FILEORGANIZER, so it can't say who may open the collection's trash.
+        """
+        if not parent_id or parent_type not in ("app", "folder", "record"):
+            return None
+        try:
+            kb_id = parent_id
+            if parent_type != "app":
+                doc = await self.graph_provider.get_document(parent_id, CollectionNames.RECORDS.value)
+                if not isinstance(doc, dict) or doc.get("orgId") != org_id:
+                    return None
+                kb_id = doc.get("connectorId")
+            if not kb_id:
+                return None
+            role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
+            return role if isinstance(role, str) else None
+        except Exception as e:
+            self.logger.warning("Could not read the collection role for %s: %s", parent_id, e)
             return None
 
     def _doc_to_node_item(self, doc: dict[str, Any]) -> NodeItem:

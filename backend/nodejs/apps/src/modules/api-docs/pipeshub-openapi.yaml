@@ -6240,6 +6240,15 @@ components:
               type: boolean
             canManagePermissions:
               type: boolean
+            collectionRole:
+              type: string
+              nullable: true
+              description: |
+                The caller's own role on the collection (knowledge base) this node is in, as
+                restore and `GET /knowledgeBase/{kbId}/trash` check it: OWNER, WRITER,
+                FILEORGANIZER, COMMENTER or READER. Unlike `role`, which ranks record
+                permissions inside a folder, it is the same at every level of the collection.
+                Null outside a collection.
 
     KBPermission:
       type: object

@@ -291,6 +291,8 @@ export interface NodePermissions {
   canEdit: boolean;
   canDelete: boolean;
   canManagePermissions: boolean;
+  /** The user's own role on the collection this node is in, the same at every level inside it; null outside a collection. */
+  collectionRole?: string | null;
 }
 
 /**
