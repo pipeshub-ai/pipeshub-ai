@@ -63,6 +63,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.config.redaction import REDACTED_PLACEHOLDER
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -1000,9 +1001,53 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 _OWNER_TOKEN_KEYS = frozenset({OAuthConfigKeys.CREDENTIALS, "oauth"})
 
 
-def _config_for_response(config: dict[str, Any]) -> dict[str, Any]:
-    """Copy of a stored connector config without the owner's tokens, which never leave the server."""
-    return {key: value for key, value in config.items() if key not in _OWNER_TOKEN_KEYS}
+def _schema_marks_secret(field: object) -> bool:
+    # BookStack's ``token_secret`` is a PASSWORD input without ``isSecret``, so either marker counts.
+    return isinstance(field, dict) and bool(field.get("isSecret") or field.get("fieldType") == "PASSWORD")
+
+
+async def _secret_auth_field_names(connector_registry: ConnectorRegistry, connector_type: str) -> frozenset[str]:
+    """Auth fields the connector's registry schemas mark secret, plus its OAuth app's secret fields.
+
+    The OAuth ones matter because ``PUT /config`` stores a ``clientSecret`` sent in ``auth``.
+    """
+    names = set(_get_secret_oauth_field_names_from_registry(connector_type))
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    schemas = ((metadata.get(OAuthConfigKeys.CONFIG) or {}).get(OAuthConfigKeys.AUTH) or {}).get("schemas")
+    if isinstance(schemas, dict):
+        for schema in schemas.values():
+            fields = schema.get("fields") if isinstance(schema, dict) else None
+            names.update(field["name"] for field in fields or [] if _schema_marks_secret(field) and field.get("name"))
+    # The OAuth save paths accept the snake_case spelling of these fields too.
+    names.update({name.replace("Secret", "_secret") for name in names})
+    return frozenset(names)
+
+
+def _config_for_response(config: dict[str, Any], secret_auth_fields: frozenset[str]) -> dict[str, Any]:
+    """Copy of a stored connector config that is safe to return.
+
+    The owner's tokens never leave the server, and each stored secret in ``auth`` comes
+    back as ``REDACTED_PLACEHOLDER``, which a save treats as "keep the stored value".
+    """
+    response = {key: value for key, value in config.items() if key not in _OWNER_TOKEN_KEYS}
+    auth = response.get(OAuthConfigKeys.AUTH)
+    if isinstance(auth, dict):
+        response[OAuthConfigKeys.AUTH] = {
+            key: REDACTED_PLACEHOLDER if key in secret_auth_fields and value else value
+            for key, value in auth.items()
+        }
+    return response
+
+
+def _without_masked_secrets(auth: dict[str, Any], secret_auth_fields: frozenset[str]) -> dict[str, Any]:
+    """Drop secrets sent back as the mask, so merging the save keeps what is stored."""
+    return {
+        key: value
+        for key, value in auth.items()
+        if not (key in secret_auth_fields and value == REDACTED_PLACEHOLDER)
+    }
 
 
 def _require_filter_sections_are_objects(filters: object) -> None:
@@ -4567,7 +4612,9 @@ async def get_connector_instance_config(
         if not config:
             config = {"auth": {}, "sync": {}, "filters": {}}
 
-        config = _config_for_response(config)
+        config = _config_for_response(
+            config, await _secret_auth_field_names(connector_registry, connector_type)
+        )
 
         # Clean auth section in config (remove redundant OAuth fields that aren't needed)
         if OAuthConfigKeys.AUTH in config:
@@ -4895,7 +4942,10 @@ async def update_connector_instance_auth_config(
         # Merge new auth configuration with existing config
         # Filter out OAuth credential fields - only store reference ID
         new_config = existing_config.copy() if existing_config else {}
-        auth_config_raw = _without_server_set_auth_fields(body.get(OAuthConfigKeys.AUTH, {}))
+        secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
+        auth_config_raw = _without_masked_secrets(
+            _without_server_set_auth_fields(body.get(OAuthConfigKeys.AUTH, {})), secret_auth_fields
+        )
 
         # Auto-create or update OAuth config if OAuth fields are provided and user is admin
         # This happens when admin updates connector auth with OAuth credentials directly
@@ -5157,7 +5207,7 @@ async def update_connector_instance_auth_config(
 
         return {
             "success": True,
-            "config": _config_for_response(new_config),
+            "config": _config_for_response(new_config, secret_auth_fields),
             "message": "Authentication configuration saved successfully."
         }
 
@@ -5310,7 +5360,9 @@ async def update_connector_instance_filters_sync_config(
 
         return {
             "success": True,
-            "config": _config_for_response(new_config),
+            "config": _config_for_response(
+                new_config, await _secret_auth_field_names(connector_registry, instance.get("type", ""))
+            ),
             "message": "Filters and sync configuration saved successfully.",
             "syncFiltersChanged": needs_full_resync,
         }
@@ -5369,8 +5421,11 @@ async def update_connector_instance_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
         _require_filter_sections_are_objects(body.get("filters"))
+        secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
         if isinstance(body.get("auth"), dict):
-            body["auth"] = _without_server_set_auth_fields(body["auth"])
+            body["auth"] = _without_masked_secrets(
+                _without_server_set_auth_fields(body["auth"]), secret_auth_fields
+            )
 
         # Prevent saving configuration when connector is active
         # Only allow filter/sync updates when connector is active (these don't require re-initialization)
@@ -5613,7 +5668,7 @@ async def update_connector_instance_config(
 
         return {
             "success": True,
-            "config": _config_for_response(new_config),
+            "config": _config_for_response(new_config, secret_auth_fields),
             "message": "Configuration saved successfully."
         }
 

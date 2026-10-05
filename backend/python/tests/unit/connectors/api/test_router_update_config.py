@@ -1091,8 +1091,8 @@ class TestUpdateConfigNonOAuthAuthType:
         # No OAuth URLs should be present
         assert "authorizeUrl" not in result["config"].get("auth", {})
         assert "tokenUrl" not in result["config"].get("auth", {})
-        # get_connector_metadata should NOT have been called
-        registry.get_connector_metadata.assert_not_awaited()
+        saved_auth = config_service.set_config.await_args.args[1]["auth"]
+        assert not {"authorizeUrl", "tokenUrl", "scopes", "redirectUri"} & saved_auth.keys()
 
 
 # ============================================================================

@@ -13042,7 +13042,7 @@ components:
           properties:
             auth:
               type: object
-              description: Authentication configuration (sensitive data redacted)
+              description: "Authentication configuration. Each stored secret (a field the connector's auth schema marks secret, such as an API token, password or client secret) is returned as `••••••••`."
             sync:
               type: object
               description: Sync configuration (schedule, options)
@@ -13083,7 +13083,7 @@ components:
     # Sub-schemas for connector configuration
     ConnectorAuthConfig:
       type: object
-      description: Authentication configuration for a connector instance
+      description: "Authentication configuration for a connector instance. A secret field sent as `••••••••` (the mask the config routes return) keeps the stored value; send a new value to replace it."
       properties:
         values:
           type: object
@@ -35886,8 +35886,9 @@ paths:
       description: |
         Get the current configuration for a connector instance.<br><br>
         <b>Security:</b><br>
-        Sensitive data (credentials, OAuth tokens) are redacted from the response.
-        Only admins can see partial credential information.
+        OAuth tokens are never returned. Each stored secret in <code>config.auth</code>
+        (a field the connector's auth schema marks secret, such as an API token,
+        password or client secret) is returned as <code>••••••••</code>.
       operationId: getConnectorConfig
       security:
         - bearerAuth: []
@@ -35928,7 +35929,11 @@ paths:
         Disable it first using <code>POST /{id}/toggle</code>.<br><br>
         <b>Partial Updates:</b><br>
         Only provide the sections you want to update. Omitted sections
-        are not modified.
+        are not modified.<br><br>
+        <b>Secrets:</b><br>
+        A secret field in <code>auth</code> sent as <code>••••••••</code> keeps the
+        stored value, so the configuration can be sent back as it was read. The
+        response masks stored secrets the same way.
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
@@ -35979,7 +35984,10 @@ paths:
         sync or filter settings. Useful for credential rotation.<br><br>
         <b>Prerequisites:</b><br>
         Connector must be disabled. This endpoint clears OAuth state,
-        requiring re-authentication for OAuth connectors.
+        requiring re-authentication for OAuth connectors.<br><br>
+        <b>Secrets:</b><br>
+        A secret field sent as <code>••••••••</code> keeps the stored value; send a
+        new value to replace it. The response masks stored secrets the same way.
       operationId: updateConnectorAuthConfig
       security:
         - bearerAuth: []
