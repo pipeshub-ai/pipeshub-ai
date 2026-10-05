@@ -279,15 +279,20 @@ the raw daemon API with no policy in between, i.e. root on the node.
 {{- $socketError := "mounts a Docker socket into the application container, which gives it, and any code it runs, root on the node. Use --set sandbox.dind.enabled=true (the app then reaches the daemon only through the docker-proxy policy sidecar) or --set config.sandboxMode=e2b." }}
 {{- range $mounts := list .Values.extraVolumeMounts .Values.volumeMounts }}
   {{- range $mounts }}
-    {{- if and (kindIs "map" .) (or (contains "docker.sock" (toString (.mountPath | default ""))) (eq (toString (.name | default "")) "dind-sock")) }}
-      {{- fail (printf "extraVolumeMounts/volumeMounts %s" $socketError) }}
+    {{- if kindIs "map" . }}
+      {{- $named := list (.mountPath | default "") (.subPath | default "") (.subPathExpr | default "") }}
+      {{- if or (eq (toString (.name | default "")) "dind-sock") (include "pipeshub-ai.namesRuntimeSocket" $named) }}
+        {{- fail (printf "extraVolumeMounts/volumeMounts %s" $socketError) }}
+      {{- end }}
     {{- end }}
   {{- end }}
 {{- end }}
 {{- range $volumes := list .Values.extraVolumes .Values.volumes }}
   {{- range $volumes }}
-    {{- if and (kindIs "map" .) (kindIs "map" .hostPath) (contains "docker.sock" (toString (.hostPath.path | default ""))) }}
-      {{- fail (printf "extraVolumes/volumes %s" $socketError) }}
+    {{- if and (kindIs "map" .) (kindIs "map" .hostPath) }}
+      {{- if or (eq (toString (.hostPath.type | default "")) "Socket") (include "pipeshub-ai.hostPathReachesRuntimeSocket" (toString (.hostPath.path | default ""))) }}
+        {{- fail (printf "extraVolumes/volumes %s" $socketError) }}
+      {{- end }}
     {{- end }}
   {{- end }}
 {{- end }}
@@ -297,6 +302,49 @@ the raw daemon API with no policy in between, i.e. root on the node.
   {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Container-runtime sockets on a node. Any of them is as good as the Docker API:
+whoever can write to it can start a privileged container. /var/run is usually a
+symlink to /run, so both spellings are listed.
+*/}}
+{{- define "pipeshub-ai.runtimeSocketPaths" -}}
+{{- list "/var/run/docker.sock" "/run/docker.sock" "/var/run/containerd/containerd.sock" "/run/containerd/containerd.sock" "/run/k3s/containerd/containerd.sock" "/var/run/crio/crio.sock" "/run/crio/crio.sock" "/run/podman/podman.sock" "/var/run/dockershim.sock" "/var/run/cri-dockerd.sock" "/run/cri-dockerd.sock" | toJson -}}
+{{- end -}}
+
+{{/*
+"true" when any of the given strings names a runtime socket file. Used on mount
+paths and subPaths, where only the file name is visible.
+*/}}
+{{- define "pipeshub-ai.namesRuntimeSocket" -}}
+{{- $hit := false -}}
+{{- $sockets := include "pipeshub-ai.runtimeSocketPaths" . | fromJsonArray -}}
+{{- range $value := . -}}
+  {{- range $socket := $sockets -}}
+    {{- if and $value (contains (base $socket) (toString $value)) -}}
+      {{- $hit = true -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if $hit }}true{{ end -}}
+{{- end -}}
+
+{{/*
+"true" when a hostPath is a runtime socket or a directory that holds one, so /,
+/run and /var/run are caught as well as the socket file itself.
+*/}}
+{{- define "pipeshub-ai.hostPathReachesRuntimeSocket" -}}
+{{- $hit := false -}}
+{{- if . -}}
+  {{- $path := clean . -}}
+  {{- range $socket := include "pipeshub-ai.runtimeSocketPaths" . | fromJsonArray -}}
+    {{- if or (eq $path "/") (eq $path $socket) (hasPrefix (printf "%s/" $path) $socket) (contains (base $socket) $path) -}}
+      {{- $hit = true -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if $hit }}true{{ end -}}
+{{- end -}}
 
 {{/*
 Canonical `config.sandboxMode`, validated against what the service accepts.

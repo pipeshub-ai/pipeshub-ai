@@ -243,9 +243,21 @@ refuses to install without one:
 - `config.dockerHost` points at a daemon you run. Put the same proxy in front
   of it. Never expose a raw dockerd.
 
-A Docker socket mounted into the application container through
-`extraVolumes`/`extraVolumeMounts` is refused at render time. It would give the
-app, and any code it runs, root on the node.
+Mounting a container-runtime socket into the application container would give
+the app, and any code it runs, root on the node. At render time the chart refuses
+`extraVolumes`/`volumes` and `extraVolumeMounts`/`volumeMounts` that:
+
+- use a `hostPath` of type `Socket`;
+- use a `hostPath` that is a Docker, containerd (including k3s), CRI-O, podman or
+  cri-dockerd socket, or a directory that holds one, such as `/`, `/run` or
+  `/var/run`;
+- name one of those sockets in `mountPath`, `subPath` or `subPathExpr`.
+
+These checks are best-effort, not a security boundary. A runtime socket in an
+unusual place, or one reached through a symlink, is not recognised. Review any
+custom `hostPath`. Where you can, enforce it in the cluster too, for example with
+a Kyverno or Gatekeeper policy that forbids `hostPath` volumes on the application
+pod.
 
 **Image requirement:** the `docker-proxy` sidecar needs an application image
 that contains `app.docker_proxy_main` (the release that added the Compose
