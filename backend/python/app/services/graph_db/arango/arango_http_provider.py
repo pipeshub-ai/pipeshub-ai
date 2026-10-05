@@ -17285,7 +17285,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET record = DOCUMENT(CONCAT(@records_col, "/", rid))
                     FILTER record != null
                         AND record.orgId == @org_id
-                        AND record.isDeleted != true
+                        AND {aql_live_record("record")}
                     {record_permission_role_aql}
                     LET r_norm = IS_ARRAY(permission_role)
                         ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)

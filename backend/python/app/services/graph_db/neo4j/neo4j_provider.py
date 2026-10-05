@@ -16447,7 +16447,7 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (u:User {{id: $user_key}})
                 UNWIND $record_ids AS rid
                 MATCH (record:Record {{id: rid, orgId: $org_id}})
-                WHERE record.isDeleted IS NULL OR record.isDeleted = false
+                WHERE {cypher_live_record("record")}
                 {record_perm}
                 WITH rid, permission_role
                 WHERE permission_role IS NOT NULL AND permission_role <> ''
