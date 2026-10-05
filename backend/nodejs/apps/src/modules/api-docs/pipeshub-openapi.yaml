@@ -16186,6 +16186,10 @@ paths:
           description: Invalid cursor
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -16234,6 +16238,10 @@ paths:
                     description: Notifications with status `archived` within the retention window
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -16277,6 +16285,10 @@ paths:
                     description: Number of notifications updated
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -16322,8 +16334,16 @@ paths:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
           description: Invalid user or notification id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Notification not found
         '429':
@@ -16371,8 +16391,16 @@ paths:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
           description: Invalid user or notification id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Notification not found
         '429':
@@ -16422,8 +16450,16 @@ paths:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
           description: Invalid user or notification id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Notification not found (or already archived)
         '429':
@@ -16473,8 +16509,16 @@ paths:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
           description: Invalid user or notification id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Notification not found or not currently archived
         '429':
@@ -16522,8 +16566,16 @@ paths:
                     example: true
         '400':
           description: Invalid user or notification id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Notification not found
         '429':
@@ -17774,6 +17826,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:
@@ -17878,6 +17936,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:
@@ -17923,12 +17987,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RevokePatResponse'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Token not found, already revoked, not owned by the caller, or the org has no PAT app yet
           content:
@@ -19078,6 +19154,12 @@ paths:
           description: Invalid request (missing or malformed parameters)
         '404':
           description: User not found or SAML not configured for organization
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /saml/signIn/callback:
     post:
@@ -19231,8 +19313,20 @@ paths:
                     type: string
                   refreshToken:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
           content:
             application/json:
               schema:
@@ -19278,6 +19372,12 @@ paths:
                 properties:
                   error:
                     type: string
+        '401':
+          description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/health:
     get:
@@ -21395,12 +21495,28 @@ paths:
           description: Identity changed
         '400':
           description: The service account is disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such application, or no such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /service-accounts:
     get:
@@ -21430,8 +21546,16 @@ paths:
                       $ref: '#/components/schemas/ServiceAccount'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - Service Accounts
@@ -21469,12 +21593,28 @@ paths:
                 $ref: '#/components/schemas/ServiceAccount'
         '400':
           description: Invalid name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: A service account of that name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /service-accounts/{id}:
     parameters:
@@ -21503,12 +21643,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ServiceAccount'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       tags:
         - Service Accounts
@@ -21537,12 +21695,24 @@ paths:
                 $ref: '#/components/schemas/ServiceAccount'
         '400':
           description: Empty body or invalid field
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Service Accounts
@@ -21558,12 +21728,30 @@ paths:
       responses:
         '204':
           description: Deleted
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /service-tokens:
     get:
@@ -21598,12 +21786,30 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ServiceToken'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - Service Tokens
@@ -21644,12 +21850,24 @@ paths:
             No scopes chosen, a scope this instance does not allow,
             `agent:execute` (service tokens are read-only), an expiry over 365
             days, or a disabled service account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /service-tokens/scopes:
     get:
@@ -21691,8 +21909,16 @@ paths:
                       $ref: '#/components/schemas/OAuthScopeInfo'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /service-tokens/{tokenId}:
     delete:
@@ -21724,12 +21950,30 @@ paths:
       responses:
         '204':
           description: Revoked
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such token for that service account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /teams:
     post:
@@ -24389,6 +24633,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ArtifactGalleryListResponse'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing, invalid, expired, or revoked authentication
           content:
@@ -24397,6 +24647,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Insufficient OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unprocessable entity
           content:
             application/json:
               schema:
@@ -24428,6 +24684,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ArtifactGalleryDetail'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing, invalid, expired, or revoked authentication
           content:
@@ -24472,6 +24734,12 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ArtifactGalleryVersion'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing, invalid, expired, or revoked authentication
           content:
@@ -27397,6 +27665,12 @@ paths:
                 error:
                   code: HTTP_FORBIDDEN
                   message: "Insufficient scope. Required: kb:read"
+        '422':
+          description: Unprocessable entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -28208,8 +28482,16 @@ paths:
           description: >
             Invalid `conversationId`, no files, unsupported MIME type, or
             Multer rejection (e.g. file too large).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Missing `conversation:chat` scope
         '500':
@@ -28258,6 +28540,10 @@ paths:
                     example: recordId is required
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Missing `conversation:chat` scope
         default:
@@ -30826,14 +31112,26 @@ paths:
                     type: boolean
         '400':
           description: Missing or malformed `runId`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: >-
             `runId` exists but was registered under a different user, org,
             or conversation than this request.
         '404':
           description: Conversation not found or unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/{conversationId}/message/{messageId}/feedback:
     post:
@@ -31179,10 +31477,22 @@ paths:
           description: |
             `visibility` missing/invalid, or the conversation is not linked
             to a project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found or caller is not the initiator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Projects --------------------
   /projects:
@@ -31736,10 +32046,24 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ProjectMember'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Project not found or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       tags:
         - Projects
@@ -31932,6 +32256,10 @@ paths:
           description: Empty audio payload (`file` read returned 0 bytes).
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
             No Speech-to-Text provider is configured. The client should fall
@@ -31947,6 +32275,10 @@ paths:
             package is not installed for the `whisper` provider, or
             `ffmpeg` is missing on the host for the `wispr` provider
             (required to transcode audio to 16 kHz WAV).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '502':
           description: Upstream provider failure (message is intentionally
             generic; see server logs for details).
@@ -32034,6 +32366,10 @@ paths:
           description: Request body missing or `text` is empty / whitespace.
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
             No Text-to-Speech provider is configured. The client should fall
@@ -32066,6 +32402,10 @@ paths:
                 $ref: '#/components/schemas/SpeechCapabilitiesResponse'
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Semantic Search --------------------
   /search:
@@ -33908,14 +34248,26 @@ paths:
                     type: boolean
         '400':
           description: Missing or malformed `runId`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: >-
             `runId` exists but was registered under a different user, org,
             or conversation than this request.
         '404':
           description: Conversation not found or unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:
@@ -34352,12 +34704,24 @@ paths:
                     nullable: true
         '400':
           description: "`projectId` missing or not a valid ObjectId/`null`."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Agent conversation not found or caller is not the initiator, or
             the target project does not exist or is not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/project-visibility:
     patch:
@@ -34422,10 +34786,22 @@ paths:
           description: |
             `visibility` missing/invalid, or the conversation is not linked
             to a project.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Agent conversation not found or caller is not the initiator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}:
     delete:
@@ -34889,8 +35265,18 @@ paths:
                       $ref: '#/components/schemas/ConnectorType'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/registry/{connectorType}/schema:
     get:
@@ -34932,10 +35318,24 @@ paths:
                     type: boolean
                   schema:
                     $ref: '#/components/schemas/ConnectorSchema'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector type not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Connector Instances --------------------
   /connectors:
@@ -35153,6 +35553,10 @@ paths:
                       $ref: '#/components/schemas/ConnectorInstance'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/inactive:
     get:
@@ -35180,6 +35584,10 @@ paths:
                       $ref: '#/components/schemas/ConnectorInstance'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/configured:
     get:
@@ -35233,8 +35641,18 @@ paths:
                       $ref: '#/components/schemas/ConnectorInstance'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/agents/active:
     get:
@@ -35288,8 +35706,18 @@ paths:
                       $ref: '#/components/schemas/ConnectorInstance'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}:
     get:
@@ -35421,16 +35849,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConnectorStats'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: |
-            Insufficient OAuth scope, or a collection the caller has a role on
-            other than OWNER, WRITER or READER
+          description: Insufficient OAuth scope or no access to connector stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: |
-            Connector not found, or one the caller cannot open (another user's
-            personal connector, admins included)
+          description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/record/{recordId}/content:
     get:
@@ -36031,12 +36473,26 @@ paths:
                     enum: [IDLE, SYNCING, FULL_SYNCING, QUEUED, DELETING]
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Insufficient scope (connector:sync is required)
         '404':
           description: Connector instance not found or not accessible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/name:
     put:
       tags:
@@ -36077,10 +36533,22 @@ paths:
                     $ref: '#/components/schemas/ConnectorInstance'
         '400':
           description: Invalid name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Connector Configuration --------------------
   /connectors/{connectorId}/config:
@@ -36118,12 +36586,26 @@ paths:
                     type: boolean
                   config:
                     $ref: '#/components/schemas/ConnectorConfig'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: No access to this connector
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
@@ -36184,10 +36666,22 @@ paths:
           description: |
             Invalid configuration or connector is active.
             Disable connector before updating.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/config/auth:
     put:
@@ -36236,10 +36730,22 @@ paths:
                     $ref: '#/components/schemas/ConnectorConfig'
         '400':
           description: Connector must be disabled first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/config/filters-sync:
     put:
@@ -36427,10 +36933,22 @@ paths:
                     description: State parameter for validation
         '400':
           description: Connector doesn't support OAuth
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/oauth/callback:
     get:
@@ -36481,6 +36999,16 @@ paths:
                 type: string
         '400':
           description: Invalid or missing state parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Connector Filters --------------------
   /connectors/{connectorId}/filters:
@@ -36525,10 +37053,24 @@ paths:
                     type: boolean
                   filterOptions:
                     $ref: '#/components/schemas/FilterOptions'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
@@ -36567,10 +37109,24 @@ paths:
                     type: boolean
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/filters/{filterKey}/options:
     get:
@@ -36807,8 +37363,16 @@ paths:
           description: Error exchanging authorization code
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Google Workspace configuration missing (client ID or secret)
         '500':
@@ -36869,8 +37433,18 @@ paths:
                     type: integer
                   limit:
                     type: integer
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/registry/{toolsetType}/schema:
     get:
@@ -36890,10 +37464,24 @@ paths:
       responses:
         '200':
           description: Schema retrieved successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Toolset type not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Toolset Instances --------------------
   /toolsets:
@@ -36949,8 +37537,22 @@ paths:
           description: Toolset created successfully
         '400':
           description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/configured:
     get:
@@ -36976,6 +37578,16 @@ paths:
                       type: object
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/{toolsetId}/status:
     get:
@@ -36995,10 +37607,24 @@ paths:
       responses:
         '200':
           description: Status retrieved successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Toolset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Toolset Configuration --------------------
   /toolsets/{toolsetId}/config:
@@ -37019,10 +37645,24 @@ paths:
       responses:
         '200':
           description: Configuration retrieved successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Toolset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     # TODO: to remove from backend as well
     post:
       tags:
@@ -37058,8 +37698,22 @@ paths:
           description: Configuration saved successfully
         '400':
           description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
@@ -37094,10 +37748,22 @@ paths:
           description: Configuration updated successfully
         '400':
           description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Toolset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -37116,10 +37782,36 @@ paths:
       responses:
         '200':
           description: Configuration deleted successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Toolset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/{toolsetId}/reauthenticate:
     post:
@@ -37148,10 +37840,30 @@ paths:
                 properties:
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Toolset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Toolset OAuth --------------------
   /toolsets/{toolsetId}/oauth/authorize:
@@ -37185,10 +37897,24 @@ paths:
                 properties:
                   authorizationUrl:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Toolset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/oauth/callback:
     get:
@@ -37230,8 +37956,16 @@ paths:
                     type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: OAuth error or invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/my-toolsets:
     get:
@@ -37650,12 +38384,26 @@ paths:
                         isFromRegistry:
                           type: boolean
                           description: true for registry-only (synthetic) entries.
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
         '404':
           description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}/instances/{instanceId}/authenticate:
     post:
@@ -37690,12 +38438,24 @@ paths:
           description: Agent toolset authenticated successfully
         '400':
           description: Invalid auth payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
         '404':
           description: Agent or instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}/instances/{instanceId}/credentials:
     put:
@@ -37741,12 +38501,24 @@ paths:
           description: Agent credentials updated successfully
         '400':
           description: Invalid credentials payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
         '404':
           description: Agent or instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
@@ -37769,8 +38541,18 @@ paths:
       responses:
         '200':
           description: Agent credentials removed successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
         '404':
@@ -37799,12 +38581,26 @@ paths:
       responses:
         '200':
           description: Agent reauthentication required
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
         '404':
           description: Agent or instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/agents/{agentKey}/instances/{instanceId}/oauth/authorize:
     get:
@@ -37840,12 +38636,26 @@ paths:
                 properties:
                   authorizationUrl:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
         '404':
           description: Agent or instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances:
     get:
@@ -37866,6 +38676,16 @@ paths:
                 additionalProperties: true
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unprocessable entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - Toolset Instances
@@ -37908,8 +38728,28 @@ paths:
           description: Invalid request
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}:
     get:
@@ -37929,10 +38769,24 @@ paths:
       responses:
         '200':
           description: Instance retrieved successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     put:
       tags:
         - Toolset Instances
@@ -37958,12 +38812,32 @@ paths:
       responses:
         '200':
           description: Instance updated successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
@@ -37981,12 +38855,30 @@ paths:
       responses:
         '200':
           description: Instance deleted successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/authenticate:
     post:
@@ -38016,10 +38908,22 @@ paths:
           description: Instance authenticated successfully
         '400':
           description: Invalid auth payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/credentials:
     put:
@@ -38060,10 +38964,22 @@ paths:
           description: Credentials updated successfully
         '400':
           description: Invalid credentials payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
@@ -38081,8 +38997,18 @@ paths:
       responses:
         '200':
           description: Credentials removed successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
 
@@ -38104,10 +39030,24 @@ paths:
       responses:
         '200':
           description: Reauthentication required
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/oauth/authorize:
     get:
@@ -38134,10 +39074,24 @@ paths:
                 properties:
                   authorizationUrl:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/instances/{instanceId}/status:
     get:
@@ -38157,10 +39111,24 @@ paths:
       responses:
         '200':
           description: Status retrieved successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /toolsets/oauth-configs/{toolsetType}:
     get:
@@ -38180,8 +39148,18 @@ paths:
       responses:
         '200':
           description: OAuth configs retrieved successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
 
@@ -38216,12 +39194,30 @@ paths:
       responses:
         '200':
           description: OAuth config updated successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: OAuth config not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - OAuth Configuration
@@ -38244,14 +39240,36 @@ paths:
       responses:
         '200':
           description: OAuth config deleted successfully
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: OAuth config not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: OAuth config is in use by one or more toolset instances
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Skills --------------------
   /skills:
@@ -38343,6 +39361,10 @@ paths:
           description: Invalid payload, or the rendered SKILL.md failed validation
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '409':
@@ -38374,6 +39396,10 @@ paths:
                       type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38424,6 +39450,10 @@ paths:
                           type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38451,6 +39481,10 @@ paths:
                       additionalProperties: true
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38476,8 +39510,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -38500,8 +39544,18 @@ paths:
       responses:
         '200':
           description: Candidate rejected
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38534,6 +39588,10 @@ paths:
           description: Invalid npm command/name, or the package could not be parsed as a skill
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38565,6 +39623,10 @@ paths:
           description: Invalid URL, or the archive could not be parsed as a skill
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38601,6 +39663,10 @@ paths:
           description: No file uploaded, or the archive could not be parsed as a skill
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38634,6 +39700,10 @@ paths:
           description: Imported SKILL.md is missing a name, or failed validation
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '409':
@@ -38661,8 +39731,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Skill'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -38699,6 +39779,10 @@ paths:
           description: Invalid payload, or the rendered SKILL.md failed validation
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -38735,8 +39819,18 @@ paths:
       responses:
         '200':
           description: Skill deleted
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -38775,8 +39869,18 @@ paths:
             text/markdown:
               schema:
                 type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -38837,8 +39941,18 @@ paths:
       responses:
         '200':
           description: Skill deprecated
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -38875,8 +39989,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillMetadata'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization, or a non-admin tried to disable a builtin skill
         '404':
@@ -38912,6 +40036,10 @@ paths:
                 $ref: '#/components/schemas/SkillMetadata'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization, or a non-admin tried to enable a builtin skill
         '404':
@@ -38941,8 +40069,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillUsage'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
 
@@ -38972,8 +40110,18 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/SkillVersionSummary'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -39005,8 +40153,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Skill'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -39041,6 +40199,10 @@ paths:
                 $ref: '#/components/schemas/SkillMetadata'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -39074,8 +40236,18 @@ paths:
             text/plain:
               schema:
                 type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -39112,6 +40284,10 @@ paths:
           description: Invalid path, or resource exceeds the byte budget
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -39140,6 +40316,10 @@ paths:
           description: Resource removed
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Skills are disabled for this organization
         '404':
@@ -39193,8 +40373,24 @@ paths:
                       $ref: '#/components/schemas/ConnectorType'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth/registry/{connectorType}:
     get:
@@ -39223,10 +40419,30 @@ paths:
                     type: boolean
                   connector:
                     $ref: '#/components/schemas/ConnectorType'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector type not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth:
     get:
@@ -39277,8 +40493,24 @@ paths:
                       $ref: '#/components/schemas/OAuthConfig'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth/{connectorType}:
     get:
@@ -39328,8 +40560,24 @@ paths:
                       $ref: '#/components/schemas/OAuthConfig'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector type not found
 
@@ -39378,12 +40626,30 @@ paths:
                     type: string
         '400':
           description: Invalid configuration or duplicate name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector type not found
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth/{connectorType}/{configId}:
     get:
@@ -39417,10 +40683,26 @@ paths:
                     type: boolean
                   oauthConfig:
                     $ref: '#/components/schemas/OAuthConfig'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+        '403':
+          description: Forbidden — the caller is not allowed to perform this action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
@@ -39480,12 +40762,30 @@ paths:
                     $ref: '#/components/schemas/OAuthConfig'
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -39524,12 +40824,28 @@ paths:
                     type: string
         '400':
           description: Cannot delete - used by active connectors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== CONFIGURATION MANAGER ENDPOINTS ====================
 
@@ -39602,8 +40918,16 @@ paths:
           description: Storage type not found in stored configuration
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags:
         - Storage Configuration
@@ -39761,8 +41085,16 @@ paths:
                                   description: Error message when passed is false
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- SMTP Configuration --------------------
   /configurationManager/smtpConfig:
@@ -39829,10 +41161,22 @@ paths:
           description: SMTP configuration saved successfully
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -39852,8 +41196,16 @@ paths:
                 $ref: '#/components/schemas/SMTPConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/smtpConfig/status:
     get:
@@ -39882,6 +41234,10 @@ paths:
                     type: boolean
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Authentication Configuration --------------------
   /configurationManager/authConfig/azureAd:
@@ -39906,10 +41262,22 @@ paths:
           description: Azure AD configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -39929,8 +41297,16 @@ paths:
                 $ref: '#/components/schemas/AzureAdAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/microsoft:
     post:
@@ -39954,10 +41330,22 @@ paths:
           description: Microsoft auth configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -39977,8 +41365,16 @@ paths:
                 $ref: '#/components/schemas/MicrosoftAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/google:
     post:
@@ -40002,10 +41398,22 @@ paths:
           description: Google auth configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -40025,8 +41433,16 @@ paths:
                 $ref: '#/components/schemas/GoogleAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/sso:
     post:
@@ -40050,10 +41466,22 @@ paths:
           description: SSO configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -40080,8 +41508,16 @@ paths:
                         example: "https://app.example.com"
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/authConfig/oauth:
     post:
@@ -40105,10 +41541,22 @@ paths:
           description: OAuth configuration saved
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -40128,8 +41576,16 @@ paths:
                 $ref: '#/components/schemas/GenericOAuthConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- AI Models Configuration --------------------
   /configurationManager/ai-models/{modelType}:
@@ -41084,10 +42540,22 @@ paths:
                     type: string
         '400':
           description: Invalid settings (e.g. maxImages required when includeImages is true)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/web-search/providers:
     post:
@@ -41129,10 +42597,22 @@ paths:
                         type: boolean
         '400':
           description: Invalid configuration or duplicate provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/web-search/providers/{providerKey}:
     put:
@@ -41171,10 +42651,22 @@ paths:
                     type: string
         '400':
           description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Provider not found
 
@@ -41208,8 +42700,16 @@ paths:
                     type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Provider not found
 
@@ -41244,8 +42744,16 @@ paths:
                     type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Provider not found
 
@@ -41272,10 +42780,22 @@ paths:
           description: Frontend URL saved
         '400':
           description: Invalid URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -41295,6 +42815,10 @@ paths:
                 $ref: '#/components/schemas/URLConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/public/desktopFrontendUrl:
     get:
@@ -41367,10 +42891,22 @@ paths:
           description: Connector URL saved
         '400':
           description: Invalid URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -41390,6 +42926,10 @@ paths:
                 $ref: '#/components/schemas/URLConfig'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Platform Settings --------------------
   /configurationManager/platform/settings:
@@ -41463,10 +43003,22 @@ paths:
           description: Platform settings saved successfully
         '400':
           description: Invalid settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -41521,8 +43073,16 @@ paths:
                       $ref: '#/components/schemas/FeatureFlag'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/platform/feature-flags/effective:
     get:
@@ -41560,6 +43120,10 @@ paths:
                       ENABLE_USER_CONTEXT: true
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/prompts/system:
     put:
@@ -41583,10 +43147,22 @@ paths:
           description: System prompt updated
         '400':
           description: Invalid prompt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -41606,8 +43182,16 @@ paths:
                 $ref: '#/components/schemas/CustomSystemPrompt'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Metrics Collection --------------------
   /configurationManager/metricsCollection:
@@ -41642,8 +43226,16 @@ paths:
                 appVersion: "1.0.0"
         '401':
           description: Unauthorized - Valid authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/metricsCollection/toggle:
     put:
@@ -41704,11 +43296,23 @@ paths:
                     example: "Metrics collection toggled successfully"
         '400':
           description: Bad Request - Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
           # TODO: Cleanup:To remove all these apis from backend code as well
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   # /configurationManager/connectors/atlassian/config:
   #   get:
   #     tags:
@@ -42083,8 +43687,16 @@ paths:
                           description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
@@ -42133,10 +43745,24 @@ paths:
                       signingSecret:
                         type: string
                         description: Masked. The stored signing secret is not returned.
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/internal/slack-bot:
     get:
@@ -42231,12 +43857,26 @@ paths:
                       signingSecret:
                         type: string
                         description: Masked. The stored signing secret is not returned.
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
         '404':
           description: Config not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -42265,10 +43905,22 @@ paths:
                     type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Config not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/metricsCollection/pushInterval:
     patch:
@@ -42301,10 +43953,24 @@ paths:
                 properties:
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/metricsCollection/serverUrl:
     patch:
@@ -42337,10 +44003,24 @@ paths:
                 properties:
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/aiModelsConfig:
     get:
@@ -42363,8 +44043,16 @@ paths:
                 type: object
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
@@ -42392,10 +44080,24 @@ paths:
                 properties:
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/ai-models:
     get:
@@ -42567,8 +44269,16 @@ paths:
                     type: integer
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: AI model registry service is unavailable
 
@@ -42611,8 +44321,16 @@ paths:
                           example: llm
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: AI model registry service is unavailable
 
@@ -42665,8 +44383,18 @@ paths:
                       type: array
                       items:
                         $ref: '#/components/schemas/AIModelFieldSchema'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
         '404':
@@ -42866,8 +44594,16 @@ paths:
             <li>Scheduled time is in the past for one-time jobs</li>
             <li>Missing connector ID</li>
             </ul>
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             Forbidden. Possible reasons:<br>
@@ -42877,6 +44613,10 @@ paths:
             </ul>
         '404':
           description: Connector instance not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
@@ -42936,8 +44676,18 @@ paths:
                     example: "Job status retrieved successfully"
                   data:
                     $ref: '#/components/schemas/JobStatus'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Insufficient permissions for this connector
         '404':
@@ -43002,12 +44752,26 @@ paths:
                   message:
                     type: string
                     example: "Crawling job removed successfully"
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Insufficient permissions for this connector
         '404':
           description: Job not found for this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /crawlingManager/schedule/all:
     get:
@@ -43044,8 +44808,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -43071,8 +44843,16 @@ paths:
                     type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: A schedule or queued run could not be removed, so it may still run
           content:
@@ -43112,10 +44892,24 @@ paths:
                 properties:
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /crawlingManager/{connector}/{connectorId}/resume:
     post:
@@ -43149,10 +44943,24 @@ paths:
                 properties:
                   message:
                     type: string
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /crawlingManager/stats:
     get:
@@ -43175,6 +44983,10 @@ paths:
                 type: object
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ── Connector Internal Endpoints (Python connector service, port 8088) ──
   /connectors/internal/all-scheduled:
@@ -43626,3 +45438,7 @@ paths:
           description: Method Not Allowed (stateless mode does not support SSE streaming)
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
