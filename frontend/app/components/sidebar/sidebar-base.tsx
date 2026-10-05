@@ -28,6 +28,8 @@ import type { SidebarBaseProps } from './types';
  */
 export function SidebarBase({ header, children, footer, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
   const { t } = useTranslation();
+  // Every hook runs before the mobile branch returns: isMobile flips after mount
+  // and on resize, and a render with fewer hooks than the last one crashes React.
   const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth);
   const setSidebarWidth = useSidebarWidthStore((s) => s.setSidebarWidth);
 

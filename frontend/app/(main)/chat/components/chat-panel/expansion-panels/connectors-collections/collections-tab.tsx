@@ -64,60 +64,31 @@ const MAX_ROOT_PAGES_RESTRICT_MODE = 200;
 
 type ChildListMeta = {
   hasMore: boolean;
-  nextPage: number;
+  nextCursor: string | null;
   totalItems: number;
 };
 
-type HubPaginationSlice = {
-  page?: number;
-  hasNext?: boolean;
-  totalItems?: number;
-} | null | undefined;
-
 /**
- * Shared hub pagination merge for the root apps list.
+ * Fold one root-apps page into the running list meta.
+ *
+ * Keyset paging ends at the absent cursor rather than at a page count, so
+ * "there is more" is exactly "the server issued a next cursor". `totalItems`
+ * falls back to what has been loaded when the server reports no total.
  */
-function mergePagedListMeta(
-  pagination: HubPaginationSlice,
-  pageFetched: number,
-  pageLimit: number,
-  newItemsCount: number,
-  previous: ChildListMeta | null
-): ChildListMeta {
-  const p = pagination;
-  if (p && typeof p.hasNext === 'boolean') {
-    const page = typeof p.page === 'number' ? p.page : pageFetched;
-    const totalItems =
-      typeof p.totalItems === 'number'
-        ? p.totalItems
-        : (previous?.totalItems ?? newItemsCount);
-    return {
-      hasMore: p.hasNext,
-      nextPage: page + 1,
-      totalItems,
-    };
-  }
-  const cumulativeLoaded =
-    previous != null ? previous.totalItems + newItemsCount : newItemsCount;
-  return {
-    hasMore: newItemsCount >= pageLimit,
-    nextPage: pageFetched + 1,
-    totalItems: cumulativeLoaded,
-  };
-}
-
 function mergeRootsListMeta(
   res: ListCollectionsForChatResult,
   newRootsCount: number,
   previous: ChildListMeta | null
 ): ChildListMeta {
-  return mergePagedListMeta(
-    res.serverPagination,
-    res.requestedPage,
-    res.requestedLimit,
-    newRootsCount,
-    previous
-  );
+  const totalItems =
+    typeof res.serverPagination?.totalItems === 'number'
+      ? res.serverPagination.totalItems
+      : (previous?.totalItems ?? 0) + newRootsCount;
+  return {
+    hasMore: Boolean(res.nextCursor),
+    nextCursor: res.nextCursor,
+    totalItems,
+  };
 }
 
 const CHECKBOX_ALIGN: React.CSSProperties = {
@@ -201,13 +172,14 @@ export function CollectionsTab({
         /** Ids from `allow` seen in fetched pages — stop paging once all are found. */
         const foundAllowed = new Set<string>();
         const mergedItems: CollectionSelectItem[] = [];
-        let page = 1;
+        let cursor: string | null = null;
+        const seenCursors = new Set<string>();
         let prevMeta: ChildListMeta | null = null;
         let hasMore = true;
         let pagesFetched = 0;
         while (hasMore && pagesFetched < MAX_ROOT_PAGES_RESTRICT_MODE) {
           pagesFetched += 1;
-          const res = await ChatApi.listCollectionsForChat({ page, limit: ROOT_APPS_PAGE_LIMIT });
+          const res = await ChatApi.listCollectionsForChat({ cursor, limit: ROOT_APPS_PAGE_LIMIT });
           const batch = transformToCollectionItems(res.knowledgeBases);
           for (const c of batch) {
             if (seen.has(c.id)) continue;
@@ -217,8 +189,13 @@ export function CollectionsTab({
           }
           prevMeta = mergeRootsListMeta(res, res.knowledgeBases.length, prevMeta);
           hasMore = prevMeta.hasMore;
-          page = prevMeta.nextPage;
+          cursor = prevMeta.nextCursor;
           if (foundAllowed.size >= allow.size) break;
+          // A server echoing a cursor back instead of advancing would spin here.
+          if (cursor) {
+            if (seenCursors.has(cursor)) break;
+            seenCursors.add(cursor);
+          }
         }
         const items = mergedItems.filter((c) => allow.has(c.id));
         setCollections(items);
@@ -232,7 +209,7 @@ export function CollectionsTab({
         setCollectionNamesCache(nameMap);
         setCollectionMetaCache(metaMap);
       } else {
-        const res = await ChatApi.listCollectionsForChat({ page: 1, limit: ROOT_APPS_PAGE_LIMIT });
+        const res = await ChatApi.listCollectionsForChat({ limit: ROOT_APPS_PAGE_LIMIT });
         const items = transformToCollectionItems(res.knowledgeBases);
         setCollections(items);
         setRootsListMeta(mergeRootsListMeta(res, res.knowledgeBases.length, null));
@@ -258,7 +235,7 @@ export function CollectionsTab({
     setLoadingMoreApps(true);
     try {
       const res = await ChatApi.listCollectionsForChat({
-        page: rootsListMeta.nextPage,
+        cursor: rootsListMeta.nextCursor,
         limit: ROOT_APPS_PAGE_LIMIT,
       });
       const newItems = transformToCollectionItems(res.knowledgeBases);

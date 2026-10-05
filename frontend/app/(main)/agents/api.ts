@@ -657,15 +657,16 @@ export const AgentsApi = {
    * Supports pagination, search, and sorting.
    */
   async getKnowledgeHubAppNodes(params?: {
-    page?: number;
+    cursor?: string | null;
     limit?: number;
     q?: string;
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
     flattened?: boolean;
-  }): Promise<{ nodes: KnowledgeHubAppNode[]; hasNext: boolean }> {
+  }): Promise<{ nodes: KnowledgeHubAppNode[]; nextCursor: string | null }> {
     const query: Record<string, string | number | boolean> = {};
-    query.page = params?.page ?? 1;
+    // Only ever hand back a cursor the server issued; inventing one is a 400.
+    if (params?.cursor) query.cursor = params.cursor;
     query.limit = params?.limit ?? 100;
     query.sortBy = params?.sortBy ?? 'updatedAt';
     query.sortOrder = params?.sortOrder ?? 'desc';
@@ -685,7 +686,7 @@ export const AgentsApi = {
 
     return {
       nodes: items,
-      hasNext: data?.pagination?.hasNext ?? false,
+      nextCursor: data?.pagination?.nextCursor ?? null,
     };
   },
 
@@ -695,18 +696,22 @@ export const AgentsApi = {
    */
   async getAllKnowledgeHubAppNodes(): Promise<KnowledgeHubAppNode[]> {
     const all: KnowledgeHubAppNode[] = [];
-    let page = 1;
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
     for (;;) {
       // Pass flattened=false to get only root connector apps, not all nested documents
-      const { nodes, hasNext } = await this.getKnowledgeHubAppNodes({ 
-        page, 
+      const { nodes, nextCursor } = await this.getKnowledgeHubAppNodes({
+        cursor,
         limit: 100,
-        flattened: false 
+        flattened: false,
       });
       all.push(...nodes);
-      if (!hasNext) break;
-      page += 1;
-      if (page > 100) break;
+      // The absent cursor is the end of the result, so no page cap is needed.
+      // The repeat guard only defends against a server echoing a cursor back
+      // instead of advancing, which would otherwise spin forever.
+      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
     return all;
   },
