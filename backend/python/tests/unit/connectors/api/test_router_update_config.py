@@ -253,11 +253,13 @@ class TestUpdateConfigOAuthWithConfigId:
         assert cfg["auth"]["scopes"] == ["https://www.googleapis.com/auth/drive"]
         assert cfg["auth"]["redirectUri"] == "https://app.example.com/oauth/callback"
         assert cfg["auth"]["authType"] == "OAUTH"
-        # Credentials cleared on auth update
-        assert cfg["credentials"] is None
-        assert cfg["oauth"] is None
-        # set_config was called
+        # Credentials cleared in the store on auth update, and never sent back
         config_service.set_config.assert_awaited_once()
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in cfg
+        assert "oauth" not in cfg
 
     @pytest.mark.asyncio
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
