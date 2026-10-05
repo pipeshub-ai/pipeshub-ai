@@ -22187,3 +22187,33 @@ class TestCheckConnectorNameExistsExcludesSelf:
         assert "@exclude_key" not in mock_query.call_args.args[0]
 
 
+
+
+class TestTrashWalkIndexReadiness:
+    WALK_FIELDS = ["orgId", "deletedAtTimestamp", "_key"]
+
+    @pytest.mark.asyncio
+    async def test_an_equivalent_index_under_another_name_is_found_and_hinted(self, connected_provider) -> None:
+        """ensureIndex keeps an existing index's name, so the walk must hint the name the server has."""
+        connected_provider.http_client.get_indexes = AsyncMock(return_value=[
+            {"name": "primary", "type": "primary", "fields": ["_key"]},
+            {"name": "some_older_name", "type": "persistent", "fields": self.WALK_FIELDS, "sparse": False},
+        ])
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        assert await connected_provider.is_trash_walk_index_ready() is True
+        await connected_provider.get_purgeable_trashed_records("org-1", 10, limit=5)
+
+        queries = [c.args[0] for c in connected_provider.http_client.execute_aql.await_args_list]
+        assert queries and all('indexHint: "some_older_name"' in q for q in queries)
+        assert not any("records_org_deleted_at" in q for q in queries)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("index", [
+        {"name": "records_org_deleted_at", "type": "persistent", "fields": WALK_FIELDS, "sparse": True},
+        {"name": "records_org_deleted_at", "type": "persistent", "fields": ["orgId", "deletedAtTimestamp"]},
+        {"name": "records_org_deleted_at", "type": "hash", "fields": WALK_FIELDS},
+    ])
+    async def test_an_index_of_another_definition_does_not_count(self, connected_provider, index) -> None:
+        connected_provider.http_client.get_indexes = AsyncMock(return_value=[index])
+        assert await connected_provider.is_trash_walk_index_ready() is False

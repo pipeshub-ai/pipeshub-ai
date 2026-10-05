@@ -70,3 +70,13 @@ async def test_any_other_error_is_raised() -> None:
 async def test_the_index_counts_as_ready_only_when_online() -> None:
     for rows, ready in (([{"state": "ONLINE"}], True), ([{"state": "POPULATING"}], False), ([], False)):
         assert await _provider(AsyncMock(return_value=rows)).is_trash_walk_index_ready() is ready
+
+
+async def test_the_index_is_found_by_its_definition_not_its_name() -> None:
+    """CREATE INDEX ... IF NOT EXISTS keeps an equivalent index under its own name."""
+    execute = AsyncMock(return_value=[{"state": "ONLINE"}])
+    assert await _provider(execute).is_trash_walk_index_ready() is True
+    query = execute.await_args.args[0]
+    assert "properties = ['orgId', 'deletedAtTimestamp', 'id']" in query
+    assert "labelsOrTypes = ['Record']" in query
+    assert "name" not in query

@@ -1297,6 +1297,68 @@ async def test_each_page_of_the_walk_reads_about_one_page(
     assert walked + rest == expected
 
 
+async def _walk_index_names(world: _World) -> list[str]:
+    """Names of every index with the walk's definition."""
+    graph = world.graph
+    if isinstance(graph, Neo4jProvider):
+        rows = await graph.client.execute_query(
+            "SHOW INDEXES YIELD name, labelsOrTypes, properties "
+            "WHERE labelsOrTypes = ['Record'] AND properties = ['orgId', 'deletedAtTimestamp', 'id'] RETURN name"
+        )
+        return sorted(row["name"] for row in rows)
+    return sorted(
+        i["name"] for i in await graph.http_client.get_indexes(RECORDS)
+        if i.get("fields") == ["orgId", "deletedAtTimestamp", "_key"]
+    )
+
+
+async def _drop_walk_indexes(world: _World) -> None:
+    graph = world.graph
+    if isinstance(graph, Neo4jProvider):
+        for name in await _walk_index_names(world):
+            await graph.client.execute_query(f"DROP INDEX `{name}` IF EXISTS")
+        return
+    session = await graph.http_client._get_session()
+    for index in await graph.http_client.get_indexes(RECORDS):
+        if index.get("fields") == ["orgId", "deletedAtTimestamp", "_key"]:
+            await session.delete(f"{graph.http_client.base_url}/_db/{graph.http_client.database}/_api/index/{index['id']}")
+
+
+async def test_an_equivalent_index_under_another_name_lets_the_purge_run(
+    world: _World, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ensuring the walk index answers with an equivalent one under its own name, so readiness and the
+    hint go by the index's fields, not the name the schema code asks for."""
+    await _production_schema(world)
+    await world.trash("upload")
+    graph = world.graph
+    await _drop_walk_indexes(world)
+    if isinstance(graph, Neo4jProvider):
+        await graph.client.execute_query(
+            "CREATE INDEX trash_walk_older_name FOR (r:Record) ON (r.orgId, r.deletedAtTimestamp, r.id)"
+        )
+    else:
+        await graph.http_client.ensure_persistent_index(
+            RECORDS, ["orgId", "deletedAtTimestamp", "_key"], name="trash_walk_older_name"
+        )
+    try:
+        await _production_schema(world)
+        assert await _walk_index_names(world) == ["trash_walk_older_name"]
+        assert await graph.is_trash_walk_index_ready() is True
+        if not isinstance(graph, Neo4jProvider):
+            assert graph._purge_walk_index == "trash_walk_older_name"
+        with caplog.at_level(logging.WARNING):
+            assert await world.tick(15) == Outcome.FINISHED
+        assert "walking the trash without it" not in caplog.text
+        assert await world.stored("upload") is None
+    finally:
+        await _drop_walk_indexes(world)
+        await _production_schema(world)
+    assert await _walk_index_names(world) == [
+        "record_org_deleted_at" if isinstance(graph, Neo4jProvider) else "records_org_deleted_at"
+    ]
+
+
 async def test_without_its_index_the_purge_waits_and_the_walk_still_answers(
     world: _World, caplog: pytest.LogCaptureFixture,
 ) -> None:
