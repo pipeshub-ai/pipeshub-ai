@@ -138,7 +138,7 @@ def _stored_mail(provider) -> None:
 
 
 class TestSyncDeleteByExternalId:
-    """Outlook's sync delete: with ``soft_delete`` the trash takes what that backend's hard delete removes."""
+    """Outlook's sync delete: with ``soft_delete`` the trash takes the message and its direct attachments."""
 
     @staticmethod
     def _arango_outlook() -> tuple[ArangoHTTPProvider, list[str]]:
@@ -180,34 +180,47 @@ class TestSyncDeleteByExternalId:
             await provider.delete_record_by_external_id("c1", "msg-1", "u1", soft_delete=True)
         provider.soft_delete_records.assert_not_called()
 
-    async def test_neo4j_trashes_the_mail_alone_like_the_hard_delete(self) -> None:
-        def neo4j_outlook() -> Neo4jProvider:
-            provider = _neo4j()
-            _stored_mail(provider)
-            provider.get_document = AsyncMock(side_effect=lambda key, collection, txn=None: (
-                _outlook_mail() if collection == "records" else None
-            ))
-            provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-            provider.delete_records_and_relations = AsyncMock()
-            provider._create_deleted_record_event_payload = AsyncMock(return_value=None)
-            provider.soft_delete_records = AsyncMock(return_value=soft_delete_result(
-                ["m1"], ["m1"], [{"id": "m1", "vrid": "vm", "orgId": "o1"}], "b1"
-            ))
-            return provider
+    @staticmethod
+    def _neo4j_outlook(mail: dict | None = None) -> Neo4jProvider:
+        provider = _neo4j()
+        _stored_mail(provider)
+        provider.get_document = AsyncMock(side_effect=lambda key, collection, txn=None: (
+            (mail or _outlook_mail()) if collection == "records" else None
+        ))
+        provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        provider.delete_records_and_relations = AsyncMock()
+        provider.client.execute_query = AsyncMock(return_value=[{"id": "a1"}])
+        provider.soft_delete_records = AsyncMock(return_value=soft_delete_result(
+            ["m1", "a1"], ["m1", "a1"],
+            [{"id": "m1", "vrid": "vm", "orgId": "o1"}, {"id": "a1", "vrid": "va", "orgId": "o1"}], "b1",
+        ))
+        return provider
 
-        hard = neo4j_outlook()
-        await hard.delete_record_by_external_id("c1", "msg-1", "u1")
-        removed = [c.args[0] for c in hard.delete_records_and_relations.await_args_list]
-
-        soft = neo4j_outlook()
+    async def test_neo4j_trashes_the_mail_and_its_direct_attachments_like_arango(self) -> None:
+        """Left live, the attachments of a trashed mail would stay searchable."""
+        soft = self._neo4j_outlook()
         result = await soft.delete_record_by_external_id("c1", "msg-1", "u1", soft_delete=True)
 
         soft.delete_records_and_relations.assert_not_called()
         soft.get_user_by_user_id.assert_not_called()
+        query = soft.client.execute_query.await_args.args[0]
+        assert "relationshipType = 'ATTACHMENT'" in query and "*" not in query
+        assert soft.client.execute_query.await_args.kwargs["parameters"] == {"record_id": "m1", "org_id": "o1"}
         args, kwargs = soft.soft_delete_records.await_args
-        assert args[0] == removed == ["m1"]
+        assert args[0] == ["m1", "a1"]
         assert (kwargs["delete_source"], kwargs["deleted_by_user_id"], kwargs["follow"]) == ("CONNECTOR", None, ())
-        assert result["softDeleted"] is True
+        assert result["softDeleted"] is True and result["virtualRecordIds"] == ["vm", "va"]
+
+    async def test_neo4j_leaves_the_attachments_of_a_mail_already_in_the_trash_alone(self) -> None:
+        """They went with the mail's own batch; a second delete must not trash them under another."""
+        provider = self._neo4j_outlook({**_outlook_mail(), "isDeleted": True})
+        provider.soft_delete_records = AsyncMock(return_value=soft_delete_result(["m1"], [], [], "b2"))
+
+        result = await provider.delete_record("m1", "u1", "o1", soft_delete=True)
+
+        provider.client.execute_query.assert_not_called()
+        assert provider.soft_delete_records.await_args.args[0] == ["m1"]
+        assert result["code"] == 404
 
     @pytest.mark.parametrize("backend", ["arango", "neo4j"])
     async def test_a_message_already_in_the_trash_is_not_looked_up(self, backend) -> None:
