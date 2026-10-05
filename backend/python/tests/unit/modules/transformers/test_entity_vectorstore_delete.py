@@ -19,6 +19,8 @@ import pytest
 from app.models.entities import EntityType
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.services.vector_db.models import ScrollResult, VectorPoint
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 
 def _make_store(vector_db_service: MagicMock | None = None) -> EntityVectorStore:
@@ -30,10 +32,10 @@ def _make_store(vector_db_service: MagicMock | None = None) -> EntityVectorStore
         vector_db_service.retrieve_points = AsyncMock(return_value=[])
     store = EntityVectorStore(
         logger=MagicMock(),
-        config_service=MagicMock(),
+        config_service=embedding_config_service(),
         vector_db_service=vector_db_service,
     )
-    store._initialized = True  # skip embedding-model/collection bootstrap
+    skip_bootstrap(store)
     store._dense_embeddings = MagicMock(
         embed_documents=MagicMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts])
     )
@@ -205,7 +207,7 @@ class _Entities:
 
 
 def _store_over(entities: _Entities) -> EntityVectorStore:
-    store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=entities)
+    store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=entities)
     store._init_embeddings = AsyncMock(side_effect=AssertionError("deletion must not embed"))
     return store
 

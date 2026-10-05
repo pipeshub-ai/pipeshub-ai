@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.services.vector_db.models import ScrollResult, VectorPoint
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 ORG = "org-1"
 
@@ -49,10 +51,10 @@ class _StatefulVectorDB:
 def _store(db: _StatefulVectorDB) -> tuple[EntityVectorStore, MagicMock]:
     store = EntityVectorStore(
         logger=logging.getLogger("entity-store-test"),
-        config_service=MagicMock(),
+        config_service=embedding_config_service(),
         vector_db_service=db,
     )
-    store._initialized = True
+    skip_bootstrap(store)
     embed = MagicMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts])
     store._dense_embeddings = MagicMock(embed_documents=embed)
     store._sparse_embedder = None
@@ -169,10 +171,10 @@ def _cleanup_store(scroll_pages: list[list[VectorPoint]]) -> tuple[EntityVectorS
     db.set_payload = AsyncMock()
     store = EntityVectorStore(
         logger=logging.getLogger("entity-store-test"),
-        config_service=MagicMock(),
+        config_service=embedding_config_service(),
         vector_db_service=db,
     )
-    store._initialized = True
+    skip_bootstrap(store)
     return store, db
 
 

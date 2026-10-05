@@ -22,6 +22,8 @@ from app.services.vector_db.models import (
     VectorCollectionInfo,
     VectorPoint,
 )
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 ORG = "org-1"
 
@@ -56,11 +58,11 @@ class _StatefulVectorDB:
 def _store(db: _StatefulVectorDB | MagicMock, **kwargs: bool) -> tuple[EntityVectorStore, MagicMock]:
     store = EntityVectorStore(
         logger=logging.getLogger("entity-store-test"),
-        config_service=MagicMock(),
+        config_service=embedding_config_service(),
         vector_db_service=db,
         **kwargs,
     )
-    store._initialized = True
+    skip_bootstrap(store)
     store._model_id, store._embedding_size = "openAI:text-embedding-3-small", 2
     embed = MagicMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts])
     store._dense_embeddings = MagicMock(embed_documents=embed)
@@ -252,8 +254,9 @@ def _init_store(
     db.create_collection = AsyncMock()
     db.delete_collection = AsyncMock()
     db.create_index = AsyncMock()
-    config = MagicMock()
-    config.get_config = AsyncMock(return_value={"embedding": [embedding_config]} if embedding_config else {})
+    db.filter_collection = AsyncMock(return_value={})
+    db.scroll = AsyncMock(return_value=ScrollResult(points=[]))
+    config = embedding_config_service(*([embedding_config] if embedding_config else []))
     store = EntityVectorStore(
         logger=logging.getLogger("entity-store-test"), config_service=config,
         vector_db_service=db, recreate_on_dimension_mismatch=recreate,
@@ -356,7 +359,7 @@ class TestARecreatedCollectionReachesRunningServices:
         with pytest.raises(RuntimeError):
             await store.search_entities("pricing", ORG, set(), {"c1"})
 
-        async def _new_model() -> None:
+        async def _new_model(embedding_configs: list | None) -> None:
             store._embedding_size = 4
             store._dense_embeddings.embed_query = MagicMock(return_value=[0.1] * 4)
 

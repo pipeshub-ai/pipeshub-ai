@@ -16,6 +16,8 @@ from app.services.vector_db.models import (
     VectorCollectionInfo,
     VectorPoint,
 )
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 
 def _make_store(vector_db_service=None) -> EntityVectorStore:
@@ -24,8 +26,8 @@ def _make_store(vector_db_service=None) -> EntityVectorStore:
     if not isinstance(vector_db_service.retrieve_points, AsyncMock):
         vector_db_service.retrieve_points = AsyncMock(return_value=[])
     vector_db_service.filter_collection = AsyncMock(side_effect=lambda **kw: kw)
-    store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=vector_db_service)
-    store._initialized = True
+    store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=vector_db_service)
+    skip_bootstrap(store)
     store._model_id, store._embedding_size = "test:model", 2
     store._dense_embeddings = MagicMock(embed_documents=MagicMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]))
     store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
@@ -349,7 +351,7 @@ class TestMembershipReadIsByPointId:
 class TestDeletesNeedNoEmbeddings:
     def _store(self, service) -> EntityVectorStore:
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
-        store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=service)
+        store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
         store._init_embeddings = AsyncMock(side_effect=RuntimeError("embedding endpoint down"))
         return store
 
@@ -424,11 +426,10 @@ class TestInitHousekeeping:
         monkeypatch.setattr(module, "get_default_embedding_model", lambda: default)
         service = MagicMock()
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
-        config = MagicMock()
-        config.get_config = AsyncMock(return_value=None)
-        store = EntityVectorStore(logger=MagicMock(), config_service=config, vector_db_service=service)
+        store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
+        store._init_collection = AsyncMock()
 
-        await store._init_embeddings()
+        await store._ensure_initialized()
 
         assert store._dense_embeddings is default
 
@@ -454,7 +455,7 @@ class TestInitialisationBackoff:
         monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
         service = MagicMock()
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
-        store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=service)
+        store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
         store._init_embeddings = AsyncMock(side_effect=RuntimeError("embedding endpoint down"))
         store._init_collection = AsyncMock()
 

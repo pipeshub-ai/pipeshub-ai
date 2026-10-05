@@ -179,12 +179,24 @@ another model, or one written before this field existed, even when its text
 is unchanged. Indexing therefore repairs whatever a pass missed. The first
 rebuild after an upgrade re-embeds every entity point once.
 
-When the dimension differs, the indexing service drops and recreates the
-collection on start, and the passes refill it. Until it does, the query and
-connector services fail entity calls with the mismatch, retrying
-initialisation every 30 seconds. Points of legacy nodes without an org are
-not projected, so after a recreate they return only when their records are
-reindexed.
+Every service's entity store follows a model change without a restart. It
+checks the embedding config on each call against `ConfigurationService`'s
+cache, which the change notification clears, and reads the stored config at
+least once a minute in case a notification is missed. A config that cannot be
+read keeps the current model. On a change the store rebuilds its client, so
+the next write, search and rebuild tick use the new model and the marker
+moves. A write embedded by the old model while the switch happened is not
+stored; the passes write that entity again.
+
+The indexing service recreates the collection when the new model does not
+match it: a different dimension, or, at the same dimension, a point recorded
+by another model. The passes refill it instead of re-embedding in place, so
+new-model queries are not matched against old-model vectors. Points from before `metadata.embeddingModel` existed do not
+trigger this; they are re-embedded in place. Until the indexing service has
+recreated the collection, the query and connector services fail entity calls
+with the dimension mismatch, retrying initialisation every 30 seconds. Points
+of legacy nodes without an org are not projected, so after a recreate they
+return only when their records are reindexed.
 
 The rebuild runs on one indexing replica at a time (Redis leader
 `entity_index_rebuild:leader`), one page per tick. It resumes from the cursor

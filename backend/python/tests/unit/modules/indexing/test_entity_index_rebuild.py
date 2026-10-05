@@ -820,3 +820,54 @@ class TestSweepScanFailures:
         store.page_entity_points = AsyncMock(return_value=([], None))
         assert await rebuilder.tick() == "sweep"
         assert graph.docs[ORGS]["org-2"][EntityIndexState.SWEPT_AT] == NOW
+
+
+class TestAModelSwitchReRunsThePasses:
+    """With the real store over the real config service: switching model in
+    the admin UI changes the marker on the next tick, so every pass re-runs
+    and rewrites the points with the new model. Before, the store kept the
+    model it started with, so the marker never moved (nightly 37229085638)."""
+
+    async def test_points_are_rewritten_with_the_new_model(self) -> None:
+        from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+        from app.modules.transformers import entity_vectorstore
+        from app.modules.transformers.entity_vectorstore import (
+            EMBEDDING_MODEL_FIELD,
+            EntityVectorStore,
+        )
+        from tests.support.embedding_config import (
+            config_service,
+            embedding_config,
+            switch_embedding_model,
+        )
+        from tests.support.entity_vector_db import (
+            FakeEmbeddingModel,
+            FakeEntityVectorDB,
+            embedding_models,
+        )
+
+        bge, small = FakeEmbeddingModel(1.0, 4), FakeEmbeddingModel(2.0, 6)
+        db, config = FakeEntityVectorDB(), config_service()
+        store = EntityVectorStore(
+            logger=logging.getLogger("entity-index-test"), config_service=config,
+            vector_db_service=db, recreate_on_dimension_mismatch=True,
+        )
+        graph = FakeGraph()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
+
+        with embedding_models({"text-embedding-3-small": small}), \
+                patch.object(entity_vectorstore, "get_default_embedding_model", return_value=bge):
+            await _run_until_idle(_rebuilder(graph, store))
+            old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4")
+            assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == old
+
+            await switch_embedding_model(config, embedding_config("openAI", "text-embedding-3-small"))
+            outcomes = await _run_until_idle(_rebuilder(graph, store))
+
+        new = entity_index_marker("openAI:text-embedding-3-small:6")
+        assert "connector" in outcomes
+        assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == new
+        (point,) = db.points.values()
+        assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == "openAI:text-embedding-3-small:6"
+        assert point.dense_vector == small.embed_query("Q3 plan")

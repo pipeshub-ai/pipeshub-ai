@@ -11,6 +11,8 @@ import pytest
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.services.vector_db.models import SearchResult, VectorPoint
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 
 def _entity(
@@ -37,10 +39,10 @@ def _make_store(vector_db_service: MagicMock | None = None) -> EntityVectorStore
         vector_db_service.retrieve_points = AsyncMock(return_value=[])
     store = EntityVectorStore(
         logger=MagicMock(),
-        config_service=MagicMock(),
+        config_service=embedding_config_service(),
         vector_db_service=vector_db_service,
     )
-    store._initialized = True  # skip embedding-model/collection bootstrap
+    skip_bootstrap(store)
     store._dense_embeddings = MagicMock(embed_documents=MagicMock(return_value=[[0.1, 0.2]]))
     store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
     store._sparse_embedder = None

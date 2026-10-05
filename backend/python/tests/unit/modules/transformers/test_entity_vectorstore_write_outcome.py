@@ -24,6 +24,8 @@ from app.modules.transformers.entity_vectorstore import (
     EntityWriteOutcome,
 )
 from app.services.vector_db.models import VectorPoint
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 ORG = "org-1"
 LOGGER = "entity-outcome-test"
@@ -60,8 +62,8 @@ class _DB:
 
 
 def _store(db: _DB) -> EntityVectorStore:
-    store = EntityVectorStore(logger=logging.getLogger(LOGGER), config_service=MagicMock(), vector_db_service=db)
-    store._initialized = True
+    store = EntityVectorStore(logger=logging.getLogger(LOGGER), config_service=embedding_config_service(), vector_db_service=db)
+    skip_bootstrap(store)
     store._model_id, store._embedding_size = "m", 2
     store._dense_embeddings = MagicMock(embed_documents=MagicMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]))
     store._sparse_embedder = None
