@@ -630,13 +630,6 @@ def test_delete_record_takes_org_id_before_transaction(provider_cls: type) -> No
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("soft_delete", [False, True], ids=["trash-off", "trash-on"])
-@pytest.mark.xfail(strict=True, raises=Exception, reason=(
-    "ArangoHTTPProvider.delete_record routes by connector name and answers 'Unsupported connector: "
-    "OUTLOOK PERSONAL', so the Outlook Personal connector's sync delete raises on ArangoDB. Fixed on "
-    "main by #3855; when main reaches this branch, drop this xfail and restore the ArangoDB case of "
-    "test_an_outlook_personal_delete_puts_the_record_in_the_trash in "
-    "tests/integration/test_soft_delete_checklist_e2e.py"
-))
 async def test_arango_sync_delete_of_an_outlook_personal_mail_reaches_the_outlook_branch(soft_delete: bool) -> None:
     mail = {**OUTLOOK_MAIL, "connectorName": "OUTLOOK PERSONAL"}
     provider, _ = _arango(mail, None, None, None)
