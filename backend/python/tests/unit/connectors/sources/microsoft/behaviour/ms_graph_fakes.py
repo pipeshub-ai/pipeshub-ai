@@ -204,6 +204,8 @@ class FakeCheckpointStore:
     def __init__(self) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, dict[str, Any]]] = []
+        # Stored nodes ("records/<id>", "recordGroups/<id>") that have an inheritPermissions edge.
+        self.inheriting: set[str] = set()
 
     async def get_sync_point(self, key: str, raise_on_error: bool = False) -> Optional[dict[str, Any]]:
         stored = self.sync_points.get(key)
@@ -223,8 +225,13 @@ class FakeCheckpointStore:
         return None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeCheckpointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
+
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict[str, Any]]:
+        if edge_collection == "inheritPermissions" and from_node_id in self.inheriting:
+            return [{"_from": from_node_id}]
+        return []
 
 
 class FakeConfigService:
@@ -262,6 +269,7 @@ class FakeRecordsDb:
         self.record_batches: list[list[Any]] = []
         self.record_groups: dict[str, Any] = {}
         self.record_group_permissions: dict[str, list[Any]] = {}
+        self.record_group_writes: list[tuple[Any, Optional[list[Any]]]] = []
         self.app_users: list[Any] = []
         self.active_users: list[Any] = []
         self.user_groups: dict[str, list[Any]] = {}
@@ -358,10 +366,19 @@ class FakeRecordsDb:
                 del self.records[external_id]
                 self.record_permissions.pop(external_id, None)
 
-    async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_record_groups(self, groups: list[tuple[Any, Optional[list[Any]]]]) -> None:
+        """Like the real processor: ``None`` grants are unknown and keep the stored ones, ``[]`` removes them."""
         for group, permissions in groups:
+            self.record_group_writes.append((group, permissions))
+            stored = self.record_groups.get(group.external_group_id)
+            if stored is not None:
+                group.id = stored.id
             self.record_groups[group.external_group_id] = group
-            self.record_group_permissions[group.external_group_id] = list(permissions)
+            if permissions is not None:
+                self.record_group_permissions[group.external_group_id] = list(permissions)
+
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[Any]:
+        return self.record_groups.get(external_id)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)

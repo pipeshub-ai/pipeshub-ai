@@ -377,9 +377,14 @@ class Neo4jClient:
         except (ClientError, ServiceUnavailable) as e:
             self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None
+    ) -> str:
         """
         Begin a Neo4j transaction session.
+
+        ``explicit`` asks for a real transaction (True) or one auto-commit per
+        statement (False) for this call; None takes the setting of the client.
 
         Args:
             read: Collections to read from (for compatibility, not used in Neo4j)
@@ -404,7 +409,7 @@ class Neo4jClient:
         # Create a new session for this transaction
         session = self.driver.session(database=self.database)
         txn_id = str(uuid.uuid4())
-        if self._explicit_transactions:
+        if self._explicit_transactions if explicit is None else explicit:
             try:
                 tx = await session.begin_transaction(timeout=self._transaction_timeout)
             except BaseException:
@@ -530,6 +535,7 @@ class Neo4jClient:
         query: str,
         parameters: dict[str, Any] | None = None,
         txn_id: str | None = None,
+        plain: bool = False,
         timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         """
@@ -539,6 +545,10 @@ class Neo4jClient:
             query: Cypher query string
             parameters: Query parameters
             txn_id: Optional transaction ID (if None, creates auto-commit transaction)
+            plain: The statement returns only scalars, lists and maps (no node,
+                relationship or path): rows are handed over as decoded,
+                skipping the default conversion, which walks every element of
+                every list in Python and is costly for thousands of ids.
             timeout: Server-side limit in seconds for an auto-commit query,
                 including one run on a transaction's session when explicit
                 transactions are off. Ignored inside an explicit transaction,
@@ -574,10 +584,10 @@ class Neo4jClient:
                     # Serialize access to the session to prevent concurrent operations
                     async with lock:
                         result = await runner.run(statement, parameters)
-                        return await result.data()
+                        return await self._rows(result, plain)
                 # Fallback if lock doesn't exist (shouldn't happen)
                 result = await runner.run(statement, parameters)
-                return await result.data()
+                return await self._rows(result, plain)
             except (ClientError, ServiceUnavailable, SessionExpired) as e:
                 _report_neo4j_failure(e)
                 raise
@@ -586,7 +596,7 @@ class Neo4jClient:
             # catches most stale connections, but a race (connection dies
             # between check and use) can still occur.
             try:
-                return await self._run_autocommit(query, parameters, timeout)
+                return await self._run_autocommit(query, parameters, plain, timeout)
             except (ServiceUnavailable, SessionExpired) as first:
                 # One dead connection is not a dead driver: the pool opens a
                 # fresh connection for the retry, so try that before doing
@@ -595,19 +605,26 @@ class Neo4jClient:
                     "Neo4j connection lost during query — retrying on the pool: %s", first
                 )
                 try:
-                    return await self._run_autocommit(query, parameters, timeout)
+                    return await self._run_autocommit(query, parameters, plain, timeout)
                 except (ServiceUnavailable, SessionExpired) as second:
                     await self._rebuild_driver_if_unreachable(second)
-                    return await self._run_autocommit(query, parameters, timeout)
+                    return await self._run_autocommit(query, parameters, plain, timeout)
+
+    @staticmethod
+    async def _rows(result: Any, plain: bool) -> list[dict[str, Any]]:
+        if not plain:
+            return await result.data()
+        keys = result.keys()
+        return [dict(zip(keys, values)) for values in await result.values()]
 
     async def _run_autocommit(
-        self, query: str, parameters: dict[str, Any], timeout: float | None = None,
+        self, query: str, parameters: dict[str, Any], plain: bool = False, timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         try:
             async with self.driver.session(database=self.database) as session:
                 statement = Query(query, timeout=timeout) if timeout is not None else query
                 result = await session.run(statement, parameters)
-                return await result.data()
+                return await self._rows(result, plain)
         except (ClientError, ServiceUnavailable, SessionExpired) as e:
             _report_neo4j_failure(e)
             raise

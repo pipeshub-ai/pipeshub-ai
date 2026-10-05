@@ -239,11 +239,34 @@ async def test_user_group_domain_and_link_sharing_is_mapped(ws: Workspace) -> No
     await ws.sync()
 
     grants = ws.grants("shared")
-    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE"), ("outsider@other.org", "USER", "COMMENT"), ("eng@example.com", "GROUP", "READ")} <= grants
-    assert [g for g in grants if g[1] == "DOMAIN"], grants
-    linked = ws.grants("linked")
-    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")} <= linked
-    assert {g[1] for g in linked} == {"USER", "ANYONE"}
+    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE"), ("eng@example.com", "GROUP", "READ")} <= grants
+    assert ("outsider@other.org", "USER", "READ") in grants, "a commenter is stored as a reader"
+    assert {g[1] for g in grants} == {"USER", "GROUP"}, "domain sharing names nobody, so it is not stored as a grant"
+    assert ws.grants("linked") == {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")}, (
+        "link sharing names nobody, so it is not stored as a grant"
+    )
+
+
+async def test_a_domain_share_and_a_domain_link_share_grant_no_one(ws: Workspace) -> None:
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.folder("dir", "Partners", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "reader", "domain": "partner.com"},
+    ])
+    ws.world.add_item("f-domain", "pricing.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "writer", "domain": "example.com"},
+    ])
+    ws.world.add_item("f-link", "roadmap.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "reader", "domain": "example.com", "allowFileDiscovery": False},
+    ])
+    ws.world.add_item("f-later", "notes.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    ws.world.share("f-later", {"type": "domain", "role": "reader", "domain": "example.com"})
+    await ws.sync()
+
+    for external_id in ("dir", "f-domain", "f-link", "f-later"):
+        assert ws.grants(external_id) == {(ALICE, "USER", "OWNER")}, (
+            f"{external_id}: a share with a domain must not become a grant to the organization"
+        )
 
 
 async def test_a_file_shared_with_a_colleague_is_filed_under_their_shared_with_me(ws: Workspace) -> None:
@@ -437,6 +460,19 @@ async def test_a_folder_moved_to_the_trash_takes_its_files_along(ws: Workspace) 
     await ws.sync()
 
     assert "dir" not in ws.records.records
+    assert "inside" not in ws.records.records
+
+
+async def test_a_folder_already_in_our_trash_is_removed_when_the_source_trashes_it(ws: Workspace) -> None:
+    ws.world.folder("dir", "Projects", parent="root-alice", owner=ALICE)
+    ws.world.add_item("inside", "draft.txt", parent="dir", owner=ALICE)
+    await ws.sync()
+    ws.records.records["dir"].is_deleted = True
+
+    ws.world.trash("dir")
+    await ws.sync()
+
+    assert "dir" not in ws.records.records, "the delete must take a folder that is in the trash"
     assert "inside" not in ws.records.records
 
 

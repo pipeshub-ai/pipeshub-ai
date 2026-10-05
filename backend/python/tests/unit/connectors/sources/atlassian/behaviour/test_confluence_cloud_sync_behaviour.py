@@ -34,7 +34,12 @@ from atlassian_cloud_fakes import (
 )
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    AccessRule,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
@@ -330,7 +335,8 @@ class TestPageSync:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         restricted, edit_only = db.records["10"], db.records["11"]
-        assert restricted.inherit_permissions is False
+        assert restricted.access_rule == AccessRule.RESTRICTED, "space access alone does not open it; a grant on the page is needed too"
+        assert restricted.inherit_permissions is True, "a RESTRICTED page that does not inherit is hidden from everyone"
         grants = {(p.entity_type, p.email or p.external_id, p.type) for p in db.record_permissions["10"]}
         assert grants == {
             (EntityType.USER, "ana@acme.com", PermissionType.READ),
@@ -338,7 +344,7 @@ class TestPageSync:
             (EntityType.GROUP, "grp-leads", PermissionType.READ),
         }
         assert [g.source_user_group_id for g, _ in db.user_groups] == ["acc-no-email"], "a stand-in group keeps the grant for a user without email"
-        assert edit_only.inherit_permissions is True, "an edit-only restriction does not hide the page from space members"
+        assert edit_only.access_rule == AccessRule.STRICT, "an edit-only restriction does not hide the page from space members"
         assert {p.type for p in db.record_permissions["11"]} == {PermissionType.WRITE}
 
     async def test_a_failed_restriction_lookup_never_opens_a_page_to_the_whole_space(self, api, db, checkpoints, search) -> None:
@@ -349,7 +355,7 @@ class TestPageSync:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         page = db.records.get("10")
-        assert page is None or page.inherit_permissions is False
+        assert page is None or page.access_rule == AccessRule.RESTRICTED
 
     async def test_one_bad_page_does_not_stop_the_rest(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10"), v1_page("11"), v1_page("12")])
@@ -617,7 +623,7 @@ class TestRestrictedPageFiles:
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert db.records["10"].inherit_permissions is False
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
 
     async def test_files_of_a_restricted_page_stay_restricted(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -627,8 +633,11 @@ class TestRestrictedPageFiles:
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert db.records["10"].inherit_permissions is False
-        assert db.records["att2"].inherit_permissions is False
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
+        file = db.records["att2"]
+        assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10"), (
+            "the file inherits from its page, never straight from the space"
+        )
         assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
 
     async def test_a_reindexed_file_of_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
@@ -642,7 +651,12 @@ class TestRestrictedPageFiles:
         await connector.reindex_records([db.records["att2"]])
 
         (updated,) = db.content_updates
-        assert updated.external_record_id == "att2" and updated.inherit_permissions is False
+        assert updated.external_record_id == "att2"
+        assert (updated.inherit_permissions, updated.parent_external_record_id) == (True, "10"), (
+            "it still hangs under its restricted page and inherits from nothing else"
+        )
+        (update,) = db.permission_updates
+        assert [p.email for p in update[1]] == ["ana@acme.com"]
 
     async def test_a_reindexed_reply_on_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -666,10 +680,10 @@ class TestRestrictedPageFiles:
         await connector.reindex_records([reply])
 
         (updated,) = db.content_updates
-        assert updated.inherit_permissions is False, "a reply gets its page's restriction, not its parent comment's"
+        assert updated.inherit_permissions is True
         assert (updated.parent_external_record_id, updated.parent_record_type) == ("201", RecordType.COMMENT)
         (update,) = db.permission_updates
-        assert [p.email for p in update[1]] == ["ana@acme.com"]
+        assert [p.email for p in update[1]] == ["ana@acme.com"], "a reply gets its page's restriction, not its parent comment's"
 
     async def test_a_file_first_seen_while_opening_a_restricted_page_stays_restricted(self, api, db, checkpoints) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -678,7 +692,8 @@ class TestRestrictedPageFiles:
 
         await connector._process_page_attachments_for_children([SPEC], "10", "page-node-10", "77", None)
 
-        assert db.records["att2"].inherit_permissions is False
+        file = db.records["att2"]
+        assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10")
         assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
 
 
@@ -704,7 +719,7 @@ class TestAuditLog:
 
         await connector._sync_permission_changes_from_audit_log()
 
-        assert db.records["10"].inherit_permissions is False, "the change on the second audit page is applied"
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "the change on the second audit page is applied"
 
     async def test_every_page_of_the_title_search_is_read(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -722,7 +737,7 @@ class TestAuditLog:
         await connector._sync_permission_changes_from_audit_log()
 
         assert [q.get("cursor") for q in search.queries if q["cql"].startswith("title IN")] == [None, "T2"]
-        assert db.records["10"].inherit_permissions is False, "the page on the search's second page gets its restriction"
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "the page on the search's second page gets its restriction"
 
     async def test_a_failed_second_page_of_the_title_search_keeps_the_audit_clock(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -743,7 +758,7 @@ class TestAuditLog:
             await connector._sync_permission_changes_from_audit_log()
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
-        assert db.records["10"].inherit_permissions is True, "page 10 was on the page that failed; the next run reads it"
+        assert db.records["10"].access_rule == AccessRule.STRICT, "page 10 was on the page that failed; the next run reads it"
 
     async def test_a_failed_title_search_does_not_move_the_audit_clock(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")])
@@ -778,7 +793,7 @@ class TestAuditLog:
         connector, _ = await ready_connector(db, checkpoints)
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
         await connector._sync_permission_changes_from_audit_log()
-        assert db.records["att2"].inherit_permissions is True
+        assert db.records["10"].access_rule == AccessRule.STRICT
 
         change = {"category": "Permissions", "associatedObjects": [
             {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
@@ -787,9 +802,11 @@ class TestAuditLog:
         api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
         await connector._sync_permission_changes_from_audit_log()
 
-        assert db.records["10"].inherit_permissions is False
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
         (file_update,) = [(r, perms) for r, perms in db.permission_updates if r.external_record_id == "att2"]
-        assert file_update[0].inherit_permissions is False, "the page's file no longer inherits the space's access"
+        assert (file_update[0].inherit_permissions, file_update[0].parent_external_record_id) == (True, "10"), (
+            "the file keeps inheriting from its page, which is now restricted"
+        )
         assert [p.email for p in file_update[1]] == ["ana@acme.com"]
 
     async def test_a_folder_under_a_page_keeps_its_own_access_when_the_page_is_restricted(
@@ -813,7 +830,7 @@ class TestAuditLog:
         api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
         await connector._sync_permission_changes_from_audit_log()
 
-        assert db.records["10"].inherit_permissions is False
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
         assert not [r for r, _ in db.permission_updates if r.external_record_id == "500"], (
             "a folder has restrictions of its own and does not take the page's"
         )
@@ -854,7 +871,7 @@ class TestPlaceholderSweep:
         assert page.id == page_stub.id
         assert page.parent_external_record_id == "500" and page.parent_record_type == RecordType.FILE
         assert folder.record_name == "Specs" and folder.is_placeholder is False
-        assert folder.inherit_permissions is False
+        assert folder.access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
         assert gone.is_placeholder is True and db.record_permissions["404"] == [], "an unreachable ancestor fails closed"
         assert api.calls("GET", f"{V2}/folders/500"), "the folder was fetched via the folder API"

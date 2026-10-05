@@ -1,29 +1,56 @@
-"""A stand-in for ``IGraphDBProvider.get_permitted_entity_records`` built
-from a candidate fixture, applying the provider's contract in Python: walk
-the window in order, keep rows in the ref's connectors that app access, a
-permission role grants, stop at the limit."""
+"""Stand-ins for the two provider calls the entity permission layer makes,
+built from one candidate fixture.
+
+``get_permitted_entity_records`` applies the query's contract: a ref's
+candidates are the fixture rows in the ref's connectors, the window is walked
+in order, and a row comes back when its connector is in
+``app_level_connector_ids``, up to the limit. No role path offers anything
+here, so a record-level row reaches the access check only when the caller
+passes its connector.
+
+``check_access`` is the decision: a row of an app-level connector is
+readable, a record-level row only when listed in ``permitted``, and
+``denied`` refuses even those. It knows a row's connector from what the query
+returned. An id that never came back as a row (a record group) is admitted
+unless denied.
+"""
 from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Iterable
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 from app.services.graph_db.common.utils import PermittedEntityRows
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 CandidateBuilder = Callable[..., dict]
 
+# What the fake hands out as the user's resolved grants; the access check must be given this object.
+RESOLVED_ACCESS: dict[str, Any] = {"grantee_ids": ["ukey"], "gated_app_ids": [], "by_connector": {}}
 
-def permitted_records(
-    build: CandidateBuilder,
-    *,
-    permitted: Iterable[str] = (),
-) -> Callable[..., Any]:
+
+class EntityGraphFake:
     """``build(refs, org_id, record_types=, limit_per_entity=, offset=)``
     returns candidates keyed by entity id or ``(type, id)``; it is asked for
     one window (``limit_per_entity`` is the window size)."""
-    granted = set(permitted)
 
-    async def _permitted(
+    def __init__(
+        self,
+        build: CandidateBuilder,
+        *,
+        app_level: Iterable[str] = (),
+        permitted: Iterable[str] = (),
+        denied: Iterable[str] = (),
+    ) -> None:
+        self._build = build
+        self._app_level = set(app_level)
+        self._permitted = set(permitted)
+        self._denied = set(denied)
+        self._connector_of: dict[str, str] = {}
+
+    async def permitted_records(
+        self,
         refs: list[dict],
         org_id: str,
         user_key: str,
@@ -37,20 +64,20 @@ def permitted_records(
     ) -> dict[tuple[str, str], PermittedEntityRows]:
         types = {str(ref["id"]): ref.get("type", "") for ref in refs}
         scopes = {(ref.get("type", ""), str(ref["id"])): set(ref.get("connectorIds") or []) for ref in refs}
-        app_level = set(app_level_connector_ids)
+        passing = set(app_level_connector_ids)
         out: dict[tuple[str, str], PermittedEntityRows] = {}
-        built = build(refs, org_id, record_types=record_types, limit_per_entity=window, offset=offset)
+        built = self._build(refs, org_id, record_types=record_types, limit_per_entity=window, offset=offset)
         if inspect.isawaitable(built):
             built = await built
         for key, rows in built.items():
             entity = key if isinstance(key, tuple) else (types.get(key, ""), key)
             scope = scopes.get(entity, set())
-            win = list(rows)[:window]
+            win = [row for row in rows if row.get("connectorId") in scope][:window]
             hits = []
             for pos, row in enumerate(win):
-                connector = row.get("connectorId")
-                if connector in scope and (connector in app_level or row.get("_key") in granted):
+                if row["connectorId"] in passing:
                     hits.append({"pos": pos, "row": row})
+                    self._connector_of[row["_key"]] = row["connectorId"]
                     if len(hits) == limit_per_entity:
                         break
             out[entity] = PermittedEntityRows.from_window(
@@ -59,4 +86,29 @@ def permitted_records(
             )
         return out
 
-    return _permitted
+    async def check_access(
+        self, user_key: str, org_id: str, *, node_ids: Iterable[str] = (), **_: object,
+    ) -> AccessCheck:
+        return AccessCheck(node_ids=frozenset(i for i in node_ids if self._readable(i)))
+
+    def _readable(self, node_id: str) -> bool:
+        if node_id in self._denied:
+            return False
+        connector = self._connector_of.get(node_id)
+        return connector is None or connector in self._app_level or node_id in self._permitted
+
+
+def entity_graph(
+    build: CandidateBuilder,
+    *,
+    app_level: Iterable[str] = (),
+    permitted: Iterable[str] = (),
+    denied: Iterable[str] = (),
+) -> MagicMock:
+    """A graph provider mock whose two calls are answered by one ``EntityGraphFake``."""
+    fake = EntityGraphFake(build, app_level=app_level, permitted=permitted, denied=denied)
+    graph = MagicMock()
+    graph.get_permitted_entity_records = AsyncMock(side_effect=fake.permitted_records)
+    graph.check_access = AsyncMock(side_effect=fake.check_access)
+    graph.get_knowledge_hub_access_v3 = AsyncMock(return_value=RESOLVED_ACCESS)
+    return graph

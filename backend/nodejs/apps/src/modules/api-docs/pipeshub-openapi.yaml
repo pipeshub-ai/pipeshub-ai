@@ -4524,6 +4524,15 @@ components:
                 chain. A group with no parent is its own root, so this is null
                 only for records written before the field existed, or by
                 connectors that do not set it.
+            accessRule:
+              type: string
+              enum: [OPEN, STRICT, RESTRICTED]
+              description: |
+                How this record's own permissions combine with its ancestors'.
+                OPEN: an accessible parent, or a direct grant, is enough.
+                STRICT: every ancestor up to the connector must be accessible too.
+                RESTRICTED: strict, and a grant on the record itself is required.
+                Absent on records written before the field existed; read as OPEN.
             connectorId:
               type: string
             connectorName:
@@ -5956,6 +5965,26 @@ components:
               type: boolean
             hasPrev:
               type: boolean
+            nextCursor:
+              type: string
+              nullable: true
+              description: Cursor for the next page; null on the last page.
+            prevCursor:
+              type: string
+              nullable: true
+              description: Cursor for the previous page; null on the first page.
+            startIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the first item on this page, when known.
+            endIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the last item on this page, when known.
+            currentPageItems:
+              type: integer
+              nullable: true
+              description: Number of items on this page.
         filters:
           type: object
           required:
@@ -13396,6 +13425,7 @@ components:
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+            - ENABLE_KH_SCOPE_LISTING: Serve the knowledge hub All records listing from per-connector scopes precomputed after each sync (default: false)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -14082,7 +14112,7 @@ components:
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
             ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
-            ENABLE_USER_CONTEXT.
+            ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -26519,11 +26549,21 @@ paths:
           in: query
           required: false
           description: |
-            Page number (1-indexed). Combined with `limit` to paginate results.
+            Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+            Prefer `cursor`: a page number is reached by reading the pages before it.
           schema:
             type: integer
             minimum: 1
             default: 1
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+            response. Send it with the same path, filters and sort as the request that returned
+            it; a cursor issued for another place, user or listing mode is refused with 400.
+          schema:
+            type: string
         - name: limit
           in: query
           required: false
@@ -27027,11 +27067,21 @@ paths:
           in: query
           required: false
           description: |
-            Page number (1-indexed). Combined with `limit` to paginate results.
+            Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+            Prefer `cursor`: a page number is reached by reading the pages before it.
           schema:
             type: integer
             minimum: 1
             default: 1
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+            response. Send it with the same path, filters and sort as the request that returned
+            it; a cursor issued for another place, user or listing mode is refused with 400.
+          schema:
+            type: string
         - name: limit
           in: query
           required: false
@@ -40875,6 +40925,7 @@ paths:
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+        - ENABLE_KH_SCOPE_LISTING: Serve the knowledge hub All records listing from precomputed per-connector scopes (default: false)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []

@@ -272,11 +272,11 @@ class TestMapConfluencePermission:
 
     def test_create_comment(self):
         c = _conn()
-        assert c._map_confluence_permission("create", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("create", "comment") == PermissionType.READ
 
     def test_delete_comment(self):
         c = _conn()
-        assert c._map_confluence_permission("delete", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("delete", "comment") == PermissionType.READ
 
     def test_create_page(self):
         c = _conn()

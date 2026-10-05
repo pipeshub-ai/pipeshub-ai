@@ -306,6 +306,11 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/toolsets.py::get_toolset_instances": "secrets are masked for members",
     "api/routes/toolsets.py::get_toolset_instance": "secrets are masked for members",
     "api/routes/toolsets.py::list_toolset_oauth_configs": "secrets are masked for members",
+    # The listing is the same for an admin; the flag only labels the root `permissions` block.
+    "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_root_nodes":
+        "admin flag fills the root permissions block",
+    "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_children_nodes":
+        "admin flag is read but unused below a parent",
     # Record reads: an admin may reach a team connector's records; members need a permission.
     "connectors/api/router.py::download_file": "record permission or admin",
     "connectors/api/router.py::stream_record": "record permission or admin",

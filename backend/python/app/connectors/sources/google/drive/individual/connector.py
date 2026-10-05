@@ -15,6 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     PermissionModel,
     Connectors,
     ExtensionTypes,
@@ -516,7 +517,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 weburl=metadata.get("webViewLink", None),
-                mime_type=mime_type if mime_type else MimeTypes.UNKNOWN.value,
+                # Every folder is written as text/directory, not Google's own folder type.
+                mime_type=MimeTypes.FOLDER.value if not is_file else (mime_type or MimeTypes.UNKNOWN.value),
                 is_file=is_file,
                 size_in_bytes=int(metadata.get("size", 0) or 0),
                 extension=file_extension,
@@ -875,7 +877,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             )
             return
 
-        if existing_record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+        if existing_record.mime_type in FOLDER_MIME_TYPES:
             self.logger.info(
                 "📁 Folder %s exited folder-filter scope; deleting folder and descendants",
                 existing_record.record_name,

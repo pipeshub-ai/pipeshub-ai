@@ -672,12 +672,9 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
     """Periodically refresh the connector_active gauge; best-effort, never fatal."""
     while True:
         try:
-            docs = await graph_provider.get_all_documents(CollectionNames.APPS.value)
-            counts: dict = {}
-            for doc in docs or []:
-                if doc.get("isActive"):
-                    connector_type = doc.get("type") or "unknown"
-                    counts[connector_type] = counts.get(connector_type, 0) + 1
+            # Counted in the database: a tenant can have thousands of collection
+            # Apps, and reading every App here stalled the event loop for seconds.
+            counts = await graph_provider.count_active_apps_by_type()
             set_connector_active(counts)
         except asyncio.CancelledError:
             raise

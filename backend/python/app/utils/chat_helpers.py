@@ -17,6 +17,7 @@ from app.config.constants.service import config_node_constants
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
     is_jira_ticket_record,
 )
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import BlockType, GroupType, SemanticMetadata
 from app.models.entities import (
     CodeFileRecord,
@@ -43,7 +44,6 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
-from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.strategy import QueryContext
@@ -773,7 +773,7 @@ GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.CONFLUENCE,
 })
 
-RECORD_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
+NODE_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
     RecordRelations.ATTACHMENT,
     RecordRelations.PARENT_CHILD,
 })
@@ -1284,7 +1284,7 @@ async def _relations_per_record(
     record_ids: list[str],
     relation_types: list[str],
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    """Per-record equivalent of `get_record_relations_batch`, used when the
+    """Per-record equivalent of `get_node_relations_batch`, used when the
     batch fails. Concurrent, and a failing pair costs only itself."""
     async def one(record_id: str, relation_type: str, *, outgoing: bool) -> list[dict[str, Any]]:
         fetch = (
@@ -1337,9 +1337,9 @@ async def _fetch_edges_for_records(
     """
     if not record_ids:
         return {}
-    by_value = {rel.value: rel for rel in RECORD_RELATION_ENRICHMENT_TYPES}
+    by_value = {rel.value: rel for rel in NODE_RELATION_ENRICHMENT_TYPES}
     try:
-        relations = await graph_provider.get_record_relations_batch(
+        relations = await graph_provider.get_node_relations_batch(
             record_ids, list(by_value),
         )
     except Exception as e:
@@ -1628,7 +1628,7 @@ def _annotate_dependent_parents(
     )
 
 
-def _annotate_record_relations(
+def _annotate_node_relations(
     relation_buckets: list[tuple[str, dict[str, Any], dict[str, dict[str, Any]]]],
     doc_index: dict[str, dict[str, Any]],
     in_context_ids: set[str],
@@ -1636,7 +1636,7 @@ def _annotate_record_relations(
     full_metadata_by_hit: dict[str, set[str]] | None = None,
     truncated_record_ids: set[str] | None = None,
 ) -> None:
-    """Attach record_relations to hit records from relation buckets.
+    """Attach node_relations to hit records from relation buckets.
 
     ``full_metadata_by_hit`` caps which relations of each hit carry
     context_metadata; None lets every resolved one through.
@@ -1662,12 +1662,50 @@ def _annotate_record_relations(
                 rel["context_metadata"] = context_map[rid]
             relations.append(rel)
         if relations:
-            record["record_relations"] = relations
+            record["node_relations"] = relations
             if truncated_record_ids and record.get("id") in truncated_record_ids:
-                record["record_relations_truncated"] = True
+                record["node_relations_truncated"] = True
             enriched_count += 1
 
     logger.info("Record relation enrichment: %d records enriched", enriched_count)
+
+
+async def accessible_node_ids(
+    graph_provider: IGraphDBProvider,
+    node_ids: set[str],
+    user_id: str,
+    org_id: str,
+) -> set[str]:
+    """The subset of ``node_ids`` (records, record groups, apps) the user may
+    access. No identity means nothing is accessible; a user lookup that fails
+    raises PermissionVerificationUnavailableError, as the check itself does."""
+    if not node_ids or not user_id or not org_id:
+        return set()
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError(str(exc)) from exc
+    user_key = (user or {}).get("id") or (user or {}).get("_key")
+    if not user_key:
+        return set()
+    return set((await graph_provider.check_access(
+        user_key, org_id, node_ids=node_ids,
+    )).node_ids)
+
+
+async def accessible_node_ids_for_enrichment(
+    graph_provider: IGraphDBProvider,
+    node_ids: set[str],
+    user_id: str,
+    org_id: str,
+) -> set[str]:
+    """``accessible_node_ids`` for context enrichment, which is optional: when the
+    check cannot answer, no neighbour is named and the turn goes on."""
+    try:
+        return await accessible_node_ids(graph_provider, node_ids, user_id, org_id)
+    except PermissionVerificationUnavailableError as exc:
+        logger.warning("Enrichment access check unavailable; naming no neighbours: %s", exc)
+        return set()
 
 
 async def enrich_records_with_graph_context(
@@ -1685,7 +1723,7 @@ async def enrich_records_with_graph_context(
     """
     Unified graph context enrichment for search results. Performs both:
       1. Dependent parent annotation (isDependentNode -> parent metadata on flattened_results)
-      2. Record relation enrichment (graph edges -> record_relations on hit records)
+      2. Record relation enrichment (graph edges -> node_relations on hit records)
 
     Only records ``user_id`` may read are shown: hits were adjudicated by the
     search, and everything reached from them is adjudicated here. If that check
@@ -1736,23 +1774,12 @@ async def enrich_records_with_graph_context(
     to_check = (all_related_ids | set(dependent_vrid_to_parent_id.values())) - in_context_ids
     readable_ids = set(in_context_ids)
     if to_check:
-        ids = list(to_check)
-        verdicts = await asyncio.gather(
-            *[
-                graph_provider.filter_accessible_record_ids(
-                    ids[start:start + GRAPH_BATCH_CHUNK_SIZE], user_id, org_id,
-                )
-                for start in range(0, len(ids), GRAPH_BATCH_CHUNK_SIZE)
-            ],
-            return_exceptions=True,
-        )
-        failed = next((v for v in verdicts if not isinstance(v, set)), None)
-        if failed is not None:
+        try:
+            readable_ids |= await graph_provider.filter_accessible_record_ids(list(to_check), user_id, org_id)
+        except Exception as exc:
             # Fail closed: without a verdict a related record may be one the user cannot open.
-            logger.warning("Graph context enrichment skipped: access check unavailable: %s", failed)
+            logger.warning("Graph context enrichment skipped: access check unavailable: %s", exc)
             return
-        for granted in verdicts:
-            readable_ids |= granted
 
     # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents
     # come first), and full metadata for the first MAX_FULL_METADATA_RELATED_PER_HIT.
@@ -1794,7 +1821,7 @@ async def enrich_records_with_graph_context(
             in_context_ids, doc_index, context_map,
         )
     if relation_buckets:
-        _annotate_record_relations(
+        _annotate_node_relations(
             relation_buckets, doc_index, in_context_ids, context_map,
             full_metadata_by_hit, truncated_record_ids,
         )
@@ -1818,14 +1845,14 @@ def build_parent_info(result: dict[str, Any]) -> str:
     parent_info = "\n".join(lines) + "\n"
     return parent_info
 
-def build_record_relations_info(record: dict[str, Any]) -> str:
+def build_node_relations_info(record: dict[str, Any]) -> str:
     """Build related records grouped by relation label (ATTACHMENT/CHILD/PARENT).
 
     Each label is rendered once as a heading with all its records listed
     underneath, so a label never repeats per row. A record reached via more than
     one relation type appears under each of its labels.
     """
-    relations = record.get("record_relations")
+    relations = record.get("node_relations")
     if not relations:
         return ""
 
@@ -1854,36 +1881,12 @@ def build_record_relations_info(record: dict[str, Any]) -> str:
                 record_id = rel.get("record_id", "")
                 record_name = rel.get("record_name", "Unknown")
                 lines.append(f"    - Record ID: {record_id} | Name: {record_name}")
-    if record.get("record_relations_truncated"):
+    if record.get("node_relations_truncated"):
         # No count: it would reveal how many linked records the user cannot see.
         lines.append("  (more related records exist; not shown)")
     return "\n".join(lines) + "\n"
 
 # FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
-
-async def _live_record_ids(
-    graph_provider: IGraphDBProvider, record_ids: Iterable[str], org_id: str
-) -> set[str]:
-    """The ids among ``record_ids`` that are live records of ``org_id``.
-
-    The FK edge reads return tables in the trash too, so without this a dropped
-    table's DDL and rows reach the answer through a table that references it.
-    A failed lookup counts as nothing live.
-    """
-    ids = list(dict.fromkeys(rid for rid in record_ids if rid))
-    if not ids:
-        return set()
-    try:
-        docs = await graph_provider.get_records_by_record_ids(
-            ids, org_id, visibility=RecordVisibility.LIVE
-        )
-    except Exception as e:
-        logger.warning("FK enrichment: live-record check failed, leaving related tables out: %s", e)
-        return set()
-    return {
-        key for doc in docs or [] if isinstance(doc, dict) and (key := doc.get("_key") or doc.get("id"))
-    }
-
 
 async def enrich_virtual_record_id_to_result_with_fk_children(
     virtual_record_id_to_result: Dict[str, Dict[str, Any]],
@@ -1891,6 +1894,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     org_id: str,
     graph_provider: IGraphDBProvider | None = None,
     flattened_results: List[Dict[str, Any]] | None = None,
+    user_id: str = "",
 ) -> None:
     """
     For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
@@ -1901,6 +1905,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     Additionally, enriches flattened_results with fk_parent_relations and fk_child_relations
     (each containing record_id, table name, source column, and target column metadata)
     so the agent knows which related tables it can fetch via tools.
+
+    Only tables the user may access are fetched or named.
 
     Field naming conventions:
     - Graph DB (ArangoDB) returns camelCase: recordName, recordType, webUrl, hideWeburl, etc.
@@ -1914,10 +1920,29 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     
     from app.config.constants.arangodb import RecordRelations
     
-    related_record_ids = set()
     sql_table_record_ids = []
     record_id_to_fk_relations: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-    
+
+    async def fk_relations(record_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        relations: Dict[str, List[Dict[str, Any]]] = {"children": [], "parents": []}
+        for key, fetch in (
+            ("children", graph_provider.get_child_record_ids_by_relation_type),
+            ("parents", graph_provider.get_parent_record_ids_by_relation_type),
+        ):
+            try:
+                relations[key] = list(await fetch(record_id, RecordRelations.FOREIGN_KEY.value))
+            except Exception as e:
+                logger.warning("Could not fetch FK %s of %s: %s", key, record_id, str(e))
+        return relations
+
+    def named_ids() -> set[str]:
+        return {
+            rel["record_id"]
+            for relations in record_id_to_fk_relations.values()
+            for rel in relations["children"] + relations["parents"]
+            if rel.get("record_id")
+        }
+
     flattened_len_before = len(flattened_results) if flattened_results is not None else 0
     logger.debug(
         "FK enrichment: checking %d records; flattened_results=%d items",
@@ -1946,53 +1971,22 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     
     # Query both child and parent tables via FK edges
     for record_id in sql_table_record_ids:
-        child_relations = []
-        parent_relations = []
-        
-        try:
-            child_relations = await graph_provider.get_child_record_ids_by_relation_type(
-                record_id, RecordRelations.FOREIGN_KEY.value
-            )
-            logger.debug("FK enrichment: record %s has %d child tables", record_id, len(child_relations))
-            for rel in child_relations:
-                if rel.get("record_id"):
-                    related_record_ids.add(rel["record_id"])
-        except Exception as e:
-            logger.warning("Could not fetch child record IDs for %s: %s", record_id, str(e))
-        
-        try:
-            parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
-                record_id, RecordRelations.FOREIGN_KEY.value
-            )
-            logger.debug("FK enrichment: record %s has %d parent tables", record_id, len(parent_relations))
-            for rel in parent_relations:
-                if rel.get("record_id"):
-                    related_record_ids.add(rel["record_id"])
-        except Exception as e:
-            logger.warning("Could not fetch parent record IDs for %s: %s", record_id, str(e))
-        
-        record_id_to_fk_relations[record_id] = {
-            "children": list(child_relations) if not isinstance(child_relations, list) else child_relations,
-            "parents": list(parent_relations) if not isinstance(parent_relations, list) else parent_relations,
-        }
+        record_id_to_fk_relations[record_id] = await fk_relations(record_id)
+    related_record_ids = named_ids()
+    # A related table is shown with its own relations, so those are named too.
+    for record_id in related_record_ids - record_id_to_fk_relations.keys():
+        record_id_to_fk_relations[record_id] = await fk_relations(record_id)
 
-    checked_ids = set(related_record_ids)
-    live_ids = await _live_record_ids(graph_provider, checked_ids, org_id)
-    related_record_ids &= live_ids
+    # The related tables' DDL and sample rows go into the context, and their
+    # names into the relation lists: only tables the user may access.
+    allowed = await accessible_node_ids_for_enrichment(graph_provider, related_record_ids | named_ids(), user_id, org_id)
+    related_record_ids &= allowed
+    for relations in record_id_to_fk_relations.values():
+        for key in ("children", "parents"):
+            relations[key] = [rel for rel in relations[key] if rel.get("record_id") in allowed]
 
-    async def live_relations_only(relations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        unchecked = {rel.get("record_id") for rel in relations if rel.get("record_id")} - checked_ids
-        if unchecked:
-            live_ids.update(await _live_record_ids(graph_provider, unchecked, org_id))
-            checked_ids.update(unchecked)
-        return [rel for rel in relations if rel.get("record_id") in live_ids]
-
-    for fk_relations in record_id_to_fk_relations.values():
-        fk_relations["children"] = await live_relations_only(fk_relations["children"])
-        fk_relations["parents"] = await live_relations_only(fk_relations["parents"])
-    
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
-    
+
     # Enrich existing flattened_results with FK relations
     if flattened_results is not None:
         for result in flattened_results:
@@ -2102,35 +2096,10 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                 if sample_rows:
                     table_summary = f"{table_summary}\n\nSample Rows:\n" + "\n".join(sample_rows)
                 
-                # Get FK relations for this record if available, otherwise fetch them
-                fk_parent_relations = []
-                fk_child_relations = []
-                if record_id in record_id_to_fk_relations:
-                    fk_parent_relations = record_id_to_fk_relations[record_id]["parents"]
-                    fk_child_relations = record_id_to_fk_relations[record_id]["children"]
-                else:
-                    try:
-                        fk_child_relations = await graph_provider.get_child_record_ids_by_relation_type(
-                            record_id, RecordRelations.FOREIGN_KEY.value
-                        )
-                        fk_child_relations = list(fk_child_relations) if not isinstance(fk_child_relations, list) else fk_child_relations
-                    except Exception as e:
-                        logger.debug("Could not fetch child record IDs for %s: %s", record_id, str(e))
-                    try:
-                        fk_parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
-                            record_id, RecordRelations.FOREIGN_KEY.value
-                        )
-                        fk_parent_relations = list(fk_parent_relations) if not isinstance(fk_parent_relations, list) else fk_parent_relations
-                    except Exception as e:
-                        logger.debug("Could not fetch parent record IDs for %s: %s", record_id, str(e))
-                    fk_child_relations = await live_relations_only(fk_child_relations)
-                    fk_parent_relations = await live_relations_only(fk_parent_relations)
-                    record_id_to_fk_relations[record_id] = {
-                        "children": fk_child_relations,
-                        "parents": fk_parent_relations,
-                    }
-                    
-                
+                fk_relations = record_id_to_fk_relations.get(record_id, {"children": [], "parents": []})
+                fk_parent_relations = fk_relations["parents"]
+                fk_child_relations = fk_relations["children"]
+
                 # Build flattened result entry
                 # rec keys are snake_case; metadata dict uses camelCase for frontend
                 enhanced_metadata = get_enhanced_metadata(rec, bg, {})
@@ -4565,7 +4534,7 @@ def build_message_content_array(
             parent_info = build_parent_info(result)
             if parent_info:
                 record_header_text = f"{record_header_text}{parent_info}"
-            relations_info = build_record_relations_info(record)
+            relations_info = build_node_relations_info(record)
             if relations_info:
                 record_header_text = f"{record_header_text}{relations_info}"
             if record_id_shortener is not None:

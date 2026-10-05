@@ -1,13 +1,22 @@
 """Knowledge Hub Unified Browse Service"""
 
+import asyncio
+import inspect
 import logging
 import re
 import traceback
 from collections import Counter
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
+    CollectionNames,
+    ProgressStatus,
+)
+from app.config.constants.service import config_node_constants
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
     AvailableFilters,
@@ -23,13 +32,23 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     NodeType,
     OriginType,
     PaginationInfo,
+    ParentRef,
     PermissionsInfo,
     SortField,
     SortOrder,
 )
+from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
 from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.kh_cursor import (
+    Boundary,
+    CursorError,
+    KnowledgeHubCursor,
+    decode,
+    derive_cursor_secret,
+    encode,
+)
 from app.utils.user_messages import action_failed, not_found
 
 
@@ -48,20 +67,52 @@ class BrowseRequestError(Exception):
         self.status_code = status_code
 
 
-FOLDER_MIME_TYPES = [
-    'application/vnd.folder',
-    'application/vnd.google-apps.folder',
-    'text/directory'
-]
+# A page number re-traverses: every page walked is one listing query, however
+# few rows it holds, so the bound counts pages. Cursors have no such cost.
+_MAX_PAGE_WALK = 50
 
-def _get_node_type_value(node_type: NodeType | str) -> str:
-    """Safely extract the string value from a NodeType enum or string."""
-    if hasattr(node_type, 'value'):
-        return node_type.value
-    return str(node_type)
+# Filter options list the user's sources, and a tenant with more Apps and
+# collections than this has a filter dropdown nobody can use anyway.
+_MAX_FILTER_SOURCES = 500
+
+_START_TYPES = {
+    "app": "app", "kb": "app", "recordGroup": "recordGroup",
+    "folder": "record", "record": "record",
+}
+
+
+def _start_type(parent_type: str | None) -> str:
+    """The kind of node a scoped listing starts from, for the type in the URL."""
+    return _START_TYPES.get(parent_type or "", "record")
+
+
+def _listing_mode(parent_id: str | None, flatten: bool) -> str:
+    if parent_id is None:
+        return "search" if flatten else "root"
+    return "flatten" if flatten else "browse"
+
+
+def _without_apps(access: dict[str, Any], app_ids: frozenset[str]) -> dict[str, Any]:
+    """The access context with these Apps out of the gate and their grants dropped."""
+    if not app_ids:
+        return access
+    out = {**access, "gated_app_ids": [a for a in access.get("gated_app_ids") or [] if a not in app_ids]}
+    if access.get("by_connector") is not None:
+        out["by_connector"] = {k: v for k, v in access["by_connector"].items() if k not in app_ids}
+    return out
+
 
 class KnowledgeHubService:
     """Service for unified Knowledge Hub browse API"""
+
+    # The API's sort names to the provider's, one map for every listing mode.
+    _SORT_FIELDS = {
+        "name": "name",
+        "createdAt": "createdAt",
+        "updatedAt": "updatedAt",
+        "size": "sizeInBytes",
+        "type": "nodeType",
+    }
 
     def __init__(
         self,
@@ -72,24 +123,374 @@ class KnowledgeHubService:
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+        self.config_service = config_service
+        self._cursor_secret: bytes | None = None
         # The Acme Corp demo, for someone who switched it off. Callers that
         # already know it pass `excluded_app_ids`; otherwise it is read per
         # request from `config_service`.
-        self._config_service = config_service
         self._excluded_app_ids = excluded_app_ids
 
     async def _excluded_apps(self, user_id: str, org_id: str) -> frozenset[str]:
         if self._excluded_app_ids is not None:
             return self._excluded_app_ids
-        if self._config_service is None:
+        if self.config_service is None:
             return frozenset()
         try:
             return await excluded_demo_connector_ids(
-                self.graph_provider, self._config_service, org_id, user_id
+                self.graph_provider, self.config_service, org_id, user_id
             )
         except Exception as exc:
             self.logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
             return frozenset()
+
+    async def _get_cursor_secret(self) -> bytes | None:
+        """The cursor-signing key, derived once, or None when nothing can sign.
+
+        An unsigned cursor is an editable one, and what a cursor carries decides
+        what the next page looks at, so a caller with no config service (the
+        agent tools, which page by number) gets pages **without** cursors rather
+        than unsigned ones, and any cursor it is handed is refused.
+        """
+        if self._cursor_secret is None:
+            if self.config_service is None:
+                return None
+            secret_keys = await self.config_service.get_config(
+                config_node_constants.SECRET_KEYS.value
+            )
+            self._cursor_secret = derive_cursor_secret(
+                (secret_keys or {}).get("scopedJwtSecret")
+            )
+        return self._cursor_secret
+
+    def _sort_field(self, sort_by: str) -> str:
+        return self._SORT_FIELDS.get(sort_by, "name")
+
+    def _decode_cursor(
+        self,
+        token: str | None,
+        secret: bytes | None,
+        user_id: str,
+        org_id: str,
+        *,
+        mode: str,
+        parent_id: str | None = None,
+        parent_type: str | None = None,
+    ) -> KnowledgeHubCursor | None:
+        """A cursor that does not verify, or was issued by another listing, is a
+        400, never a silent first page.
+
+        A caller's cursor is refused up front when nothing can verify it, so a
+        token reaching here unsigned is one this service made to walk to a page
+        number and never handed out.
+        """
+        if not token:
+            return None
+        try:
+            cursor = decode(token, secret, expected_user_id=user_id, expected_org_id=org_id)
+        except CursorError as exc:
+            raise BrowseRequestError(f"Invalid cursor: {exc}", 400) from exc
+        # A cursor that names no mode fails here too: it cannot say where it is from.
+        issued_for = (cursor.mode, cursor.parent_id, _start_type(cursor.parent_type))
+        if issued_for != (mode, parent_id, _start_type(parent_type)):
+            raise BrowseRequestError("Invalid cursor: issued for a different location", 400)
+        return cursor
+
+    async def _walk_pages(
+        self,
+        fetch_page: Callable[[str | None], Awaitable[SearchPage]],
+        cursor_token: str | None,
+        page: int,
+    ) -> SearchPage:
+        """One page, by cursor if given, otherwise by walking forward to `page`."""
+        if cursor_token:
+            return await fetch_page(cursor_token)
+        if page > _MAX_PAGE_WALK:
+            raise BrowseRequestError(
+                f"Invalid page: page must not exceed {_MAX_PAGE_WALK}. "
+                f"Use the cursor from a previous response.",
+                400,
+            )
+        result = await fetch_page(None)
+        for _ in range(page - 1):
+            if not result.next_cursor:
+                return replace(
+                    result, rows=[], start_index=0, end_index=0,
+                    next_cursor=None, prev_cursor=None,
+                )
+            result = await fetch_page(result.next_cursor)
+        return result
+
+    def _page_from_partition(
+        self,
+        part: dict[str, Any],
+        cursor: KnowledgeHubCursor | None,
+        secret: bytes,
+        *,
+        filters: dict[str, Any],
+        sort_field: str,
+        sort_dir: str,
+        parent_id: str | None,
+        parent_type: str | None,
+        mode: str,
+        user_id: str,
+        org_id: str,
+        want_counts: bool,
+    ) -> SearchPage:
+        """A single-partition listing (root or scoped) as a page, with its cursors.
+
+        Browse and a scoped flatten are one query, so there is nothing to merge
+        — but the page shape, the boundary and the carried total are the same
+        as a global search's, which is what lets one response builder serve both.
+        """
+        rows = part["rows"]
+        direction = cursor.direction if cursor else "next"
+
+        if cursor is not None and cursor.total is not None:
+            total, counts = cursor.total, cursor.counts_by_type
+        else:
+            total = part["total"] if part["total"] is not None else len(rows)
+            if want_counts and part.get("counts") is not None:
+                counts = part["counts"]
+            elif want_counts:
+                counts = dict(Counter(entry["nodeType"] for entry in part["ids"]))
+            else:
+                counts = None
+
+        seen_before = 0
+        if cursor is not None:
+            seen_before = (
+                cursor.items_seen if direction == "next"
+                else max(0, cursor.items_seen - len(rows))
+            )
+        # Going back, `hasMore` means more rows lie *before* this page; the page
+        # ahead is the one the caller just came from and always exists.
+        has_next = part["hasMore"] if direction == "next" else True
+        has_prev = (cursor is not None) if direction == "next" else part["hasMore"]
+
+        def issue(row: dict[str, Any], next_direction: str, items_seen: int) -> str:
+            return encode(
+                KnowledgeHubCursor(
+                    boundary=Boundary.of(row),
+                    direction=next_direction,
+                    items_seen=items_seen,
+                    total=total,
+                    counts_by_type=counts,
+                    filters=filters,
+                    sort_by=sort_field,
+                    sort_order=sort_dir,
+                    parent_id=parent_id,
+                    parent_type=parent_type,
+                    via_parent_id=cursor.via_parent_id if cursor else None,
+                    mode=mode,
+                    user_id=user_id,
+                    org_id=org_id,
+                ),
+                secret,
+            )
+
+        return SearchPage(
+            rows=rows,
+            total=total,
+            counts_by_type=counts,
+            start_index=seen_before + 1 if rows else 0,
+            end_index=seen_before + len(rows),
+            next_cursor=issue(rows[-1], "next", seen_before + len(rows))
+            if rows and has_next else None,
+            prev_cursor=issue(rows[0], "prev", seen_before)
+            if rows and has_prev else None,
+        )
+
+    async def _v2_nodes(
+        self,
+        *,
+        user_id: str,
+        user_key: str,
+        org_id: str,
+        parent_id: str | None,
+        parent_type: str | None,
+        limit: int,
+        page: int,
+        cursor: str | None,
+        sort_by: str,
+        sort_order: str,
+        filters: dict[str, Any],
+        flatten: bool,
+        want_counts: bool,
+        access: dict[str, list[str]],
+        excluded: frozenset[str] = frozenset(),
+    ) -> tuple[SearchPage, dict[str, Any] | None]:
+        """One page of a listing or search, plus the `scope` a scoped request carries.
+
+        Three modes, one shape: a global search is partitioned and merged, while
+        a root listing and a scoped browse or flatten are each a single query
+        that also returns `currentNode`, `parentNode` and the breadcrumb trail.
+        """
+        secret = await self._get_cursor_secret()
+        # Nothing can verify it, so it cannot be trusted to say where to resume.
+        if cursor and secret is None:
+            raise BrowseRequestError("Invalid cursor: cursor paging is not configured", 400)
+        sort_field = self._sort_field(sort_by)
+        sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
+        mode = _listing_mode(parent_id, flatten)
+
+        if parent_id is None and flatten:
+            # The search partitions by connector, so it needs the grants too; a
+            # provider that reads them per connector does so inside each page.
+            if getattr(self.graph_provider, "kh_grants_per_connector", False) is not True:
+                access = _without_apps(
+                    await self.graph_provider.get_knowledge_hub_access_v3(user_key=user_key, org_id=org_id),
+                    excluded,
+                )
+
+            async def fetch_global(token: str | None) -> SearchPage:
+                self._decode_cursor(token, secret, user_id, org_id, mode=mode)
+                return await search_page(
+                    self.graph_provider,
+                    user_key=user_key, user_id=user_id, org_id=org_id,
+                    limit=limit, sort_field=sort_field, sort_dir=sort_dir,
+                    filters=filters, cursor_token=token, secret=secret,
+                    access=access,
+                )
+            try:
+                global_page = await self._walk_pages(fetch_global, cursor, page)
+            except CursorError as exc:
+                raise BrowseRequestError(f"Invalid cursor: {exc}", 400) from exc
+            return global_page, None
+
+        scope: dict[str, Any] | None = None
+
+        async def fetch_single(token: str | None) -> SearchPage:
+            nonlocal scope
+            page_cursor = self._decode_cursor(
+                token, secret, user_id, org_id,
+                mode=mode, parent_id=parent_id, parent_type=parent_type,
+            )
+            # The cursor decides sort and filters, so a page cannot resume a
+            # keyset from an order that no longer applies.
+            active = dict(page_cursor.filters or {}) if page_cursor else dict(filters)
+            field = (page_cursor.sort_by if page_cursor else None) or sort_field
+            order = (page_cursor.sort_order if page_cursor else None) or sort_dir
+            reuse_total = page_cursor is not None and page_cursor.total is not None
+
+            common = {
+                "user_key": user_key, "org_id": org_id, "limit": limit,
+                "sort_field": field, "sort_dir": order,
+                "after": page_cursor.boundary.as_after() if page_cursor else None,
+                "direction": page_cursor.direction if page_cursor else "next",
+                "include_ids": want_counts and not reuse_total,
+            }
+            if parent_id is None:
+                envelope = await self.graph_provider.get_knowledge_hub_root_nodes_v2(
+                    user_app_ids=access["gated_app_ids"],
+                    # Apps are in no record group, and this filter only narrows
+                    # collection-origin groups.
+                    **{k: v for k, v in active.items() if k != "record_group_ids"},
+                    **common,
+                )
+            else:
+                start_type = _start_type(parent_type)
+                page = await self.graph_provider.get_knowledge_hub_connector_page_v3(
+                    app_id=parent_id if start_type == "app" else "",
+                    org_id=org_id,
+                    grantee_ids=access["grantee_ids"],
+                    gated_app_ids=access["gated_app_ids"],
+                    # Browsing stays inside one connector: the page reads that
+                    # connector's grants, not every grant the user holds.
+                    granted_ids=None,
+                    user_key=user_key,
+                    limit=limit,
+                    flatten=flatten,
+                    sort_field=field,
+                    sort_dir=order,
+                    after=page_cursor.boundary.as_after() if page_cursor else None,
+                    direction=page_cursor.direction if page_cursor else "next",
+                    filters=active,
+                    include_total=not reuse_total,
+                    start_id=parent_id,
+                    start_type=start_type,
+                    include_scope=True,
+                    via_parent_id=page_cursor.via_parent_id if page_cursor else None,
+                )
+                envelope = {
+                    "partitions": [{
+                        "rows": page["rows"],
+                        "hasMore": page["hasMore"],
+                        "total": page["total"],
+                        "ids": [],
+                        "counts": page.get("counts"),
+                    }],
+                    "scope": page.get("scope"),
+                }
+            scope = envelope.get("scope")
+            return self._page_from_partition(
+                envelope["partitions"][0], page_cursor, secret,
+                filters=active, sort_field=field, sort_dir=order,
+                parent_id=parent_id, parent_type=parent_type, mode=mode,
+                user_id=user_id, org_id=org_id, want_counts=want_counts,
+            )
+
+        return await self._walk_pages(fetch_single, cursor, page), scope
+
+    def _only_signed_cursors(self, page: SearchPage, secret: bytes | None) -> SearchPage:
+        """Hand out cursors only when they are signed.
+
+        Walking to a `page` number builds cursors internally to step forward, so
+        they exist either way, but an unsigned one must never leave the process,
+        where it becomes an editable instruction about what to read next.
+        """
+        if secret is not None:
+            return page
+        return replace(page, next_cursor=None, prev_cursor=None)
+
+    def _to_current_node(self, crumb: dict[str, Any] | None) -> CurrentNode | None:
+        if not crumb or not crumb.get('id'):
+            return None
+        return CurrentNode(
+            id=crumb['id'],
+            name=crumb.get('name') or '',
+            nodeType=crumb.get('nodeType') or '',
+            subType=crumb.get('subType'),
+        )
+
+    async def warm_browse_plans(self) -> int:
+        """Browse each kind of place once, as the UI does, for a sample user, and
+        drop the answers: the database plans a statement the first time it sees
+        it (seconds for the listing and the access check) and again when its
+        statistics move, and this takes that cost off a person's click. Returns
+        how many requests were made."""
+        sample = await self.graph_provider.get_knowledge_hub_warm_sample()
+        if not sample:
+            return 0
+        full = ["counts", "permissions", "breadcrumbs", "availableFilters"]
+        main = {"limit": 50, "sort_by": "updatedAt", "sort_order": "desc", "include": full}
+        requests: list[dict[str, Any]] = [
+            main,
+            {"limit": 20, "sort_by": "updatedAt", "sort_order": "desc", "include": ["counts"]},
+        ]
+        for parent_type, key in (("app", "appId"), ("recordGroup", "groupId"), ("record", "recordId")):
+            parent = {"parent_id": sample[key], "parent_type": parent_type}
+            requests.append({**main, **parent})
+            if parent_type != "record":
+                requests.append({
+                    **parent, "limit": 20, "sort_by": "name", "sort_order": "asc", "only_containers": True,
+                    "include": full if parent_type == "recordGroup" else None,
+                })
+        for request in requests:
+            try:
+                await self.get_nodes(user_id=sample["userId"], org_id=sample["orgId"], **request)
+            except Exception as exc:
+                self.logger.warning("knowledge hub plan warm-up request failed: %s", exc)
+        return len(requests)
+
+    async def _shared(self, key: tuple, compute: Callable[[], Awaitable[Any]]) -> Any:
+        """``compute()``, shared with the other request of the same click while it
+        runs (``IGraphDBProvider._kh_v3_shared``): the main pane and the sidebar ask
+        for the same user and the same gate at the same moment. The answer is read,
+        never changed."""
+        share = getattr(type(self.graph_provider), "_kh_v3_shared", None)
+        if not inspect.iscoroutinefunction(share):
+            return await compute()
+        return await self.graph_provider._kh_v3_shared(key, compute)
 
     async def _belongs_to(self, node_id: str, node_type: str | None, app_ids: frozenset[str]) -> bool:
         """Whether a browsed node is one of `app_ids` or sits inside one."""
@@ -157,23 +558,28 @@ class KnowledgeHubService:
         record_group_ids: list[str] | None = None,
         depth: int | None = None,
         include_typed_records: bool = False,
+        cursor: str | None = None,
+        is_org_admin: bool | None = None,
     ) -> KnowledgeHubNodesResponse:
         """
         Get nodes for the Knowledge Hub unified browse API
+
+        `is_org_admin` is the caller's org role from the auth token; the root
+        permissions block needs it because graph User nodes carry no role.
 
         `flattened` precedence: if the caller passes it explicitly (True or
         False), it always decides search-vs-browse mode. Only when it's
         omitted (None) do we fall back to computing it from which filters
         are present (see _has_flattening_filters).
         """
+        filters_task: asyncio.Task | None = None
+        permissions_task: asyncio.Task | None = None
         try:
-            # Validate pagination
             page = max(1, page)
             limit = min(max(1, limit), 200)  # Max 200
-            skip = (page - 1) * limit
 
             # Get user key
-            user = await self._resolve_user(user_id, org_id)
+            user = await self._shared(("user", user_id, org_id), lambda: self._resolve_user(user_id, org_id))
             if not user:
                 return KnowledgeHubNodesResponse(
                     success=False,
@@ -188,13 +594,10 @@ class KnowledgeHubService:
                     filters=FiltersInfo(applied=AppliedFilters()),
                 )
             user_key = user.get('_key')
+            # Switched-off demo data leaves the gate, so a deep link into it
+            # answers like a missing node, in any mode.
             excluded = await self._excluded_apps(user_id, org_id)
-            # A deep link into switched-off demo data answers like a missing node,
-            # so neither its name nor its breadcrumbs come back, in any mode.
-            if parent_id and await self._belongs_to(parent_id, parent_type, excluded):
-                raise BrowseRequestError(not_found("This item"), 404)
 
-            # Get nodes based on request type.
             # `flattened`, when explicitly passed by the caller, always wins.
             # Otherwise fall back to computing it from which filters are present
             # (any of q/nodeTypes/recordTypes/origins/connectorIds/indexingStatus/
@@ -207,91 +610,95 @@ class KnowledgeHubService:
                     indexing_status, created_at, updated_at, size
                 )
 
-            # Initialize available_filters
-            available_filters = None
+            # Browse applies filters too: one query serves browse, flatten and
+            # search.
+            filters = {
+                "search_query": q,
+                "node_types": node_types,
+                "record_types": record_types,
+                "indexing_status": indexing_status,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "size": size,
+                "origins": origins,
+                "connector_ids": connector_ids,
+                "record_group_ids": record_group_ids,
+                "only_containers": only_containers,
+            }
+            # Who the user is, resolved once: the listing queries, the global
+            # search and the filter options all gate on this same answer, and
+            # asking three times would let them disagree.
+            access = _without_apps(
+                await self._shared(
+                    ("gate", user_key, org_id),
+                    lambda: self.graph_provider.get_knowledge_hub_access_context_v2(user_key=user_key, org_id=org_id),
+                ),
+                excluded,
+            )
+            # The filter options and the context permissions read neither the
+            # page nor each other, so they run beside it rather than after it.
+            if include and 'availableFilters' in include:
+                filters_task = asyncio.create_task(self._get_available_filters(user_key, org_id, access))
+            if include and 'permissions' in include:
+                permissions_task = asyncio.create_task(self._get_permissions(
+                    user_key, org_id, parent_id, parent_type, is_org_admin=is_org_admin,
+                ))
+            page_result, scope = await self._v2_nodes(
+                user_id=user_id,
+                user_key=user_key,
+                org_id=org_id,
+                access=access,
+                excluded=excluded,
+                parent_id=parent_id,
+                parent_type=parent_type,
+                limit=limit,
+                page=page,
+                cursor=cursor,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                filters=filters,
+                flatten=use_search_mode,
+                want_counts=bool(include and 'counts' in include),
+            )
 
-            if use_search_mode:
-                # Search mode: Global search (no parent) or scoped search (within parent and descendants)
-                items, total_count, available_filters = await self._search_nodes(
-                    user_key=user_key,
-                    org_id=org_id,
-                    skip=skip,
-                    limit=limit,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    q=q,
-                    node_types=node_types,
-                    record_types=record_types,
-                    origins=origins,
-                    connector_ids=connector_ids,
-                    indexing_status=indexing_status,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    size=size,
-                    only_containers=only_containers,
-                    parent_id=parent_id,  # None for global search, set for scoped search
-                    parent_type=parent_type,
-                    include_filters=(parent_id is None) or (include and 'availableFilters' in include),
-                    record_group_ids=record_group_ids,
-                    depth=depth,
-                    excluded_app_ids=excluded,
-                )
-            else:
-                # Browse mode - get direct children of parent only
-                items, total_count, _ = await self._get_children_nodes(
-                    user_key=user_key,
-                    org_id=org_id,
-                    parent_id=parent_id,
-                    parent_type=parent_type,
-                    skip=skip,
-                    limit=limit,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    q=None,  # No search query for browse mode
-                    node_types=node_types,
-                    record_types=record_types,
-                    origins=origins,
-                    connector_ids=connector_ids,
-                    indexing_status=indexing_status,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    size=size,
-                    only_containers=only_containers,
-                    record_group_ids=record_group_ids,
-                    excluded_app_ids=excluded,
-                )
-                # In browse mode, fetch available filters only if requested
-                if include and 'availableFilters' in include:
-                    available_filters = await self._get_available_filters(user_key, org_id, excluded)
+            # The start node's own admission decides this, and the 404 body is
+            # constant: naming the node, or its type, would confirm it exists
+            # to someone who may not see it.
+            if scope is not None and not scope.get('admitted'):
+                raise BrowseRequestError("Node not found", 404)
 
+            # Browsing with the wrong type in the URL is a 400. A folder *is* a
+            # record in the graph, so those two are one type here: comparing
+            # the raw values would reject every folder browse.
+            actual_type = ((scope or {}).get('currentNode') or {}).get('nodeType')
+            if parent_type and actual_type:
+                same = {'folder': 'record'}
+                if same.get(actual_type, actual_type) != same.get(parent_type, parent_type):
+                    raise BrowseRequestError(
+                        f"Node type mismatch: node '{parent_id}' is not '{parent_type}', "
+                        f"it is '{actual_type}'. Use /nodes/{actual_type}/{parent_id} instead.",
+                        400,
+                    )
+
+            # Whether more rows exist is known either way; only the cursors
+            # themselves are withheld from a caller that pages by number.
+            has_next = page_result.next_cursor is not None
+            has_prev = page_result.prev_cursor is not None
+            page_result = self._only_signed_cursors(page_result, await self._get_cursor_secret())
+
+            await self._stamp_collection_roles(page_result.rows, user_key)
+            items = [self._doc_to_node_item(row) for row in page_result.rows]
             user_email = user.get('email')
             for item in items:
                 if item.webUrl:
                     item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
+            total_count = page_result.total or 0
 
-            # Permissions are now included directly from queries (userRole field)
-            # No need for separate batch permission fetch
+            available_filters = await filters_task if filters_task is not None else None
 
-            # Calculate pagination
             total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
-
-            # Build current node info if parent_id is provided
-            current_node = None
-            parent_node = None
-            if parent_id:
-                current_node = await self._get_current_node_info(parent_id)
-                # Get parent node info using provider's parent lookup
-                parent_info = await self.graph_provider.get_knowledge_hub_parent_node(
-                    node_id=parent_id,
-                    folder_mime_types=FOLDER_MIME_TYPES,
-                )
-                if parent_info and parent_info.get('id') and parent_info.get('name'):
-                    parent_node = CurrentNode(
-                        id=parent_info['id'],
-                        name=parent_info['name'],
-                        nodeType=parent_info['nodeType'],
-                        subType=parent_info.get('subType'),
-                    )
+            current_node = self._to_current_node((scope or {}).get('currentNode'))
+            parent_node = self._to_current_node((scope or {}).get('parentNode'))
 
             # Build applied filters
             applied_filters = AppliedFilters(
@@ -319,12 +726,18 @@ class KnowledgeHubService:
                 parentNode=parent_node,
                 items=items,
                 pagination=PaginationInfo(
-                    page=page,
                     limit=limit,
                     totalItems=total_count,
-                    totalPages=total_pages,
-                    hasNext=page < total_pages,
-                    hasPrev=page > 1,
+                    hasNext=has_next,
+                    hasPrev=has_prev,
+                    startIndex=page_result.start_index,
+                    endIndex=page_result.end_index,
+                    currentPageItems=len(items),
+                    nextCursor=page_result.next_cursor,
+                    prevCursor=page_result.prev_cursor,
+                    # Legacy, and meaningless once the caller pages by cursor.
+                    page=page if cursor is None else None,
+                    totalPages=total_pages if cursor is None else None,
                 ),
                 filters=filters_info,
             )
@@ -349,15 +762,24 @@ class KnowledgeHubService:
                     # Add available filters only when requested
                     response.filters.available = available_filters
 
-                if 'breadcrumbs' in include and parent_id:
-                    response.breadcrumbs = await self._get_breadcrumbs(parent_id, user_key, org_id)
+                if 'breadcrumbs' in include and scope:
+                    # The placement trail: an ancestor the user cannot open is
+                    # replaced by where the node actually appears, never named.
+                    response.breadcrumbs = [
+                        BreadcrumbItem(
+                            id=crumb['id'],
+                            name=crumb.get('name') or '',
+                            nodeType=crumb.get('nodeType') or '',
+                            subType=crumb.get('subType'),
+                        )
+                        for crumb in (scope.get('breadcrumbs') or [])
+                        if crumb.get('id')
+                    ]
 
                 if 'counts' in include:
-                    # TODO(Counts): Per-type breakdown only reflects current page items, not all
-                    # filtered results. The 'total' is correct, but 'items' breakdown is inaccurate
-                    # for paginated results. To fix properly, add a separate aggregation query
-                    # that counts by nodeType across the entire filtered result set.
-                    type_counts = Counter(_get_node_type_value(item.nodeType) for item in items)
+                    # Whole-result counts, taken on the first page and then
+                    # carried in the cursor, so they agree with the total.
+                    type_counts = page_result.counts_by_type or {}
 
                     # Map nodeType to display label
                     label_map = {
@@ -380,10 +802,8 @@ class KnowledgeHubService:
                         total=total_count,  # Use actual total count, not paginated length
                     )
 
-                if 'permissions' in include:
-                    response.permissions = await self._get_permissions(
-                        user_key, org_id, parent_id, parent_type
-                    )
+                if permissions_task is not None:
+                    response.permissions = await permissions_task
 
             return response
 
@@ -415,159 +835,55 @@ class KnowledgeHubService:
                 ),
                 filters=FiltersInfo(applied=AppliedFilters()),
             )
-
-    async def _get_children_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        parent_id: str | None,
-        parent_type: str | None,  # Now passed directly from router
-        skip: int,
-        limit: int,
-        sort_by: str,
-        sort_order: str,
-        q: str | None,  # Search query to filter within children
-        node_types: list[str] | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connector_ids: list[str] | None,
-        indexing_status: list[str] | None,
-        created_at: dict[str, int | None] | None,
-        updated_at: dict[str, int | None] | None,
-        size: dict[str, int | None] | None,
-        only_containers: bool,
-        record_group_ids: list[str] | None = None,
-        excluded_app_ids: frozenset[str] = frozenset(),
-    ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
-        """Get children nodes for a given parent using unified provider method."""
-        if parent_id is None:
-            # Root level: return Apps
-            return await self._get_root_level_nodes(
-                user_key, org_id, skip, limit, sort_by, sort_order,
-                node_types, origins, connector_ids, only_containers=only_containers,
-                excluded_app_ids=excluded_app_ids,
-            )
-
-        if await self._belongs_to(parent_id, parent_type, excluded_app_ids):
-            return [], 0, None
-
-        # Validate that the node exists and type matches
-        await self._validate_node_existence_and_type(parent_id, parent_type, user_key, org_id)
-
-        # Type is now known from the URL path - no DB lookup needed!
-
-        # Build sort clause
-        sort_field_map = {
-            "name": "name",
-            "createdAt": "createdAt",
-            "updatedAt": "updatedAt",
-            "size": "sizeInBytes",
-            "type": "nodeType",
-        }
-        sort_field = sort_field_map.get(sort_by, "name")
-        sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
-
-        # Use provider method for simple tree navigation (no filters)
-        # For filtered results, the API should use the search endpoint instead
-        result = await self.graph_provider.get_knowledge_hub_children(
-            parent_id=parent_id,
-            parent_type=parent_type,
-            org_id=org_id,
-            user_key=user_key,
-            skip=skip,
-            limit=limit,
-            sort_field=sort_field,
-            sort_dir=sort_dir,
-            only_containers=only_containers,
-            record_group_ids=record_group_ids,
-        )
-
-        nodes_data = result.get('nodes', [])
-        total_count = result.get('total', 0)
-
-        # Convert to NodeItem objects
-        items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
-
-        # Available filters are always None for browse mode (children)
-        # They're only returned in search mode or can be fetched separately
-        return items, total_count, None
-
-    async def _get_root_level_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        sort_by: str,
-        sort_order: str,
-        node_types: list[str] | None,
-        origins: list[str] | None,
-        connector_ids: list[str] | None,
-        only_containers: bool,
-        excluded_app_ids: frozenset[str] = frozenset(),
-    ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
-        """Get root level nodes (Apps, including Collection App)"""
-        try:
-            user_apps_ids = [
-                a for a in await self._get_user_app_ids(user_key, org_id) if a not in excluded_app_ids
-            ]
-
-            # Filter apps by connector_ids if provided
-            if connector_ids:
-                user_apps_ids = [app_id for app_id in user_apps_ids if app_id in connector_ids]
-
-            # Build sort clause
-            sort_field_map = {
-                "name": "name",
-                "createdAt": "createdAt",
-                "updatedAt": "updatedAt",
-            }
-            sort_field = sort_field_map.get(sort_by, "name")
-            sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
-
-            # Use the provider method
-            result = await self.graph_provider.get_knowledge_hub_root_nodes(
-                user_key=user_key,
-                org_id=org_id,
-                user_app_ids=user_apps_ids,
-                skip=skip,
-                limit=limit,
-                sort_field=sort_field,
-                sort_dir=sort_dir,
-                only_containers=only_containers,
-                origins=origins,
-                node_types=node_types,
-            )
-
-            nodes_data = result.get('nodes', [])
-            total_count = result.get('total', 0)
-
-            # Convert to NodeItem objects
-            items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
-
-            return items, total_count, None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get root level nodes: {str(e)}")
-            raise
+        finally:
+            for task in (filters_task, permissions_task):
+                if task is None:
+                    continue
+                if not task.done():
+                    task.cancel()
+                elif not task.cancelled():
+                    task.exception()  # retrieved, so a discarded failure is not logged as unhandled
 
     async def _get_available_filters(
-        self, user_key: str, org_id: str, excluded_app_ids: frozenset[str] = frozenset()
+        self,
+        user_key: str,
+        org_id: str,
+        access: dict[str, list[str]] | None = None,
     ) -> AvailableFilters:
-        """Get filter options (dynamic Apps + static others)"""
-        try:
-            options = await self.graph_provider.get_knowledge_hub_filter_options(user_key, org_id)
-            apps_data = [a for a in options.get('apps', []) if a.get('id') not in excluded_app_ids]
+        """The static filter enums, plus the sources this user can actually open.
 
-            # App/Connector options with connectorType
-            app_options = [
-                FilterOption(
-                    id=a['id'],
-                    label=a['name'],
-                    connectorType=a.get('type', a.get('name'))
+        The sources are the same `gated_app_ids` the listing queries admit, read
+        back through the root listing so the label and type come from the row
+        the user would see, already ordered case-insensitively by name. That
+        keeps them org-scoped and includes collections and Apps reached only
+        through a grantee's permission.
+
+        `get_knowledge_hub_filter_options` stays for its other callers (the
+        agent catalog and the chat bridge), which ask a different question.
+        """
+        try:
+            if access is None:
+                access = await self.graph_provider.get_knowledge_hub_access_context_v2(
+                    user_key=user_key, org_id=org_id
                 )
-                for a in apps_data
-            ]
+
+            app_options: list[FilterOption] = []
+            if access.get("gated_app_ids"):
+                listing = await self.graph_provider.get_knowledge_hub_root_nodes_v2(
+                    user_key=user_key,
+                    org_id=org_id,
+                    user_app_ids=access["gated_app_ids"],
+                    limit=_MAX_FILTER_SOURCES,
+                    names_only=True,
+                )
+                app_options = [
+                    FilterOption(
+                        id=row["id"],
+                        label=row.get("name") or row["id"],
+                        connectorType=row.get("connector") or row.get("origin"),
+                    )
+                    for row in listing["partitions"][0]["rows"]
+                ]
 
             # Node type labels mapping
             node_type_labels = {
@@ -626,213 +942,27 @@ class KnowledgeHubService:
             self.logger.error(f"Failed to get available filters: {e}")
             return AvailableFilters()
 
-    async def _search_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        sort_by: str,
-        sort_order: str,
-        q: str | None,
-        node_types: list[str] | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connector_ids: list[str] | None,
-        indexing_status: list[str] | None,
-        created_at: dict[str, int | None] | None,
-        updated_at: dict[str, int | None] | None,
-        size: dict[str, int | None] | None,
-        only_containers: bool,
-        parent_id: str | None = None,
-        parent_type: str | None = None,
-        include_filters: bool = False,
-        record_group_ids: list[str] | None = None,
-        depth: int | None = None,
-        excluded_app_ids: frozenset[str] = frozenset(),
-    ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
-        """
-        Search for nodes (global or scoped within parent).
-
-        This unified method handles both:
-        - Global search: When parent_id is None, searches across all nodes
-        - Scoped search: When parent_id is provided, searches within parent and descendants
-
-        Args:
-            user_key: User's key for permission filtering
-            org_id: Organization ID
-            skip: Number of items to skip for pagination
-            limit: Maximum number of items to return
-            sort_by: Sort field
-            sort_order: Sort order (asc/desc)
-            q: Optional search query
-            node_types: Optional list of node types to filter by
-            record_types: Optional list of record types to filter by
-            origins: Optional list of origins to filter by
-            connector_ids: Optional list of connector IDs to filter by
-            indexing_status: Optional list of indexing statuses to filter by
-            created_at: Optional date range filter for creation date
-            updated_at: Optional date range filter for update date
-            size: Optional size range filter
-            only_containers: If True, only return nodes that can have children
-            parent_id: Optional parent to scope search within (None for global)
-            parent_type: Type of parent (required if parent_id provided)
-            include_filters: Whether to fetch available filters
-            depth: Optional traversal depth limit for children-intersection search
-
-        Returns:
-            Tuple of (items, total_count, available_filters)
-        """
-        try:
-            # Build sort clause
-            sort_field_map = {
-                "name": "name",
-                "createdAt": "createdAt",
-                "updatedAt": "updatedAt",
-                "size": "sizeInBytes",
-                "type": "nodeType",
-            }
-            sort_field = sort_field_map.get(sort_by, "name")
-            sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
-
-            # Call unified provider method
-            result = await self.graph_provider.get_knowledge_hub_search(
-                org_id=org_id,
-                user_key=user_key,
-                skip=skip,
-                limit=limit,
-                sort_field=sort_field,
-                sort_dir=sort_dir,
-                search_query=q,
-                node_types=node_types,
-                record_types=record_types,
-                origins=origins,
-                connector_ids=connector_ids,
-                indexing_status=indexing_status,
-                created_at=created_at,
-                updated_at=updated_at,
-                size=size,
-                only_containers=only_containers,
-                parent_id=parent_id,  # Can be None for global search
-                parent_type=parent_type,
-                record_group_ids=record_group_ids,
-                depth=depth,
-                exclude_app_ids=excluded_app_ids,
-            )
-
-            nodes_data = result.get('nodes', [])
-            total_count = result.get('total', 0)
-
-            # Convert to NodeItem objects
-            items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
-
-            # Get available filters if requested
-            available_filters = None
-            if include_filters:
-                available_filters = await self._get_available_filters(user_key, org_id, excluded_app_ids)
-
-            return items, total_count, available_filters
-
-        except Exception as e:
-            scope = f"within parent {parent_id}" if parent_id else "globally"
-            self.logger.error(f"❌ Failed to search nodes {scope}: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            raise
-
-    async def _validate_node_existence_and_type(
-        self,
-        node_id: str,
-        expected_type: str,
-        user_key: str,
-        org_id: str
-    ) -> None:
-        """
-        Validate that a node exists and matches the expected type.
-
-        Raises:
-            BrowseRequestError: the node is gone, or the link asks for it as the
-                wrong kind of thing.
-        """
-        # Get node info
-        node_info = await self.graph_provider.get_knowledge_hub_node_info(
-            node_id=node_id,
-            folder_mime_types=FOLDER_MIME_TYPES,
-        )
-
-        if not node_info:
-            raise BrowseRequestError(not_found("This item"), 404)
-
-        actual_type = node_info.get('nodeType')
-
-        # Validate type matches
-        if actual_type != expected_type:
-            self.logger.warning(
-                "⚠️ Node %s is a %s, not the %s the request asked for",
-                node_id, actual_type, expected_type,
-            )
-            raise BrowseRequestError(
-                "This link points to something else now. "
-                "Go back to the collection and open the item from there.",
-                400,
-            )
-
-        # Validate user has access (check permissions)
-        # For now, the queries already filter by user permissions, but we could add explicit check here
-        # TODO: Add explicit permission check if needed
-
-    async def _get_current_node_info(self, node_id: str) -> CurrentNode | None:
-        """Get current node information (the node being browsed)"""
-        node_info = await self.graph_provider.get_knowledge_hub_node_info(
-            node_id=node_id,
-            folder_mime_types=FOLDER_MIME_TYPES,
-        )
-        if node_info and node_info.get('id') and node_info.get('name'):
-            return CurrentNode(
-                id=node_info['id'],
-                name=node_info['name'],
-                nodeType=node_info['nodeType'],
-                subType=node_info.get('subType'),
-            )
-        return None
-
-    async def _get_breadcrumbs(
-        self, node_id: str, user_key: str, org_id: str
-    ) -> list[BreadcrumbItem]:
-        """
-        Get breadcrumb trail for a node, filtered to what this user can see.
-        """
-        try:
-            # Use the provider's optimized AQL query
-            breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(
-                node_id=node_id, user_key=user_key, org_id=org_id
-            )
-
-            # Convert to BreadcrumbItem objects
-            return [
-                BreadcrumbItem(
-                    id=item['id'],
-                    name=item['name'],
-                    nodeType=item['nodeType'],
-                    subType=item.get('subType')
-                )
-                for item in breadcrumbs_data
-            ]
-
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get breadcrumbs: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            # Fallback: return empty list or just current node if possible
-            return []
-
     async def _get_permissions(
         self,
         user_key: str,
         org_id: str,
         parent_id: str | None,
         parent_type: str | None = None,
+        *,
+        is_org_admin: bool | None = None,
     ) -> PermissionsInfo | None:
         """Get user permissions for the current context. Returns None if user has no permission."""
+        if not parent_id and is_org_admin is not None:
+            # The providers' root branch reads role/orgRole off the graph User,
+            # which is never written there, so it answers MEMBER for every admin.
+            return PermissionsInfo(
+                role="ADMIN" if is_org_admin else "MEMBER",
+                canUpload=is_org_admin,
+                canCreateFolders=is_org_admin,
+                canEdit=is_org_admin,
+                canDelete=is_org_admin,
+                canManagePermissions=is_org_admin,
+            )
         try:
             perm_data = await self.graph_provider.get_knowledge_hub_context_permissions(
                 user_key=user_key,
@@ -897,12 +1027,24 @@ class KnowledgeHubService:
             if user_role:
                 permission = self._role_to_permission(user_role)
 
+        # The parent's id, type and name travel with the row, so a search hit
+        # renders "in <folder>" without a second lookup. Without the type a
+        # client cannot build the parent's own URL.
+        parent = None
+        if doc.get('parentId') and doc.get('parentType'):
+            parent = ParentRef(
+                id=doc['parentId'],
+                nodeType=doc['parentType'],
+                name=doc.get('parentName'),
+            )
+
         # Build NodeItem
         return NodeItem(
             id=doc_id,
             name=doc.get('name', ''),
             nodeType=node_type,
             parentId=doc.get('parentId'),
+            parent=parent,
             origin=origin,
             connector=doc.get('connector'),
             connectorId=doc.get('connectorId'),
@@ -924,6 +1066,23 @@ class KnowledgeHubService:
             isPlaceholder=bool(doc.get('isPlaceholder', False)),
         )
 
+
+    async def _stamp_collection_roles(self, rows: list[dict], user_key: str) -> None:
+        """The listing leaves userRole off everything below an App. Collection
+        content inherits flat from its collection, so its role is the caller's
+        role on that collection, and the collections page gates edit and delete
+        on it. One lookup per collection on the page, all at once."""
+        kb_ids = list({
+            row.get('connectorId') for row in rows
+            if row.get('origin') == 'COLLECTION' and row.get('nodeType') != 'app'
+            and not row.get('userRole') and row.get('connectorId')
+        })
+        roles = dict(zip(kb_ids, await asyncio.gather(*(
+            self.graph_provider.get_user_kb_permission(kb_id, user_key) for kb_id in kb_ids
+        ))))
+        for row in rows:
+            if row.get('connectorId') in roles and row.get('nodeType') != 'app' and not row.get('userRole'):
+                row['userRole'] = roles[row['connectorId']]
 
     def _role_to_permission(self, role: str) -> ItemPermission:
         """

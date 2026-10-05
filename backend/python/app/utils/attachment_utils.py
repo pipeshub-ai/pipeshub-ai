@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
@@ -18,6 +18,9 @@ from app.utils.image_admission import (
 )
 from app.utils.record_access import caller_can_read_virtual_record
 
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
     "data:image/png",
@@ -25,6 +28,47 @@ _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
     "data:image/jpg",
     "data:image/webp",
 )
+
+
+async def keep_accessible_attachments(
+    graph_provider: "IGraphDBProvider",
+    *,
+    org_id: str,
+    user_id: str | None,
+    is_service_account: bool,
+    attachments: list[dict[str, Any]],
+    previous_conversations: list[dict[str, Any]],
+    logger: logging.Logger,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """This turn's attachments and the history's, without those whose record the
+    user may not access.
+
+    They arrive from the client by ``virtualRecordId`` and every resolver reads
+    them from blob storage checking the org only. A service account has no User
+    node to check and keeps that org scoping.
+    """
+    history_attachments = [a for conv in previous_conversations or [] for a in conv.get("attachments") or []]
+    vrids = {a.get("virtualRecordId") for a in [*(attachments or []), *history_attachments]} - {None, ""}
+    if not vrids or is_service_account:
+        return attachments, previous_conversations
+
+    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    user_key = (user_doc or {}).get("id") or (user_doc or {}).get("_key")
+    # A failed check raises: answering as if nothing were attached would hide
+    # the outage from the user.
+    allowed = set((await graph_provider.check_access(
+        user_key, org_id, virtual_record_ids=vrids,
+    )).records_by_vrid) if user_key else set()
+
+    def keep(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        return [a for a in items or [] if not a.get("virtualRecordId") or a["virtualRecordId"] in allowed]
+
+    if vrids - allowed:
+        logger.warning("Dropped %d attachment(s) the user may not access", len(vrids - allowed))
+    return keep(attachments), [
+        {**conv, "attachments": keep(conv["attachments"])} if conv.get("attachments") else conv
+        for conv in previous_conversations or []
+    ]
 
 
 async def resolve_attachments(

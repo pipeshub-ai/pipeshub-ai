@@ -65,6 +65,7 @@ from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (
+    keep_accessible_attachments,
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
 from app.utils.llm import LLM_MISSING_FOR_CHAT
@@ -3889,12 +3890,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     else None
                 )
 
+                attachments, previous_conversations = await keep_accessible_attachments(
+                    graph_provider,
+                    org_id=user_context["orgId"],
+                    user_id=user_context["userId"],
+                    is_service_account=bool(
+                        (getattr(request.state, "user", None) or {}).get("isServiceAccount"),
+                    ),
+                    attachments=chat_query.attachments,
+                    previous_conversations=chat_query.previousConversations,
+                    logger=logger,
+                )
                 # Build query info
                 query_info = {
                     "query": chat_query.query,
                     "limit": chat_query.limit,
                     "messages": [],
-                    "previous_conversations": chat_query.previousConversations,
+                    "previous_conversations": previous_conversations,
                     "quickMode": chat_query.quickMode,
                     "chatMode": chat_query.chatMode,
                     "retrievalMode": chat_query.retrievalMode,
@@ -3919,7 +3931,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "modelKey": model_key,
                     "webSearch": web_search_provider,
                     "webSearchConfig": web_search_tool_config,
-                    "attachments": chat_query.attachments,
+                    "attachments": attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
                     "runId": chat_query.runId,
                 }

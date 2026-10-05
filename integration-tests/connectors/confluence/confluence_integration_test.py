@@ -170,7 +170,7 @@ class TestConfluenceValidation:
         logger.info("✅ TC-CF-003: Space %s validated successfully", space_id)
     
     @pytest.mark.order(4)
-    async def test_tc_cf_008_record_relationships(
+    async def test_tc_cf_008_node_relationships(
         self,
         confluence_connector: Dict[str, Any],
         confluence_datasource: ConfluenceDataSource,

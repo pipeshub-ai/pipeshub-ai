@@ -64,7 +64,7 @@ export function buildTreeFromNodes(
 /**
  * Categorize nodes into sidebar sections
  * @param nodes - The nodes to categorize (KB app children or root nodes)
- * @param rootParentId - The parentId that identifies top-level nodes (null for root nodes, 'apps/<id>' for KB app children)
+ * @param rootParentId - The parentId that identifies top-level nodes (null for root nodes, the App's id for KB app children)
  */
 export function categorizeNodes(nodes: KnowledgeHubNode[], rootParentId: string | null = null): CategorizedNodes {
   const filteredNodes = nodes;
@@ -139,21 +139,18 @@ export function findAncestorChainIds(
 
 /**
  * Build sidebar roots for a connector (non-KB) app from a flat API child list.
- * Tries common parentId shapes used by the knowledge-hub API.
+ *
+ * Every id the API returns is bare and every row names its placement parent, so
+ * a child of an App carries that App's id. A prefixed-id or parentless
+ * fallback would only fire when the tree is genuinely wrong, and would hide
+ * that by re-rooting the whole list.
  */
 export function buildConnectorAppSidebarTree(
   appId: string,
   items: KnowledgeHubNode[]
 ): EnhancedFolderTreeNode[] {
   const filtered = items.filter((n) => n.nodeType !== 'app');
-  const appPrefix = `apps/${appId}`;
-  const byAppPrefix = buildTreeFromNodes(filtered, appPrefix);
-  if (byAppPrefix.length > 0) return byAppPrefix;
-  const byAppId = buildTreeFromNodes(filtered, appId);
-  if (byAppId.length > 0) return byAppId;
-  const byNull = buildTreeFromNodes(filtered, null);
-  if (byNull.length > 0) return byNull;
-  return filtered.map((n) => nodeToTreeNode(n, 0, []));
+  return buildTreeFromNodes(filtered, appId);
 }
 
 /**

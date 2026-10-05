@@ -73,6 +73,7 @@ def _setup(*, signs_urls: bool = False) -> tuple[_Graph, FakeBlobStore, Artifact
     graph = _Graph()
     for user_id, key in ((OWNER, "ukey-owner"), (COLLEAGUE, "ukey-colleague"), (STRANGER, "ukey-stranger")):
         graph.add_user(user_id, key=key)
+        graph.users[user_id]["orgId"] = ORG
     blob = FakeBlobStore(signs_urls=signs_urls)
     return graph, blob, ArtifactRegistryService(graph, blob)
 
@@ -198,7 +199,7 @@ class TestSharingTheConversation:
         shared = await _get_artifact_record_ids_for_conversation(graph, ORG, CONVERSATION)
         assert shared == [record_id]
 
-        assert await _grant_reader_permissions(graph, OWNER, [COLLEAGUE], shared) == 1
+        assert await _grant_reader_permissions(graph, ORG, OWNER, [COLLEAGUE], shared) == 1
         assert _permission_edges(graph, record_id) == {"ukey-owner": "OWNER", "ukey-colleague": "READER"}
         await registry.get_download_url(actor=colleague, artifact_id=record_id)
         await TieredRecordAuthorizer(graph).authorize(colleague, _record_view(entry))
@@ -206,7 +207,7 @@ class TestSharingTheConversation:
         with pytest.raises(AccessDeniedError):
             await registry.get_download_url(actor=Actor(org_id=ORG, user_id=STRANGER), artifact_id=record_id)
 
-        assert await _revoke_reader_permissions(graph, OWNER, [COLLEAGUE], shared) == 1
+        assert await _revoke_reader_permissions(graph, ORG, OWNER, [COLLEAGUE], shared) == 1
         with pytest.raises(AccessDeniedError):
             await registry.get_download_url(actor=colleague, artifact_id=record_id)
 
@@ -214,7 +215,17 @@ class TestSharingTheConversation:
         graph, blob, _ = _setup()
         entry = await _export(graph, blob)
 
-        granted = await _grant_reader_permissions(graph, STRANGER, [COLLEAGUE], [entry["recordId"]])
+        granted = await _grant_reader_permissions(graph, ORG, STRANGER, [COLLEAGUE], [entry["recordId"]])
+
+        assert granted == 0
+        assert "ukey-colleague" not in _permission_edges(graph, entry["recordId"])
+
+    async def test_it_cannot_be_shared_with_someone_in_another_org(self) -> None:
+        graph, blob, _ = _setup()
+        entry = await _export(graph, blob)
+        graph.users[COLLEAGUE]["orgId"] = "org-2"
+
+        granted = await _grant_reader_permissions(graph, ORG, OWNER, [COLLEAGUE], [entry["recordId"]])
 
         assert granted == 0
         assert "ukey-colleague" not in _permission_edges(graph, entry["recordId"])
@@ -245,7 +256,7 @@ class TestArtifactTools:
     async def test_reader_cannot_add_a_version(self) -> None:
         graph, blob, registry = _setup()
         entry = await _export(graph, blob)
-        await _grant_reader_permissions(graph, OWNER, [COLLEAGUE], [entry["recordId"]])
+        await _grant_reader_permissions(graph, ORG, OWNER, [COLLEAGUE], [entry["recordId"]])
 
         with pytest.raises(AccessDeniedError):
             await registry.add_version(

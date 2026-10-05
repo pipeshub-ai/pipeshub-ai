@@ -19,6 +19,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from app.config.constants.arangodb import (
     AppStatus,
+    CollectionNames,
     Connectors,
     OriginTypes,
 )
@@ -1102,137 +1103,6 @@ class TestGetSignedUrl:
 # ============================================================================
 
 
-class TestGetRecords:
-    """Tests for get_records route handler."""
-
-    async def test_success(self):
-        from app.connectors.api.router import get_records
-
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk-1"})
-        gp.get_records = AsyncMock(return_value=(
-            [{"id": "rec-1"}],
-            1,
-            {"recordTypes": ["FILE"]},
-        ))
-
-        container = MagicMock()
-        container.logger = MagicMock(return_value=MagicMock())
-        request = _mock_request(container=container)
-
-        result = await get_records(
-            request=request,
-            graph_provider=gp,
-            page=1,
-            limit=20,
-            search=None,
-            record_types=None,
-            origins=None,
-            connectors=None,
-            indexing_status=None,
-            permissions=None,
-            date_from=None,
-            date_to=None,
-            sort_by="createdAtTimestamp",
-            sort_order="desc",
-            source="all",
-        )
-        assert result["records"] == [{"id": "rec-1"}]
-        assert result["pagination"]["totalCount"] == 1
-
-    async def test_user_not_found(self):
-        from app.connectors.api.router import get_records
-
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(return_value=None)
-
-        container = MagicMock()
-        container.logger = MagicMock(return_value=MagicMock())
-        request = _mock_request(container=container)
-
-        result = await get_records(
-            request=request,
-            graph_provider=gp,
-            page=1,
-            limit=20,
-            search=None,
-            record_types=None,
-            origins=None,
-            connectors=None,
-            indexing_status=None,
-            permissions=None,
-            date_from=None,
-            date_to=None,
-            sort_by="createdAtTimestamp",
-            sort_order="desc",
-            source="all",
-        )
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    async def test_exception_returns_500(self):
-        from app.connectors.api.router import get_records
-
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
-
-        container = MagicMock()
-        container.logger = MagicMock(return_value=MagicMock())
-        request = _mock_request(container=container)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await get_records(
-                request=request,
-                graph_provider=gp,
-                page=1,
-                limit=20,
-                search=None,
-                record_types=None,
-                origins=None,
-                connectors=None,
-                indexing_status=None,
-                permissions=None,
-                date_from=None,
-                date_to=None,
-                sort_by="createdAtTimestamp",
-                sort_order="desc",
-                source="all",
-            )
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-    async def test_sort_order_normalization(self):
-        from app.connectors.api.router import get_records
-
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk-1"})
-        gp.get_records = AsyncMock(return_value=([], 0, {}))
-
-        container = MagicMock()
-        container.logger = MagicMock(return_value=MagicMock())
-        request = _mock_request(container=container)
-
-        await get_records(
-            request=request,
-            graph_provider=gp,
-            page=1,
-            limit=20,
-            search=None,
-            record_types="FILE,MAIL",
-            origins=None,
-            connectors=None,
-            indexing_status=None,
-            permissions=None,
-            date_from=None,
-            date_to=None,
-            sort_by="invalidField",
-            sort_order="INVALID",
-            source="all",
-        )
-        # sort_order should default to "desc" and sort_by to "createdAtTimestamp"
-        call_kwargs = gp.get_records.call_args[1]
-        assert call_kwargs["sort_order"] == "desc"
-        assert call_kwargs["sort_by"] == "createdAtTimestamp"
-
 
 # ============================================================================
 # get_record_by_id
@@ -1278,6 +1148,26 @@ class TestGetRecordById:
 
 class TestDeleteRecord:
     """Tests for delete_record route handler."""
+
+    async def test_a_connector_record_is_not_deleted(self) -> None:
+        from app.connectors.api.router import delete_record
+
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"orgId": "org-1", "origin": "CONNECTOR"}})
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_record("rec-1", _mock_request(), gp, AsyncMock())
+        assert exc_info.value.status_code == 403
+        gp.delete_record.assert_not_called()
+
+    async def test_a_record_of_another_org_is_not_found(self) -> None:
+        from app.connectors.api.router import delete_record
+
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"orgId": "org-2", "origin": "UPLOAD"}})
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_record("rec-1", _mock_request(), gp, AsyncMock())
+        assert exc_info.value.status_code == 404
+        gp.delete_record.assert_not_called()
 
     async def test_success_with_event(self):
         from app.connectors.api.router import delete_record
@@ -1379,6 +1269,34 @@ class TestDeleteRecord:
         assert result["vectorCleanupPending"] is True
         assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
         kafka.publish_event.assert_not_called()
+
+    async def test_a_folder_delete_publishes_one_event_per_deleted_record(self):
+        """A KB folder goes with its contents, so the delete carries several
+        payloads; each is published, and only the unpublished ones are flagged."""
+        from app.connectors.api.router import delete_record
+
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"orgId": "org-1", "origin": "UPLOAD"}})
+        gp.delete_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {
+                "eventType": "deleteRecord",
+                "topic": "record-events",
+                "payloads": [{"recordId": "folder-1"}, {"recordId": "file-1"}, {"recordId": "file-2"}],
+            },
+        })
+
+        kafka = AsyncMock()
+        kafka.publish_event = AsyncMock(side_effect=[True, True, Exception("down")] + [Exception("down")] * 5)
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        request = _mock_request(container=container)
+
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            result = await delete_record("folder-1", request, gp, kafka)
+        published = [c.args[1]["payload"]["recordId"] for c in kafka.publish_event.await_args_list]
+        assert published[:3] == ["folder-1", "file-1", "file-2"]
+        assert result["vectorCleanupFailedRecordIds"] == ["file-2"]
 
     async def test_transient_event_publish_failure_recovers(self):
         """A broker hiccup that clears on retry must not be reported as a
@@ -1505,7 +1423,7 @@ class TestGetConnectorStatsEndpoint:
         from app.connectors.api.router import get_connector_stats_endpoint
 
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_document = AsyncMock(return_value={"type": "Slack", "orgId": "org-1"})
         gp.get_connector_stats = AsyncMock(return_value={
             "success": True,
             "data": {"totalRecords": 100},
@@ -1536,7 +1454,7 @@ class TestGetConnectorStatsEndpoint:
         from app.connectors.api.router import get_connector_stats_endpoint
 
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_document = AsyncMock(return_value={"type": "Slack", "orgId": "org-1"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
 
         connector_registry = AsyncMock()
@@ -2188,6 +2106,7 @@ class TestReindexRecordGroup:
         from app.connectors.api.router import reindex_record_group
 
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
         gp.reindex_record_group_records = AsyncMock(return_value={
             "success": True,
             "connectorId": "conn-1",
@@ -2232,6 +2151,7 @@ class TestReindexRecordGroup:
         from app.connectors.api.router import reindex_record_group
 
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
         gp.reindex_record_group_records = AsyncMock(return_value={
             "success": True,
             "connectorId": "conn-1",
@@ -2250,6 +2170,134 @@ class TestReindexRecordGroup:
             with pytest.raises(HTTPException) as exc_info:
                 await reindex_record_group("rg-1", request, gp, kafka)
             assert exc_info.value.status_code == 500
+
+
+def _route_dependency_calls(path: str) -> list:
+    from app.connectors.api.router import router
+
+    route = next(r for r in router.routes if getattr(r, "path", None) == path and "POST" in r.methods)
+    return [d.dependency for d in route.dependencies]
+
+
+class TestReindexAccessBeforeLock:
+    """H-5: the lock 409 must not reach a caller the provider refuses (403),
+    and H-17: eventPublished reports whether the publish actually happened."""
+
+    @staticmethod
+    def _locked_connector_record_gp() -> AsyncMock:
+        gp = AsyncMock()
+
+        async def get_document(key, collection):
+            if collection == CollectionNames.RECORDS.value:
+                return {"origin": OriginTypes.CONNECTOR.value, "connectorId": "conn-1"}
+            if collection == CollectionNames.RECORD_GROUPS.value:
+                return {"connectorId": "conn-1"}
+            return {"isLocked": True, "status": AppStatus.FULL_SYNCING.value}
+
+        gp.get_document = AsyncMock(side_effect=get_document)
+        return gp
+
+    @staticmethod
+    def _request():
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        return _mock_request(container=container)
+
+    def test_lock_is_not_a_route_dependency(self):
+        from app.connectors.api.router import (
+            require_connector_not_locked_for_record,
+            require_connector_not_locked_for_record_group,
+        )
+
+        assert require_connector_not_locked_for_record not in _route_dependency_calls(
+            "/api/v1/records/{record_id}/reindex"
+        )
+        assert require_connector_not_locked_for_record_group not in _route_dependency_calls(
+            "/api/v1/record-groups/{record_group_id}/reindex"
+        )
+
+    async def test_record_without_access_is_403_even_when_locked(self):
+        from app.connectors.api.router import reindex_single_record
+
+        gp = self._locked_connector_record_gp()
+        gp.reindex_single_record = AsyncMock(return_value={"success": False, "code": 403, "reason": "no"})
+        kafka = AsyncMock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await reindex_single_record("rec-1", self._request(), gp, kafka)
+        assert exc_info.value.status_code == 403
+        gp.get_document.assert_not_awaited()
+
+    async def test_record_with_access_on_locked_connector_is_409_and_not_published(self):
+        from app.connectors.api.router import reindex_single_record
+
+        gp = self._locked_connector_record_gp()
+        gp.reindex_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"eventType": "drive.reindex", "topic": "sync-events", "payload": {}},
+        })
+        kafka = AsyncMock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await reindex_single_record("rec-1", self._request(), gp, kafka)
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
+        kafka.publish_event.assert_not_awaited()
+
+    async def test_record_group_with_access_on_locked_connector_is_409_and_not_published(self):
+        from app.connectors.api.router import reindex_record_group
+
+        gp = self._locked_connector_record_gp()
+        gp.reindex_record_group_records = AsyncMock(return_value={
+            "success": True, "connectorId": "conn-1", "connectorName": "Drive", "userKey": "uk", "depth": 0,
+        })
+        kafka = AsyncMock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await reindex_record_group("rg-1", self._request(), gp, kafka)
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
+        kafka.publish_event.assert_not_awaited()
+
+    async def test_record_group_without_access_is_403_even_when_locked(self):
+        from app.connectors.api.router import reindex_record_group
+
+        gp = self._locked_connector_record_gp()
+        gp.reindex_record_group_records = AsyncMock(return_value={"success": False, "code": 403, "reason": "no"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await reindex_record_group("rg-1", self._request(), gp, AsyncMock())
+        assert exc_info.value.status_code == 403
+        gp.get_document.assert_not_awaited()
+
+    async def test_failed_publish_reports_event_not_published(self):
+        from app.connectors.api.router import reindex_single_record
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.reindex_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"eventType": "newRecord", "topic": "record-events", "payload": {}},
+        })
+        kafka = AsyncMock()
+        kafka.publish_event = AsyncMock(side_effect=RuntimeError("broker down"))
+
+        result = await reindex_single_record("rec-1", self._request(), gp, kafka)
+        assert result["eventPublished"] is False
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+
+    async def test_successful_publish_reports_event_published(self):
+        from app.connectors.api.router import reindex_single_record
+
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.reindex_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"eventType": "drive.reindex", "topic": "sync-events", "payload": {}},
+        })
+        kafka = AsyncMock()
+
+        result = await reindex_single_record("rec-1", self._request(), gp, kafka)
+        assert result["eventPublished"] is True
+        kafka.publish_event.assert_awaited_once()
 
 
 # ============================================================================

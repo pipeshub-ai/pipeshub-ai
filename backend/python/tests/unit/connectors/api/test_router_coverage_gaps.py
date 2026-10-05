@@ -76,7 +76,6 @@ from app.connectors.api.router import (
     get_kafka_service,
     get_mime_type_from_record,
     get_record_by_id,
-    get_records,
     get_validated_connector_instance,
     reindex_record_group,
     reindex_single_record,
@@ -364,7 +363,7 @@ class TestReindexSingleRecordGaps:
 
         result = await reindex_single_record("rec-1", req, graph_provider=gp, kafka_service=kafka)
         assert result["success"] is True
-        assert result["eventPublished"] is True  # eventData was not None
+        assert result["eventPublished"] is False
 
     @pytest.mark.asyncio
     async def test_generic_exception_raises_500(self):
@@ -424,6 +423,7 @@ class TestReindexRecordGroupGaps:
         req = _mock_request()
         req.json = AsyncMock(side_effect=json.JSONDecodeError("e", "doc", 0))
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
         gp.reindex_record_group_records = AsyncMock(return_value={
             "success": True,
             "connectorId": "c1",
@@ -466,6 +466,7 @@ class TestReindexRecordGroupGaps:
     async def test_event_publish_failure_raises_500(self):
         req = _mock_request(body={"depth": 0})
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
         gp.reindex_record_group_records = AsyncMock(return_value={
             "success": True,
             "connectorId": "c1",
@@ -899,7 +900,7 @@ class TestGetConnectorStatsGaps:
     @pytest.mark.asyncio
     async def test_success_returns_data(self):
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_document = AsyncMock(return_value={"type": "Slack", "orgId": "org-1"})
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
         registry = AsyncMock()
         registry.can_user_view_connector = AsyncMock(return_value=True)
@@ -911,7 +912,7 @@ class TestGetConnectorStatsGaps:
     @pytest.mark.asyncio
     async def test_not_found_raises_404(self):
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_document = AsyncMock(return_value={"type": "Slack", "orgId": "org-1"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
         registry = AsyncMock()
         registry.can_user_view_connector = AsyncMock(return_value=True)
@@ -925,7 +926,7 @@ class TestGetConnectorStatsGaps:
     async def test_generic_exception_propagates(self):
         """When get_connector_stats raises, returns 500."""
         gp = AsyncMock()
-        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_document = AsyncMock(return_value={"type": "Slack", "orgId": "org-1"})
         gp.get_connector_stats = AsyncMock(side_effect=RuntimeError("boom"))
         registry = AsyncMock()
         registry.can_user_view_connector = AsyncMock(return_value=True)
@@ -2058,27 +2059,6 @@ class TestCreateConnectorInstanceConfigAuthMissing:
 # ============================================================================
 
 
-class TestGetRecordsGaps:
-    @pytest.mark.asyncio
-    async def test_user_not_found_returns_404_dict(self):
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(return_value=None)
-        req = _mock_request(graph_provider=gp)
-
-        result = await get_records(req, graph_provider=gp)
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_exception_raises_500(self):
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("boom"))
-        req = _mock_request(graph_provider=gp)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await get_records(req, graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
 
 # ============================================================================
 # _parse_filter_response — unknown connector
@@ -2722,43 +2702,6 @@ class TestGetValidatedConnectorInstanceAdditional:
 # ============================================================================
 
 
-class TestGetRecordsAdditional:
-    @pytest.mark.asyncio
-    async def test_success_returns_paginated(self):
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey1"})
-        gp.get_records = AsyncMock(return_value=(
-            [{"id": "r1"}],  # records
-            1,  # total_count
-            {"types": ["PDF"]},  # available_filters
-        ))
-        req = _mock_request(graph_provider=gp)
-
-        result = await get_records(
-            req, graph_provider=gp, page=1, limit=20,
-            search=None, record_types=None, origins=None, connectors=None,
-            indexing_status=None, permissions=None, date_from=None, date_to=None,
-            sort_by="createdAtTimestamp", sort_order="desc", source="all"
-        )
-        assert result["records"] == [{"id": "r1"}]
-        assert result["pagination"]["totalCount"] == 1
-
-    @pytest.mark.asyncio
-    async def test_with_filters(self):
-        gp = AsyncMock()
-        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey1"})
-        gp.get_records = AsyncMock(return_value=([], 0, {}))
-        req = _mock_request(graph_provider=gp)
-
-        result = await get_records(
-            req, graph_provider=gp, page=1, limit=10,
-            search="test", record_types="PDF,DOC", origins="CONNECTOR",
-            connectors="GOOGLE_DRIVE", indexing_status="COMPLETED",
-            permissions=None, date_from=1000, date_to=2000,
-            sort_by="recordName", sort_order="asc", source="kb"
-        )
-        assert "records" in result
-
 
 # ============================================================================
 # delete_record — success with event data published
@@ -2854,6 +2797,7 @@ class TestReindexRecordGroupSuccess:
     async def test_success_publishes_event(self):
         req = _mock_request(body={"depth": 2})
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
         gp.reindex_record_group_records = AsyncMock(return_value={
             "success": True,
             "connectorId": "c1",

@@ -20,6 +20,8 @@ import {
   hubNode,
   hubResponse,
   openRowMenu,
+  pageCursor,
+  pagedByCursor,
   queryRow,
   installBrowserShims,
   renderInTheme,
@@ -70,11 +72,18 @@ const api = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../api', () => ({
-  KnowledgeHubApi: api.hub,
-  KnowledgeBaseApi: api.kb,
-  forgetPendingNodeChildrenRequests: () => {},
-}));
+vi.mock('../api', async () => {
+  const { pagedByCursor } = await import('./kb-page-harness');
+  return {
+    KnowledgeHubApi: {
+      ...api.hub,
+      getNavigationNodes: pagedByCursor(api.hub.getNavigationNodes, 0),
+      getNodeChildren: pagedByCursor(api.hub.getNodeChildren, 2),
+    },
+    KnowledgeBaseApi: api.kb,
+    forgetPendingNodeChildrenRequests: () => {},
+  };
+});
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
 vi.mock('@/config', async (importOriginal) => {
@@ -177,11 +186,22 @@ vi.mock('../components', async (importOriginal) => {
   };
 });
 
+let pushState: { mockRestore: () => void } | null = null;
+let replaceState: { mockRestore: () => void } | null = null;
+
 beforeEach(() => {
   installBrowserShims();
   nav.current = createNavigation();
   router.push.mockImplementation((url: string) => nav.current!.setUrl(url));
   router.replace.mockImplementation((url: string) => nav.current!.setUrl(url));
+  // Navigation inside the page writes the address with history.pushState, which
+  // Next mirrors into useSearchParams; this harness does the same.
+  pushState = vi.spyOn(window.history, 'pushState').mockImplementation((_state, _unused, url) => {
+    if (url != null) nav.current!.setUrl(String(url));
+  });
+  replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation((_state, _unused, url) => {
+    if (url != null) nav.current!.setUrl(String(url));
+  });
   permissions.denied.clear();
   // Loads a previous test left in flight must not leak into this one.
   resetKnowledgeBaseSession();
@@ -196,6 +216,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  pushState?.mockRestore();
+  replaceState?.mockRestore();
 });
 
 function sidebarIds() {
@@ -378,6 +400,38 @@ describe('Knowledge base page — inside a collection', () => {
     fireEvent.click(screen.getByText('Engineering'));
     expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
     expect(currentUrl()).toContain('nodeId=kb-eng');
+  });
+
+  it('keeps the place the user went to last when an earlier folder answers after it', async () => {
+    await openEngineering();
+    let answerDesigns: (value: unknown) => void = () => {};
+    api.hub.loadFolderData.mockImplementation((_type: string, id: string) =>
+      id === 'folder-designs'
+        ? new Promise((resolve) => {
+            answerDesigns = resolve;
+          })
+        : Promise.resolve(engineeringContents([SPEC])),
+    );
+
+    fireEvent.click(row('Designs'));
+    await waitFor(() => expect(currentUrl()).toContain('nodeId=folder-designs'));
+    act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-eng'));
+    await waitFor(() => expect(queryRow('Designs')).toBeNull());
+    expect(row('spec.pdf')).toBeTruthy();
+
+    await act(async () => {
+      answerDesigns(
+        folderResponse(
+          { id: 'folder-designs', name: 'Designs', nodeType: 'folder' },
+          [...ENGINEERING_TRAIL, { id: 'folder-designs', name: 'Designs', nodeType: 'folder' }],
+          [hubNode({ id: 'rec-logo', name: 'logo.png', parentId: 'folder-designs' })],
+        ),
+      );
+    });
+
+    expect(queryRow('logo.png')).toBeNull();
+    expect(row('spec.pdf')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('offers to add files to an empty collection', async () => {
@@ -764,7 +818,7 @@ describe('Knowledge base page — failures the user must be able to recover from
     );
     openAt('/knowledge-base');
     await screen.findByRole('row', { name: 'Engineering' });
-    await waitFor(() => expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextPage: 2 }));
+    await waitFor(() => expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextCursor: 'p2' }));
     act(() => {
       const kb = useKnowledgeBaseStore.getState();
       kb.cacheNodeChildren('kb-eng', [DESIGNS]);
@@ -797,7 +851,7 @@ describe('Knowledge base page — failures the user must be able to recover from
     );
     openAt('/knowledge-base');
     await screen.findByRole('row', { name: 'Engineering' });
-    await waitFor(() => expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextPage: 2 }));
+    await waitFor(() => expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextCursor: 'p2' }));
     act(() => {
       const kb = useKnowledgeBaseStore.getState();
       kb.cacheNodeChildren('kb-eng', [DESIGNS]);
@@ -1006,18 +1060,20 @@ describe('Knowledge base page — working with files', () => {
 
   it('loads the next page of a large collection', async () => {
     withCollections();
-    api.hub.loadFolderData.mockImplementation(async (_type: string, _id: string, params: { page: number }) => {
+    api.hub.loadFolderData.mockImplementation(pagedByCursor(async (_type: string, _id: string, params: { page: number }) => {
       const page = engineeringContents(params.page === 1 ? [DESIGNS, SPEC] : [NOTES]);
       page.pagination = {
         page: params.page,
         limit: 50,
         totalItems: 120,
         totalPages: 3,
+        startIndex: (params.page - 1) * 50 + 1,
+        endIndex: params.page * 50,
         hasNext: params.page < 3,
         hasPrev: params.page > 1,
       };
       return page;
-    });
+    }, 2));
     openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
     await screen.findByRole('row', { name: 'spec.pdf' });
     expect(screen.getByText('Showing 1-50 of 120 Items')).toBeTruthy();
@@ -1026,7 +1082,10 @@ describe('Knowledge base page — working with files', () => {
 
     expect(await screen.findByRole('row', { name: 'notes.txt' })).toBeTruthy();
     expect(screen.getByText('Showing 51-100 of 120 Items')).toBeTruthy();
-    expect(currentUrl()).toContain('page=2');
+    expect(currentUrl()).toContain(`cursor=${pageCursor(2)}`);
+    expect(api.hub.loadFolderData).toHaveBeenLastCalledWith(
+      'app', 'kb-eng', expect.objectContaining({ cursor: pageCursor(2) }), expect.anything(),
+    );
   });
 });
 
@@ -1643,7 +1702,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     ]);
     expect(childIdsOf('folder-designs')).toHaveLength(40);
     expect(useKnowledgeBaseStore.getState().nodeChildrenPagination.get('folder-designs')).toEqual(
-      expect.objectContaining({ hasNext: true, nextPage: 3 }),
+      expect.objectContaining({ hasNext: true, nextCursor: 'p3' }),
     );
   });
 
@@ -1741,7 +1800,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     sidebar = within(view.container).getByTestId('sidebar-slot');
     await screen.findByRole('row', { name: 'Designs' });
     await waitFor(() => expect(childIdsOf('kb-eng')).toEqual(['folder-designs', 'folder-specs']));
-    await waitFor(() => expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextPage: 2 }));
+    await waitFor(() => expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextCursor: 'p2' }));
 
     await act(async () => {
       fireEvent.click(sidebarChevron('Designs'));

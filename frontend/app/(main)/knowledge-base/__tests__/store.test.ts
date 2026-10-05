@@ -203,26 +203,41 @@ describe('the sidebar child cache', () => {
 });
 
 describe('browsing state', () => {
-  it('goes back to page 1 whenever what is listed changes', () => {
-    store().setCollectionsPagination({ page: 3, limit: 50, totalItems: 500, totalPages: 10, hasNext: true, hasPrev: true });
+  it('goes back to the first page whenever what is listed changes', () => {
+    store().setCollectionsPagination({
+      cursor: 'c3', limit: 50, totalItems: 500, startIndex: 101, endIndex: 150,
+      hasNext: true, hasPrev: true, nextCursor: 'c4', prevCursor: 'c2',
+    });
     store().setSearchQuery('invoice');
-    expect(store().collectionsPagination.page).toBe(1);
-    store().setCollectionsPage(4);
+    expect(store().collectionsPagination.cursor).toBeNull();
+    store().setCollectionsCursor('c4');
     store().setSort({ field: 'name', order: 'asc' } as never);
-    expect(store().collectionsPagination.page).toBe(1);
-    store().setCollectionsPage(10);
-    expect(store().collectionsPagination).toMatchObject({ hasNext: false, hasPrev: true });
+    expect(store().collectionsPagination.cursor).toBeNull();
+    store().setCollectionsCursor('c9');
+    store().setFilter({ recordTypes: ['FILE'] } as never);
+    expect(store().collectionsPagination.cursor).toBeNull();
+    // A cursor is issued for one page size.
+    store().setCollectionsCursor('c9');
     store().setCollectionsLimit(100);
-    expect(store().collectionsPagination).toMatchObject({ page: 1, totalPages: 5, hasNext: true, hasPrev: false });
+    expect(store().collectionsPagination).toMatchObject({ cursor: null, limit: 100 });
   });
 
-  it('keeps the page when a filter is restored from the URL', () => {
-    store().setCollectionsPage(2);
+  it('moves only the position on Next; the footer waits for the response', () => {
+    store().setCollectionsPagination({
+      cursor: null, limit: 50, totalItems: 120, startIndex: 1, endIndex: 50,
+      hasNext: true, hasPrev: false, nextCursor: 'c2', prevCursor: null,
+    });
+    store().setCollectionsCursor('c2');
+    expect(store().collectionsPagination).toMatchObject({ cursor: 'c2', startIndex: 1, endIndex: 50, hasPrev: false });
+  });
+
+  it('keeps the position when a filter is restored from the URL', () => {
+    store().setCollectionsCursor('c2');
     store().hydrateFilter({ recordTypes: ['FILE'] } as never);
-    expect(store().collectionsPagination.page).toBe(2);
+    expect(store().collectionsPagination.cursor).toBe('c2');
     store().clearFilter();
     expect(store().filter).toEqual({});
-    expect(store().collectionsPagination.page).toBe(1);
+    expect(store().collectionsPagination.cursor).toBeNull();
   });
 
   it('expanding a folder collapses its siblings and everything under them', () => {
@@ -239,14 +254,21 @@ describe('browsing state', () => {
     expect(store().expandedFolders).toEqual({ b: true });
   });
 
-  it('pages all records from the loaded list', () => {
-    store().setAllRecordsLimit(2);
+  it('pages all records by cursor; a response never moves the position', () => {
+    // A client-side list is the whole result: nothing to page to.
     store().setAllRecords([{ id: '1' }, { id: '2' }, { id: '3' }] as never);
-    expect(store().allRecordsPagination).toMatchObject({ totalItems: 3, totalPages: 2, hasNext: true, hasPrev: false });
-    store().setAllRecordsPage(2);
-    expect(store().allRecordsPagination).toMatchObject({ hasNext: false, hasPrev: true });
-    store().syncAllRecordsPaginationMeta({ totalItems: 9, totalPages: 5, hasNext: true, hasPrev: true });
-    expect(store().allRecordsPagination).toMatchObject({ page: 2, limit: 2, totalItems: 9 });
+    expect(store().allRecordsPagination).toMatchObject({
+      totalItems: 3, startIndex: 1, endIndex: 3, hasNext: false, hasPrev: false, nextCursor: null,
+    });
+    store().setAllRecordsLimit(2);
+    store().setAllRecordsCursor('c2');
+    store().syncAllRecordsPaginationMeta({
+      cursor: 'ignored', limit: 99, totalItems: 9, startIndex: 3, endIndex: 4,
+      hasNext: true, hasPrev: true, nextCursor: 'c3', prevCursor: 'c1',
+    });
+    expect(store().allRecordsPagination).toMatchObject({
+      cursor: 'c2', limit: 2, totalItems: 9, startIndex: 3, endIndex: 4, nextCursor: 'c3', prevCursor: 'c1',
+    });
   });
 
   it('selects, toggles and clears', () => {

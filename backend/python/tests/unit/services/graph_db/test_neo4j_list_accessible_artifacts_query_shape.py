@@ -1,5 +1,6 @@
 """Query-shape tests for Neo4j artifact gallery listing."""
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -153,15 +154,48 @@ class TestNeo4jGalleryReadFailuresPropagate:
         assert await provider.get_artifact_detail("user-key", "org-1", "art-1") is None
 
 
-class TestNeo4jListAllRecordsExcludesArtifacts:
+class TestNeo4jAllRecordsExcludesArtifacts:
+    """An artifact is a record with a direct grant and the connector id of no App
+    (``coding_sandbox_<org>``). The All Records list is the Knowledge Hub listing,
+    one page per App the user may enter, so an artifact stays out by never
+    reaching a page: it is in no bucket of the user's grants, its connector id
+    lists nothing, and a page picks up a granted node only of its own App."""
+
+    ARTIFACT_CONNECTOR = "coding_sandbox_org-1"
+
     @pytest.mark.asyncio
-    async def test_kb_clause_excludes_artifact_type(self, provider):
+    async def test_a_granted_artifact_is_in_no_connector_bucket(self, provider):
+        provider.client.execute_query = AsyncMock(return_value=[{
+            "grantees": ["user-key"],
+            "gatedApps": ["app-1"],
+            "grantSets": [
+                {"connectorId": "app-1", "ids": ["rec-1"]},
+                {"connectorId": self.ARTIFACT_CONNECTOR, "ids": ["art-1"]},
+            ],
+        }])
+        access = await provider.get_knowledge_hub_access_v3("user-key", "org-1")
+        assert access["by_connector"] == {"app-1": ["rec-1"]}
+
+    @pytest.mark.asyncio
+    async def test_the_connector_id_of_an_artifact_lists_nothing(self, provider):
         provider.client.execute_query = AsyncMock(return_value=[])
-        await provider.list_all_records(
-            user_id="user-key",
-            org_id="org-1",
-            skip=0,
-            limit=10,
+        page = await provider.get_knowledge_hub_connector_page_v3(
+            self.ARTIFACT_CONNECTOR, "org-1", ["user-key"], ["app-1"], ["art-1"],
         )
-        list_query = provider.client.execute_query.await_args_list[0].args[0]
-        assert 'kbRecord.recordType <> "ARTIFACT"' in list_query
+        assert page["rows"] == [] and page["total"] == 0
+        provider.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_takes_a_granted_node_only_of_its_own_app(self, provider):
+        provider.client.execute_query = AsyncMock(return_value=[])
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app-1", "org-1", ["user-key"], ["app-1"], ["rec-1", "art-1"],
+        )
+        listing = _queries(provider)[-1]
+        assert listing.lstrip().startswith("MATCH (app:App {id: $app_id})")
+        # The two arms that read the grant list rather than walk from the App.
+        assert re.search(r"MATCH \(sd:Record\|RecordGroup\)\s+WHERE sd\.connectorId = app\.id", listing)
+        assert re.search(r"MATCH \(dg:RecordGroup\)\s+WHERE dg\.connectorId = app\.id", listing)
+        assert listing.count("IN $kh_lists.grantedIds") == listing.count("sd.id IN $kh_lists.grantedIds") + listing.count(
+            "dg.id IN $kh_lists.grantedIds"
+        ) + listing.count("ca.id IN $kh_lists.grantedIds") + listing.count("cc.id IN $kh_lists.grantedIds")

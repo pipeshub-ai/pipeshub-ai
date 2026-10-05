@@ -15,6 +15,7 @@ from app.modules.retrieval.retrieval_service import (
     DEFAULT_SEARCH_LIMIT,
     PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
 )
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -28,6 +29,12 @@ def _clear_user_cache():
     mod._user_cache.clear()
     yield
     mod._user_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _a_user_with_a_graph_key(mock_graph_provider):
+    """The shared provider's default user has no key, and no hit is checked without one."""
+    mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "test@example.com"}
 
 
 @pytest.fixture
@@ -893,14 +900,34 @@ class TestExecuteParallelSearches:
 class TestGetUserCached:
     @pytest.mark.asyncio
     async def test_cache_miss_fetches_from_db(self, retrieval_service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "user@test.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "user@test.com"}
         result = await retrieval_service._get_user_cached("user1")
         assert result["email"] == "user@test.com"
-        mock_graph_provider.get_user_by_user_id.assert_called_once_with("user1")
+        mock_graph_provider.get_user_by_user_id.assert_called_once_with("user1", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_an_unavailable_permission_check(
+        self, retrieval_service, mock_graph_provider
+    ):
+        import app.modules.retrieval.retrieval_service as mod
+        from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+
+        mock_graph_provider.get_user_by_user_id.side_effect = RuntimeError("graph down")
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await retrieval_service._get_user_cached("user1")
+        assert "user1" not in mod._user_cache
+
+    @pytest.mark.asyncio
+    async def test_a_missing_user_is_none_and_is_not_cached(self, retrieval_service, mock_graph_provider):
+        import app.modules.retrieval.retrieval_service as mod
+
+        mock_graph_provider.get_user_by_user_id.return_value = None
+        assert await retrieval_service._get_user_cached("nobody") is None
+        assert "nobody" not in mod._user_cache
 
     @pytest.mark.asyncio
     async def test_cache_hit_returns_cached(self, retrieval_service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "cached@test.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "cached@test.com"}
         await retrieval_service._get_user_cached("user1")
         await retrieval_service._get_user_cached("user1")
         # Should only call DB once (second is cache hit)
@@ -909,13 +936,13 @@ class TestGetUserCached:
     @pytest.mark.asyncio
     async def test_cache_expiry(self, retrieval_service, mock_graph_provider):
         import app.modules.retrieval.retrieval_service as mod
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "old@test.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "old@test.com"}
         await retrieval_service._get_user_cached("user1")
 
         # Manually expire the cache entry
         mod._user_cache["user1"] = ({"email": "old@test.com"}, time.time() - 400)
 
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "new@test.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "new@test.com"}
         result = await retrieval_service._get_user_cached("user1")
         assert result["email"] == "new@test.com"
         assert mock_graph_provider.get_user_by_user_id.call_count == 2
@@ -923,7 +950,7 @@ class TestGetUserCached:
     @pytest.mark.asyncio
     async def test_cache_size_limit(self, retrieval_service, mock_graph_provider):
         import app.modules.retrieval.retrieval_service as mod
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "test@test.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "test@test.com"}
 
         # Fill cache to exactly the limit
         for i in range(mod.MAX_USER_CACHE_SIZE):
@@ -978,6 +1005,76 @@ class TestSearchWithFilters:
         assert result["message"] == PERMISSION_CHECK_UNAVAILABLE_MESSAGE
         assert result["searchResults"] == []
         retrieval_service._execute_parallel_searches.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_lookup_shows_nothing_and_says_why(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """The lookup answers None on a graph error unless asked to raise, and
+        with no user key every hit was denied: "no relevant documents found"."""
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        async def lookup(_user_id, *, raise_on_error=False):
+            if raise_on_error:
+                raise RuntimeError("graph down")
+            return None
+
+        mock_graph_provider.get_user_by_user_id = AsyncMock(side_effect=lookup)
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.check_access = AsyncMock(
+            side_effect=lambda user_key, _org_id, *, node_ids=(), **_kwargs: AccessCheck(
+                node_ids=frozenset(node_ids) if user_key else frozenset()
+            ),
+        )
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[{
+            "score": 0.9, "content": "body", "citationType": "vectordb|document",
+            "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+        }])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.PERMISSION_CHECK_UNAVAILABLE.value
+        assert result["status_code"] == 503
+        assert result["message"] == PERMISSION_CHECK_UNAVAILABLE_MESSAGE
+        assert result["searchResults"] == []
+        retrieval_service._execute_parallel_searches.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user", [None, {"email": "u@t.com"}], ids=["no-user", "no-key"])
+    async def test_hits_are_not_checked_without_a_user_key(
+        self, retrieval_service, mock_graph_provider, user
+    ):
+        """The scope was read for this user, so a lookup that names no key did
+        not answer; checking the hits as nobody would deny them all."""
+        mock_graph_provider.get_user_by_user_id.return_value = user
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock()
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.PERMISSION_CHECK_UNAVAILABLE.value
+        assert result["message"] == PERMISSION_CHECK_UNAVAILABLE_MESSAGE
+        retrieval_service._execute_parallel_searches.assert_not_called()
+        mock_graph_provider.check_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_user_who_does_not_exist_reaches_nothing(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """A missing user is a denial, not an outage: nothing is accessible."""
+        mock_graph_provider.get_user_by_user_id.return_value = None
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="nobody", org_id="o1"
+        )
+
+        assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+        assert result["message"] == ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
 
     @pytest.mark.asyncio
     async def test_search_asks_for_the_strict_permission_read(
@@ -1051,7 +1148,7 @@ class TestSearchWithFilters:
         self, retrieval_service, mock_graph_provider
     ):
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "user@test.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "user@test.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc"}
         ]
@@ -1074,7 +1171,7 @@ class TestSearchWithFilters:
         self, retrieval_service, mock_graph_provider, mock_vector_db_service
     ):
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "user@test.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "user@test.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1109,12 +1206,60 @@ class TestSearchWithFilters:
         assert sr["metadata"]["connectorId"] == "conn-123"
         assert sr["metadata"]["mimeType"] == "application/pdf"
 
+    @staticmethod
+    def _two_hits(mock_graph_provider, retrieval_service) -> None:
+        """The old enumeration admits two records; each has one hit."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {
+            "vr-open": "rec-open", "vr-restricted": "rec-restricted",
+        }
+        mock_graph_provider.get_user_by_user_id.return_value = {"id": "user-key", "email": "u@test.com"}
+        mock_graph_provider.get_records_by_record_ids.side_effect = lambda ids, _org: [
+            {
+                "_key": rid, "virtualRecordId": rid.replace("rec", "vr"), "origin": "CONNECTOR",
+                "recordName": rid, "webUrl": f"https://example.com/{rid}", "mimeType": "text/html",
+            }
+            for rid in ids
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {"score": 0.9, "content": "a", "metadata": {"virtualRecordId": "vr-open", "orgId": "o1"}},
+            {"score": 0.8, "content": "b", "metadata": {"virtualRecordId": "vr-restricted", "orgId": "o1"}},
+        ])
+
+    @pytest.mark.asyncio
+    async def test_a_hit_the_permission_model_denies_is_dropped(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """The enumeration is the old model's, which admits a RESTRICTED page
+        to every member of its space."""
+        self._two_hits(mock_graph_provider, retrieval_service)
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"rec-open"})),
+        )
+
+        result = await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+
+        assert [r["metadata"]["recordId"] for r in result["searchResults"]] == ["rec-open"]
+        key, org = mock_graph_provider.check_access.await_args.args
+        ids = mock_graph_provider.check_access.await_args.kwargs["node_ids"]
+        assert (key, org, sorted(ids)) == ("user-key", "o1", ["rec-open", "rec-restricted"])
+
+    @pytest.mark.asyncio
+    async def test_a_failed_hit_check_says_so_instead_of_answering_empty(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        self._two_hits(mock_graph_provider, retrieval_service)
+        mock_graph_provider.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        result = await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+
+        assert result["status"] == Status.PERMISSION_CHECK_UNAVAILABLE.value
+
     @pytest.mark.asyncio
     async def test_gmail_url_template_replacement(
         self, retrieval_service, mock_graph_provider
     ):
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "alice@corp.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1145,7 +1290,7 @@ class TestSearchWithFilters:
         self, retrieval_service, mock_graph_provider
     ):
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -1271,7 +1416,7 @@ class TestSearchWithFilters:
         self, retrieval_service, mock_graph_provider
     ):
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1",
@@ -1305,7 +1450,7 @@ class TestSearchWithFilters:
         self, retrieval_service, mock_graph_provider, mock_vector_db_service
     ):
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
 
         await retrieval_service.search_with_filters(
@@ -1322,7 +1467,7 @@ class TestSearchWithFilters:
     ):
         """Record with missing mimeType and recordType=FILE adds to file_record_ids_to_fetch."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1367,7 +1512,7 @@ class TestSearchWithFilters:
     ):
         """Record with missing mimeType and recordType=MAIL adds to mail_record_ids_to_fetch."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "alice@corp.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1413,7 +1558,7 @@ class TestSearchWithFilters:
     ):
         """Record with mimeType but missing webUrl and recordType=FILE fetches from files collection."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1449,7 +1594,7 @@ class TestSearchWithFilters:
     def _sql_table_without_link(mock_graph_provider) -> None:
         """A PostgreSQL table indexed while FRONTEND_PUBLIC_URL was unset: its webUrl is ""."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1542,7 +1687,7 @@ class TestSearchWithFilters:
         """The chat citation path reads webUrl off this map, not off the metadata."""
         template = "https://mail.google.com/mail?authuser={user.email}#all/m1"
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "alice@corp.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
@@ -1571,7 +1716,7 @@ class TestSearchWithFilters:
     ):
         """A Gmail attachment is a FILE record carrying the mail placeholder."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "alice@corp.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1610,7 +1755,7 @@ class TestSearchWithFilters:
     ):
         """Record with mimeType but missing webUrl and recordType=MAIL fetches from mails collection."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1649,7 +1794,7 @@ class TestSearchWithFilters:
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {
             "vr1": "rec1", "vr2": "rec2"
         }
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1714,7 +1859,7 @@ class TestSearchWithFilters:
     ):
         """When get_records_by_record_ids returns empty list, should return 404."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = []
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
@@ -1736,7 +1881,7 @@ class TestSearchWithFilters:
     ):
         """Exception in _create_virtual_to_record_mapping is re-raised (caught by outer except)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1771,7 +1916,7 @@ class TestSearchWithFilters:
     ):
         """When virtual_to_record_map produces no unique record IDs, return 404."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         # Return records with None _key so unique_record_ids will be empty
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {"_key": None, "virtualRecordId": "vr1"}
@@ -1795,7 +1940,7 @@ class TestSearchWithFilters:
     ):
         """knowledge_search=True with isBlockGroup in metadata triggers get_record and get_flattened_results."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1878,7 +2023,7 @@ class TestSearchWithFilters:
     ):
         """knowledge_search=True where get_record sets None for the record skips it."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1922,7 +2067,7 @@ class TestSearchWithFilters:
     ):
         """When the batched file fetch raises, it's handled gracefully."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1957,7 +2102,7 @@ class TestSearchWithFilters:
         """The fetch list is appended per search result, so a record matched by
         several chunks used to cost one query per chunk."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1",
@@ -1998,7 +2143,7 @@ class TestSearchWithFilters:
     ):
         """Search results with no valid virtualRecordId should return 404."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
                 "score": 0.9,
@@ -2024,7 +2169,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Non-dict or None results in search_results are skipped (line 360-361)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -2052,7 +2197,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Result with no metadata key is skipped (lines 362-364)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -2083,7 +2228,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Result with virtual_id not in virtual_to_record_map goes to final_search_results (line 366->420)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1", "vr2": "rec2"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -2113,7 +2258,7 @@ class TestSearchWithFiltersBranches:
     ):
         """When record_id_to_record_map doesn't have the record_id, no enrichment (line 371->420)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -2139,9 +2284,9 @@ class TestSearchWithFiltersBranches:
     async def test_gmail_url_no_user_email(
         self, retrieval_service, mock_graph_provider
     ):
-        """Gmail URL with user=None does not replace template (line 378->380 branch)."""
+        """Gmail URL for a user with no email does not replace template (line 378->380 branch)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = None  # user is None
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
@@ -2169,7 +2314,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Record with no mimeType and recordType neither FILE nor MAIL continues (line 390->393 fallthrough)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "web",
@@ -2196,7 +2341,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Record with mimeType but no webUrl and recordType neither FILE nor MAIL (line 404->407 fallthrough)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "web",
@@ -2222,7 +2367,7 @@ class TestSearchWithFiltersBranches:
     ):
         """knowledge_search=True but isBlockGroup is None — goes to final_search_results (line 412->420)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -2252,7 +2397,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Fetched mail with Gmail URL but user has no email (line 479->481 branch)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = None
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
@@ -2282,7 +2427,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Record with mimeType that has no known extension (line 397->400 branch)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -2311,7 +2456,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Fetched file with mimeType that has no known extension (line 489->492 branch)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",
@@ -2343,7 +2488,7 @@ class TestSearchWithFiltersBranches:
     ):
         """Falsy entries in fetched_records are skipped in record_id_to_record_map (line 334->333)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         # Return list with a None entry and a valid entry
         mock_graph_provider.get_records_by_record_ids.return_value = [
             None,  # falsy entry
@@ -2370,7 +2515,7 @@ class TestSearchWithFiltersBranches:
     ):
         """In result_to_record_map iteration, when record not in record_id_to_record_map, skip (line 465-466)."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1", "vr2": "rec2"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "drive",

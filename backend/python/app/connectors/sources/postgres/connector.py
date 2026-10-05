@@ -1583,7 +1583,11 @@ class PostgreSQLConnector(BaseConnector):
             )
             if not group:
                 return
-            for edge_collection in (CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value):
+            for edge_collection in (
+                CollectionNames.BELONGS_TO.value,
+                CollectionNames.INHERIT_PERMISSIONS.value,
+                CollectionNames.NODE_RELATIONS.value,
+            ):
                 await tx_store.delete_edge(
                     group.id, CollectionNames.RECORD_GROUPS.value,
                     group.id, CollectionNames.RECORD_GROUPS.value,

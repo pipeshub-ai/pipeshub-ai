@@ -2120,9 +2120,12 @@ class JiraConnector(BaseConnector):
                 # Add group to batch (with or without members)
                 user_groups_batch.append((user_group, app_users))
 
-            # Save all groups in one batch
+            # One transaction per group, as the Confluence connector writes them: a large
+            # site's groups in a single transaction (one user lookup per membership) outlive
+            # the transaction timeout, and the rollback leaves the connector with no group.
             if user_groups_batch:
-                await self.data_entities_processor.on_new_user_groups(user_groups_batch)
+                for entry in user_groups_batch:
+                    await self.data_entities_processor.on_new_user_groups([entry])
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
@@ -3314,7 +3317,7 @@ class JiraConnector(BaseConnector):
 
         When is_new_project is True (full sync wiped sync points), the "skip unchanged
         issues" short-circuit is bypassed so every issue flows through _process_record
-        and its BELONGS_TO / RECORD_RELATIONS / PERMISSION / ENTITY_RELATIONS edges are
+        and its BELONGS_TO / NODE_RELATIONS / PERMISSION / ENTITY_RELATIONS edges are
         recreated after full-sync edge deletion. Those re-emitted records carry
         ``content_changed=False`` so the caller rebuilds their edges without re-indexing them.
 

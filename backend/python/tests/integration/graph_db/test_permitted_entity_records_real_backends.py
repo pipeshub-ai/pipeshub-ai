@@ -10,6 +10,14 @@ The fixture links one topic to:
   - records shared with "anyone" (active or not) and a record with no grant,
     which stay hidden: "anyone" shares grant no access in any check (#3691).
 
+The graph is in the hierarchy the access check reads: the user passes the gate
+of both Apps, the app-level record is a collection record of its App, the
+inherited record hangs under the granted record group, and every other record
+hangs under a record group the user holds nothing on.
+
+A second topic links one record no grant reaches: its record group inherits
+from the gated record-level App and the record from the group.
+
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
   cd backend/python && pytest tests/integration/graph_db/test_permitted_entity_records_real_backends.py -m integration
@@ -52,8 +60,10 @@ NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
 ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "entity_graph_it"
-RECORD_LEVEL = "conf-it"
-APP_LEVEL = "kb-it"
+# The connector ids are App keys, so each run takes its own: the stores are shared.
+_RUN = uuid.uuid4().hex[:8]
+RECORD_LEVEL = f"conf-it-{_RUN}"
+APP_LEVEL = f"kb-it-{_RUN}"
 NOISE = 70
 # Newest first among the readable records.
 READABLE = ("app", "direct", "group", "inherited")
@@ -68,9 +78,24 @@ def _keys(org_id: str) -> dict[str, Any]:
         "user": f"{org_id}-user",
         "group": f"{org_id}-group",
         "rg": f"{org_id}-rg",
+        "closed": f"{org_id}-closed",
+        "gate_topic": f"{org_id}-gate-topic",
+        "open": f"{org_id}-open",
+        "gated": f"{org_id}-gated",
         "records": {name: f"{org_id}-{name}" for name in (*READABLE, *HIDDEN)},
         "noise": [f"{org_id}-noise{i}" for i in range(NOISE)],
     }
+
+
+def _parents(keys: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    """The node each record hangs under, belongs to and inherits from, as
+    ``(collection, key)``."""
+    r = keys["records"]
+    closed = (CollectionNames.RECORD_GROUPS.value, keys["closed"])
+    parents = {key: closed for key in (*r.values(), *keys["noise"])}
+    parents[r["app"]] = (CollectionNames.APPS.value, APP_LEVEL)
+    parents[r["inherited"]] = (CollectionNames.RECORD_GROUPS.value, keys["rg"])
+    return parents
 
 
 def _timestamps(keys: dict[str, Any]) -> dict[str, int]:
@@ -107,7 +132,10 @@ async def _seed_neo4j(provider: Neo4jProvider, org_id: str) -> None:
         CREATE (t:Topics {id: $topic, name: 'Security', orgId: $org})
         CREATE (:User {id: $user, userId: $user, orgId: $org})
         CREATE (:Group {id: $group, orgId: $org})
-        CREATE (:RecordGroup {id: $rg, orgId: $org})
+        CREATE (:App {id: $kb, orgId: $org, name: 'KB', type: 'KB'})
+        CREATE (:App {id: $conf, orgId: $org, name: 'Confluence', type: 'CONFLUENCE'})
+        CREATE (:RecordGroup {id: $rg, orgId: $org, connectorId: $conf})
+        CREATE (:RecordGroup {id: $closed, orgId: $org, connectorId: $conf})
         WITH t
         UNWIND $records AS row
         CREATE (rec:Record {id: row.id, orgId: $org, connectorId: row.connector,
@@ -116,23 +144,61 @@ async def _seed_neo4j(provider: Neo4jProvider, org_id: str) -> None:
         CREATE (rec)-[:BELONGS_TO_TOPIC]->(t)
         """,
         parameters={"topic": keys["topic"], "user": keys["user"], "group": keys["group"],
-                    "rg": keys["rg"], "org": org_id, "records": records},
+                    "rg": keys["rg"], "closed": keys["closed"], "kb": APP_LEVEL, "conf": RECORD_LEVEL,
+                    "org": org_id, "records": records},
     )
     await provider.client.execute_query(
         """
         MATCH (u:User {id: $user}), (g:Group {id: $group}), (rg:RecordGroup {id: $rg})
-        MATCH (direct:Record {id: $direct}), (viaGroup:Record {id: $viaGroup}), (inherited:Record {id: $inherited})
+        MATCH (direct:Record {id: $direct}), (viaGroup:Record {id: $viaGroup})
+        MATCH (kb:App {id: $kb}), (conf:App {id: $conf}), (closed:RecordGroup {id: $closed})
+        CREATE (u)-[:PERMISSION {type: 'USER', role: 'OWNER'}]->(kb)
+        CREATE (u)-[:USER_APP_RELATION]->(conf)
+        CREATE (conf)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(rg)
+        CREATE (rg)-[:BELONGS_TO]->(conf)
+        CREATE (conf)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(closed)
+        CREATE (closed)-[:BELONGS_TO]->(conf)
         CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER'}]->(direct)
         CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER'}]->(g)
         CREATE (g)-[:PERMISSION {type: 'GROUP', role: 'READER'}]->(viaGroup)
         CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER'}]->(rg)
-        CREATE (inherited)-[:INHERIT_PERMISSIONS]->(rg)
         CREATE (:Anyone {file_key: $anyone, organization: $org, active: true, orgId: $org})
         CREATE (:Anyone {file_key: $anyoneOff, organization: $org, active: false, orgId: $org})
         """,
         parameters={"user": keys["user"], "group": keys["group"], "rg": keys["rg"], "org": org_id,
-                    "direct": r["direct"], "viaGroup": r["group"], "inherited": r["inherited"],
+                    "closed": keys["closed"], "kb": APP_LEVEL, "conf": RECORD_LEVEL,
+                    "direct": r["direct"], "viaGroup": r["group"],
                     "anyone": r["anyone"], "anyoneOff": r["anyone-off"]},
+    )
+    await provider.client.execute_query(
+        """
+        UNWIND $rows AS row
+        MATCH (rec:Record {id: row.id})
+        MATCH (parent:App|RecordGroup {id: row.parent})
+        CREATE (parent)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(rec)
+        CREATE (rec)-[:BELONGS_TO]->(parent)
+        CREATE (rec)-[:INHERIT_PERMISSIONS]->(parent)
+        """,
+        parameters={"rows": [{"id": key, "parent": parent} for key, (_, parent) in _parents(keys).items()]},
+    )
+    await provider.client.execute_query(
+        """
+        MATCH (conf:App {id: $conf})
+        CREATE (t:Topics {id: $topic, name: 'Onboarding', orgId: $org})
+        CREATE (open:RecordGroup {id: $open, orgId: $org, connectorId: $conf})
+        CREATE (rec:Record {id: $gated, orgId: $org, connectorId: $conf, recordName: $gated,
+                            recordType: 'FILE', isDeleted: false, indexingStatus: 'COMPLETED',
+                            sourceLastModifiedTimestamp: 1})
+        CREATE (rec)-[:BELONGS_TO_TOPIC]->(t)
+        CREATE (conf)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(open)
+        CREATE (open)-[:BELONGS_TO]->(conf)
+        CREATE (open)-[:INHERIT_PERMISSIONS]->(conf)
+        CREATE (open)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(rec)
+        CREATE (rec)-[:BELONGS_TO]->(open)
+        CREATE (rec)-[:INHERIT_PERMISSIONS]->(open)
+        """,
+        parameters={"conf": RECORD_LEVEL, "org": org_id, "topic": keys["gate_topic"],
+                    "open": keys["open"], "gated": keys["gated"]},
     )
 
 
@@ -183,24 +249,75 @@ async def _seed_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
         {"_key": keys["user"], "userId": keys["user"], "orgId": org_id, "email": f"{org_id}@it.test"},
     ])
     await _insert(provider, CollectionNames.GROUPS.value, [{"_key": keys["group"], "orgId": org_id}])
-    await _insert(provider, CollectionNames.RECORD_GROUPS.value, [{
-        "_key": keys["rg"], "orgId": org_id, "groupName": "Private", "groupType": RecordGroupType.KB.value,
-        "connectorName": Connectors.KNOWLEDGE_BASE.value, "createdAtTimestamp": 1,
-    }])
+    await _insert(provider, CollectionNames.APPS.value, [
+        {"_key": key, "orgId": org_id, "name": name, "type": kind, "appGroup": name, "scope": "team",
+         "isActive": True, "createdAtTimestamp": 1}
+        for key, name, kind in (
+            (APP_LEVEL, "KB", Connectors.KNOWLEDGE_BASE.value),
+            (RECORD_LEVEL, "Confluence", Connectors.CONFLUENCE.value),
+        )
+    ])
+    await _insert(provider, CollectionNames.RECORD_GROUPS.value, [
+        {"_key": key, "orgId": org_id, "groupName": name, "groupType": RecordGroupType.KB.value,
+         "connectorName": Connectors.KNOWLEDGE_BASE.value, "connectorId": RECORD_LEVEL, "createdAtTimestamp": 1}
+        for key, name in ((keys["rg"], "Private"), (keys["closed"], "Closed"))
+    ])
     user, group, rg = f"users/{keys['user']}", f"groups/{keys['group']}", f"recordGroups/{keys['rg']}"
+    kb, conf, closed = f"apps/{APP_LEVEL}", f"apps/{RECORD_LEVEL}", f"recordGroups/{keys['closed']}"
     await _insert(provider, CollectionNames.PERMISSION.value, [
+        {"_from": user, "_to": kb, "type": "USER", "role": "OWNER"},
         {"_from": user, "_to": f"records/{r['direct']}", "type": "USER", "role": "READER"},
         {"_from": user, "_to": group, "type": "USER", "role": "READER"},
         {"_from": group, "_to": f"records/{r['group']}", "type": "GROUP", "role": "READER"},
         {"_from": user, "_to": rg, "type": "USER", "role": "READER"},
     ])
+    await _insert(provider, CollectionNames.USER_APP_RELATION.value, [
+        {"_from": user, "_to": conf, "syncState": "COMPLETED", "lastSyncUpdate": 1, "createdAtTimestamp": 1},
+    ])
+    placed = [(f"records/{key}", f"{collection}/{parent}") for key, (collection, parent) in _parents(keys).items()]
+    await _insert(provider, CollectionNames.NODE_RELATIONS.value, [
+        {"_from": parent, "_to": child, "relationshipType": "PARENT_CHILD", "createdAtTimestamp": 1}
+        for child, parent in [(rg, conf), (closed, conf), *placed]
+    ])
+    await _insert(provider, CollectionNames.BELONGS_TO.value, [
+        {"_from": child, "_to": parent, "createdAtTimestamp": 1}
+        for child, parent in [(rg, conf), (closed, conf), *placed]
+    ])
     await _insert(provider, CollectionNames.INHERIT_PERMISSIONS.value, [
-        {"_from": f"records/{r['inherited']}", "_to": rg, "createdAtTimestamp": 1},
+        {"_from": child, "_to": parent, "createdAtTimestamp": 1} for child, parent in placed
     ])
     await _insert(provider, CollectionNames.ANYONE.value, [
         {"file_key": r["anyone"], "organization": org_id, "active": True},
         {"file_key": r["anyone-off"], "organization": org_id, "active": False},
     ])
+    await provider.create_taxonomy_node_if_absent(CollectionNames.TOPICS.value, {
+        "id": keys["gate_topic"], "name": "Onboarding", "normalizedName": "onboarding", "orgId": org_id,
+    })
+    await _insert(provider, CollectionNames.RECORDS.value, [
+        Record(
+            id=keys["gated"], org_id=org_id, record_name=keys["gated"], record_type=RecordType.FILE,
+            external_record_id=f"ext-{keys['gated']}", version=0, origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.KNOWLEDGE_BASE, connector_id=RECORD_LEVEL,
+            indexing_status=ProgressStatus.COMPLETED.value, source_updated_at=1,
+        ).to_arango_base_record(),
+    ])
+    await _insert(provider, CollectionNames.BELONGS_TO_TOPIC.value, [
+        {"_from": f"records/{keys['gated']}", "_to": f"topics/{keys['gate_topic']}", "createdAtTimestamp": 1},
+    ])
+    await _insert(provider, CollectionNames.RECORD_GROUPS.value, [
+        {"_key": keys["open"], "orgId": org_id, "groupName": "Open", "groupType": RecordGroupType.KB.value,
+         "connectorName": Connectors.KNOWLEDGE_BASE.value, "connectorId": RECORD_LEVEL, "createdAtTimestamp": 1},
+    ])
+    open_group = f"recordGroups/{keys['open']}"
+    gate_only = [(open_group, conf), (f"records/{keys['gated']}", open_group)]
+    await _insert(provider, CollectionNames.NODE_RELATIONS.value, [
+        {"_from": parent, "_to": child, "relationshipType": "PARENT_CHILD", "createdAtTimestamp": 1}
+        for child, parent in gate_only
+    ])
+    for collection in (CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value):
+        await _insert(provider, collection, [
+            {"_from": child, "_to": parent, "createdAtTimestamp": 1} for child, parent in gate_only
+        ])
 
 
 async def _close_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
@@ -208,6 +325,9 @@ async def _close_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
         CollectionNames.BELONGS_TO_TOPIC.value: "e._from",
         CollectionNames.PERMISSION.value: "e._from",
         CollectionNames.INHERIT_PERMISSIONS.value: "e._from",
+        CollectionNames.NODE_RELATIONS.value: "e._from",
+        CollectionNames.BELONGS_TO.value: "e._from",
+        CollectionNames.USER_APP_RELATION.value: "e._from",
     }
     for collection, field in edge_cleanup.items():
         await provider.http_client.execute_aql(
@@ -217,7 +337,7 @@ async def _close_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
         )
     for collection in (
         CollectionNames.TOPICS.value, CollectionNames.RECORDS.value, CollectionNames.USERS.value,
-        CollectionNames.GROUPS.value, CollectionNames.RECORD_GROUPS.value,
+        CollectionNames.GROUPS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.APPS.value,
     ):
         await provider.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d.orgId == @org REMOVE d IN {collection}", {"org": org_id},
@@ -346,3 +466,31 @@ class TestThroughThePermissionLayer:
         )
         assert [r["_key"] for r in rest.records] == [records[n] for n in READABLE[3:]]
         assert rest.next_cursor is None
+
+    async def test_a_record_reached_through_the_gate_and_inheritance_alone_is_returned(self, backend) -> None:
+        """No grant anywhere, so the query's role test never offers it; the access check admits it."""
+        provider, org_id = backend
+        keys = _keys(org_id)
+        ref = {"id": keys["gate_topic"], "type": "topic", "connectorIds": [APP_LEVEL, RECORD_LEVEL]}
+        by_role = await provider.get_permitted_entity_records(
+            [ref], org_id, keys["user"], app_level_connector_ids=[APP_LEVEL],
+        )
+        assert by_role[("topic", keys["gate_topic"])] == []
+        admitted = await provider.check_access(keys["user"], org_id, node_ids=[keys["gated"]])
+        assert admitted.node_ids == {keys["gated"]}
+
+        page = await list_accessible_entity_records(
+            provider, _context(org_id), entity_id=keys["gate_topic"], entity_type="topic",
+        )
+        assert [r["_key"] for r in page.records] == [keys["gated"]]
+        assert page.next_cursor is None
+
+        store = MagicMock()
+        store.search_entities_passes = AsyncMock(side_effect=lambda q, org, passes, **kw: [
+            [{"entityId": keys["gate_topic"], "entityType": "topic", "name": "Onboarding", "score": 0.9}],
+            *([] for _ in passes[1:]),
+        ])
+        hits = await search_entities_for_user(store, provider, _context(org_id), "onboarding")
+        assert [h.entity_id for h in hits] == [keys["gate_topic"]]
+        assert [r["_key"] for r in hits[0].records] == [keys["gated"]]
+        assert hits[0].more_records is False

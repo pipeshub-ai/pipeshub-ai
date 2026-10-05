@@ -13,6 +13,7 @@ Real-database behaviour is in tests/integration/test_record_visibility_e2e.py.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -171,18 +172,19 @@ class TestVisibilityParameter:
 class TestPermissionMap:
     """The accessible-record map decides what search may return.
 
-    Every permission path gets the filter, and it runs before the VRID is
-    collapsed to one record id, so a VRID shared by a live and a trashed record
-    resolves to the live one.
+    Every place that returns a record gets the filter, and it runs before the
+    VRID is collapsed to one record id, so a VRID shared by a live and a trashed
+    record resolves to the live one.
     """
 
     async def test_arango_connector_map_filters_every_path(self) -> None:
         provider = _arango()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _arango_queries(provider)
-        paths = query.count("FILTER record.indexingStatus == @completedStatus")
-        # Seven since #3691 dropped the "anyone" path, which granted no access.
-        assert paths == 7
+        # Every grant seeds one walk, and that walk alone returns records.
+        paths = query.count("RETURN {virtualRecordId: record.virtualRecordId, recordId: record._key}")
+        assert paths == 1
+        assert query.count("FILTER record.indexingStatus == @completedStatus") == paths
         assert query.count(f"FILTER {aql_live_record('record')}") == paths
         assert query.index(aql_live_record("record")) < query.index("COLLECT virtualRecordId")
 
@@ -198,8 +200,9 @@ class TestPermissionMap:
         provider = _neo4j()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
-        paths = query.count("r.indexingStatus = $completedStatus")
-        assert paths == 7
+        paths = query.count("RETURN r.virtualRecordId AS virtualId, r.id AS recordId")
+        assert paths == 1
+        assert query.count("r.indexingStatus = $completedStatus") == paths
         assert query.count(f"AND {cypher_live_record('r')}") == paths
 
     async def test_neo4j_kb_map_filters_every_path(self) -> None:
@@ -232,9 +235,26 @@ class TestAccessCheck:
 
         assert await provider.check_record_access_with_details("u1", "o1", "r1") is None
 
-        # Neo4j reads the user through the client; the access query never runs.
+        # Neo4j reads the user and the connector gate through the client; neither
+        # the batch check nor the query that names the access paths runs.
         queries = _arango_queries(provider) if backend == "arango" else _neo4j_queries(provider)
-        assert len(queries) == (0 if backend == "arango" else 1)
+        assert len(queries) == (0 if backend == "arango" else 2)
+        assert not any("kh_ids" in q or "allAccess" in q for q in queries)
+
+    async def test_the_batch_check_never_admits_the_trash(self, backend) -> None:
+        """``check_access`` decides every open, listing and search hit: a trashed
+        node is no target, and a grant on one is no grant."""
+        provider = _arango() if backend == "arango" else _neo4j()
+
+        await provider.check_access("uk1", "o1", node_ids=["r1"], virtual_record_ids=["v1"])
+
+        grants, check = _arango_queries(provider) if backend == "arango" else _neo4j_queries(provider)
+        if backend == "arango":
+            assert aql_live_record("granted") in grants
+            assert f"FILTER t.orgId == @org_id AND {aql_live_record('t')}" in check
+        else:
+            assert "NOT coalesce(granted.isDeleted, false)" in grants
+            assert re.search(r"WHERE t\.orgId = \$org_id\s+AND NOT coalesce\(t\.isDeleted, false\)", check)
 
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])
@@ -292,13 +312,6 @@ class TestFailedRecords:
         got = await provider.get_failed_records_by_org("o1", "c1")
         assert [r["_key"] for r in got] == ["live", "legacy"]
 
-    async def test_failed_with_users_is_live_only(self, backend) -> None:
-        provider = _arango() if backend == "arango" else _neo4j()
-        await provider.get_failed_records_with_active_users("o1", "c1")
-        queries = _arango_queries(provider) if backend == "arango" else _neo4j_queries(provider)
-        live = aql_live_record("doc") if backend == "arango" else cypher_live_record("record")
-        assert live in queries[0]
-
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])
 async def test_weburl_lookup_is_live_only(backend) -> None:
@@ -310,24 +323,56 @@ async def test_weburl_lookup_is_live_only(backend) -> None:
     assert live in queries[0]
 
 
-class TestNeo4jKnowledgeHubBrowse:
-    """Arango's browse queries already skipped the trash; Neo4j's did not."""
+class TestNeo4jKnowledgeHubListing:
+    """The knowledge hub listing (``get_knowledge_hub_connector_page_v3``) never
+    lists the trash: every arm that collects nodes drops deleted ones, and a row
+    counts only its live children."""
 
-    def test_folder_children_and_their_counts(self) -> None:
-        cypher = _neo4j()._get_record_children_cypher()
-        assert cypher_live_record("record") in cypher
-        assert cypher_live_record("child") in cypher
+    @staticmethod
+    def _live(var: str) -> str:
+        # Null-safe: a node written before soft delete has no isDeleted.
+        return f"NOT coalesce({var}.isDeleted, false)"
 
-    def test_kb_root_and_group_children(self) -> None:
+    @staticmethod
+    async def _listing(**page: Any) -> str:
         provider = _neo4j()
-        provider._get_permission_role_cypher = MagicMock(return_value="")
-        app_cypher = provider._get_app_children_cypher()
-        assert cypher_live_record("record") in app_cypher
-        assert cypher_live_record("child") in app_cypher
-        assert cypher_live_record("child_record") in app_cypher
-        rg_cypher = provider._get_record_group_children_cypher("recordGroup")
-        for var in ("record", "internal_record", "child", "child_record_check"):
-            assert cypher_live_record(var) in rg_cypher, var
+
+        async def answer(query: str, **_: Any) -> list[dict]:
+            # A folder or group start resolves its connector first.
+            return [{"connectorId": "app1", "belonging": 0}] if "AS belonging" in query else []
+
+        provider.client.execute_query = AsyncMock(side_effect=answer)
+        await provider.get_knowledge_hub_connector_page_v3("app1", "o1", ["uk1"], ["app1"], ["g1"], **page)
+        (listing,) = [q for q in _neo4j_queries(provider) if "AS rows" in q and "nRecord" in q]
+        return listing
+
+    async def test_the_children_of_an_app(self) -> None:
+        listing = await self._listing(flatten=False)
+        assert re.search(
+            r"\(app\)-\[kh_ra:NODE_RELATION\]->\(ca\)\s+WHERE kh_ra\.relationshipType IN "
+            r"\['PARENT_CHILD', 'ATTACHMENT'\] AND " + re.escape(self._live("ca")),
+            listing,
+        )
+
+    async def test_the_whole_connector(self) -> None:
+        listing = await self._listing(flatten=True)
+        # The walk from the App, declared groups and what is under them, seeds
+        # and what is below them, and the records of an App that opens everything.
+        for var in ("ca", "dg", "cb", "mb", "sd", "cc", "cl"):
+            assert self._live(var) in listing, var
+
+    @pytest.mark.parametrize("flatten", [False, True])
+    async def test_the_children_of_a_folder(self, flatten) -> None:
+        listing = await self._listing(flatten=flatten, start_id="f1", start_type="folder")
+        assert self._live("start") in listing
+        # Every arm of the walk down from the start: by the hop rule, below a
+        # seed, and inside a declared scope.
+        assert listing.count(self._live("ca")) >= 3
+
+    @pytest.mark.parametrize("page", [{"flatten": False}, {"flatten": True}, {"start_id": "f1", "start_type": "folder"}])
+    async def test_a_row_counts_only_its_live_children(self, page) -> None:
+        listing = await self._listing(**page)
+        assert listing.count(self._live("ch")) == 2, "hierarchy children and belonging records"
 
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])

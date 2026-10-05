@@ -516,7 +516,7 @@ class FakeCheckpoints:
         return None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeCheckpoints"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpoints"]:
         yield self
 
 

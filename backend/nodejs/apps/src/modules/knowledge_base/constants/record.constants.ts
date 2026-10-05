@@ -56,7 +56,7 @@ export const COLLECTIONS = {
   PERMISSIONS_TO_KNOWLEDGE_BASE: 'permissionsToKnowledgeBase',
 
   // Edge collections
-  RECORD_TO_RECORD: 'recordRelations',
+  RECORD_TO_RECORD: 'nodeRelations',
   IS_OF_TYPE: 'isOfType',
   PERMISSIONS: 'permissions',
   BELONGS_TO: 'belongsTo',

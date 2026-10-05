@@ -73,33 +73,35 @@ class JiraRecordsDb(FakeRecordsDb):
     async def get_placeholder_records(self, connector_id: str) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
 
-
-class JiraStore(FakeCheckpointStore):
-    """Checkpoint store plus the record lookups the deletion pass runs in a transaction."""
-
-    def __init__(self, db: JiraRecordsDb) -> None:
-        super().__init__()
-        self.db = db
-        self.hard_deleted: list[str] = []
-
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[TicketRecord]:
-        for record in self.db.records.values():
+        for record in self.records.values():
             if record.record_type == RecordType.TICKET and (record.weburl or "").endswith(f"/browse/{issue_key}"):
                 return record
         return None
 
-    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str) -> list[Any]:
-        return [
-            r for r in self.db.records.values()
-            if r.parent_external_record_id == parent_external_record_id and r.record_type.value == record_type
-            and is_live_record(r)
-        ]
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        *, include_trashed_roots: bool = False,
+    ) -> dict[str, Any]:
+        """Deletes each root with its attachments, as the stores do; child issues only with ``cascade_children``.
 
-    async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
-        self.hard_deleted.append(record_key)
-        for ext_id, record in list(self.db.records.items()):
-            if record.id == record_key:
-                del self.db.records[ext_id]
+        A root in the trash is left alone unless ``include_trashed_roots``.
+        """
+        by_id = {r.id: r for r in self.records.values()}
+        doomed = [
+            by_id[i] for i in record_ids
+            if i in by_id and (include_trashed_roots or is_live_record(by_id[i]))
+        ]
+        for parent in doomed:
+            doomed.extend(
+                child for child in self.records.values()
+                if child.parent_external_record_id == parent.external_record_id
+                and (cascade_children or child.record_type == RecordType.FILE)
+                and not any(child is seen for seen in doomed)
+            )
+        for record in doomed:
+            self.records.pop(record.external_record_id, None)
+        return {"success": True, "deleted_records": [r.id for r in doomed]}
 
 
 def ts(day: int, hour: int = 10) -> str:
@@ -248,8 +250,8 @@ def db() -> JiraRecordsDb:
 
 
 @pytest.fixture
-def store(db: JiraRecordsDb) -> JiraStore:
-    return JiraStore(db)
+def store() -> FakeCheckpointStore:
+    return FakeCheckpointStore()
 
 
 @pytest.fixture
@@ -270,7 +272,7 @@ def jira(atlassian_api: AtlassianApiStub, monkeypatch: pytest.MonkeyPatch) -> At
     return atlassian_api
 
 
-async def make_connector(db: JiraRecordsDb, store: JiraStore, filters: Optional[dict[str, Any]] = None) -> tuple[JiraDataCenterConnector, Notifications]:
+async def make_connector(db: JiraRecordsDb, store: FakeCheckpointStore, filters: Optional[dict[str, Any]] = None) -> tuple[JiraDataCenterConnector, Notifications]:
     config = {"auth": {"authType": "API_TOKEN", "baseUrl": f"{BASE}/", "apiToken": FAKE_PAT}, "filters": filters or {}}
     connector = JiraDataCenterConnector(
         logging.getLogger("test.jira_dc"), db, store, FakeConfigService(CONNECTOR_ID, config),
@@ -792,6 +794,19 @@ class TestDeletions:
         offsets = [AtlassianApiStub.query(r).get("offset") for r in jira.calls("GET", "/rest/auditing/1.0/events")]
         assert offsets == ["0", "1"]
         assert store.values_for("issues_audit_deletions")
+
+    async def test_an_issue_already_in_our_trash_is_removed_when_jira_deletes_it(self, jira, db, store, search) -> None:
+        connector, _ = await self._synced(jira, db, store, search)
+        db.records["1002"].is_deleted = True
+        jira.on("GET", "/rest/auditing/1.0/events", {
+            "entities": [{"affectedObjects": [{"type": "ISSUE", "name": "ENG-2"}]}], "pagingInfo": {"lastPage": True},
+        })
+        jira.on("GET", f"{API}/issue/ENG-2", json_response({"errorMessages": ["Issue Does Not Exist"]}, status=404))
+
+        await connector.run_sync()
+
+        assert "1002" not in db.records, "the delete must take an issue that is in the trash"
+        assert "attachment_201" not in db.records
 
     async def _synced_with_audit_checkpoint(self, jira, db, store, search, monkeypatch) -> tuple[JiraDataCenterConnector, dict[str, Any]]:
         """Sync twice so the connector itself writes an audit checkpoint, then pin later clock readings."""

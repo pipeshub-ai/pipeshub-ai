@@ -16,6 +16,7 @@ from app.utils.execute_query import (
     has_sql_connector_configured,
     sql_connector_instance_ids,
 )
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 # ===========================================================================
@@ -783,6 +784,81 @@ class TestExecuteQueryImpl:
 # ===========================================================================
 
 
+def _reachable(
+    reachable: bool = True, app_org: str = "org-1", allowed: tuple[str, ...] = ("conn-1",),
+) -> dict:
+    """Factory kwargs for a user in org-1 whose graph admits the connector when
+    ``reachable``, on a tool allowed to query ``allowed``."""
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(return_value={"id": "conn-1", "orgId": app_org})
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+    graph.check_access = AsyncMock(
+        side_effect=lambda user_key, org_id, node_ids=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids) if reachable else frozenset(),
+        ),
+    )
+    return {
+        "graph_provider": graph, "org_id": "org-1", "user_id": "u1",
+        "allowed_connector_ids": frozenset(allowed),
+    }
+
+
+class TestSqlToolConnectorAccess:
+    """The model picks the connector and the query runs with its credentials, so
+    the user must reach that connector, in the caller's org."""
+
+    async def _call(self, connector_id="conn-1", **factory) -> tuple[dict, AsyncMock]:
+        from app.utils.execute_query import create_execute_query_tool
+
+        with patch(
+            "app.utils.execute_query._execute_query_impl",
+            new_callable=AsyncMock,
+            return_value={"ok": True, "markdown_result": "| x |"},
+        ) as impl:
+            tool = create_execute_query_tool(config_service=MagicMock(), **factory)
+            result = await tool.ainvoke({
+                "query": "SELECT 1", "source_name": "PostgreSQL", "connector_id": connector_id,
+            })
+        return result, impl
+
+    @pytest.mark.asyncio
+    async def test_a_reachable_connector_runs_the_query(self) -> None:
+        factory = _reachable()
+        result, impl = await self._call(**factory)
+        assert result["ok"] is True
+        assert impl.await_args.kwargs["connector_instance_id"] == "conn-1"
+        call = factory["graph_provider"].check_access.await_args
+        assert call.args == ("user-key", "org-1") and list(call.kwargs["node_ids"]) == ["conn-1"]
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_connector_is_refused(self) -> None:
+        result, impl = await self._call(**_reachable(reachable=False))
+        assert result["ok"] is False and "not available" in result["error"]
+        impl.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_connector_of_another_org_is_refused(self) -> None:
+        factory = _reachable(app_org="org-2")
+        result, impl = await self._call(**factory)
+        assert result["ok"] is False
+        impl.assert_not_called()
+        factory["graph_provider"].check_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_connector_id_no_longer_falls_back_to_a_default(self) -> None:
+        result, impl = await self._call(connector_id="  ", **_reachable())
+        assert result["ok"] is False and "connector_id is required" in result["error"]
+        impl.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_user_is_refused(self) -> None:
+        factory = _reachable()
+        factory.pop("user_id")
+        result, impl = await self._call(**factory)
+        assert result["ok"] is False
+        impl.assert_not_called()
+
+
 class TestCreateExecuteQueryTool:
     def test_creates_tool(self):
         from app.utils.execute_query import create_execute_query_tool
@@ -806,7 +882,7 @@ class TestCreateExecuteQueryTool:
                 "raw_rows": [(1,)],
             },
         ):
-            tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids={"conn-1"})
+            tool = create_execute_query_tool(config_service=MagicMock(), **_reachable())
             result = await tool.ainvoke({
                 "query": "SELECT 1",
                 "source_name": "PostgreSQL",
@@ -827,7 +903,7 @@ class TestCreateExecuteQueryTool:
             new_callable=AsyncMock,
             return_value={"ok": False, "error": "blocked"},
         ):
-            tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids={"conn-1"})
+            tool = create_execute_query_tool(config_service=MagicMock(), **_reachable())
             result = await tool.ainvoke({
                 "query": "DROP TABLE x",
                 "source_name": "PostgreSQL",
@@ -845,7 +921,7 @@ class TestCreateExecuteQueryTool:
             new_callable=AsyncMock,
             side_effect=RuntimeError("unexpected"),
         ):
-            tool = create_execute_query_tool(config_service=MagicMock(), allowed_connector_ids={"conn-1"})
+            tool = create_execute_query_tool(config_service=MagicMock(), **_reachable())
             result = await tool.ainvoke({
                 "query": "SELECT 1",
                 "source_name": "PostgreSQL",
@@ -880,10 +956,9 @@ class TestCreateExecuteQueryTool:
         ) as mock_register:
             tool = create_execute_query_tool(
                 config_service=MagicMock(),
-                org_id="org-1",
                 conversation_id="conv-1",
                 blob_store=mock_blob_store,
-                allowed_connector_ids={"conn-1"},
+                **_reachable(),
             )
             result = await tool.ainvoke({
                 "query": "SELECT 1",
@@ -923,7 +998,10 @@ class TestCreateExecuteQueryTool:
         ) as mock_register, patch(
             "app.sandbox.artifact_upload.create_artifact_record",
             AsyncMock(return_value="rec-1"),
-        ) as create:
+        ) as create, patch(
+            "app.utils.execute_query._connector_is_accessible",
+            AsyncMock(return_value=True),
+        ):
             tool = create_execute_query_tool(
                 config_service=MagicMock(),
                 graph_provider=graph,
@@ -969,9 +1047,8 @@ class TestCreateExecuteQueryTool:
         ) as mock_register:
             tool = create_execute_query_tool(
                 config_service=MagicMock(),
-                org_id="org-1",
                 conversation_id=None,
-                allowed_connector_ids={"conn-1"},
+                **_reachable(),
             )
             await tool.ainvoke({
                 "query": "SELECT 1",
@@ -1060,7 +1137,7 @@ class TestExecuteQueryToolConnectorAllowlist:
             return_value=self._ok_result(),
         ) as mock_impl:
             tool = create_execute_query_tool(
-                config_service=MagicMock(), allowed_connector_ids={"agent-pg", "agent-sf"},
+                config_service=MagicMock(), **_reachable(allowed=("agent-pg", "agent-sf")),
             )
             result = await tool.ainvoke({
                 "query": "SELECT 1",

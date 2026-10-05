@@ -39,7 +39,7 @@ export async function loadMoreRootAppList(): Promise<void> {
 
   setLoadingRootAppListMore(true);
   try {
-    const response = await fetchRootAppPage(meta.nextPage);
+    const response = await fetchRootAppPage(meta.nextCursor);
     // Stale if a refresh started meanwhile, or one already running when this
     // was clicked has since written its own cursor: its pages replace ours.
     const cursorNow = useKnowledgeBaseStore.getState().appRootListPagination;
@@ -47,7 +47,7 @@ export async function loadMoreRootAppList(): Promise<void> {
       !isCurrent() ||
       isReplacingRootListLoadInFlight() ||
       !cursorNow?.hasNext ||
-      cursorNow.nextPage !== meta.nextPage
+      cursorNow.nextCursor !== meta.nextCursor
     ) {
       return;
     }
@@ -96,7 +96,7 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
   try {
     const response = await KnowledgeHubApi.getNodeChildren('app', appId, {
       onlyContainers: true,
-      page: childMeta.nextPage,
+      cursor: childMeta.nextCursor ?? undefined,
       limit: SIDEBAR_PAGINATION_PAGE_SIZE,
       sortBy: 'name',
       sortOrder: 'asc',
@@ -110,12 +110,9 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     const p = response.pagination;
     setAppChildPagination(
       appId,
-      p
-        ? {
-            hasNext: p.hasNext,
-            nextPage: p.hasNext ? p.page + 1 : p.page,
-          }
-        : { hasNext: false, nextPage: 1 }
+      p?.nextCursor
+        ? { hasNext: p.hasNext, nextCursor: p.nextCursor }
+        : { hasNext: false, nextCursor: null }
     );
 
     // Build the tree for BOTH KB and connector apps — see

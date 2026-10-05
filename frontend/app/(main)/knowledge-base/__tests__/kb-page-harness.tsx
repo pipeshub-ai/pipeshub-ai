@@ -55,6 +55,43 @@ export function hubResponse(
   };
 }
 
+/** The fake cursor that stands for page `page` (see {@link pagedByCursor}). */
+export function pageCursor(page: number): string {
+  return `p${page}`;
+}
+
+function withPage(params: unknown): unknown {
+  if (params !== undefined && (typeof params !== 'object' || params === null)) return params;
+  const { cursor, ...rest } = (params ?? {}) as { cursor?: string };
+  if (cursor === undefined) return { ...rest, page: 1 };
+  const match = /^p(\d+)$/.exec(cursor);
+  return match ? { ...rest, page: Number(match[1]) } : params;
+}
+
+function withNextCursor(response: unknown): unknown {
+  const pagination = (response as KnowledgeHubApiResponse | undefined)?.pagination;
+  if (!pagination || pagination.nextCursor !== undefined || pagination.page == null) return response;
+  return {
+    ...(response as KnowledgeHubApiResponse),
+    pagination: { ...pagination, nextCursor: pagination.hasNext ? pageCursor(pagination.page + 1) : null },
+  };
+}
+
+/**
+ * The hub pages by opaque cursor; these tests describe pages by number. Wraps a
+ * fake so the cursor `p<N>` reaches it as `page: N` (no cursor is page 1), and a
+ * response that names its page but no cursor gets `nextCursor: p<N+1>` when there
+ * is more — a server whose cursor encodes the page, so the code under test must
+ * still send the right cursor to get the right rows.
+ */
+export function pagedByCursor(fake: (...args: never[]) => unknown, paramsIndex: number) {
+  return async (...args: unknown[]) => {
+    const next = [...args];
+    next[paramsIndex] = withPage(next[paramsIndex]);
+    return withNextCursor(await (fake as (...a: unknown[]) => unknown)(...next));
+  };
+}
+
 /**
  * A getNodeChildren fake that sorts and pages the way the hub does, including
  * its defaults (updatedAt desc, 50 per page), so a caller that asks for a

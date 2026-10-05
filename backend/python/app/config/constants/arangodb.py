@@ -118,6 +118,26 @@ class PermissionModel(Enum):
     RECORD_GROUP_LEVEL = "RECORD_GROUP_LEVEL"
 
 
+class AccessRule(Enum):
+    """How a node's own permissions combine with its ancestors'.
+
+    ``OPEN``: inheritance from an accessible parent, or a direct grant, is
+    enough — nothing above the parent is consulted.
+    ``STRICT``: every ancestor up to the App must be accessible as well.
+    ``RESTRICTED``: implies strict, and inheritance alone is not sufficient —
+    the node's own grant is required on top of it.
+
+    A missing value reads as ``OPEN`` (a connector that declares nothing gets
+    the permissive reading), but an *unrecognised* value reads as
+    ``RESTRICTED``, so corruption or a foreign writer fails closed rather than
+    exposing a node.
+    """
+
+    OPEN = "OPEN"
+    STRICT = "STRICT"
+    RESTRICTED = "RESTRICTED"
+
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"
@@ -176,7 +196,10 @@ class GraphNames(Enum):
 class CollectionNames(Enum):
     # Records and Record relations
     RECORDS = "records"
-    RECORD_RELATIONS = "recordRelations"
+    NODE_RELATIONS = "nodeRelations"
+    # Links between records (BLOCKS, FOREIGN_KEY, SIBLING, ...), apart from the
+    # hierarchy. Shared code addresses them through NODE_RELATIONS.
+    RECORD_LINKS = "recordLinks"
     RECORD_GROUPS = "recordGroups"
     SYNC_POINTS = "syncPoints"
     INHERIT_PERMISSIONS = "inheritPermissions"
@@ -214,9 +237,8 @@ class CollectionNames(Enum):
     GROUPS = "groups"
     ROLES = "roles"
     ORGS = "organizations"
-    # DOMAINS = "domains"
+    # No grant type writes these nodes; kept for the queries that still read them.
     ANYONE = "anyone"
-    # ANYONE_WITH_LINK = "anyoneWithLink"
     BELONGS_TO = "belongsTo"
     TEAMS = "teams"
 
@@ -415,6 +437,15 @@ class MimeTypes(Enum):
     SHELLSCRIPT = "text/x-shellscript"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
+
+# Every mimeType a folder record has been written with. Folders are written as
+# MimeTypes.FOLDER only; readers accept the older values too, so a folder the
+# startup migration has not rewritten yet still reads as a folder.
+FOLDER_MIME_TYPES = [
+    MimeTypes.FOLDER.value,
+    "application/vnd.folder",  # older collection folders
+    MimeTypes.GOOGLE_DRIVE_FOLDER.value,  # older Google Drive folders
+]
 
 CODE_FILE_MIME_TYPE_VALUES = frozenset({
     MimeTypes.PYTHON.value,
@@ -643,12 +674,15 @@ class RecordRelations(Enum):
     # running a specific version of a CODE artifact. Auto-captured by the
     # harness (`sandbox_bridge.py`'s POST_TOOL_USE hook) — never asserted
     # by the model — carrying `sourceVersion`/`derivedVersion` custom
-    # properties (see `record_relations_schema`, which allows additional
-    # properties). Portable to Neo4j unchanged: it is just another
-    # `relationshipType` value on the existing RECORD_RELATION edge type
-    # (see `config/constants/neo4j.py`), no new edge collection or Neo4j
-    # relationship type required.
+    # properties (see `record_links_schema`, which allows additional
+    # properties). A link like any other type outside the hierarchy: stored on
+    # RECORD_LINK in Neo4j and in recordLinks in Arango.
     DERIVED_FROM = "DERIVED_FROM"
+
+
+#: The relation types that are hierarchy. Every other type is a link, stored
+#: apart from the hierarchy.
+HIERARCHY_RELATION_TYPES = frozenset({RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value})
 
 
 class EntityRelations(Enum):

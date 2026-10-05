@@ -1,11 +1,13 @@
 """Tests for app.utils.fetch_full_record — record fetching tools."""
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
 from app.models.entities import TicketRecord
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 class TestFetchFullRecordArgs:
@@ -52,12 +54,44 @@ class TestEnrichSqlTableWithFkRelations:
         graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=["child-1", "child-2"])
         graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=["parent-1"])
 
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
+        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr,              patch("app.utils.fetch_full_record.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
             mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
             result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
 
         assert result["fk_child_record_ids"] == ["child-1", "child-2"]
         assert result["fk_parent_record_ids"] == ["parent-1"]
+
+    @pytest.mark.asyncio
+    async def test_only_tables_the_user_may_open_are_named(self):
+        """C4: a related table's id is an existence leak unless the user may open it."""
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        record = {"id": "rec-1", "record_name": "users"}
+        graph_provider = AsyncMock()
+        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(
+            return_value=[{"record_id": "child-1"}, {"record_id": "child-2"}],
+        )
+        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[{"record_id": "parent-1"}])
+        check = AsyncMock(return_value={"child-2"})
+
+        with patch("app.utils.fetch_full_record.accessible_node_ids", check):
+            result = await _enrich_sql_table_with_fk_relations(record, graph_provider, "user-1", "org-1")
+
+        assert result["fk_child_record_ids"] == [{"record_id": "child-2"}]
+        assert result["fk_parent_record_ids"] == []
+        assert check.await_args.args[1:] == ({"child-1", "child-2", "parent-1"}, "user-1", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_without_a_user_no_table_is_named(self):
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph_provider = AsyncMock()
+        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=[{"record_id": "c1"}])
+        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+
+        result = await _enrich_sql_table_with_fk_relations({"id": "rec-1"}, graph_provider)
+
+        assert result["fk_child_record_ids"] == []
 
     @pytest.mark.asyncio
     async def test_returns_copy_not_original(self):
@@ -111,7 +145,7 @@ class TestEnrichSqlTableWithFkRelations:
         )
         graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=["p1"])
 
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
+        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr,              patch("app.utils.fetch_full_record.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
             mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
             result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
 
@@ -129,7 +163,7 @@ class TestEnrichSqlTableWithFkRelations:
             side_effect=RuntimeError("graph down")
         )
 
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
+        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr,              patch("app.utils.fetch_full_record.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
             mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
             result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
 
@@ -243,6 +277,15 @@ class TestApplyLiveTicketContextMetadata:
 
 
 class TestFetchMultipleRecordsImpl:
+    @pytest.fixture(autouse=True)
+    def _batch_check_admits_every_id(self) -> Iterator[None]:
+        """These cases are about enrichment and resolution, not access."""
+        with patch(
+            "app.utils.fetch_full_record.accessible_node_ids",
+            new=AsyncMock(side_effect=lambda _gp, ids, _user, _org: set(ids)),
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_found_records(self):
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
@@ -562,6 +605,12 @@ class TestFetchMultipleRecordsImplGraphFallback:
         gp.check_record_access_with_details = AsyncMock(
             return_value={"record": {"_key": "r1"}} if access else None,
         )
+        gp.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        gp.check_access = AsyncMock(
+            side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(
+                node_ids=frozenset(node_ids) if access else frozenset(),
+            ),
+        )
         return gp
 
     @pytest.mark.asyncio
@@ -729,6 +778,12 @@ class TestColdPathAccessControl:
         gp.check_record_access_with_details = AsyncMock(
             return_value={"record": {"_key": "r1"}} if access else None,
         )
+        gp.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        gp.check_access = AsyncMock(
+            side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(
+                node_ids=frozenset(node_ids) if access else frozenset(),
+            ),
+        )
         gp.get_document = AsyncMock(return_value={
             "indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1",
         })
@@ -777,9 +832,10 @@ class TestColdPathAccessControl:
         graph_provider.get_document.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_records_already_in_the_map_are_not_re_checked(self):
-        """Those came from an ACL-filtered search — re-checking each one would
-        add a permission traversal per record for no security gain."""
+    async def test_records_in_the_map_are_checked_in_one_batch_not_per_id(self) -> None:
+        """The map is not only filled by ACL-filtered search (attachments and FK
+        enrichment write to it too), so its entries are checked as well: once,
+        for all ids together."""
         from app.utils import fetch_full_record as ffr
 
         graph_provider = self._graph_provider(access=True)
@@ -790,7 +846,19 @@ class TestColdPathAccessControl:
         )
 
         assert result["ok"] is True
+        graph_provider.check_access.assert_awaited_once()
         graph_provider.check_record_access_with_details.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_denied_record_in_the_map_is_not_served(self) -> None:
+        from app.utils import fetch_full_record as ffr
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {"vr1": {"id": "r1", "content": "data"}},
+            org_id="org-1", graph_provider=self._graph_provider(access=False), user_id="u1",
+        )
+
+        assert result["ok"] is False
 
 
 class TestCreateFetchFullRecordTool:

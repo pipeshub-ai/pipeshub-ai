@@ -297,8 +297,14 @@ def _permission_graph(edges=None):
         return {"role": role} if role else None
 
     gp = AsyncMock()
-    gp.get_user_by_user_id = AsyncMock(side_effect=lambda user_id: {"_key": f"key-{user_id}"})
+    gp.get_user_by_user_id = AsyncMock(
+        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-1"}
+    )
     gp.get_edge = AsyncMock(side_effect=_get_edge)
+    # Every record here is a chat attachment of the grantor's org.
+    gp.get_document = AsyncMock(side_effect=lambda record_id, _collection: {
+        "orgId": "org-1", "origin": "UPLOAD", "connectorId": "attachments_org-1",
+    })
     gp.batch_create_edges = AsyncMock()
     gp.batch_delete_edges = AsyncMock()
     return gp
@@ -353,7 +359,7 @@ async def test_grant_attachment_permissions_skips_unknown_users_and_empty_payloa
 
     gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda user_id: None if user_id == "ghost" else {"_key": f"key-{user_id}"}
+        side_effect=lambda user_id: None if user_id == "ghost" else {"_key": f"key-{user_id}", "orgId": "org-1"}
     )
 
     with patch.object(cr.logger, "warning", MagicMock()):
@@ -367,6 +373,25 @@ async def test_grant_attachment_permissions_skips_unknown_users_and_empty_payloa
     )
     assert out_empty["granted"] == 0
     gp.batch_create_edges.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_grant_attachment_permissions_skips_users_of_another_org():
+    import app.api.routes.chatbot as cr
+    from app.api.routes.chatbot import grant_attachment_permissions
+
+    gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
+    gp.get_user_by_user_id = AsyncMock(
+        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-2" if user_id == "outsider" else "org-1"}
+    )
+
+    with patch.object(cr.logger, "warning", MagicMock()):
+        out = await grant_attachment_permissions(
+            _json_request({"userIds": ["outsider", "viewer"], "recordIds": ["rec-1"]}), gp, _GRANTOR_CLAIMS
+        )
+
+    assert out["granted"] == 1
+    assert _edge_pairs(gp.batch_create_edges.await_args) == [("key-viewer", "rec-1")]
 
 
 @pytest.mark.asyncio
@@ -541,7 +566,7 @@ async def test_delete_chat_attachment_paths():
 
         await delete_chat_attachment("rid", rr, gp)
 
-    assert ex.value.status_code == 403
+    assert ex.value.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -1501,7 +1526,9 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    await delete_chat_attachment("rid", rr, gp)
+    with pytest.raises(HTTPException) as ex:
+        await delete_chat_attachment("rid", rr, gp)
+    assert ex.value.status_code == 404
 
 
 
@@ -1519,9 +1546,12 @@ async def test_delete_chat_attachment_early_and_full():
 
 
     rr.state.user = {"orgId": "o1", "userId": "u1"}
-    gp.get_document.return_value = {"orgId": "o1", "connectorName": Connectors.ATTACHMENTS.value}
-    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "orgId": "o1"})
     gp.get_edge = AsyncMock(return_value={"role": "OWNER"})
+    gp.get_document.return_value = {
+        "orgId": "o1", "origin": "UPLOAD", "connectorId": "attachments_o1",
+        "connectorName": Connectors.ATTACHMENTS.value,
+    }
 
 
 

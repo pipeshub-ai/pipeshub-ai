@@ -494,8 +494,11 @@ class ArtifactManager:
         except Exception:
             logger.exception("[get_record_download_url] lookup failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to look up record"})
+        # Missing, another org's and denied read the same: the id comes from the
+        # model, and the answer must not say which ids exist.
+        not_found = _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
         if record is None:
-            return _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
+            return not_found
 
         from app.config.constants.arangodb import OriginTypes
         from app.services.record_content import (
@@ -511,7 +514,7 @@ class ArtifactManager:
         except RecordNotFoundError:
             return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
         except RecordAccessDeniedError:
-            return _result(False, {"success": False, "error": "You do not have permission to access this record"})
+            return not_found
         except Exception:
             logger.exception("[get_record_download_url] access check failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to check access to this record"})

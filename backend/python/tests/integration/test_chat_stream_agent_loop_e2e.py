@@ -24,6 +24,7 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 
 from app.api.routes.chatbot import askAIStream
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 def _mock_request(body: dict) -> MagicMock:
@@ -277,7 +278,17 @@ class TestChatStreamAgentLoopEndToEnd:
                 {"virtualRecordId": "vr-attach-1", "mimeType": "application/pdf", "fileName": "board_deck.pdf"},
             ],
         })
+
+        async def _check_access(user_key, org_id, *, virtual_record_ids=(), **_kwargs):
+            # The uploader alone may read the attachment, as the upload's OWNER edge grants.
+            granted = {"vr-attach-1": "rec-attach-1"} if (user_key, org_id) == ("user-key-1", "org-1") else {}
+            return AccessCheck(
+                records_by_vrid={vrid: rid for vrid, rid in granted.items() if vrid in virtual_record_ids}
+            )
+
         graph = AsyncMock()
+        graph.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        graph.check_access.side_effect = _check_access
         graph.get_records_by_virtual_record_id.return_value = ["rec-attach-1"]
         graph.check_record_access_with_details.return_value = {"id": "rec-attach-1"}
 

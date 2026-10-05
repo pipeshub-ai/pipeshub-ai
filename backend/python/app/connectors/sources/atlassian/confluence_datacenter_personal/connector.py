@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     PermissionModel,
     Connectors,
     MimeTypes,
@@ -2265,6 +2266,12 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 web_url=web_url,
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,  # Confluence doesn't provide updated timestamp for spaces
+                # STRICT and deliberately NOT inheriting. Every space is synced
+                # carrying the ConnectorGroup grant, which is what admits it.
+                # Inheriting from the App would reveal personal spaces to
+                # anyone who can reach the connector, since STRICT is satisfied
+                # by inheritance alone.
+                access_rule=AccessRule.STRICT,
             )
 
         except Exception as e:

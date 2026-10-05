@@ -1,5 +1,5 @@
 """`LineageTracker` — auto-captures `DERIVED_FROM` edges over the existing
-`recordRelations` edge collection. There is deliberately NO public method
+`nodeRelations` edge collection. There is deliberately NO public method
 that takes lineage asserted by a caller-supplied arbitrary pair without
 version numbers pinned by the harness itself — see module docstring in the
 plan: lineage is an observable fact of "this code run produced these
@@ -10,7 +10,7 @@ Backend-agnostic by construction: only `batch_create_edges`/
 `get_edges_from_node`/`get_edges_to_node` (generic `IGraphDBProvider`
 methods) are used, so this works unchanged against ArangoDB and Neo4j — see
 `config/constants/neo4j.py`'s `EDGE_COLLECTION_TO_RELATIONSHIP` mapping for
-`recordRelations` -> `RECORD_RELATION`, with `DERIVED_FROM` carried as the
+`nodeRelations` -> `NODE_RELATION`, with `DERIVED_FROM` carried as the
 `relationshipType` property exactly like every other `RecordRelations`
 value already is.
 """
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["LineageTracker"]
 
 _RECORDS = CollectionNames.RECORDS.value
-_RELATIONS = CollectionNames.RECORD_RELATIONS.value
+_RELATIONS = CollectionNames.NODE_RELATIONS.value
 
 
 class LineageTracker:

@@ -43,12 +43,18 @@ class TestValidateEnumValues:
     def test_empty_list_returns_none(self):
         assert _validate_enum_values([], {"a", "b"}, "test") is None
 
-    def test_filters_invalid(self):
-        result = _validate_enum_values(["valid", "invalid"], {"valid"}, "test")
-        assert result == ["valid"]
+    def test_an_invalid_value_is_refused(self):
+        """Dropping it would apply a filter the caller never asked for,
+        returning a *wider* result set that looks like a correct answer."""
+        with pytest.raises(HTTPException) as caught:
+            _validate_enum_values(["valid", "invalid"], {"valid"}, "test")
+        assert caught.value.status_code == 400
+        assert "invalid" in caught.value.detail
 
-    def test_all_invalid_returns_none(self):
-        assert _validate_enum_values(["x", "y"], {"a", "b"}, "test") is None
+    def test_all_invalid_values_are_refused(self):
+        with pytest.raises(HTTPException) as caught:
+            _validate_enum_values(["x", "y"], {"a", "b"}, "test")
+        assert caught.value.status_code == 400
 
     def test_all_valid(self):
         result = _validate_enum_values(["a", "b"], {"a", "b", "c"}, "test")

@@ -1,13 +1,14 @@
 """The All Records and KB record lists, against a real Neo4j and a real ArangoDB.
 
 Seeds one user with a knowledge base (a root file and a folder holding a file)
-and one connector record shared with them directly, then lists them the way
-kb_service does: ``list_all_records`` and ``list_kb_records`` with the user's
-graph key. Each list must return the seeded records, a total that agrees with
-the page, and honour pagination and a search filter.
+and one connector record shared with them directly, then lists them the way the
+product does: All Records is the knowledge hub's global flatten
+(``KnowledgeHubService.get_nodes``), the KB list is ``list_kb_records`` with the
+user's graph key. Each list must return the seeded records, a total that agrees
+with the page, and honour pagination and a search filter.
 
-On ArangoDB both lists used to answer every request with an empty page: the
-count query was sent bind parameters it never declared, and the KB list read
+On ArangoDB the KB list used to answer every request with an empty page: the
+count query was sent bind parameters it never declared, and it read
 ``user_permission`` as a collection name. The error was logged and swallowed,
 so users saw an empty list rather than a failure.
 
@@ -40,6 +41,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -48,6 +50,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from app.connectors.sources.localKB.api.knowledge_hub_models import KnowledgeHubNodesResponse
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -71,6 +74,7 @@ class _World:
     user_key: str
     connector_id: str
     kb_id: str
+    team_user_id: str = ""
     team_user_key: str = ""
     team_ids: tuple[str, ...] = ()
     ids: dict[str, str] = field(default_factory=dict)
@@ -118,7 +122,8 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
         CollectionNames.PERMISSION.value,
         CollectionNames.BELONGS_TO.value,
         CollectionNames.IS_OF_TYPE.value,
-        CollectionNames.RECORD_RELATIONS.value,
+        CollectionNames.USER_APP_RELATION.value,
+        CollectionNames.NODE_RELATIONS.value,
     ):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -148,6 +153,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
             user_key=f"ukey-lists-{suffix}",
             connector_id=f"drive-lists-{suffix}",
             kb_id=f"kb-lists-{suffix}",
+            team_user_id=f"team-user-{suffix}",
             team_user_key=f"ukey-team-{suffix}",
             team_ids=(f"team-a-{suffix}", f"team-b-{suffix}"),
         )
@@ -188,7 +194,8 @@ async def _seed(w: _World) -> None:
     await g.batch_upsert_nodes(
         [
             {"id": w.connector_id, "name": "Drive", "type": "Drive", "appGroup": "Google Workspace",
-             "scope": "team", "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now},
+             "scope": "team", "isActive": True, "orgId": w.org_id,
+             "createdAtTimestamp": now, "updatedAtTimestamp": now},
             {"id": w.kb_id, "name": "Collection", "type": "KB", "appGroup": "Local Storage",
              "scope": "personal", "isActive": True, "orgId": w.org_id,
              "createdAtTimestamp": now, "updatedAtTimestamp": now},
@@ -216,16 +223,24 @@ async def _seed(w: _World) -> None:
         [edge(w.ids[n], records, w.kb_id, apps, entityType="KB") for n in ("kb_root", "kb_folder", "kb_file")],
         collection=CollectionNames.BELONGS_TO.value,
     )
+    # The collection's root items hang off its App, a nested one off its folder.
     await g.batch_create_edges(
-        [edge(w.ids["kb_folder"], records, w.ids["kb_file"], records, relationshipType="PARENT_CHILD")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        [edge(w.kb_id, apps, w.ids["kb_root"], records, relationshipType="PARENT_CHILD"),
+         edge(w.kb_id, apps, w.ids["kb_folder"], records, relationshipType="PARENT_CHILD"),
+         edge(w.ids["kb_folder"], records, w.ids["kb_file"], records, relationshipType="PARENT_CHILD")],
+        collection=CollectionNames.NODE_RELATIONS.value,
+    )
+    # A record shared with someone is listed once they are a user of its connector.
+    await g.batch_create_edges(
+        [edge(w.user_key, users, w.connector_id, apps, syncState="COMPLETED", lastSyncUpdate=now)],
+        collection=CollectionNames.USER_APP_RELATION.value,
     )
 
     # A second user who reaches the same KB through two teams and a direct grant, all different.
     teams = CollectionNames.TEAMS.value
     await g.batch_upsert_nodes(
-        [{"id": w.team_user_key, "userId": f"team-user-{w.org_id}", "orgId": w.org_id,
-          "email": f"team-user-{w.org_id}@example.com", "fullName": "Team Member", "isActive": True,
+        [{"id": w.team_user_key, "userId": w.team_user_id, "orgId": w.org_id,
+          "email": f"{w.team_user_id}@example.com", "fullName": "Team Member", "isActive": True,
           "createdAtTimestamp": now, "updatedAtTimestamp": now}],
         collection=users,
     )
@@ -243,15 +258,14 @@ async def _seed(w: _World) -> None:
     )
 
 
-def _all_records_args(w: _World, **overrides: object) -> dict:
-    args: dict = {
-        "user_id": w.user_key, "org_id": w.org_id, "skip": 0, "limit": 50, "search": None,
-        "record_types": None, "origins": None, "connectors": None, "indexing_status": None,
-        "permissions": None, "date_from": None, "date_to": None,
-        "sort_by": "recordName", "sort_order": "asc", "source": "all",
-    }
+async def _all_records(w: _World, **overrides: object) -> KnowledgeHubNodesResponse:
+    """The All Records list: everything the caller may see, across the hub."""
+    args: dict = {"user_id": w.user_id, "org_id": w.org_id, "flattened": True, "limit": 50,
+                  "sort_by": "name", "sort_order": "asc"}
     args.update(overrides)
-    return args
+    listing = await KnowledgeHubService(logger, w.graph).get_nodes(**args)
+    assert listing.success, listing.error
+    return listing
 
 
 def _kb_args(w: _World, **overrides: object) -> dict:
@@ -266,33 +280,29 @@ def _kb_args(w: _World, **overrides: object) -> dict:
 
 
 async def test_all_records_lists_kb_and_connector_records(world: _World) -> None:
-    records, total, _ = await world.graph.list_all_records(**_all_records_args(world))
-    got = {r["id"] for r in records}
-    assert {world.ids[n] for n in ("kb_root", "kb_file", "drive_file")} <= got
-    assert total == len(records)
+    listing = await _all_records(world)
+    got = [item.id for item in listing.items]
+    assert {world.ids[n] for n in ("kb_root", "kb_file", "drive_file")} <= set(got)
+    assert len(got) == len(set(got))
+    assert listing.pagination.totalItems == len(got)
 
 
 async def test_all_records_paginates_and_filters(world: _World) -> None:
-    g = world.graph
-    _, total, _ = await g.list_all_records(**_all_records_args(world))
-    page, page_total, _ = await g.list_all_records(**_all_records_args(world, limit=1))
-    assert len(page) == 1 and page_total == total
+    whole = await _all_records(world)
+    first = await _all_records(world, limit=1)
+    second = await _all_records(world, limit=1, page=2)
+    assert first.pagination.totalItems == whole.pagination.totalItems
+    assert [i.id for i in first.items + second.items] == [i.id for i in whole.items[:2]]
 
-    found, found_total, _ = await g.list_all_records(**_all_records_args(world, search="drive_file"))
-    assert [r["id"] for r in found] == [world.ids["drive_file"]]
-    assert found_total == 1
+    found = await _all_records(world, q="drive_file")
+    assert [item.id for item in found.items] == [world.ids["drive_file"]]
+    assert found.pagination.totalItems == 1
 
-    connector_only, _, _ = await g.list_all_records(**_all_records_args(world, source="connector"))
-    assert {r["id"] for r in connector_only} == {world.ids["drive_file"]}
+    connector_only = await _all_records(world, origins=["CONNECTOR"])
+    assert {item.id for item in connector_only.items} == {world.ids["drive_file"]}
 
-    kb_only, _, _ = await g.list_all_records(**_all_records_args(world, source="local"))
-    got = {r["id"] for r in kb_only}
-    assert {world.ids["kb_root"], world.ids["kb_file"]} <= got and world.ids["drive_file"] not in got
-
-    # No KB is shared with this user as READER; the connector record must survive that.
-    readers, readers_total, _ = await g.list_all_records(**_all_records_args(world, permissions=["READER"]))
-    assert world.ids["drive_file"] in {r["id"] for r in readers}
-    assert readers_total == len(readers)
+    kb_only = {item.id for item in (await _all_records(world, origins=["COLLECTION"])).items}
+    assert {world.ids["kb_root"], world.ids["kb_file"]} <= kb_only and world.ids["drive_file"] not in kb_only
 
 
 async def test_kb_records_lists_the_folder_contents(world: _World) -> None:
@@ -317,69 +327,22 @@ async def test_kb_records_lists_the_folder_contents(world: _World) -> None:
     assert found_total == 1
 
 
-async def _records_route(w: _World, **overrides: object) -> dict:
-    """GET /api/v1/records as the route runs it: the caller comes from the JWT."""
-    from types import SimpleNamespace
-
-    from app.connectors.api.router import get_records as records_route
-
-    request = SimpleNamespace(
-        app=SimpleNamespace(container=SimpleNamespace(logger=lambda: logger)),
-        state=SimpleNamespace(user={"userId": w.user_id, "orgId": w.org_id}),
+async def test_all_records_answers_404_for_an_unknown_caller(world: _World) -> None:
+    listing = await KnowledgeHubService(logger, world.graph).get_nodes(
+        user_id=f"nobody-{uuid.uuid4().hex[:8]}", org_id=world.org_id, flattened=True,
     )
-    params: dict = {
-        "page": 1, "limit": 50, "search": None, "record_types": None, "origins": None,
-        "connectors": None, "indexing_status": None, "permissions": None,
-        "date_from": None, "date_to": None, "sort_by": "recordName", "sort_order": "asc", "source": "all",
-    }
-    params.update(overrides)
-    return await records_route(request=request, graph_provider=w.graph, **params)
-
-
-async def test_the_records_route_lists_the_callers_records(world: _World) -> None:
-    body = await _records_route(world)
-    got = {r["id"] for r in body["records"]}
-    assert {world.ids[n] for n in ("kb_root", "kb_file", "drive_file")} <= got
-    assert body["pagination"]["totalCount"] == len(body["records"])
-
-    connector_only = await _records_route(world, source="connector")
-    assert {r["id"] for r in connector_only["records"]} == {world.ids["drive_file"]}
-
-
-async def test_the_records_route_answers_404_for_an_unknown_caller(world: _World) -> None:
-    stranger = _World(**{**world.__dict__, "user_id": f"nobody-{uuid.uuid4().hex[:8]}"})
-    body = await _records_route(stranger)
-    assert body == {"success": False, "code": 404, "reason": f"User not found for user_id: {stranger.user_id}"}
+    assert (listing.success, listing.errorCode, listing.error) == (False, 404, "User not found")
+    assert listing.items == []
 
 
 async def test_a_kb_reached_through_several_grants_is_listed_once(world: _World) -> None:
     """Each team grant used to add another copy of every record in the KB.
 
-    The strongest grant wins, ranked as the providers rank a record's highest
-    permission: FILEORGANIZER, a write role, above WRITER and READER.
+    The strongest grant wins. FILEORGANIZER is a retired role and reads as
+    READER, so the WRITER membership of the second team is the strongest here.
     """
-    records, total, _ = await world.graph.list_all_records(
-        **_all_records_args(world, user_id=world.team_user_key)
-    )
-    ids = [r["id"] for r in records]
-    assert sorted(ids) == sorted({world.ids["kb_root"], world.ids["kb_file"]})
-    assert total == len(records)
-    assert {r["permission"]["role"] for r in records} == {"FILEORGANIZER"}
-
-
-@pytest.mark.parametrize(("wanted", "listed"), [
-    (["FILEORGANIZER"], True),
-    (["READER"], False),
-    (["WRITER"], False),
-    (["READER", "FILEORGANIZER"], True),
-])
-async def test_the_permissions_filter_sees_the_role_the_user_ends_up_with(
-    world: _World, wanted: list[str], listed: bool,
-) -> None:
-    """A READER filter must not return a KB the user holds as FILEORGANIZER through another grant."""
-    records, total, _ = await world.graph.list_all_records(
-        **_all_records_args(world, user_id=world.team_user_key, permissions=wanted)
-    )
-    kb_ids = {world.ids["kb_root"], world.ids["kb_file"]}
-    assert {r["id"] for r in records} == (kb_ids if listed else set())
-    assert total == len(records)
+    listing = await _all_records(world, user_id=world.team_user_id)
+    ids = [item.id for item in listing.items]
+    assert sorted(ids) == sorted(world.ids[n] for n in ("kb_root", "kb_folder", "kb_file"))
+    assert listing.pagination.totalItems == len(ids)
+    assert {item.permission.role for item in listing.items} == {"WRITER"}

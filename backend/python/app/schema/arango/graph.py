@@ -4,17 +4,35 @@ from app.config.constants.arangodb import CollectionNames
 EDGE_DEFINITIONS = [
     {
         "edge_collection": CollectionNames.BELONGS_TO.value,
-        "from_vertex_collections": [CollectionNames.USERS.value,CollectionNames.RECORDS.value,CollectionNames.FILES.value],
+        # A record group belongs to its org, its App and its parent group; the
+        # processor writes all three on every sync.
+        "from_vertex_collections": [
+            CollectionNames.USERS.value,
+            CollectionNames.RECORDS.value,
+            CollectionNames.FILES.value,
+            CollectionNames.RECORD_GROUPS.value,
+        ],
         "to_vertex_collections": [
             CollectionNames.GROUPS.value,
             CollectionNames.ORGS.value,
-            CollectionNames.RECORD_GROUPS.value
+            CollectionNames.RECORD_GROUPS.value,
+            CollectionNames.APPS.value,
         ],
     },
     {
         "edge_collection": CollectionNames.INHERIT_PERMISSIONS.value,
-        "from_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
-        "to_vertex_collections": [CollectionNames.RECORDS.value],
+        # From child to parent, the direction every write uses: a record
+        # inherits from its parent record or its record group, and a top-level
+        # group from its App.
+        "from_vertex_collections": [
+            CollectionNames.RECORDS.value,
+            CollectionNames.RECORD_GROUPS.value,
+        ],
+        "to_vertex_collections": [
+            CollectionNames.RECORDS.value,
+            CollectionNames.RECORD_GROUPS.value,
+            CollectionNames.APPS.value,
+        ],
     },
     {
         "edge_collection": CollectionNames.ORG_DEPARTMENT_RELATION.value,
@@ -67,9 +85,25 @@ EDGE_DEFINITIONS = [
         ],
     },
     {
-        "edge_collection": CollectionNames.RECORD_RELATIONS.value,
-        "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value,CollectionNames.RECORD_GROUPS.value],
-        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value],
+        "edge_collection": CollectionNames.NODE_RELATIONS.value,
+        # The hierarchy runs from the App through record groups to records.
+        "from_vertex_collections": [
+            CollectionNames.RECORDS.value,
+            CollectionNames.FILES.value,
+            CollectionNames.RECORD_GROUPS.value,
+            CollectionNames.APPS.value,
+        ],
+        "to_vertex_collections": [
+            CollectionNames.RECORDS.value,
+            CollectionNames.FILES.value,
+            CollectionNames.RECORD_GROUPS.value,
+        ],
+    },
+    {
+        # Links between records, apart from the hierarchy.
+        "edge_collection": CollectionNames.RECORD_LINKS.value,
+        "from_vertex_collections": [CollectionNames.RECORDS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value],
     },
     {
         "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,
@@ -102,7 +136,8 @@ EDGE_DEFINITIONS = [
         # people: external collaborators hold grants on individual records before
         # (or without ever) becoming platform users.
         "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.PEOPLE.value],
-        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.AGENT_SKILLS.value],
+        # APPS: a collection grant is a permission edge from the user to the App.
+        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.AGENT_SKILLS.value, CollectionNames.APPS.value],
     },
     {
         "edge_collection": CollectionNames.ENTITY_RELATIONS.value,

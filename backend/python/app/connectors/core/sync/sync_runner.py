@@ -130,6 +130,9 @@ async def _finalize(
     connector: "BaseConnector | None" = None,
     resync_spec: object | None = None,
     org_id: str | None = None,
+    *,
+    scope_generation: int | None = None,
+    stamp_scopes: bool = False,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -199,6 +202,35 @@ async def _finalize(
     # boot resumes every connector anyway.
     if resync_spec is not None and getattr(coordinator, "shutting_down", False) is not True:
         await _reissue_pending_resync(graph_provider, logger, connector_id, resync_spec)
+
+    # Last: a stamp of a large connector takes minutes, and nothing above may wait for it.
+    await _kh_scope_end(graph_provider, logger, connector_id, scope_generation, stamp=stamp_scopes)
+
+
+async def _kh_scope_begin(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str
+) -> int | None:
+    """Mark the connector's knowledge hub scopes stale before a sync writes; the generation this run owns."""
+    try:
+        return await graph_provider.kh_scope_mark_stale(connector_id)
+    except Exception as e:
+        logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+        return None
+
+
+async def _kh_scope_end(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str,
+    generation: int | None, *, stamp: bool,
+) -> None:
+    """End this run's mark and, when the scope listing is enabled, re-stamp from what it left."""
+    if generation is None:
+        return
+    try:
+        await graph_provider.kh_scope_sync_ended(connector_id, generation)
+        if stamp and await graph_provider.kh_scope_enabled():
+            await graph_provider.kh_scope_stamp(connector_id)
+    except Exception as e:
+        logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
 
 
 # How long a queued connector may sit with its request already submitted before
@@ -492,6 +524,7 @@ async def run_sync_task(
     stopped = False
     failed = False
     skipped_code: str | None = None
+    scope_generation = await _kh_scope_begin(graph_provider, logger, connector_id)
     try:
         await write_app_status(graph_provider, logger, connector_id, start_status)
         # A resync asked for before this run began is served by it. Left set, the
@@ -569,6 +602,10 @@ async def run_sync_task(
                 getattr(
                     getattr(connector, "data_entities_processor", None), "org_id", None
                 ),
+                scope_generation=scope_generation,
+                # A stopped sync is being replaced, or its connector disabled: it ends
+                # only its own mark, and the replacement or the scope keeper stamps.
+                stamp_scopes=not stopped,
             ),
             name=f"sync_cleanup_{connector_id}",
         )

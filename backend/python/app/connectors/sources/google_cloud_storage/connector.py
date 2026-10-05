@@ -1302,7 +1302,9 @@ class GCSConnector(BaseConnector):
             # Prepare record data: all items are RecordType.FILE; folders have is_file=False
             record_type = RecordType.FILE
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else obj.get("ContentType") or get_mimetype_for_gcs(normalized_key))
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
@@ -1745,7 +1747,9 @@ class GCSConnector(BaseConnector):
             is_file = not is_folder
 
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key))
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None

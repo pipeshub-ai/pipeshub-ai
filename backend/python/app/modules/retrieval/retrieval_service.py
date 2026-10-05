@@ -33,8 +33,6 @@ from app.modules.retrieval.result_merging import (
     merger_for,
 )
 from app.modules.transformers.blob_storage import BlobStorage
-from app.services.featureflag.config.config import CONFIG
-from app.services.featureflag.platform_settings import read_platform_feature_flag
 from app.services.graph_db.interface.graph_db_provider import (
     AccessibleContainers,
     IGraphDBProvider,
@@ -507,6 +505,14 @@ class RetrievalService:
 
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
+            if not user_key:
+                # The scope above was read for this user: no key means the lookup did not answer.
+                self.logger.warning(
+                    "No graph user key for user %s in org %s; hits cannot be checked", user_id, org_id
+                )
+                return self._create_empty_response(
+                    PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
+                )
 
             if use_containers:
                 clauses = self._build_container_clauses(
@@ -545,6 +551,7 @@ class RetrievalService:
                     queries, filter, limit, org_id, user_id, containers,
                     allow_requery=not virtual_record_ids_from_tool,
                     scope_connector_ids=containers.scope_connector_ids,
+                    user_key=user_key,
                 )
                 if verification_degraded:
                     # The graph could not answer. Telling this user to upload
@@ -557,6 +564,28 @@ class RetrievalService:
                 search_results = await self._execute_parallel_searches(
                     queries, filter, limit, org_id, user_id
                 )
+                try:
+                    enumerated = accessible_virtual_id_to_record_id
+                    accessible_virtual_id_to_record_id = await self._keep_permitted_hits(
+                        search_results, enumerated, user_key, org_id,
+                        scope_connector_ids=requested_scope_ids(filters),
+                    )
+                    denied = enumerated.keys() - accessible_virtual_id_to_record_id.keys()
+                    # A denied hit is gone, so all of them denied reads as no match.
+                    search_results = [
+                        result for result in search_results
+                        if not isinstance(result, dict)
+                        or (result.get("metadata") or {}).get("virtualRecordId") not in denied
+                    ]
+                except Exception:
+                    self.logger.exception(
+                        "Permission check of search hits failed (user=%s org=%s)", user_id, org_id,
+                    )
+                    return self._create_empty_response(
+                        "Could not verify document permissions right now. "
+                        "Please retry shortly.",
+                        Status.PERMISSION_CHECK_UNAVAILABLE,
+                    )
 
             if not search_results:
                 self.logger.debug("No search results found")
@@ -929,26 +958,6 @@ class RetrievalService:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
-    async def _container_filter_enabled(self) -> bool:
-        """Whether searches scope by container instead of by record id.
-
-        Read per request, uncached, so an admin toggling it in Labs takes
-        effect on the next search rather than after a restart.
-
-        Defaults OFF, and an unreadable setting keeps it off. This path now
-        grants records in an APP_LEVEL or RECORD_GROUP_LEVEL container without
-        resolving a per-record role, so it is no longer the stricter of the
-        two and must not be what a failed config read falls back to: a missing
-        settings blob, a non-dict featureFlags, or a KV outage all look alike
-        here, and an operator who turned this off to stop the shortcut would
-        otherwise have it silently turned back on.
-        """
-        return await read_platform_feature_flag(
-            CONFIG.ENABLE_CONTAINER_PERMISSION_FILTER,
-            self.config_service,
-            default=False,
-        )
-
     async def _resolve_search_scope(
         self,
         user_id: str,
@@ -959,10 +968,10 @@ class RetrievalService:
         """Decide how this search's permission filter is built.
 
         Returns ``(containers, accessible_map, user)``. ``containers`` is None
-        whenever the legacy record-id path is in force — the flag is off, the
-        request carries a record-level predicate no container can express, or
-        the graph declined (an unbacklogged connector, a filter too large).
-        The two are never both authoritative.
+        whenever the record-id path is in force — the request carries a
+        record-level predicate no container can express, or the graph declined
+        (an unbacklogged connector, a filter too large). The two are never both
+        authoritative.
         """
         excluded = await self._excluded_demo_apps(user_id, org_id)
 
@@ -976,13 +985,9 @@ class RetrievalService:
 
         user_task = self._get_user_cached(user_id)
 
-        # Awaited before the branch rather than gathered with `user_task`: it is
-        # a single ~0.2ms KV read, and every branch below overlaps `user_task`
-        # with its own expensive call. Gathering the flag here instead would
-        # leave that call serialised behind the user lookup.
         # A container scope cannot leave one app out, so an exclusion keeps the
         # record-id path.
-        if excluded or not await self._container_filter_enabled():
+        if excluded:
             accessible, user = await asyncio.gather(_legacy(), user_task)
             return None, accessible, user
 
@@ -1170,6 +1175,7 @@ class RetrievalService:
         *,
         allow_requery: bool,
         scope_connector_ids: frozenset[str] | None,
+        user_key: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
 
@@ -1216,14 +1222,13 @@ class RetrievalService:
                 break
 
             try:
-                accessible = await self.graph_provider.filter_accessible_virtual_record_ids(
-                    list(returned_vids),
-                    user_id,
+                accessible = (await self.graph_provider.check_access(
+                    user_key or "",
                     org_id,
-                    trusted_app_ids=containers.app_ids_trusted,
-                    trusted_group_ids=containers.record_group_ids_trusted,
-                    scope_connector_ids=scope_connector_ids,
-                )
+                    virtual_record_ids=returned_vids,
+                    indexed_only=True,
+                    connector_ids=scope_connector_ids,
+                )).records_by_vrid
             except PermissionVerificationUnavailableError as exc:
                 # The caller turns this into a 503 rather than telling a user
                 # with a full workspace that nothing matched.
@@ -1291,6 +1296,42 @@ class RetrievalService:
         admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
         return admitted[:budget], best_accessible, best_degraded
 
+    async def _keep_permitted_hits(
+        self,
+        search_results: list[dict[str, Any]],
+        accessible: dict[str, str],
+        user_key: str | None,
+        org_id: str,
+        scope_connector_ids: "tuple[str, ...] | None" = None,
+    ) -> dict[str, str]:
+        """The part of the enumerated ``{vrid: recordId}`` map that the hits use
+        and the permission model admits. A substitute copy is cited only from
+        the request's scope (``scope_connector_ids``; None is unscoped).
+
+        The enumeration does not apply the access rules (it admits a RESTRICTED
+        page to every member of its space), so the record it chose for each hit
+        is checked here. A hit whose chosen record is denied keeps another
+        accessible, indexed copy if it has one.
+        """
+        hit_vrids = {
+            (result.get("metadata") or {}).get("virtualRecordId")
+            for result in search_results
+            if isinstance(result, dict)
+        }
+        hits = {vrid: accessible[vrid] for vrid in hit_vrids if vrid in accessible}
+        if not hits:
+            return hits
+        check = await self.graph_provider.check_access(
+            user_key or "", org_id, node_ids=hits.values(),
+            virtual_record_ids=hits.keys(), indexed_only=True,
+            connector_ids=frozenset(scope_connector_ids) if scope_connector_ids is not None else None,
+        )
+        return {
+            vrid: record_id if record_id in check.node_ids else check.records_by_vrid[vrid]
+            for vrid, record_id in hits.items()
+            if record_id in check.node_ids or vrid in check.records_by_vrid
+        }
+
     async def _get_accessible_virtual_ids_task(
         self,
         user_id: str,
@@ -1350,7 +1391,13 @@ class RetrievalService:
 
         # Cache miss - fetch from database
         self.logger.debug(f"User cache miss for user_id: {user_id}")
-        user_data = await self.graph_provider.get_user_by_user_id(user_id)
+        try:
+            user_data = await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        if user_data is None:
+            # Not cached: a user created a moment later must be found.
+            return None
 
         # Store in cache
         _user_cache[user_id] = (user_data, time.time())

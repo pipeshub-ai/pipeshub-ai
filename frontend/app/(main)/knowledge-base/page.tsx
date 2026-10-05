@@ -55,7 +55,7 @@ import {
   applyClientSideFilters,
   isKbCollectionsHubApp,
 } from './utils/all-records-transformer';
-import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteningFilters } from './utils';
+import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteningFilters, toTablePagination } from './utils';
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
@@ -67,7 +67,7 @@ import {
   buildFilterUrl,
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
-import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
+import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl, pushKbUrl, replaceKbUrl } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { UPLOAD_BATCH_CONFIG } from './constants/upload-batch.constants';
 import { createSizeBatches } from './utils/batch-files';
@@ -110,6 +110,7 @@ import {
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
+import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 
 function KnowledgeBasePageContent() {
@@ -151,7 +152,7 @@ function KnowledgeBasePageContent() {
     setTableDataError,
     setSelectedNode,
     setCollectionsPagination,
-    setCollectionsPage,
+    setCollectionsCursor,
     setCollectionsLimit,
     collectionsPagination,
     clearTableData,
@@ -206,7 +207,6 @@ function KnowledgeBasePageContent() {
     rawFilter.indexingStatus?.join(','),
     rawFilter.origins?.join(','),
     rawFilter.connectorIds?.join(','),
-    rawFilter.kbIds?.join(','),
     rawFilter.sizeRange,
     rawFilter.createdAfter,
     rawFilter.createdBefore,
@@ -339,7 +339,9 @@ function KnowledgeBasePageContent() {
       store.setAllRecordsSort(parsed.sort);
       store.setAllRecordsLimit(parsed.limit);
       store.setAllRecordsSearchQuery(parsed.searchQuery);
-      store.setAllRecordsPage(parsed.page);
+      // Last: the setters above each clear the cursor, so hydrating it first
+      // would be undone by them.
+      store.setAllRecordsCursor(parsed.cursor);
       setIsSearchOpen(!!parsed.searchQuery);
     } else {
       const parsed = parseCollectionsParams(searchParams);
@@ -347,7 +349,7 @@ function KnowledgeBasePageContent() {
       store.setSort(parsed.sort);
       store.setCollectionsLimit(parsed.limit);
       store.setSearchQuery(parsed.searchQuery);
-      store.setCollectionsPage(parsed.page);
+      store.setCollectionsCursor(parsed.cursor);
       setIsSearchOpen(!!parsed.searchQuery);
     }
   }, [searchParams]);
@@ -369,13 +371,13 @@ function KnowledgeBasePageContent() {
       ? serializeAllRecordsParams(
           store.allRecordsFilter,
           store.allRecordsSort,
-          { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
+          { cursor: store.allRecordsPagination.cursor, limit: store.allRecordsPagination.limit },
           debouncedAllRecordsSearchQuery
         )
       : serializeCollectionsParams(
           store.filter,
           store.sort,
-          { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
+          { cursor: store.collectionsPagination.cursor, limit: store.collectionsPagination.limit },
           debouncedSearchQuery
         );
 
@@ -386,14 +388,13 @@ function KnowledgeBasePageContent() {
     if (newUrl !== currentUrl) {
       // Update the hydration ref so the read-effect skips this URL (it came from us, not navigation)
       lastHydratedUrl.current = new URL(newUrl, 'http://x').searchParams.toString();
-      router.replace(newUrl);
+      replaceKbUrl(newUrl);
     }
   }, [
-    filter, sort, collectionsPagination.page, collectionsPagination.limit, debouncedSearchQuery,
-    allRecordsFilter, allRecordsSort, allRecordsPagination.page, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
+    filter, sort, collectionsPagination.cursor, collectionsPagination.limit, debouncedSearchQuery,
+    allRecordsFilter, allRecordsSort, allRecordsPagination.cursor, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
     isAllRecordsMode,
     searchParams,
-    router,
   ]);
 
   // Check if any filters are active (for empty state messaging)
@@ -420,8 +421,7 @@ function KnowledgeBasePageContent() {
       filter.updatedAfter ||
       filter.updatedBefore ||
       filter.origins?.length ||
-      filter.connectorIds?.length ||
-      filter.kbIds?.length
+      filter.connectorIds?.length
     );
   }, [isAllRecordsMode, allRecordsFilter, filter]);
 
@@ -501,10 +501,10 @@ function KnowledgeBasePageContent() {
   const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
 
   /**
-   * Tracks last page we fetched for so filter/sort resets (page → 1) do not trigger a
-   * duplicate fetch from the pagination effect when page actually changes (e.g. 2 → 1).
+   * The cursor we last fetched for, so a filter/sort reset (cursor → null) does
+   * not also trigger the pagination effect when the cursor actually changes.
    */
-  const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
+  const prevAllRecordsCursorRef = useRef(allRecordsPagination.cursor);
 
   // Sync current folder from URL params (Collections mode only).
   // In All Records mode the active node is tracked via nodeId + auto-expansion
@@ -570,9 +570,16 @@ function KnowledgeBasePageContent() {
     }
   }, [appNodes, isAllRecordsMode]);
 
+  // A navigation supersedes the table request before it: only the newest may
+  // write the table, the error or the loader (an older response landing last
+  // would show the previous place under the new address).
+  const allRecordsFetchSeq = useRef(0);
+
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
-    const stillSignedIn = kbSessionToken();
+    const signedIn = kbSessionToken();
+    const seq = ++allRecordsFetchSeq.current;
+    const stillSignedIn = () => signedIn() && seq === allRecordsFetchSeq.current;
     try {
       setIsLoadingAllRecordsTable(true);
       setAllRecordsTableError(null);
@@ -607,13 +614,23 @@ function KnowledgeBasePageContent() {
       }
       if (!stillSignedIn()) return;
       setAllRecordsTableData(data);
-      // Sync derived pagination metadata (totalItems, totalPages, hasNext, hasPrev)
-      // without overwriting user-controlled page/limit to avoid triggering effect loops
+      // Sync what the response decided (totals, indices, the two cursors)
+      // without touching the cursor the user asked for — overwriting that would
+      // re-trigger the effect watching it.
       if (data.pagination) {
-        syncAllRecordsPaginationMeta(data.pagination);
+        syncAllRecordsPaginationMeta(
+          toTablePagination(data.pagination, currentPagination.cursor)
+        );
       }
     } catch (error) {
       if (!stillSignedIn()) return;
+      // A refused cursor goes back to the first page instead of erroring; the
+      // effect watching the cursor issues that fetch.
+      const rejectedCursor = useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
+      if (isRejectedCursorError(error, rejectedCursor)) {
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(null);
+        return;
+      }
       console.error('Error fetching all records:', error);
       setAllRecordsTableError('Failed to load records');
     } finally {
@@ -660,25 +677,25 @@ function KnowledgeBasePageContent() {
     // setAllRecordsFilter / setAllRecordsSort reset page to 1; sync ref so pagination effect
     // does not duplicate-fetch when page changes (e.g. 2 → 1), without a skip flag that can
     // stick when page stays 1 and the pagination effect never runs.
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
 
-  // All Records mode: Re-fetch when pagination page changes
+  // All Records mode: Re-fetch when the cursor moves (Next/Previous)
   useEffect(() => {
     if (!isAllRecordsMode) return;
-    if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-    prevAllRecordsPageRef.current = allRecordsPagination.page;
+    if (allRecordsPagination.cursor === prevAllRecordsCursorRef.current) return;
+    prevAllRecordsCursorRef.current = allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-  }, [allRecordsPagination.page]);
+  }, [allRecordsPagination.cursor]);
 
   // All Records mode: Re-fetch when pagination limit changes
   useEffect(() => {
     if (!isAllRecordsMode || allRecordsPagination.limit === DEFAULT_PAGE_SIZE) return;
     // setAllRecordsLimit resets page to 1; keep pagination ref in sync (same as filter effect).
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsPagination.limit]);
 
@@ -711,10 +728,15 @@ function KnowledgeBasePageContent() {
     router.push('/knowledge-base');
   }, [clearTableData, refreshKbTree, router]);
 
+  // Both Collections fetches write one table, so they share the counter.
+  const collectionsFetchSeq = useRef(0);
+
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
     async (nodeType: string, nodeId: string) => {
-      const stillSignedIn = kbSessionToken();
+      const signedIn = kbSessionToken();
+      const seq = ++collectionsFetchSeq.current;
+      const stillSignedIn = () => signedIn() && seq === collectionsFetchSeq.current;
       setIsLoadingTableData(true);
       setTableDataError(null);
 
@@ -755,10 +777,15 @@ function KnowledgeBasePageContent() {
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        // The rows are ready: the sidebar path opened below is separate work and
+        // must not hold the table's loader.
+        setIsLoadingTableData(false);
 
         // Update pagination from response
         if (data.pagination) {
-          setCollectionsPagination(data.pagination);
+          setCollectionsPagination(
+            toTablePagination(data.pagination, currentPagination.cursor)
+          );
         }
         setSelectedNode({ nodeType, nodeId });
 
@@ -814,6 +841,13 @@ function KnowledgeBasePageContent() {
 
       } catch (error) {
         if (!stillSignedIn()) return;
+        // A refused cursor goes back to the first page instead of erroring;
+        // clearing it rewrites the URL, which re-runs this fetch without one.
+        const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
+        if (isRejectedCursorError(error, rejectedCursor)) {
+          useKnowledgeBaseStore.getState().setCollectionsCursor(null);
+          return;
+        }
         const status = isProcessedError(error) ? error.statusCode : (error as { statusCode?: number })?.statusCode;
         const isNotFound =
           status === 404 || (isProcessedError(error) && error.type === ErrorType.NOT_FOUND);
@@ -897,7 +931,9 @@ function KnowledgeBasePageContent() {
   // (flattened=false) so the API returns app-level collection nodes; with
   // filters, omit flattened and let the backend use search mode.
   const fetchAllCollectionsData = useCallback(async () => {
-    const stillSignedIn = kbSessionToken();
+    const signedIn = kbSessionToken();
+    const seq = ++collectionsFetchSeq.current;
+    const stillSignedIn = () => signedIn() && seq === collectionsFetchSeq.current;
     setIsLoadingTableData(true);
     setTableDataError(null);
     try {
@@ -938,10 +974,19 @@ function KnowledgeBasePageContent() {
       setTableData(data);
       setSelectedNode(null);
       if (data.pagination) {
-        setCollectionsPagination(data.pagination);
+        setCollectionsPagination(
+          toTablePagination(data.pagination, currentPagination.cursor)
+        );
       }
     } catch (error: unknown) {
       if (!stillSignedIn()) return;
+      // A refused cursor goes back to the first page instead of erroring;
+      // clearing it rewrites the URL, which re-runs this fetch without one.
+      const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
+      if (isRejectedCursorError(error, rejectedCursor)) {
+        useKnowledgeBaseStore.getState().setCollectionsCursor(null);
+        return;
+      }
       setTableDataError(
         getUserFacingErrorMessage(
           error,
@@ -1016,8 +1061,8 @@ function KnowledgeBasePageContent() {
     }
 
     // setAllRecordsSearchQuery resets page to 1; keep pagination ref in sync (same as filter effect).
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [debouncedAllRecordsSearchQuery, isAllRecordsMode]);
 
@@ -1110,8 +1155,8 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
     if (isAllRecordsMode) {
       setAllRecordsSearchQuery('');
-      prevAllRecordsPageRef.current =
-        useKnowledgeBaseStore.getState().allRecordsPagination.page;
+      prevAllRecordsCursorRef.current =
+        useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
       // Immediate refetch when clearing search (bypasses debounce).
       // Preserve drill-down: fetchAllRecordsTableData() with no args loads the global root only.
       const nt = searchParams.get('nodeType');
@@ -1161,7 +1206,6 @@ function KnowledgeBasePageContent() {
     try {
       const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
         onlyContainers: true,
-        page: 1,
         limit: SIDEBAR_PAGINATION_PAGE_SIZE,
         include: 'counts',
         sortBy: 'name',
@@ -1178,12 +1222,9 @@ function KnowledgeBasePageContent() {
         const p = response.pagination;
         state.setAppChildPagination(
           selectedApp.id,
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : { hasNext: false, nextPage: 1 }
+          p?.nextCursor
+            ? { hasNext: p.hasNext, nextCursor: p.nextCursor }
+            : { hasNext: false, nextCursor: null }
         );
 
         if (!isKbCollectionsHubApp(selectedApp)) {
@@ -1199,12 +1240,7 @@ function KnowledgeBasePageContent() {
       storeChildrenList(
         nodeId,
         response.items,
-        sidebarNodeChildrenMetaFromResponse(
-          response.pagination,
-          response.items.length,
-          SIDEBAR_PAGINATION_PAGE_SIZE,
-          nodeType
-        )
+        sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType)
       );
       state.addNodes(response.items);
 
@@ -1375,28 +1411,27 @@ function KnowledgeBasePageContent() {
       });
       setIsCreateFolderDialogOpen(true);
     } else if (currentNode?.nodeType === 'folder') {
-      // Inside a folder — find the KB root from breadcrumbs (app or kb nodeType)
-      const kbBreadcrumb = tableData?.breadcrumbs?.find(
-        (b) => b.nodeType === 'app' || b.nodeType === 'kb'
-      );
-      const kbId = kbBreadcrumb?.id ?? tableData?.breadcrumbs?.[0]?.id;
-      if (kbId) {
-        setCreateFolderContext({
-          type: 'subfolder' as const,
-          kbId,
-          parentId: currentNode.id,
-          parentName: currentNode.name,
+      const kbId = tableData?.breadcrumbs?.find((b) => b.nodeType === 'app')?.id;
+      if (!kbId) {
+        toast.error('Failed to create folder', {
+          description: `Could not find the collection "${currentNode.name}" belongs to.`,
         });
-        setIsCreateFolderDialogOpen(true);
-      } else {
-        // Fallback: no KB root found — create a new collection
-        setCreateFolderContext({ type: 'collection' });
-        setIsCreateFolderDialogOpen(true);
+        return;
       }
-    } else {
-      // No KB context (at root or no currentNode) — create new collection
+      setCreateFolderContext({
+        type: 'subfolder' as const,
+        kbId,
+        parentId: currentNode.id,
+        parentName: currentNode.name,
+      });
+      setIsCreateFolderDialogOpen(true);
+    } else if (!currentNode) {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
+    } else {
+      toast.error('Failed to create folder', {
+        description: `A folder cannot be created inside "${currentNode.name}" (${currentNode.nodeType}).`,
+      });
     }
   }, [tableData, canCreateCollection]);
 
@@ -2117,6 +2152,17 @@ function KnowledgeBasePageContent() {
     }
   }, [getPreviewErrorMessage]);
 
+  // Search and filter results come from anywhere below the current place: open a row's
+  // parent as plain navigation, without the search or the filters that found the row.
+  const handleGoToParent = useCallback(
+    (item: KnowledgeHubNode) => {
+      if (!item.parent?.id) return;
+      setIsSearchOpen(false);
+      pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.parent.nodeType, nodeId: item.parent.id }));
+    },
+    [isAllRecordsMode, setIsSearchOpen]
+  );
+
   // Handle item click (navigate into folder or open file)
   const handleItemClick = useCallback(
     (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -2141,7 +2187,12 @@ function KnowledgeBasePageContent() {
         if (isNavigableContainer) {
           // Use clean nav URL — filters don't carry over when drilling into a new container
           setIsSearchOpen(false);
-          router.push(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.nodeType, nodeId: item.id }));
+          // The sidebar lists an app's children once the app is open: start that
+          // read with the table's instead of after it (the loader shares it).
+          if (isAllRecordsMode && item.nodeType === 'app') {
+            void fetchAppDirectChildren(item.id).catch(() => {});
+          }
+          pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.nodeType, nodeId: item.id }));
         } else if (item.nodeType === 'record') {
           handlePreviewFile(item);
         }
@@ -2151,13 +2202,13 @@ function KnowledgeBasePageContent() {
           setIsSearchOpen(false);
           setCurrentFolderId(item.id);
           // Use clean nav URL to clear search params when navigating into folders
-          router.push(buildCleanNavUrl(false, { kbId: selectedKbId || '', folderId: item.id }));
+          pushKbUrl(buildCleanNavUrl(false, { kbId: selectedKbId || '', folderId: item.id }));
         } else {
           handlePreviewFile(item);
         }
       }
     },
-    [selectedKbId, router, isAllRecordsMode, setCurrentFolderId, handlePreviewFile, setIsSearchOpen]
+    [selectedKbId, isAllRecordsMode, setCurrentFolderId, handlePreviewFile, setIsSearchOpen]
   );
 
 
@@ -2259,12 +2310,12 @@ function KnowledgeBasePageContent() {
     (breadcrumb: Breadcrumb) => {
       setIsSearchOpen(false);
       if (breadcrumb.id === 'all-records-root') {
-        router.push(buildCleanNavUrl(isAllRecordsMode, {}));
+        pushKbUrl(buildCleanNavUrl(isAllRecordsMode, {}));
         return;
       }
-      router.push(buildCleanNavUrl(isAllRecordsMode, { nodeType: breadcrumb.nodeType, nodeId: breadcrumb.id }));
+      pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: breadcrumb.nodeType, nodeId: breadcrumb.id }));
     },
-    [router, isAllRecordsMode, setIsSearchOpen]
+    [isAllRecordsMode, setIsSearchOpen]
   );
 
   const executeReindex = useCallback(
@@ -2594,14 +2645,12 @@ function KnowledgeBasePageContent() {
   const handleDelete = useCallback((item: KnowledgeBaseItem) => {
     if (!canDeleteCollection) return;
     const isHubNode = 'nodeType' in item && 'origin' in item;
-    // 'app'/'kb' nodes have no nodeType here — deleteNode's fallback path
-    // (nodeType neither 'folder' nor 'record') routes them to
-    // deleteKnowledgeBase, which is what deleting a collection needs.
     let nodeType: NodeType | undefined;
     if (isHubNode) {
       const hubNode = item as unknown as KnowledgeHubNode;
       if (hubNode.nodeType === 'record') nodeType = 'record';
       else if (hubNode.nodeType === 'folder' || hubNode.nodeType === 'recordGroup') nodeType = 'folder';
+      else if (hubNode.nodeType === 'app') nodeType = 'app';
     } else {
       nodeType = item.type === 'folder' ? 'folder' : 'record';
     }
@@ -2857,11 +2906,11 @@ function KnowledgeBasePageContent() {
           hasSearchQuery={hasSearchQuery}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
-          onPageChange={(page) => {
+          onCursorChange={(cursor) => {
             if (isAllRecordsMode) {
-              useKnowledgeBaseStore.getState().setAllRecordsPage(page);
+              useKnowledgeBaseStore.getState().setAllRecordsCursor(cursor);
             } else {
-              setCollectionsPage(page);
+              setCollectionsCursor(cursor);
             }
           }}
           onLimitChange={(limit) => {
@@ -2873,6 +2922,7 @@ function KnowledgeBasePageContent() {
           }}
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
+          onGoToParent={handleGoToParent}
           onRename={!isAllRecordsMode ? handleRename : undefined}
           onReindex={handleReindexClick}
           onReplace={

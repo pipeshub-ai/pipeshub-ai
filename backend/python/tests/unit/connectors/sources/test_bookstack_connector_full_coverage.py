@@ -832,7 +832,8 @@ class TestCreateRecordGroupWithPermissions:
             item, "book", {}, None
         )
         assert result is not None
-        assert result[1] == []
+        # Unknown, not empty: the processor keeps the stored grants (RG-5).
+        assert result[1] is None
 
 
 class TestParseBookstackPermissions:

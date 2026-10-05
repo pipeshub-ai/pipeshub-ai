@@ -132,7 +132,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.IS_OF_TYPE.value,
-                  CollectionNames.USER_APP_RELATION.value, CollectionNames.RECORD_RELATIONS.value):
+                  CollectionNames.USER_APP_RELATION.value, CollectionNames.NODE_RELATIONS.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
             f"OR PARSE_IDENTIFIER(e._to).key IN @ids REMOVE e IN {edges}",
@@ -227,7 +227,7 @@ async def _seed(w: _World) -> None:
     await g.batch_create_edges(
         [edge(w.ids[mail], records, w.ids[attachment], records, relationshipType="ATTACHMENT")
          for attachment, mail in ATTACHMENTS.items()],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
 
@@ -264,14 +264,13 @@ async def _found_by(w: _World, name: str) -> set[str]:
         found.add("search record check")
     if record_id in _ids_anywhere(await g.get_records_by_record_ids([record_id], w.org_id)):
         found.add("search hydration")
-    listed, _, _ = await g.list_all_records(
-        w.user_key, w.org_id, 0, 200, None, None, None, None, None, None, None, None, "recordName", "asc", "all",
+    access = await g.get_knowledge_hub_access_v3(w.user_key, w.org_id)
+    hub = await g.get_knowledge_hub_connector_page_v3(
+        w.connector_id, w.org_id, access["grantee_ids"], access["gated_app_ids"],
+        grants_by_connector=access["by_connector"], limit=100, flatten=True,
     )
-    if record_id in _ids_anywhere(listed):
-        found.add("All Records list")
-    hub = await g.get_knowledge_hub_search(w.org_id, w.user_key, 0, 100, "name", "asc")
-    if record_id in _ids_anywhere(hub.get("nodes", [])):
-        found.add("Knowledge Hub search")
+    if record_id in {row["id"] for row in hub["rows"]}:
+        found.add("Knowledge Hub listing")
     if name in ATTACHMENTS:
         children = await g.get_records_by_parent(w.connector_id, w.ext(ATTACHMENTS[name]))
         if record_id in _ids_anywhere(children):
@@ -281,7 +280,7 @@ async def _found_by(w: _World, name: str) -> set[str]:
 
 SURFACES = {
     "access check", "search permission map", "search vrid check", "search record check",
-    "search hydration", "All Records list", "Knowledge Hub search",
+    "search hydration", "Knowledge Hub listing",
 }
 
 
@@ -315,7 +314,7 @@ async def test_a_trashed_mail_takes_its_attachment_into_its_batch(world: _World)
     assert set(result["virtualRecordIds"]) == {world.vrid("mail"), world.vrid("attachment")}
     # Nothing is removed: the batch can be restored as it was.
     edges = await world.graph.get_edges_from_node(
-        f"{CollectionNames.RECORDS.value}/{world.ids['mail']}", CollectionNames.RECORD_RELATIONS.value
+        f"{CollectionNames.RECORDS.value}/{world.ids['mail']}", CollectionNames.NODE_RELATIONS.value
     )
     assert world.ids["attachment"] in {(e.get("_to") or e.get("to_id") or "").split("/")[-1] for e in edges}
     for name in ("other_mail", "other_attachment"):

@@ -8,7 +8,7 @@ from app.services.artifact_registry.lineage import LineageTracker
 
 from .fakes import FakeGraphProvider
 
-_RELATIONS = CollectionNames.RECORD_RELATIONS.value
+_RELATIONS = CollectionNames.NODE_RELATIONS.value
 
 
 class TestRecordDerivation:

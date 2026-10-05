@@ -1294,7 +1294,7 @@ class BookStackConnector(BaseConnector):
 
     async def _create_record_group_with_permissions(
         self, item: Dict, content_type_name: str, roles_details: Dict[int, Dict], parent_external_id: Optional[str] = None
-    ) -> Optional[Tuple[RecordGroup, List[Permission]]]:
+    ) -> Optional[Tuple[RecordGroup, List[Permission] | None]]:
         """Creates a RecordGroup and fetches its permissions for a single BookStack item."""
         try:
             item_id = item.get("id")
@@ -1329,7 +1329,9 @@ class BookStackConnector(BaseConnector):
                 content_type=content_type_name, content_id=item_id
             )
 
-            permissions_list = []
+            # None when the fetch fails: the processor then keeps the stored grants
+            # instead of wiping them.
+            permissions_list = None
             if permissions_response.success and permissions_response.data:
                 permissions_list = await self._parse_bookstack_permissions(permissions_response.data, roles_details, content_type_name)
 

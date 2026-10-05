@@ -1175,10 +1175,9 @@ class AzureFilesConnector(BaseConnector):
             # Use RecordType.FILE for both files and directories; directories are distinguished via is_file flag.
             record_type = RecordType.FILE
             extension = get_file_extension(normalized_path) if is_file else None
-            mime_type = (
-                item.get("content_type")
-                or get_mimetype_for_azure_files(normalized_path, is_directory=is_directory)
-            )
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_directory
+                         else item.get("content_type") or get_mimetype_for_azure_files(normalized_path))
 
             parent_path = get_parent_path(normalized_path)
             parent_external_id = (
@@ -1743,10 +1742,9 @@ class AzureFilesConnector(BaseConnector):
             is_directory = item_metadata.get("is_directory", False)
 
             extension = get_file_extension(item_path) if is_file else None
-            mime_type = (
-                item_metadata.get("content_type")
-                or get_mimetype_for_azure_files(item_path, is_directory=is_directory)
-            )
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_directory
+                         else item_metadata.get("content_type") or get_mimetype_for_azure_files(item_path))
 
             parent_path = get_parent_path(item_path)
             parent_external_id = (

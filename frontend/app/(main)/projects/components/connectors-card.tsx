@@ -68,10 +68,15 @@ export function ConnectorsCard({
       try {
         const seen = new Set<string>();
         const rows: ConnectorRow[] = [];
-        let page = 1;
-        let hasMore = true;
-        while (hasMore && page <= CONNECTORS_MAX_PAGES) {
-          const res = await ChatApi.listCollectionsForChat({ page, limit: CONNECTORS_PAGE_LIMIT });
+        // The listing pages by cursor, not by number: `nextCursor` is null at
+        // the end of the result, and it is the only thing that resumes at the
+        // right place — a page number names a position inside one ordering.
+        let cursor: string | null = null;
+        for (let page = 0; page < CONNECTORS_MAX_PAGES; page += 1) {
+          const res = await ChatApi.listCollectionsForChat({
+            cursor,
+            limit: CONNECTORS_PAGE_LIMIT,
+          });
           for (const item of res.knowledgeBases) {
             if (seen.has(item.id) || isCollectionOrigin(item)) continue;
             seen.add(item.id);
@@ -82,10 +87,8 @@ export function ConnectorsCard({
               connector: item.connector ?? '',
             });
           }
-          hasMore =
-            res.serverPagination?.hasNext === true ||
-            (res.serverPagination == null && res.knowledgeBases.length >= CONNECTORS_PAGE_LIMIT);
-          page += 1;
+          cursor = res.nextCursor;
+          if (!cursor) break;
         }
         if (!cancelled) setConnectors(rows);
       } catch {

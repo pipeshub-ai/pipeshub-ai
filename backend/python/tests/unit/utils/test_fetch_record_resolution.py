@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import ProgressStatus
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.fetch_full_record import (
     NOT_INDEXED_YET,
     STORAGE_ERROR,
@@ -24,10 +25,20 @@ from app.utils.fetch_full_record import (
 MODULE = "app.utils.fetch_full_record"
 
 
-def _graph_provider(*, access: bool = True, indexing_status: str | None = None) -> MagicMock:
+def _graph_provider(
+    *,
+    access: bool | set[str] = True,
+    indexing_status: str | None = None,
+) -> MagicMock:
+    """``access``: every id, none, or these ids."""
     provider = MagicMock()
     provider.config_service = MagicMock()
-    provider.check_record_access_with_details = AsyncMock(return_value=access)
+    provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+    provider.check_access = AsyncMock(
+        side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(node_ids=frozenset(
+            i for i in node_ids if access is True or (access and i in access)
+        )),
+    )
     provider.get_document = AsyncMock(return_value={
         "virtualRecordId": "vr-new",
         "indexingStatus": indexing_status or ProgressStatus.COMPLETED.value,
@@ -51,9 +62,7 @@ async def _fetch(record_ids: list[str], **kwargs):
 
 
 class TestCachedRecords:
-    async def test_a_record_already_in_the_map_skips_the_access_check(self) -> None:
-        """The map is per request and already ACL-filtered; re-checking every
-        repeat fetch would be a round trip for nothing."""
+    async def test_a_map_entry_is_checked_in_the_one_batch_not_per_id(self) -> None:
         provider = _graph_provider()
         result = await _fetch(
             ["rec-1"],
@@ -63,7 +72,31 @@ class TestCachedRecords:
 
         assert result["ok"] is True
         assert result["records"][0]["virtual_record_id"] == "vr-1"
-        provider.check_record_access_with_details.assert_not_awaited()
+        provider.check_access.assert_awaited_once()
+
+    async def test_a_map_entry_the_user_may_not_read_is_not_served(self) -> None:
+        """The map is also filled by attachment and FK enrichment, which do not
+        verify: being in it proves nothing."""
+        result = await _fetch(
+            ["rec-1"],
+            virtual_record_id_to_result={"vr-1": _cached_record("rec-1")},
+            graph_provider=_graph_provider(access=False),
+        )
+
+        assert result["ok"] is False
+        assert result["unavailable_reasons"]["rec-1"] == UNAVAILABLE
+
+    async def test_a_failed_batch_check_serves_nothing(self) -> None:
+        provider = _graph_provider()
+        provider.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await _fetch(
+            ["rec-1"],
+            virtual_record_id_to_result={"vr-1": _cached_record("rec-1")},
+            graph_provider=provider,
+        )
+
+        assert result["ok"] is False
+        assert result["unavailable_reasons"]["rec-1"] == STORAGE_ERROR
 
     async def test_order_follows_the_requested_ids(self) -> None:
         """Concurrent resolution must not reorder the model's records."""
@@ -79,16 +112,16 @@ class TestConcurrency:
         in_flight = 0
         peak = 0
 
-        async def slow_check(*_args, **_kwargs) -> bool:
+        async def slow_lookup(*_args, **_kwargs) -> None:
             nonlocal in_flight, peak
             in_flight += 1
             peak = max(peak, in_flight)
             await asyncio.sleep(0.01)
             in_flight -= 1
-            return False        # denied: keeps the test to the ACL step
+            return None         # not found: keeps the test to the lookup step
 
         provider = _graph_provider()
-        provider.check_record_access_with_details = AsyncMock(side_effect=slow_check)
+        provider.get_document = AsyncMock(side_effect=slow_lookup)
 
         await _fetch([f"rec-{i}" for i in range(10)], graph_provider=provider)
 
@@ -99,16 +132,16 @@ class TestConcurrency:
         in_flight = 0
         peak = 0
 
-        async def slow_check(*_args, **_kwargs) -> bool:
+        async def slow_lookup(*_args, **_kwargs) -> None:
             nonlocal in_flight, peak
             in_flight += 1
             peak = max(peak, in_flight)
             await asyncio.sleep(0.01)
             in_flight -= 1
-            return False
+            return None         # not found: keeps the test to the lookup step
 
         provider = _graph_provider()
-        provider.check_record_access_with_details = AsyncMock(side_effect=slow_check)
+        provider.get_document = AsyncMock(side_effect=slow_lookup)
 
         await _fetch([f"rec-{i}" for i in range(40)], graph_provider=provider)
 
@@ -184,7 +217,6 @@ class TestUnavailableReasons:
 
         assert result["ok"] is False
         assert result["unavailable_reasons"]["rec-1"] == UNAVAILABLE
-        provider.check_record_access_with_details.assert_not_awaited()
 
     async def test_empty_record_ids_says_so(self) -> None:
         result = await _fetch([])
@@ -192,7 +224,7 @@ class TestUnavailableReasons:
         assert "No record IDs were provided" in result["error"]
 
     async def test_a_partial_batch_still_returns_what_resolved(self) -> None:
-        provider = _graph_provider(access=False)
+        provider = _graph_provider(access={"rec-1"})
         result = await _fetch(
             ["rec-1", "denied"],
             virtual_record_id_to_result={"vr-1": _cached_record("rec-1")},

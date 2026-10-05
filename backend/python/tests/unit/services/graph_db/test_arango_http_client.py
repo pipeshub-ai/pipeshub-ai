@@ -624,6 +624,26 @@ class TestExecuteAql:
             assert results == [{"_key": "x"}]
 
     @pytest.mark.asyncio
+    async def test_cursor_options_are_sent_only_when_given(self, client):
+        """The v2 knowledge-hub queries switch off one optimizer rule through
+        ``options``; every other caller must keep sending no options at all."""
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [
+            MockResponse(201, json_data={"result": [], "hasMore": False}),
+            MockResponse(201, json_data={"result": [], "hasMore": False}),
+        ]
+        options = {"optimizer": {"rules": ["-move-calculations-down"]}}
+
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=mock_session):
+            await client.execute_aql("RETURN 1", options=options)
+            await client.execute_aql("RETURN 1")
+
+        with_options = mock_session.post.call_args_list[0].kwargs["json"]
+        without_options = mock_session.post.call_args_list[1].kwargs["json"]
+        assert with_options["options"] == options
+        assert "options" not in without_options
+
+    @pytest.mark.asyncio
     async def test_query_response_with_error(self, client):
         """Test error detected in response body despite 201 status."""
         error_data = {

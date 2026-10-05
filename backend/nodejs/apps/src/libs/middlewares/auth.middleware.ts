@@ -95,11 +95,31 @@ export class AuthMiddleware {
     // search for user activities for this user
     const userId = decoded?.userId;
     const orgId = decoded?.orgId;
-    const user = await Users.findOne({
-      _id: userId,
-      isDeleted: false,
-    }).lean()
-      .exec();
+    // The account and its latest session-invalidating activity are independent
+    // reads: asked together they cost one round trip to the database on every
+    // authenticated request instead of two.
+    const [user, userActivity] = await Promise.all([
+      Users.findOne({
+        _id: userId,
+        isDeleted: false,
+      }).lean()
+        .exec(),
+      userId && orgId
+        ? UserActivities.findOne({
+            userId: userId,
+            orgId: orgId,
+            isDeleted: false,
+            activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
+          })
+            .sort({ createdAt: -1 }) // sort by most recent first
+            .lean()
+            .exec()
+            .catch((activityError: unknown): null => {
+              this.logger.error('Failed to fetch user activity', activityError);
+              return null;
+            })
+        : Promise.resolve(null),
+    ]);
     if (!user) {
       throw new UnauthorizedError('User not found, please login again');
     }
@@ -119,26 +139,8 @@ export class AuthMiddleware {
       throw new UnauthorizedError('Service accounts cannot sign in');
     }
 
-    if (userId && orgId) {
-      let userActivity: Pick<IUserActivity, 'createdAt' | 'activityType'> | null = null;
-      try {
-        userActivity = await UserActivities.findOne({
-          userId: userId,
-          orgId: orgId,
-          isDeleted: false,
-          activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-        })
-          .sort({ createdAt: -1 }) // sort by most recent first
-          .lean()
-          .exec();
-
-      } catch (activityError) {
-        this.logger.error('Failed to fetch user activity', activityError);
-      }
-
-      if (userActivity && activityEndsSession(userActivity, decoded.iat)) {
-        throw new UnauthorizedError('Session expired, please login again');
-      }
+    if (userActivity && activityEndsSession(userActivity, decoded.iat)) {
+      throw new UnauthorizedError('Session expired, please login again');
     }
 
     this.logger.debug('User authenticated', decoded);

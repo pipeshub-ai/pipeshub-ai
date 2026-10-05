@@ -676,14 +676,15 @@ export const ChatApi = {
    * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
    * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat(params?: { page?: number; limit?: number }): Promise<ListCollectionsForChatResult> {
-    const page = params?.page ?? 1;
+  async listCollectionsForChat(params?: { cursor?: string | null; limit?: number }): Promise<ListCollectionsForChatResult> {
     const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
       {
         params: {
-          page,
+          // Only a cursor the server issued is ever sent back; one it did not
+          // issue is a 400.
+          ...(params?.cursor ? { cursor: params.cursor } : {}),
           limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
@@ -707,8 +708,8 @@ export const ChatApi = {
     }));
     return {
       knowledgeBases,
-      requestedPage: page,
       requestedLimit: limit,
+      nextCursor: data.pagination?.nextCursor ?? null,
       serverPagination: data.pagination ?? null,
     };
   },
@@ -777,16 +778,21 @@ interface KnowledgeHubNodesResponse {
     limit?: number;
     totalItems?: number;
     totalPages?: number;
+    startIndex?: number;
+    endIndex?: number;
     hasNext?: boolean;
     hasPrev?: boolean;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   } | null;
 }
 
 /** One page from {@link ChatApi.listCollectionsForChat}. */
 export interface ListCollectionsForChatResult {
   knowledgeBases: KnowledgeBaseForChat[];
-  requestedPage: number;
   requestedLimit: number;
+  /** The cursor for the next page, or null at the end of the result. */
+  nextCursor: string | null;
   serverPagination: KnowledgeHubNodesResponse['pagination'];
 }
 

@@ -243,7 +243,7 @@ class TestGetRecordDownloadUrl:
         success, payload = await manager.get_record_download_url(record_id="rec-1")
 
         assert success is False
-        assert "permission" in json.loads(payload)["error"]
+        assert "No record found" in json.loads(payload)["error"]
         blob.get_download_url.assert_not_awaited()
         graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
 
@@ -268,10 +268,23 @@ class TestGetRecordDownloadUrl:
         assert success is False
         blob.get_download_url.assert_not_awaited()
 
-    async def test_direct_permission_edge_gets_signed_url(self) -> None:
+    async def test_direct_permission_edge_alone_gets_no_signed_url(self) -> None:
+        """The access check decides; a direct edge the check does not admit
+        (a STRICT or RESTRICTED record, a closed connector gate) is not enough."""
         blob = MagicMock()
         blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
         graph = _record_graph(record=_upload_record(), has_edge=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, _ = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        blob.get_download_url.assert_not_awaited()
+
+    async def test_accessible_record_gets_signed_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(), acl_access=True)
         manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
 
         success, payload = await manager.get_record_download_url(record_id="rec-1")
@@ -310,7 +323,7 @@ class TestGetRecordDownloadUrl:
         blob.get_record_stream_url = AsyncMock(
             return_value="https://app.example/api/v1/knowledgeBase/stream/record/rec-1",
         )
-        graph = _record_graph(record=_upload_record(), has_edge=True)
+        graph = _record_graph(record=_upload_record(), acl_access=True)
         manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
 
         success, payload = await manager.get_record_download_url(record_id="rec-1")
@@ -539,3 +552,48 @@ class TestGetArtifactContentBoundsTheFetch:
         )
 
         assert _MAX_ARTIFACT_FETCH_BYTES > _MAX_ARTIFACT_CONTENT_CHARS * 4
+
+
+class TestRecordDownloadUrlChecksAccess:
+    """The record id comes from the model, so a signed URL (or a connector
+    record's name and source URL) is only handed out after the permission check
+    the record routes use -- not after an org check alone."""
+
+    @staticmethod
+    def _manager(allowed):
+        from types import SimpleNamespace
+
+        from app.config.constants.arangodb import OriginTypes
+
+        record = SimpleNamespace(
+            id="rec-1", org_id="org-1", origin=OriginTypes.UPLOAD, external_record_id="blob-1",
+            record_name="f.pdf", mime_type="application/pdf", weburl=None,
+        )
+        graph = MagicMock()
+        graph.get_record_by_id = AsyncMock(return_value=record)
+        graph.check_record_access_with_details = AsyncMock(return_value=allowed)
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://signed/url")
+        manager = ArtifactManager({"org_id": "org-1", "user_id": "user-1",
+                                   "graph_provider": graph, "blob_store": blob})
+        return manager, graph, blob
+
+    @pytest.mark.asyncio
+    async def test_denied_record_gets_no_url(self) -> None:
+        manager, graph, blob = self._manager(allowed=None)
+        ok, payload = await manager.get_record_download_url("rec-1")
+        assert not ok
+        graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        blob.get_download_url.assert_not_called()
+        denied = json.loads(payload)["error"]
+
+        graph.get_record_by_id = AsyncMock(return_value=None)
+        _, missing = await manager.get_record_download_url("rec-1")
+        assert json.loads(missing)["error"] == denied    # no existence oracle (P9)
+
+    @pytest.mark.asyncio
+    async def test_accessible_record_gets_its_url(self) -> None:
+        manager, _, blob = self._manager(allowed={"record": {}})
+        ok, payload = await manager.get_record_download_url("rec-1")
+        assert ok and json.loads(payload)["download_url"] == "https://signed/url"
+        blob.get_download_url.assert_awaited_once()

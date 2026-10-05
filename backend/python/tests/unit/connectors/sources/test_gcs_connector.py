@@ -1223,6 +1223,14 @@ class TestProcessGcsObject95:
         assert record.is_file is False
 
     @pytest.mark.asyncio
+    async def test_a_folder_marker_is_text_directory_whatever_its_content_type(self, connector):
+        connector.scope = ConnectorScope.TEAM.value
+        obj = {"Key": "folder/", "LastModified": "2025-06-01T00:00:00Z",
+               "ContentType": "application/x-www-form-urlencoded;charset=UTF-8"}
+        record, _ = await connector._process_gcs_object(obj, "bucket")
+        assert record.mime_type == MimeTypes.FOLDER.value
+
+    @pytest.mark.asyncio
     async def test_existing_record_content_changed(self, connector):
         existing = MagicMock()
         existing.id = "existing-id"

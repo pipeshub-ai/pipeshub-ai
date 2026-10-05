@@ -1,8 +1,8 @@
 """`knowledgegraph__list_files` through the real `KnowledgeHubService` and
 scope resolver; only the graph database is stubbed, with an autospec of the
-production `ArangoHTTPProvider`. The stubbed search mirrors the provider's
-query: it applies the connector filter to each record's own `connectorId`
-(a knowledge base's id for its files), before paging.
+production `ArangoHTTPProvider`. The stub applies the providers' connector
+filter to each record's own `connectorId` (a knowledge base's id for its
+files), before paging.
 """
 
 from __future__ import annotations
@@ -16,65 +16,24 @@ import pytest
 from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
+from ..kh_listing_stub import connector_pages, node, root_listings, stub_listing
+
 USER_KEY = "user-key-1"
 
-
-def _node(node_id: str, name: str, node_type: str = "record") -> dict[str, Any]:
-    return {"id": node_id, "name": name, "nodeType": node_type, "origin": "CONNECTOR"}
-
-
-# (connector id, node) pairs the user can see: three apps and two KBs.
-_USER_VISIBLE = [
-    ("app-jira", _node("jira-1", "budget ticket")),
-    ("app-drive", _node("drive-1", "budget sheet")),
-    ("app-slack", _node("slack-1", "budget thread")),
-    ("kb-hr", _node("hr-1", "budget policy")),
-    ("kb-hr", _node("hr-2", "budget faq")),
-    ("kb-finance", _node("fin-1", "budget plan")),
-]
-_USER_APPS = ["app-jira", "app-drive", "app-slack", "kb-hr", "kb-finance"]
-
-
-def _project_like_providers(connector_id: str, node: dict[str, Any]) -> dict[str, Any]:
-    """Mirror both graph providers' search projection, which keeps each
-    record's own connectorId (a knowledge base's id for its files) for the
-    connector filter."""
-    return {**node, "connectorId": connector_id}
-
-
-def _passes_connector_filter(node: dict[str, Any], connector_ids: list[str]) -> bool:
-    # _build_knowledge_hub_filter_conditions: (app node whose id is listed) OR
-    # (node.connectorId listed), evaluated on the projected node.
-    return (node["nodeType"] == "app" and node["id"] in connector_ids) or node["connectorId"] in connector_ids
-
-
-def _provider_search(
-    *, skip: int, limit: int, search_query: str | None = None,
-    connector_ids: list[str] | None = None, **_: object,
-) -> dict[str, Any]:
-    projected = [_project_like_providers(cid, node) for cid, node in _USER_VISIBLE]
-    matches = [
-        node for node in projected
-        if (not connector_ids or _passes_connector_filter(node, connector_ids))
-        and (not search_query or search_query in node["name"])
-    ]
-    return {"nodes": matches[skip:skip + limit], "total": len(matches)}
-
-
-def _provider_root_nodes(*, user_app_ids: list[str], skip: int, limit: int, **_: object) -> dict[str, Any]:
-    nodes = [_node(app_id, app_id, "app") for app_id in user_app_ids]
-    return {"nodes": nodes[skip:skip + limit], "total": len(nodes)}
+# What the user can see: three apps and two KBs.
+_USER_VISIBLE = {
+    "app-jira": [node("jira-1", "budget ticket")],
+    "app-drive": [node("drive-1", "budget sheet")],
+    "app-slack": [node("slack-1", "budget thread")],
+    "kb-hr": [node("hr-1", "budget policy", origin="COLLECTION"), node("hr-2", "budget faq", origin="COLLECTION")],
+    "kb-finance": [node("fin-1", "budget plan", origin="COLLECTION")],
+}
 
 
 @pytest.fixture
 def graph() -> MagicMock:
     g = create_autospec(ArangoHTTPProvider, instance=True)
-    g.get_user_by_user_id.return_value = {"_key": USER_KEY}
-    g.get_knowledge_hub_search.side_effect = _provider_search
-    g.get_knowledge_hub_root_nodes.side_effect = _provider_root_nodes
-    g.get_user_app_ids.return_value = list(_USER_APPS)
-    g.get_user_permission_app_ids.return_value = []
-    g.get_knowledge_hub_filter_options.return_value = {"apps": []}
+    stub_listing(g, USER_KEY, _USER_VISIBLE)
     return g
 
 
@@ -98,27 +57,30 @@ class TestSearchByName:
         ok, text = await execute_list_files(_state(graph, apps=["app-jira"], kb=[]), query="budget")
 
         assert ok is True
-        graph.get_knowledge_hub_search.assert_awaited_once()
-        assert graph.get_knowledge_hub_search.await_args.kwargs["search_query"] == "budget"
-        graph.get_knowledge_hub_root_nodes.assert_not_awaited()
+        (page,) = connector_pages(graph)
+        assert (page["app_id"], page["filters"]["search_query"]) == ("app-jira", "budget")
+        assert root_listings(graph) == []
         assert _ids(text) == {"jira-1"}
 
     async def test_without_a_query_it_lists(self, graph: MagicMock) -> None:
         await execute_list_files(_state(graph, apps=["app-jira"], kb=[]))
 
-        graph.get_knowledge_hub_search.assert_not_awaited()
-        graph.get_knowledge_hub_root_nodes.assert_awaited_once()
+        assert connector_pages(graph) == []
+        assert len(root_listings(graph)) == 1
 
 
 class TestStaysInsideTheAgentsSources:
     async def test_kb_only_agent_search_returns_nothing_from_other_sources(self, graph: MagicMock) -> None:
         other_sources = {"jira-1", "drive-1", "slack-1", "fin-1"}
-        unscoped = {n["id"] for n in _provider_search(skip=0, limit=50, search_query="budget")["nodes"]}
-        assert other_sources <= unscoped
+        every_source = _state(graph, apps=["app-jira", "app-drive", "app-slack"], kb=["kb-hr", "kb-finance"])
+        _, unscoped = await execute_list_files(every_source, query="budget")
+        assert other_sources <= _ids(unscoped)
+        graph.get_knowledge_hub_connector_page_v3.reset_mock()
 
         _, text = await execute_list_files(_state(graph, apps=[], kb=["kb-hr"]), query="budget")
 
-        assert graph.get_knowledge_hub_search.await_args.kwargs["search_query"] == "budget"
+        (page,) = connector_pages(graph)
+        assert (page["app_id"], page["filters"]["search_query"]) == ("kb-hr", "budget")
         assert not _ids(text) & other_sources
 
     async def test_kb_only_agent_search_finds_its_kb_files(self, graph: MagicMock) -> None:
@@ -158,5 +120,4 @@ class TestStaysInsideTheAgentsSources:
 
         assert [len(_ids(text)) for _, text in pages] == [1, 1]
         assert set().union(*(_ids(text) for _, text in pages)) == {"jira-1", "drive-1"}
-        kwargs = [c.kwargs for c in graph.get_knowledge_hub_search.await_args_list]
-        assert [(k["skip"], k["limit"]) for k in kwargs] == [(0, 1), (1, 1)]
+        assert {p["limit"] for p in connector_pages(graph)} == {1}

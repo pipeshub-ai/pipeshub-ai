@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
 from app.api.middlewares.auth import require_scopes
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -17,10 +17,8 @@ from app.connectors.sources.localKB.api.models import (
     CreateFolderResponse,
     CreateKnowledgeBaseResponse,
     CreatePermissionsResponse,
-    CreateRecordsResponse,
     DeleteRecordResponse,
     ErrorResponse,
-    FolderContentsResponse,
     KnowledgeBaseResponse,
     ListKnowledgeBaseResponse,
     ListPermissionsResponse,
@@ -414,52 +412,6 @@ async def delete_knowledge_base(
         )
 
 @kb_router.post(
-    "/{kb_id}/records",
-    response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
-)
-@inject
-async def create_records_in_kb(
-    kb_id: str,
-    request: Request,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Union[CreateRecordsResponse, Dict[str, Any]]:
-    try:
-        user_id = request.state.user.get("userId")
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
-            )
-        result = await kb_service.create_records_in_kb(
-            kb_id=kb_id,
-            user_id=user_id,
-            records=body.get("records"),
-            file_records=body.get("fileRecords"),
-        )
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
-            )
-        return result
-
-    except HTTPException as he:
-        raise he
-
-    except Exception as e:
-        _log.error("create_records_in_kb failed: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=action_failed("add these files")
-        )
-
-@kb_router.post(
     "/{kb_id}/upload",
     response_model=UploadRecordsinKBResponse,
     responses={
@@ -833,42 +785,6 @@ async def create_nested_folder(
     except Exception as e:
         _log.error("create_nested_folder failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("create this folder"))
-
-@kb_router.get(
-    "/{kb_id}/folder/{folder_id}/user/{user_id}",
-    response_model=FolderContentsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
-)
-@inject
-async def get_folder_contents(
-    kb_id: str,
-    folder_id: str,
-    request: Request,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Union[FolderContentsResponse, Dict[str, Any]]:
-    try:
-        user_id = request.state.user.get("userId")
-        result = await kb_service.get_folder_contents(kb_id=kb_id, folder_id=folder_id, user_id=user_id)
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
-            )
-        return result
-
-    except HTTPException as he:
-        raise he
-
-    except Exception as e:
-        _log.error("get_folder_contents failed: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=action_failed("open this folder")
-        )
-
 
 @kb_router.put(
     "/{kb_id}/folder/{folder_id}",
@@ -1345,55 +1261,6 @@ async def list_kb_permissions(
         )
 
 
-@kb_router.post(
-    "/{kb_id}/folder/{folder_id}/records",
-    response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
-)
-@inject
-async def create_records_in_folder(
-    kb_id: str,
-    folder_id: str,
-    request: Request,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Union[CreateRecordsResponse, Dict[str, Any]]:
-    try:
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
-            )
-        user_id = request.state.user.get("userId")
-        result = await kb_service.create_records_in_folder(
-            kb_id=kb_id,
-            folder_id=folder_id,
-            user_id=user_id,
-            records=body.get("records"),
-            file_records=body.get("fileRecords"),
-        )
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
-            )
-        return result
-
-    except HTTPException as he:
-        raise he
-
-    except Exception as e:
-        _log.error("create_records_in_folder failed: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=action_failed("add these files")
-        )
-
-
 @kb_router.put(
     "/record/{record_id}",
     response_model=UpdateRecordResponse,
@@ -1494,10 +1361,9 @@ async def update_record(
                 }
 
             # Determine location (folder or kb_root)
-            folder_mime_types = ["application/vnd.google-apps.folder", "application/x-directory"]
             parent_info = await graph_provider.get_knowledge_hub_parent_node(
                 record_id,
-                folder_mime_types=folder_mime_types
+                folder_mime_types=FOLDER_MIME_TYPES,
             )
 
             location = "kb_root"
@@ -1722,63 +1588,6 @@ async def restore_records(
         _log.error("restore_records failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("restore these items")) from e
 
-
-@kb_router.get(
-    "/records",
-    # response_model=ListAllRecordsResponse
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
-)
-@inject
-async def list_all_records(
-    request: Request,
-    page: int = 1,
-    limit: int = 20,
-    search: Optional[str] = None,
-    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
-    sort_by: str = "createdAtTimestamp",
-    sort_order: str = "desc",
-    source: str = "all",
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Dict[str, Any]:
-
-    # Parse comma-separated strings into lists
-    parsed_record_types = _parse_comma_separated_str(record_types)
-    parsed_origins = _parse_comma_separated_str(origins)
-    parsed_connectors = _parse_comma_separated_str(connectors)
-    parsed_indexing_status = _parse_comma_separated_str(indexing_status)
-    parsed_permissions = _parse_comma_separated_str(permissions)
-
-    user_id = request.state.user.get("userId")
-    org_id = request.state.user.get("orgId")
-
-    return _listing_or_error(await kb_service.list_all_records(
-        user_id=user_id,
-        org_id=org_id,
-        page=page,
-        limit=limit,
-        search=search,
-        record_types=parsed_record_types,
-        origins=parsed_origins,
-        connectors=parsed_connectors,
-        indexing_status=parsed_indexing_status,
-        permissions=parsed_permissions,
-        date_from=date_from,
-        date_to=date_to,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        source=source,
-    ))
-
-
-# ========================================================================
-# Move Record API
-# ========================================================================
 
 @kb_router.put(
     "/{kb_id}/record/{record_id}/move",
