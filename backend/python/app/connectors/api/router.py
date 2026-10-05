@@ -3899,7 +3899,10 @@ def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | 
     try:
         check_salesforce_login_url_setting(connector_type, settings)
     except ValueError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=str(e),  # user-written message
+        ) from e
 
 
 async def _link_to_shared_oauth_app(
