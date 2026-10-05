@@ -19,9 +19,10 @@ from zammad_behaviour_fakes import (
 )
 
 from app.connectors.sources.zammad import connector as zammad_connector
-from app.connectors.sources.zammad.connector import ZammadConnector
+from app.connectors.sources.zammad.connector import MIN_SPLIT_WINDOW_MS, ZammadConnector
 
 CONNECTOR_ID = "zm-1"
+NOW = epoch_ms(30)
 
 
 class World:
@@ -55,6 +56,16 @@ class World:
         self.config.sync_filters = values
         self.store.clear()
         await self.sync()
+
+
+def _clock(monkeypatch: pytest.MonkeyPatch, now: int) -> None:
+    monkeypatch.setattr(zammad_connector, "get_epoch_timestamp_in_ms", lambda: now)
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Search windows are halved up to now, so the real clock would move every window edge between runs."""
+    _clock(monkeypatch, NOW)
 
 
 @pytest.fixture
@@ -347,6 +358,39 @@ async def test_a_burst_read_that_fails_part_way_carries_on_from_the_id_it_reache
     assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
     assert _group_point(world, "Support").get("burst_next_id") == 0
     assert _checkpoint(world, "Support") > epoch_ms(6)
+
+
+async def test_a_burst_resumed_beside_a_window_edge_in_its_own_second_is_not_read_again(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Queries state window edges to the second, so an edge half a second after a burst used to share its second."""
+    _search_window(world, monkeypatch, 60)
+    burst_at = epoch_ms(5)
+    edge = burst_at + 500
+    # A window from edge - MIN_SPLIT_WINDOW_MS to now is split once, at edge.
+    _clock(monkeypatch, edge + MIN_SPLIT_WINDOW_MS)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    world.zammad.add_ticket(1200, 1, day=5, minute=1)
+    world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
+
+    await world.save_filters({"modified": {
+        "operator": "is_after", "value": {"start": edge - MIN_SPLIT_WINDOW_MS, "end": None}, "type": "datetime",
+    }})
+    assert all(str(t) in world.db.external_ids() for t in range(1000, 1100))
+    assert "1120" not in world.db.external_ids() and "1200" not in world.db.external_ids()
+    assert _group_point(world, "Support").get("burst_next_id") == 1100
+    assert (_checkpoint(world, "Support") or 0) <= burst_at
+
+    world.zammad.fail_search = lambda _query: False
+    world.zammad.search_queries.clear()
+    await world.sync()
+
+    assert all(str(t) in world.db.external_ids() for t in [*range(1100, 1150), 1200])
+    burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
+    assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    assert _group_point(world, "Support").get("burst_next_id") == 0
+    assert _checkpoint(world, "Support") > burst_at + 60_000
 
 
 async def test_a_window_past_the_search_window_is_split_after_one_probe_not_after_paging_to_its_end(

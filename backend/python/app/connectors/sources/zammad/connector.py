@@ -1052,8 +1052,11 @@ class ZammadConnector(BaseConnector):
 
         if last_sync_time:
             modified_after = max(modified_after, last_sync_time) if modified_after else last_sync_time
-        if until:
-            modified_before = min(modified_before, until) if modified_before else until
+        # ``until`` is the next window's ``last_sync_time``. Both round down to the same second,
+        # so it is exclusive: otherwise tickets stamped in that second match both windows.
+        before_bracket = "]"
+        if until and (not modified_before or until < modified_before):
+            modified_before, before_bracket = until, "}"
 
         def _iso(epoch_ms: int) -> str:
             return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1061,7 +1064,7 @@ class ZammadConnector(BaseConnector):
         if modified_after:
             query_parts.append(f"updated_at:[{_iso(modified_after)} TO *]")
         if modified_before:
-            query_parts.append(f"updated_at:[* TO {_iso(modified_before)}]")
+            query_parts.append(f"updated_at:[* TO {_iso(modified_before)}{before_bracket}")
         if created_after:
             query_parts.append(f"created_at:[{_iso(created_after)} TO *]")
         if created_before:
@@ -1078,7 +1081,8 @@ class ZammadConnector(BaseConnector):
         lo, hi = self._window_bounds(low, high)
         if hi - lo < 2 * MIN_SPLIT_WINDOW_MS:
             return None
-        mid = (lo + hi) // 2
+        # On a whole second, as the query states it, so "read every ticket before mid" holds to the ms.
+        mid = (lo + hi) // 2 // 1000 * 1000
         return [(low, mid), (mid, high)]
 
     async def _fetch_tickets_for_group_batch(
