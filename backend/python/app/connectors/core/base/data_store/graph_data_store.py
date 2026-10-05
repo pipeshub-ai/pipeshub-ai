@@ -286,9 +286,6 @@ class GraphTransactionStore(TransactionStore):
     async def take_back_kept_record_group(self, group_id: str) -> bool:
         return await self.graph_provider.take_back_kept_record_group(group_id, transaction=self.txn)
 
-    async def take_back_kept_record_group(self, group_id: str) -> bool:
-        return await self.graph_provider.take_back_kept_record_group(group_id, transaction=self.txn)
-
     async def find_slack_burst_record_by_ts(
         self,
         connector_id: str,
