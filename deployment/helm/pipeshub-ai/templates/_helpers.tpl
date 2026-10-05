@@ -305,11 +305,16 @@ the raw daemon API with no policy in between, i.e. root on the node.
 
 {{/*
 Container-runtime sockets on a node. Any of them is as good as the Docker API:
-whoever can write to it can start a privileged container. /var/run is usually a
-symlink to /run, so both spellings are listed.
+whoever can write to it can start a privileged container. Each is listed once
+under /run and expanded to the /var/run spelling as well, because /var/run is
+usually a symlink to /run and a hostPath under either reaches the same socket.
 */}}
 {{- define "pipeshub-ai.runtimeSocketPaths" -}}
-{{- list "/var/run/docker.sock" "/run/docker.sock" "/var/run/containerd/containerd.sock" "/run/containerd/containerd.sock" "/run/k3s/containerd/containerd.sock" "/var/run/crio/crio.sock" "/run/crio/crio.sock" "/run/podman/podman.sock" "/var/run/dockershim.sock" "/var/run/cri-dockerd.sock" "/run/cri-dockerd.sock" | toJson -}}
+{{- $paths := list -}}
+{{- range list "/run/docker.sock" "/run/containerd/containerd.sock" "/run/k3s/containerd/containerd.sock" "/run/crio/crio.sock" "/run/podman/podman.sock" "/run/dockershim.sock" "/run/cri-dockerd.sock" -}}
+  {{- $paths = append (append $paths .) (printf "/var%s" .) -}}
+{{- end -}}
+{{- $paths | toJson -}}
 {{- end -}}
 
 {{/*
