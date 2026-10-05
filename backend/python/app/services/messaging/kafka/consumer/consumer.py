@@ -18,9 +18,13 @@ from app.utils.request_context import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aiokafka.structs import TopicPartition
 
     from app.services.messaging.retry_manager import RetryManager
+
+MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
 
 
 class KafkaMessagingConsumer(IMessagingConsumer):
@@ -41,7 +45,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         retry_manager: Optional["RetryManager"] = None,
     ) -> None:
         self.logger = logger
-        self.consumer: Optional[AIOKafkaConsumer] = None
+        self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
         self.processed_messages: dict[str, list[int]] = {}
@@ -54,6 +58,14 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         # Counted in memory as well as in Redis, so a Redis outage cannot
         # retry a failing message forever.
         self._failed_attempts: dict[str, int] = {}
+        # Returns False while this consumer is full. Unlike Redis Streams, we
+        # cannot simply stop polling: getmany() must keep being called or the
+        # group coordinator evicts the member on max_poll_interval_ms. So we
+        # pause the assigned partitions instead and keep polling.
+        self.capacity_gate: "Callable[[], bool] | None" = None
+        # Only what backpressure paused, so clearing it never cuts a retry hold short.
+        self._backpressure_paused: set["TopicPartition"] = set()
+        self._backpressure_logged = False
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
@@ -136,7 +148,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             raise
 
     # implementing abstract methods from IMessagingConsumer
-    async def stop(self, message_handler: Optional[MessageHandler] = None) -> None:
+    async def stop(self, message_handler: MessageHandler | None = None) -> None:
         """Stop consuming messages"""
         self.running = False
 
@@ -239,6 +251,39 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             )
             return False, e
 
+    def _apply_backpressure(self) -> None:
+        """Pause or resume assigned partitions from the capacity gate.
+
+        Ported from IndexingKafkaConsumer rather than shared: this class's
+        semaphore and task-wrapper are dead code, so there was nothing to reuse.
+
+        Asymmetry worth knowing: a paused partition head-of-line-blocks every
+        other connector whose events landed on it, where Redis Streams merely
+        defers the message to another consumer.
+        """
+        if self.capacity_gate is None or self.consumer is None:
+            return
+
+        if not self.capacity_gate():
+            assigned = self.consumer.assignment()
+            not_paused = assigned - self.consumer.paused()
+            if not_paused:
+                self.consumer.pause(*not_paused)
+                self._backpressure_paused |= not_paused
+            if not self._backpressure_logged:
+                self.logger.warning("Sync backpressure engaged: pausing partition reads")
+                self._backpressure_logged = True
+        else:
+            # A partition held for a retry stays paused until its own timer
+            # resumes it; one revoked meanwhile cannot be resumed at all.
+            ours = (self._backpressure_paused & self.consumer.assignment()) - set(self._retry_paused)
+            self._backpressure_paused.clear()
+            if ours:
+                self.consumer.resume(*ours)
+            if self._backpressure_logged:
+                self.logger.info("Sync backpressure cleared: resuming partition reads")
+                self._backpressure_logged = False
+
     async def __consume_loop(self) -> None:
         """Main consumption loop with Redis-based retry tracking."""
         try:
@@ -246,6 +291,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             while self.running:
                 try:
                     self.__resume_retried_partitions()
+                    self._apply_backpressure()
 
                     # Get messages asynchronously with timeout
                     message_batch = await self.consumer.getmany(

@@ -1,10 +1,12 @@
 """GraphDBTransformer with an EntityResolution: canonical nodes, aliases, edge provenance."""
 
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
 from app.models.entities import EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
@@ -47,6 +49,9 @@ def _transformer(store, provider=None) -> GraphDBTransformer:
     transformer.graph_data_store = MagicMock()
     transformer.graph_data_store.graph_provider = provider or AsyncMock()
     transformer.graph_data_store.transaction = MagicMock(return_value=ctx_mgr)
+    transformer.graph_data_store.execute_idempotent_in_transaction = partial(
+        GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
+    )
     return transformer
 
 
@@ -126,17 +131,30 @@ class TestWithResolution:
         provider.add_taxonomy_aliases.assert_not_awaited()
 
     async def test_subcategory_entity_carries_level_and_hierarchy_edge(self) -> None:
+        """The hierarchy edge is shared by every record with the chain, so it
+        is written through the provider before the record's transaction
+        (KG-32), never inside it."""
         store = _tx_store()
+        provider = AsyncMock()
+        order: list[str] = []
+        provider.ensure_taxonomy_hierarchy_edge = AsyncMock(side_effect=lambda *a: order.append("edge"))
         cat = ResolvedEntity(kind=CATEGORY, key="k-cat", name="Legal", normalized="legal", is_new=True, decision="new", extracted_names=["Legal"])
         sub = ResolvedEntity(kind=SUBCATEGORY_1, key="k-sub", name="Contract", normalized="contract", is_new=True, decision="new", extracted_names=["Contract"])
-        touched = await _transformer(store).save_metadata_to_db(
+        transformer = _transformer(store, provider)
+        transformer.graph_data_store.transaction.side_effect = (
+            lambda: (order.append("txn"), transformer.graph_data_store.transaction.return_value)[1]
+        )
+        touched = await transformer.save_metadata_to_db(
             "rec-1", _metadata(categories=["Legal"], sub_category_level_1="Contract"), "vr-1",
             resolution=_resolution(cat, sub),
         )
         (record,) = [t for t in touched if t.entity_type is EntityType.SUBCATEGORY]
         assert record.level == "1" and record.entity_id == "k-sub"
-        (hierarchy,) = _created_edges(store, CollectionNames.INTER_CATEGORY_RELATIONS.value)
-        assert hierarchy["from_id"] == "k-sub" and hierarchy["to_id"] == "k-cat"
+        provider.ensure_taxonomy_hierarchy_edge.assert_awaited_once_with(
+            CollectionNames.SUBCATEGORIES1.value, "k-sub", "k-cat",
+        )
+        assert order == ["edge", "txn"]
+        assert _created_edges(store, CollectionNames.INTER_CATEGORY_RELATIONS.value) == []
 
     async def test_name_missing_from_resolution_links_its_per_org_node(self) -> None:
         """The legacy lookup is by name alone across orgs; with a resolution a
@@ -171,14 +189,14 @@ class TestWithResolution:
         await _transformer(store).save_metadata_to_db(
             "rec-1", _metadata(topics=["Unseen topic"]), "vr-1", resolution=None,
         )
-        store.get_nodes_by_filters.assert_any_await(TOPICS, {"name": "Unseen topic"})
+        store.get_nodes_by_filters.assert_any_await(TOPICS, {"name": "Unseen topic"}, raise_on_error=True)
         store.create_taxonomy_node_if_absent.assert_not_awaited()
 
     async def test_existing_edge_keeps_its_original_extracted_name(self) -> None:
         store = _tx_store()
         existing = [{"_to": f"{TOPICS}/k-bug", "name": "Bug bash testing", "extractedName": "original"}]
         store.get_edges_from_node_with_target_name = AsyncMock(
-            side_effect=lambda record_from, edge_collection: (
+            side_effect=lambda record_from, edge_collection, **_kwargs: (
                 existing if edge_collection == CollectionNames.BELONGS_TO_TOPIC.value else []
             )
         )
@@ -195,7 +213,7 @@ class TestWithoutResolution:
     async def test_legacy_path_unchanged_and_edges_have_no_extracted_name(self) -> None:
         store = _tx_store()
         await _transformer(store).save_metadata_to_db("rec-1", _metadata(topics=["Bug bash testing"]), "vr-1")
-        store.get_nodes_by_filters.assert_awaited_with(TOPICS, {"name": "Bug bash testing"})
+        store.get_nodes_by_filters.assert_awaited_with(TOPICS, {"name": "Bug bash testing"}, raise_on_error=True)
         store.create_taxonomy_node_if_absent.assert_not_awaited()
         (edge,) = _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value)
         assert "extractedName" not in edge
@@ -303,3 +321,45 @@ class TestCanonicalNodesBeforeTheTransaction:
         )
 
         assert order == ["node", "txn"]
+
+
+class TestPartlyLandedAttemptIsRerun:
+    """KG-32 under Neo4j auto-commit: a write conflict after some edges
+    already landed re-runs the whole write, which must not duplicate them."""
+
+    async def test_the_rerun_leaves_one_edge_per_target(self, monkeypatch) -> None:
+        from tests.unit.modules.entity_resolution.conftest import FakeGraph
+
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        graph = FakeGraph()
+        graph.records["rec-1"] = {"_key": "rec-1", "orgId": "org-1"}
+        graph.departments["Engineering"] = "d-eng"
+        transformer = GraphDBTransformer(graph_provider=MagicMock(), logger=MagicMock())
+
+        class _Txn:
+            async def __aenter__(self) -> FakeGraph:
+                return graph
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        transformer.graph_data_store = MagicMock()
+        transformer.graph_data_store.graph_provider = graph
+        transformer.graph_data_store.transaction = MagicMock(side_effect=lambda: _Txn())
+        transformer.graph_data_store.execute_idempotent_in_transaction = partial(
+            GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
+        )
+        status_writes = AsyncMock(side_effect=[RuntimeError("write conflict"), True])
+        graph.batch_update_nodes = status_writes
+        topic = ResolvedEntity(kind=TOPIC, key="k-t", name="Budget", normalized="budget", is_new=True,
+                               decision="new", extracted_names=["Budget"])
+
+        touched = await transformer.save_metadata_to_db(
+            "rec-1", _metadata(topics=["Budget"], departments=["Engineering"]), "vr-1",
+            resolution=_resolution(topic),
+        )
+
+        assert status_writes.await_count == 2
+        assert len(graph.edges_from("rec-1", CollectionNames.BELONGS_TO_DEPARTMENT.value)) == 1
+        assert len(graph.edges_from("rec-1", CollectionNames.BELONGS_TO_TOPIC.value)) == 1
+        assert sorted(e.entity_id for e in touched) == ["d-eng", "k-t"]
