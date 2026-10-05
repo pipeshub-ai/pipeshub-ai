@@ -29,6 +29,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import AuthField, DocumentationLink
+from app.connectors.sources.atlassian.core.auth_fields import confluence_include_jira_scope_field
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.models.entities import ArtifactType
 from app.services.artifact_registry import (
@@ -428,6 +429,7 @@ def _confluence_user_label(user: dict[str, Any]) -> str:
             fields=[
                 CommonFields.client_id("Atlassian Developer Console"),
                 CommonFields.client_secret("Atlassian Developer Console"),
+                confluence_include_jira_scope_field(),
             ],
             icon_path=IconPaths.connector_icon("confluence"),
             app_group="Documentation",

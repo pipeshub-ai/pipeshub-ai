@@ -78,6 +78,10 @@ from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
     ConfluenceBlockParser,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
+from app.connectors.sources.atlassian.core.auth_fields import (
+    INCLUDE_JIRA_SCOPE,
+    confluence_include_jira_scope_field,
+)
 from app.connectors.sources.atlassian.core.confluence_access import (
     _is_folder,
     apply_page_access_to_dependents,
@@ -283,17 +287,7 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
             fields=[
                 CommonFields.client_id("Atlassian OAuth App"),
                 CommonFields.client_secret("Atlassian OAuth App"),
-                AuthField(
-                    name="includeJiraScope",
-                    display_name="Grant Jira user access",
-                    description="Choose Yes only if your Atlassian OAuth app includes Jira and you have added the read:jira-user scope. Pipeshub will request that scope during authorization and may use Jira to resolve user emails when Confluence profiles hide them. Choose No if you do not use Jira on this site or have not added that scope.",
-                    field_type="SELECT",
-                    required=True,
-                    placeholder="Select...",
-                    default_value="yes",
-                    options=["no", "yes"],
-                    is_secret=False,
-                ),
+                confluence_include_jira_scope_field(),
             ],
             icon_path=IconPaths.connector_icon(Connectors.CONFLUENCE.value),
             app_group="Atlassian",
@@ -941,7 +935,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _include_jira_scope_setting(self, auth_config: dict[str, Any]) -> Any:
         """The connector's own includeJiraScope, else the one saved on its OAuth app."""
-        value = auth_config.get("includeJiraScope")
+        value = auth_config.get(INCLUDE_JIRA_SCOPE)
         oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
         if value not in (None, "") or not oauth_config_id:
             return value
@@ -959,7 +953,7 @@ class ConfluenceConnector(BaseConnector):
                 "Could not read the OAuth app for the Jira access setting: %s", type(e).__name__
             )
             return value
-        return ((shared or {}).get(OAuthConfigKeys.CONFIG) or {}).get("includeJiraScope")
+        return ((shared or {}).get(OAuthConfigKeys.CONFIG) or {}).get(INCLUDE_JIRA_SCOPE)
 
     async def _link_platform_users_via_jira(self) -> None:
         """
