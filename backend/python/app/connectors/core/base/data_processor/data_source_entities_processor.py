@@ -2540,11 +2540,13 @@ class DataSourceEntitiesProcessor:
             delete_source=delete_source,
         ):
             ids = event["payload"]["virtualRecordIds"]
+            async def publish(event: dict = event) -> None:
+                if await self.messaging_producer.send_message("record-events", event, key=batch_id) is False:
+                    raise RuntimeError("the message broker did not accept the event")
+
             try:
                 await retry_async(
-                    lambda event=event: self.messaging_producer.send_message(
-                        "record-events", event, key=batch_id
-                    ),
+                    publish,
                     logger=self.logger,
                     description=f"publish softDeleteRecords for batch {batch_id}",
                 )
