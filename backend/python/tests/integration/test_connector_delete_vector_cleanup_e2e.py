@@ -292,3 +292,27 @@ async def test_a_mail_delete_that_fails_part_way_leaves_everything_and_publishes
     for name in ("email", "attachment", "attachment_2"):
         assert await world.graph.get_document(world.ids[name], CollectionNames.RECORDS.value) is not None, name
     assert world.producer.events == []
+
+
+async def _unlink_type_node(graph: IGraphDBProvider, record_id: str) -> None:
+    """Drop a record's IS_OF_TYPE edge, as an upsert that failed before writing it leaves things."""
+    if isinstance(graph, Neo4jProvider):
+        await graph.client.execute_query(
+            "MATCH (:Record {id: $id})-[e:IS_OF_TYPE]->() DELETE e", parameters={"id": record_id}
+        )
+        return
+    await graph.http_client.execute_aql(
+        f"FOR e IN {CollectionNames.IS_OF_TYPE.value} FILTER e._from == @from "
+        f"REMOVE e IN {CollectionNames.IS_OF_TYPE.value}",
+        {"from": f"{CollectionNames.RECORDS.value}/{record_id}"},
+    )
+
+
+async def test_a_mail_delete_removes_type_nodes_that_lost_their_link(world: _World) -> None:
+    for name in ("email", "attachment"):
+        await _unlink_type_node(world.graph, world.ids[name])
+
+    await world.processor.delete_record_by_external_id(world.outlook_id, f"ext-{world.ids['email']}", world.user_id)
+
+    assert await world.graph.get_document(world.ids["email"], CollectionNames.MAILS.value) is None
+    assert await world.graph.get_document(world.ids["attachment"], CollectionNames.FILES.value) is None

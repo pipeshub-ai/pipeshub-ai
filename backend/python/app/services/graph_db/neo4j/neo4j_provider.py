@@ -7948,12 +7948,21 @@ class Neo4jProvider(IGraphDBProvider):
     async def _delete_records_with_their_types(self, record_ids: list[str], transaction: str | None) -> None:
         # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
         # off (the default) a caller's transaction cannot roll back separate statements.
+        # Type nodes are also matched by id, label by label (each an index seek):
+        # batch_upsert_records writes the IS_OF_TYPE edge in a statement of its own,
+        # so a type node can exist without it.
+        labels = sorted({collection_to_label(c) for c in RECORD_TYPE_COLLECTION_MAPPING.values()})
+        same_id = "\n".join(f"OPTIONAL MATCH (s{i}:`{label}` {{id: rid}})" for i, label in enumerate(labels))
+        candidates = ", ".join(f"s{i}" for i in range(len(labels)))
         await self.client.execute_query(
-            """
+            f"""
             UNWIND $record_ids AS rid
-            MATCH (v:Record {id: rid})
+            MATCH (v:Record {{id: rid}})
             OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(t)
-            WITH v, collect(t) AS types
+            WITH v, rid, collect(t) AS linked
+            {same_id}
+            UNWIND linked + [{candidates}] AS candidate
+            WITH v, collect(DISTINCT candidate) AS types
             FOREACH (t IN types | DETACH DELETE t)
             DETACH DELETE v
             """,
