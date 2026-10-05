@@ -614,6 +614,20 @@ class TestDeletedIssuesOnAFreePlan:
         assert len(connector._notification_service.refused) == 1
         assert len(connector._notification_service.sent) == 1
 
+    async def test_a_refused_notice_does_not_hold_back_the_next_sync(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._notification_service = RecordingNotifications(broker_answers=[False])
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+
+        assert len(connector._notification_service.refused) == 1
+        assert len(connector._notification_service.sent) == 1, "the backoff only starts once a notice is out"
+        assert (checkpoints.values_for("issues_audit_free_plan_notice") or {}).get("sent") is True
+
     async def test_a_suppressed_notice_is_not_marked_sent(
         self, api, db, checkpoints, fresh_notification_memory
     ) -> None:

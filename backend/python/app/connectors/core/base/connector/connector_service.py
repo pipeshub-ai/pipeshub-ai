@@ -537,7 +537,10 @@ class BaseConnector(ABC):
         """Like ``notify``, but waits for the broker and says what happened.
 
         For a caller that records a notice as delivered: only SENT means it was.
+        A notice that failed to publish does not hold back the next attempt.
         """
+        key = self._notification_key(title, message)
+        reservation_before = self._notification_cache.get(key)
         prepared = self._prepare_notification(
             type, severity, title, message, payload, recipient_user_ids, recipient_roles
         )
@@ -545,11 +548,18 @@ class BaseConnector(ABC):
             return prepared
         svc, publish_kwargs = prepared
         try:
-            published = await svc.publish_notification(**publish_kwargs)
+            published = await svc.publish_notification(**publish_kwargs) is True
         except Exception as e:
             self.logger.warning("Notification \"%s\" was not published for connector %s: %s", title, self.connector_id, e)
-            return NotificationOutcome.FAILED
-        return NotificationOutcome.SENT if published is True else NotificationOutcome.FAILED
+            published = False
+        if published:
+            return NotificationOutcome.SENT
+        # The suppression check reserved this notice's backoff before publishing.
+        if reservation_before is None:
+            self._notification_cache.pop(key, None)
+        else:
+            self._notification_cache[key] = reservation_before
+        return NotificationOutcome.FAILED
 
     def _prepare_notification(
         self,
@@ -603,12 +613,15 @@ class BaseConnector(ABC):
             "recipient_roles": recipient_roles,
         }
 
+    def _notification_key(self, title: str, message: str) -> str:
+        return f"{self.connector_id}:{title}:{message}"
+
     def _suppress_notification(self, title: str, message: str, severity: NotificationSeverity) -> bool:
 
         if severity in [NotificationSeverity.INFO, NotificationSeverity.SUCCESS]:
             return False
 
-        key = f"{self.connector_id}:{title}:{message}"
+        key = self._notification_key(title, message)
         now = get_epoch_timestamp_in_ms()
 
         if key in self._notification_cache:
