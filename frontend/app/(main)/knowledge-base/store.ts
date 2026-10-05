@@ -98,10 +98,10 @@ interface KnowledgeBaseState {
   connectors: Connector[]; // DEPRECATED - will be removed
   appNodes: KnowledgeHubNode[]; // Flat list of app nodes (each becomes own section)
   appChildrenCache: Map<string, KnowledgeHubNode[]>; // Cache for app children
-  /** Server pagination for root app list (getNavigationNodes); null before first page */
-  appRootListPagination: { hasNext: boolean; nextPage: number } | null;
-  /** Server pagination for each app's direct children (getNodeChildren with parent app) */
-  appChildrenPagination: Map<string, { hasNext: boolean; nextPage: number }>;
+  /** Where the root app list resumes (getNavigationNodes); null before first page */
+  appRootListPagination: { hasNext: boolean; nextCursor: string | null } | null;
+  /** Where each app's direct children resume (getNodeChildren with parent app) */
+  appChildrenPagination: Map<string, { hasNext: boolean; nextCursor: string | null }>;
   /** True while a "load more" for root app list is in flight */
   loadingRootAppListMore: boolean;
   /** Nested sidebar trees for non-KB apps (All Records), keyed by app id — mirrors categorizedNodes for KB */
@@ -227,7 +227,7 @@ interface KnowledgeBaseActions {
 
   // Collections pagination actions
   setCollectionsPagination: (pagination: AllRecordsPagination) => void;
-  setCollectionsPage: (page: number) => void;
+  setCollectionsCursor: (cursor: string | null) => void;
   setCollectionsLimit: (limit: number) => void;
 
   // ========================================
@@ -242,8 +242,8 @@ interface KnowledgeBaseActions {
   setConnectors: (connectors: Connector[]) => void;
   setAppNodes: (nodes: KnowledgeHubNode[]) => void;
   appendAppNodes: (appNodes: KnowledgeHubNode[]) => void;
-  setAppRootListPagination: (p: { hasNext: boolean; nextPage: number } | null) => void;
-  setAppChildPagination: (appId: string, p: { hasNext: boolean; nextPage: number }) => void;
+  setAppRootListPagination: (p: { hasNext: boolean; nextCursor: string | null } | null) => void;
+  setAppChildPagination: (appId: string, p: { hasNext: boolean; nextCursor: string | null }) => void;
   setLoadingRootAppListMore: (loading: boolean) => void;
   cacheAppChildren: (appId: string, children: KnowledgeHubNode[]) => void;
   setConnectorAppTree: (appId: string, tree: EnhancedFolderTreeNode[]) => void;
@@ -274,7 +274,7 @@ interface KnowledgeBaseActions {
 
   // All Records pagination
   setAllRecordsPagination: (pagination: AllRecordsPagination) => void;
-  setAllRecordsPage: (page: number) => void;
+  setAllRecordsCursor: (cursor: string | null) => void;
   setAllRecordsLimit: (limit: number) => void;
 
   // All Records loading
@@ -290,7 +290,7 @@ interface KnowledgeBaseActions {
 
   // All Records table data
   setAllRecordsTableData: (data: KnowledgeHubApiResponse | null) => void;
-  syncAllRecordsPaginationMeta: (pagination: { totalItems: number; totalPages: number; hasNext: boolean; hasPrev: boolean }) => void;
+  syncAllRecordsPaginationMeta: (pagination: AllRecordsPagination) => void;
   setIsLoadingAllRecordsTable: (loading: boolean) => void;
   setAllRecordsTableError: (error: string | null) => void;
 
@@ -376,12 +376,15 @@ const initialState: KnowledgeBaseState = {
   tableDataError: null,
   selectedNode: null,
   collectionsPagination: {
-    page: 1,
+    cursor: null,
     limit: DEFAULT_PAGE_SIZE,
     totalItems: 0,
-    totalPages: 0,
+    startIndex: 0,
+    endIndex: 0,
     hasNext: false,
     hasPrev: false,
+    nextCursor: null,
+    prevCursor: null,
   },
 
   // All Records mode state
@@ -406,12 +409,15 @@ const initialState: KnowledgeBaseState = {
   allRecordsSort: { field: 'updatedAt', order: 'desc' },
   allRecordsSearchQuery: '',
   allRecordsPagination: {
-    page: 1,
+    cursor: null,
     limit: DEFAULT_PAGE_SIZE,
     totalItems: 0,
-    totalPages: 0,
+    startIndex: 0,
+    endIndex: 0,
     hasNext: false,
     hasPrev: false,
+    nextCursor: null,
+    prevCursor: null,
   },
   isLoadingAllRecords: false,
   isLoadingConnectors: false,
@@ -522,7 +528,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       setFilter: (filter) =>
         set((state) => {
           state.filter = { ...state.filter, ...filter };
-          state.collectionsPagination.page = 1; // Reset to page 1 on filter change
+          state.collectionsPagination.cursor = null; // Back to the first page on filter change
         }),
 
       hydrateFilter: (filter) =>
@@ -533,19 +539,21 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       clearFilter: () =>
         set((state) => {
           state.filter = {};
-          state.collectionsPagination.page = 1; // Reset to page 1 on filter clear
+          state.collectionsPagination.cursor = null; // Back to the first page on filter clear
         }),
 
       setSort: (sort) =>
         set((state) => {
           state.sort = sort;
-          state.collectionsPagination.page = 1; // Reset to page 1 on sort change
+          // A cursor names a position in one ordering; keeping it across a sort
+          // change would resume against an order that no longer applies.
+          state.collectionsPagination.cursor = null;
         }),
 
       setSearchQuery: (query) =>
         set((state) => {
           state.searchQuery = query;
-          state.collectionsPagination.page = 1; // Reset to page 1 on search
+          state.collectionsPagination.cursor = null; // Back to the first page on search
         }),
 
       toggleFolderExpanded: (folderId) =>
@@ -765,20 +773,19 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.collectionsPagination = pagination;
         }),
 
-      setCollectionsPage: (page) =>
+      setCollectionsCursor: (cursor) =>
         set((state) => {
-          state.collectionsPagination.page = page;
-          state.collectionsPagination.hasNext = page < state.collectionsPagination.totalPages;
-          state.collectionsPagination.hasPrev = page > 1;
+          // Only the position moves. The flags and indices belong to the
+          // response and are set when it arrives — guessing them here would
+          // briefly show a page whose footer disagrees with its rows.
+          state.collectionsPagination.cursor = cursor;
         }),
 
       setCollectionsLimit: (limit) =>
         set((state) => {
           state.collectionsPagination.limit = limit;
-          state.collectionsPagination.page = 1; // Reset to first page when limit changes
-          state.collectionsPagination.totalPages = Math.ceil(state.collectionsPagination.totalItems / limit);
-          state.collectionsPagination.hasNext = 1 < state.collectionsPagination.totalPages;
-          state.collectionsPagination.hasPrev = false;
+          // A cursor is tied to the page size it was issued for.
+          state.collectionsPagination.cursor = null;
         }),
 
       // ========================================
@@ -793,13 +800,15 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       setAllRecords: (records) =>
         set((state) => {
           state.allRecords = records;
+          // This deprecated setter holds a client-side list, which is the whole
+          // result: there is nothing to page to.
           state.allRecordsPagination.totalItems = records.length;
-          state.allRecordsPagination.totalPages = Math.ceil(
-            records.length / state.allRecordsPagination.limit
-          );
-          state.allRecordsPagination.hasNext =
-            state.allRecordsPagination.page < state.allRecordsPagination.totalPages;
-          state.allRecordsPagination.hasPrev = state.allRecordsPagination.page > 1;
+          state.allRecordsPagination.startIndex = records.length > 0 ? 1 : 0;
+          state.allRecordsPagination.endIndex = records.length;
+          state.allRecordsPagination.hasNext = false;
+          state.allRecordsPagination.hasPrev = false;
+          state.allRecordsPagination.nextCursor = null;
+          state.allRecordsPagination.prevCursor = null;
         }),
 
       setConnectors: (connectors) =>
@@ -869,7 +878,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.selectedRecords.clear();
           // Only reset pagination when explicitly switching to a different parent (not during auto-expansion sync)
           if (selection.type !== 'explorer') {
-            state.allRecordsPagination.page = 1;
+            state.allRecordsPagination.cursor = null;
           }
         }),
 
@@ -924,7 +933,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       setAllRecordsFilter: (filter) =>
         set((state) => {
           state.allRecordsFilter = { ...state.allRecordsFilter, ...filter };
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.cursor = null;
         }),
 
       hydrateAllRecordsFilter: (filter) =>
@@ -935,19 +944,19 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       clearAllRecordsFilter: () =>
         set((state) => {
           state.allRecordsFilter = {};
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.cursor = null;
         }),
 
       setAllRecordsSort: (sort) =>
         set((state) => {
           state.allRecordsSort = sort;
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.cursor = null;
         }),
 
       setAllRecordsSearchQuery: (query) =>
         set((state) => {
           state.allRecordsSearchQuery = query;
-          state.allRecordsPagination.page = 1;
+          state.allRecordsPagination.cursor = null;
         }),
 
       setAllRecordsPagination: (pagination) =>
@@ -955,20 +964,15 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.allRecordsPagination = pagination;
         }),
 
-      setAllRecordsPage: (page) =>
+      setAllRecordsCursor: (cursor) =>
         set((state) => {
-          state.allRecordsPagination.page = page;
-          state.allRecordsPagination.hasNext = page < state.allRecordsPagination.totalPages;
-          state.allRecordsPagination.hasPrev = page > 1;
+          state.allRecordsPagination.cursor = cursor;
         }),
 
       setAllRecordsLimit: (limit) =>
         set((state) => {
           state.allRecordsPagination.limit = limit;
-          state.allRecordsPagination.page = 1; // Reset to first page when limit changes
-          state.allRecordsPagination.totalPages = Math.ceil(state.allRecordsPagination.totalItems / limit);
-          state.allRecordsPagination.hasNext = 1 < state.allRecordsPagination.totalPages;
-          state.allRecordsPagination.hasPrev = false;
+          state.allRecordsPagination.cursor = null;
         }),
 
       setLoadingAllRecords: (loading) =>
@@ -1015,12 +1019,18 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
 
       // Sync only derived pagination metadata from API response (totalItems, totalPages, hasNext, hasPrev).
       // Does NOT overwrite page/limit — those are the source of truth from user actions.
-      syncAllRecordsPaginationMeta: (pagination: { totalItems: number; totalPages: number; hasNext: boolean; hasPrev: boolean }) =>
+      syncAllRecordsPaginationMeta: (pagination: AllRecordsPagination) =>
         set((state) => {
+          // Everything the response decided. `cursor` is deliberately left
+          // alone: it is the position the user asked for, and overwriting it
+          // from a response would fight the fetch effect that watches it.
           state.allRecordsPagination.totalItems = pagination.totalItems;
-          state.allRecordsPagination.totalPages = pagination.totalPages;
+          state.allRecordsPagination.startIndex = pagination.startIndex;
+          state.allRecordsPagination.endIndex = pagination.endIndex;
           state.allRecordsPagination.hasNext = pagination.hasNext;
           state.allRecordsPagination.hasPrev = pagination.hasPrev;
+          state.allRecordsPagination.nextCursor = pagination.nextCursor;
+          state.allRecordsPagination.prevCursor = pagination.prevCursor;
         }),
 
       setIsLoadingAllRecordsTable: (loading) =>

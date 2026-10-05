@@ -32,12 +32,13 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
     // data (e.g. a KB that was just renamed) must not be reused.
     const appItems: KnowledgeHubNode[] = [];
     let pagination: KnowledgeHubApiResponse['pagination'] | undefined;
+    let cursor: string | null = null;
     let page = 0;
     do {
       page += 1;
       let response: KnowledgeHubApiResponse;
       try {
-        response = await fetchRootAppPage(page);
+        response = await fetchRootAppPage(cursor);
       } catch (error) {
         if (!isCurrent()) return;
         throw error;
@@ -45,7 +46,8 @@ export async function refreshKbTree(afterRefresh?: () => void): Promise<void> {
       if (!isCurrent()) return;
       appItems.push(...response.items.filter((n) => n.nodeType === 'app'));
       pagination = response.pagination;
-    } while (pagination?.hasNext && page < MAX_ROOT_PAGES_FOR_COLLECTIONS);
+      cursor = pagination?.nextCursor ?? null;
+    } while (pagination?.hasNext && cursor && page < MAX_ROOT_PAGES_FOR_COLLECTIONS);
 
     const { setAppNodes, setAppRootListPagination } = useKnowledgeBaseStore.getState();
     setAppNodes(collectionsFirst(appItems));
