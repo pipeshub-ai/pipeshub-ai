@@ -80,9 +80,20 @@ def _hop_deadline(timeout: float) -> float:
 _MIN_BODY_RATE = 16 * 1024  # bytes a second
 
 
-# How long a request may wait for a free fetch thread before it is given up on. Waiting isn't a
-# fault of the site, so this only stops a crawl from waiting forever on a pool that never frees up.
-_MAX_QUEUE_WAIT = 600
+def _max_queue_wait(timeout: float) -> float:
+    """How long a request may wait for a free fetch thread. Most requests end well inside one hop
+    deadline, so a queue that hasn't moved for two means the threads are held by transfers that
+    won't end soon. Pages are fetched one at a time, so the page goes on without the threads
+    rather than waiting any longer."""
+    return 2 * _hop_deadline(timeout)
+
+
+class FetchPoolBusy(Exception):
+    """No fetch thread came free in time. Every strategy that needs one is skipped for the page."""
+
+
+# The strategies whose requests run on the fetch threads.
+_POOLED_STRATEGIES = {"curl_cffi(H2)", "cloudscraper"}
 
 # Blocking requests run here rather than in the loop's default executor. A request that wedges
 # keeps its thread past its deadline, and must not take one of the threads that DNS lookups and
@@ -333,10 +344,9 @@ class _HopWatch:
                 socket.socket.shutdown(self._socket, socket.SHUT_RDWR)
 
     def overdue(self, now: float, timeout: float) -> str | None:
-        """Why to give up on the request now, or None to keep waiting."""
+        """Why to give up on the request now, or None to keep waiting. Not asked while queued."""
         if self.started is None:
-            waited = now - self.queued_at
-            return f"{waited:.0f} seconds waiting for a free fetch thread" if waited > _MAX_QUEUE_WAIT else None
+            return None
         if self.body_started is None:
             deadline = _hop_deadline(timeout)
             return f"{deadline:g} seconds without an answer" if now - self.started > deadline else None
@@ -383,7 +393,7 @@ async def _hop_in_thread(
 ) -> _Hop:
     """Run ``hop`` on a fetch thread until it ends or ``_HopWatch.overdue`` gives up on it. Then the
     hop is told to stop, and TimeoutError is raised, which the strategies handle as a request
-    that timed out."""
+    that timed out. FetchPoolBusy is raised instead when no thread took the hop in time."""
     watch = _HopWatch()
 
     def run() -> _Hop:
@@ -395,7 +405,15 @@ async def _hop_in_thread(
     try:
         while not running.done():
             await asyncio.wait({running}, timeout=check_every)
-            reason = None if running.done() else watch.overdue(time.monotonic(), timeout)
+            if running.done():
+                break
+            now = time.monotonic()
+            waited = now - watch.queued_at
+            if watch.started is None and waited > _max_queue_wait(timeout):
+                watch.stop()
+                running.cancel()  # drops it if still queued; if a thread just took it, begin() refuses
+                raise FetchPoolBusy(f"no web fetch thread came free for {waited:.0f} seconds")
+            reason = watch.overdue(now, timeout)
             if reason is not None:
                 watch.stop()
                 running.cancel()  # drops it if still queued; if a thread just took it, begin() refuses
@@ -693,6 +711,8 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
 
         try:
             return await _walk_hops(walk, get, f"curl_cffi({profile}, h2=True)")
+        except FetchPoolBusy:
+            raise  # another profile would wait for the same threads
         except Exception:
             continue  # TLS error, connection reset -> next profile, from the start of the chain
         finally:
@@ -745,6 +765,8 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
 
     try:
         return await _walk_hops(walk, get, "cloudscraper")
+    except FetchPoolBusy:
+        raise
     except Exception:
         logger.warning(f"⚠️ [cloudscraper] Failed for {walk.url}")
         return None
@@ -879,8 +901,11 @@ async def fetch_url_with_fallback(
     # hard connection failure), this lets callers inspect the status code and
     # decide whether to queue the URL for a post-crawl retry.
     last_failed_result: FetchResponse | None = None
+    pool_busy = False
 
     for strategy_name, strategy_fn in strategies:
+        if pool_busy and strategy_name in _POOLED_STRATEGIES:
+            continue
         for attempt in range(max_retries_per_strategy):
             if attempt > 0:
                 # Backoff between retries of same strategy: 1s, 2s, ...
@@ -895,7 +920,16 @@ async def fetch_url_with_fallback(
             # asyncio.sleep yields to the event loop, so other domain fetches are never blocked.
             _rl_attempt = 0
             while True:
-                result = await strategy_fn()
+                try:
+                    result = await strategy_fn()
+                except FetchPoolBusy as e:
+                    logger.warning(
+                        "⚠️ [%s] Gave up waiting for a thread to fetch %s: %s. "
+                        "Skipping curl_cffi and cloudscraper for this page.",
+                        strategy_name, url, e,
+                    )
+                    pool_busy = True
+                    break
 
                 # Strategy returned nothing (import missing, all profiles exhausted, connection error)
                 if result is None:
@@ -989,6 +1023,9 @@ async def fetch_url_with_fallback(
                 if status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value and status not in _BOT_DETECTION_CODES and status not in _RATE_LIMIT_CODES:
                     logger.error(f"❌ [{strategy_name}] Server error {status} for {url}")
                     return result
+
+            if pool_busy:
+                break
 
         logger.debug(f"🔄 [{strategy_name}] Exhausted all {max_retries_per_strategy} attempts for {url}")
 

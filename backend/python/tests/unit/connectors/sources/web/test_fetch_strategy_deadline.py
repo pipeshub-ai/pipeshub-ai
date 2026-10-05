@@ -42,6 +42,7 @@ STEADY_CHUNKS = 50  # every 50ms: 1 MB a second, for 2.5 seconds
 class Trickle:
     port: int
     requests: int = 0
+    agents: list[str] = field(default_factory=list)
     # Set when a write fails: the client closed its end of the connection.
     hung_up: threading.Event = field(default_factory=threading.Event)
 
@@ -50,13 +51,21 @@ class Trickle:
 def trickle() -> Iterator[Trickle]:
     """Sends a byte every 50ms, never fast enough to end: the body of a 200 at ``/page``, the
     body of a Cloudflare 503 at ``/cloudflare``, the headers at ``/headers``. ``/steady`` sends
-    a body above MIN_RATE that takes longer than DEADLINE."""
+    a body above MIN_RATE that takes longer than DEADLINE; ``/plain`` is an ordinary page."""
     state = Trickle(port=0)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             state.requests += 1
+            state.agents.append(self.headers.get("User-Agent", ""))
             try:
+                if self.path == "/plain":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(BODY)))
+                    self.end_headers()
+                    self.wfile.write(BODY)
+                    return
                 if self.path == "/headers":
                     self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
                     self._trickle()
@@ -517,6 +526,7 @@ async def test_a_request_waiting_for_a_fetch_thread_is_not_given_up_on_for_the_w
 ) -> None:
     # The only thread is busy with a live body for longer than the deadline; the deadline counts
     # from when the second request starts, not from when it was queued.
+    monkeypatch.setattr(fetch_strategy, "_max_queue_wait", lambda timeout: 30.0, raising=False)
     _resolve_to(monkeypatch, _loopback(trickle.port))
     url = f"http://127.0.0.1:{trickle.port}/steady"
     logger = logging.getLogger("test_deadline")
@@ -534,19 +544,16 @@ async def test_a_request_waiting_for_a_fetch_thread_is_not_given_up_on_for_the_w
 
 async def test_a_request_given_up_on_while_queued_is_never_sent(
     trickle: Trickle, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(fetch_strategy, "_MAX_QUEUE_WAIT", 0.5, raising=False)
+    monkeypatch.setattr(fetch_strategy, "_max_queue_wait", lambda timeout: 0.5, raising=False)
     _resolve_to(monkeypatch, _loopback(trickle.port))
     url = f"http://127.0.0.1:{trickle.port}/steady"
     logger = logging.getLogger("test_deadline")
-    caplog.set_level(logging.WARNING)
 
     first = asyncio.create_task(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger))
     await asyncio.sleep(0.2)
-    queued = await asyncio.wait_for(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger), 10)
-    assert queued is None
-    assert "waiting for a free fetch thread" in caplog.text
+    with pytest.raises(fetch_strategy.FetchPoolBusy, match="no web fetch thread came free"):
+        await asyncio.wait_for(_hops_cloudscraper(_walk(url), SCRAPER_TIMEOUT, logger), 10)
 
     assert (await asyncio.wait_for(first, 10)) is not None
     assert await _thread_is_free(one_fetch_thread)
@@ -576,3 +583,37 @@ async def test_a_session_whose_request_ends_late_is_still_closed(monkeypatch: py
         session.release.set()
     assert await asyncio.to_thread(session.closed.wait, 5), "the session was never closed"
     assert session.closed_mid_request is False
+
+
+async def test_a_page_goes_to_aiohttp_once_no_fetch_thread_comes_free(
+    trickle: Trickle, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import aiohttp
+
+    # The only thread is held by a request that won't end; the queue gives up once, and neither
+    # the other curl profiles, curl's second attempt nor cloudscraper wait for it again.
+    cap = 0.5
+    monkeypatch.setattr(fetch_strategy, "_max_queue_wait", lambda timeout: cap, raising=False)
+    monkeypatch.setattr(fetch_strategy, "_MAX_QUEUE_WAIT", cap, raising=False)  # the previous head's name
+    monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", ["chrome", "safari", "edge"])
+    _resolve_to(monkeypatch, _loopback(trickle.port))
+    held = threading.Event()
+    one_fetch_thread.submit(held.wait, 30)
+    caplog.set_level(logging.WARNING)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            started = time.monotonic()
+            result = await asyncio.wait_for(fetch_strategy.fetch_url_with_fallback(
+                f"http://127.0.0.1:{trickle.port}/plain", session, logging.getLogger("test_deadline"), timeout=5,
+            ), 20)
+            elapsed = time.monotonic() - started
+    finally:
+        held.set()
+
+    assert result is not None
+    assert (result.status_code, result.content_bytes, result.strategy) == (200, BODY, "aiohttp")
+    assert cap < elapsed < 3 * cap
+    assert len(trickle.agents) == 1 and "aiohttp" in trickle.agents[0]
+    assert caplog.text.count("Gave up waiting for a thread to fetch") == 1
