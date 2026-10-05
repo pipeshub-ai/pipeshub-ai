@@ -1254,10 +1254,11 @@ async def test_without_its_index_the_purge_waits_and_the_walk_still_answers(
     assert await world.stored("upload") is None
 
 
+# Not collected on Neo4j, which takes no collection locks: its lock races are the
+# link tests above. CI fails any run that reports a skip.
+@pytest.mark.parametrize("world", ["arango"], indirect=True)
 async def test_a_purge_that_cannot_take_its_lock_says_so(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
     """ArangoDB: a sync transaction holding the collections makes the purge's exclusive lock time out."""
-    if isinstance(world.graph, Neo4jProvider):
-        pytest.skip("Neo4j takes no collection locks; its lock races are covered by the link tests")
     from app.services.graph_db.arango import arango_http_provider as arango_module
     monkeypatch.setattr(arango_module, "_PURGE_LOCK_TIMEOUT_SECONDS", 1)
     await world.trash("upload")

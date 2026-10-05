@@ -20,7 +20,11 @@ LOCK_TIMEOUT = Exception(
     'waiting for exclusive-lock on collection soft_delete_it/recordRelations on single","errorNum":18}'
 )
 WRITE_CONFLICT = Exception('Failed to begin transaction: {"code":409,"error":true,"errorNum":1200}')
-NOT_A_LOCK = Exception(
+class CollectionMissing(Exception):
+    """A begin that failed for a reason that has nothing to do with locks."""
+
+
+NOT_A_LOCK = CollectionMissing(
     'Failed to begin transaction: {"code":404,"error":true,"errorMessage":"collection or view not found",'
     '"errorNum":1203}'
 )
@@ -47,6 +51,6 @@ async def test_any_other_failure_is_raised_as_it_is() -> None:
         lambda p: p.purge_trashed_records(["r1"], "org-1", 10),
         lambda p: p.purge_trash_kept_record_groups("org-1"),
     ):
-        with pytest.raises(Exception, match="1203") as raised:
+        with pytest.raises(CollectionMissing) as raised:
             await call(_provider(NOT_A_LOCK))
-        assert not isinstance(raised.value, GraphLockUnavailableError)
+        assert raised.value is NOT_A_LOCK

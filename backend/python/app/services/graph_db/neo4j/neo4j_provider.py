@@ -8036,7 +8036,12 @@ class Neo4jProvider(IGraphDBProvider):
     async def _attachments_to_delete(
         self, record_id: str, org_id: str, transaction: str | None
     ) -> tuple[list[str], list[dict]]:
-        """A record's direct ATTACHMENT children and their deleteRecord payloads, read before the delete."""
+        """A record's direct ATTACHMENT children and their deleteRecord payloads, read before the delete.
+
+        Attachments already in the trash, from an earlier batch, go too: a restore
+        refuses an item whose parent is in the trash, so with its mail gone for good
+        one could never come back, and ArangoDB's hard delete takes them the same way.
+        """
         attachment_ids = await self._direct_attachment_ids(record_id, org_id, transaction)
         payloads: list[dict] = []
         for attachment_id in attachment_ids:

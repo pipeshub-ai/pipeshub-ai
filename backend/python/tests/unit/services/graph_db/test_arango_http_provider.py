@@ -5028,6 +5028,19 @@ class TestEnsureIndexes:
         await connected_provider._ensure_indexes()
         assert connected_provider.http_client.ensure_persistent_index.await_count == 49
 
+    @pytest.mark.asyncio
+    async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
+        """The walk hints this index by name, so its fields and name must stay as the query expects."""
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        walks = [
+            c for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if c.kwargs.get("name") == "records_org_deleted_at"
+        ]
+        assert len(walks) == 1
+        assert walks[0].args[:2] == ("records", ["orgId", "deletedAtTimestamp", "_key"])
+        assert walks[0].kwargs.get("sparse", False) is False
+
 
 # ---------------------------------------------------------------------------
 # get_records_by_record_group with pagination
