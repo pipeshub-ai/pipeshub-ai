@@ -753,15 +753,20 @@ class EntityVectorStore:
         another replica may already have recreated the collection for the new
         model while this one still holds the old config in its cache (a missed
         or late notification). Read from the store, not the cache, once per
-        written batch, as the records path does per record. An unreadable
-        config keeps the current model, as everywhere else."""
+        written batch, as the records path does per record.
+
+        Unlike initialisation, an unreadable config refuses the write: this
+        process cannot tell whether the collection now belongs to another
+        model. The batch is counted failed and the rebuild writes it again."""
         try:
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value, use_cache=False, raise_on_error=True,
             )
         except Exception as exc:
-            self.logger.warning("Could not re-read the embedding model config before a write: %s", exc)
-            return
+            raise VectorStoreError(
+                "Cannot confirm the embedding model before an entity write",
+                details={"collection": self.collection_name, "error": str(exc)},
+            ) from exc
         if embedding_config_hash(_embedding_configs(ai_models)) != config_hash:
             raise VectorStoreError(
                 "Embedding model config changed since this entity write was embedded",

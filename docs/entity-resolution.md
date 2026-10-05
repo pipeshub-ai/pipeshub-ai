@@ -193,8 +193,10 @@ store, as the records path does per record. A batch embedded with a model
 the stored config no longer names is refused, and so is one whose model
 changed in this process while it was embedding. This covers an indexing
 replica that missed the notification and still holds the old model while
-another has already recreated the collection. The passes write a refused
-entity again.
+another has already recreated the collection. If that re-read fails, the
+write is refused as well, because the store cannot tell whether the
+collection now belongs to another model. Searches and initialisation keep
+the current model on a failed read. The passes write a refused entity again.
 
 A store checks the collection against its new model: the collection's
 dimension, and the model recorded on one stored point. The collection does
@@ -209,16 +211,21 @@ are re-embedded in place.
   The passes then refill it. Two replicas dropping in turn would lose the
   points the first one had refilled.
 - While the rebuild loop waits between ticks, it checks the configured model
-  every 5 seconds (a cache read) and ends the wait on a change. So the leader
-  recreates within seconds of the switch, even when nothing is being indexed.
+  every 5 seconds (a cache read) and ends the wait on a change. When the
+  change notification reaches the leader, it recreates within seconds of the
+  switch, even when nothing is being indexed. If the notification is missed,
+  the leader sees the change only at its next stored-config read, up to a
+  minute later.
 - Every other store fails entity calls with the mismatch (`The indexing
-  service recreates it`) and retries initialisation every 30 seconds. That
-  includes the query and connector services and the other indexing replicas.
+  service recreates it`). That includes the query and connector services and
+  the other indexing replicas. The retry is driven by calls, not a timer: for
+  30 seconds after a failed initialisation, entity calls fail without
+  retrying, and the first call after that tries again.
   After a restart that finds a mismatched collection, entity writes fail
   until the leader's first tick, which comes after a 60-second startup grace.
-- If the stored point cannot be read, the switch fails and is retried 30
-  seconds later. The store does not adopt the new model on an unread
-  collection.
+- If the stored point cannot be read, the switch fails, and the first entity
+  call more than 30 seconds later tries again. The store does not adopt the
+  new model on an unread collection.
 
 Points of legacy nodes without an org are not projected, so after a recreate
 they return only when their records are reindexed.

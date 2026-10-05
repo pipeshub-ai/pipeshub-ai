@@ -274,6 +274,24 @@ class TestReplicas:
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
 
 
+    async def test_a_stale_replica_that_cannot_read_the_config_does_not_write(self) -> None:
+        """The case the write check exists for, with the store unreachable at
+        the moment of the write: the stale replica must not assume its model."""
+        db, config_a = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        config_b = another_process(config_a)
+        leader, other = _store(db, config_a), _store(db, config_b)
+        await other.upsert_entities_batch([_topic("t2")], merge_membership=False)
+        await switch_embedding_model(config_a, ADA_CONFIG)
+        assert await _leader_tick(leader) == ADA_FP
+        await leader.upsert_entities_batch([_topic()], merge_membership=False)
+
+        with patch.object(config_b.store, "get_key", side_effect=RuntimeError("kv store timed out")):
+            outcome = await other.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert (outcome.written, outcome.failed) == (0, 1)
+        assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
+
+
 class TestRecreateOnSwitch:
     async def test_a_failed_point_read_fails_the_switch_and_is_retried(self, monkeypatch) -> None:
         """An unread collection may still hold the old model's vectors, so the
@@ -338,18 +356,23 @@ class TestConfigReads:
 
     async def test_an_unreadable_config_keeps_the_model_and_the_collection(self, monkeypatch) -> None:
         """A failed read must not look like "no model configured", which would
-        switch to the default model and recreate the collection."""
+        switch to the default model and recreate the collection. A write is
+        refused, though: it cannot confirm the collection is still its model's."""
         db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
         store = _store(db, config)
         await store.upsert_entities_batch([_topic("t1")], merge_membership=False)
 
         monkeypatch.setattr(module, "_CONFIG_RECHECK_SECONDS", 0.0)
         with patch.object(config.store, "get_key", side_effect=RuntimeError("kv store down")):
-            await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
             assert await store.embedding_fingerprint() == SMALL_FP
+            await store.search_entities("pricing", ORG, set(), {"c1"})
+            outcome = await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
 
+        assert (outcome.written, outcome.failed) == (0, 1)
         assert db.deletions == 0
-        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value), "t2": (SMALL_FP, SMALL.value)}
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+        await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
+        assert _models_of(db)["t2"] == (SMALL_FP, SMALL.value)
 
     async def test_an_unchanged_model_with_new_credentials_keeps_the_collection(self) -> None:
         db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
