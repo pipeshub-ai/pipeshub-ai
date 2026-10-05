@@ -520,6 +520,8 @@ async def test_arango_sync_delete_of_a_record_without_org_raises_instead_of_pass
 
 @pytest.mark.parametrize("provider_cls", [Neo4jProvider, ArangoHTTPProvider])
 def test_delete_record_takes_org_id_before_transaction(provider_cls: type) -> None:
-    assert list(inspect.signature(provider_cls.delete_record).parameters) == [
+    params = inspect.signature(provider_cls.delete_record).parameters.values()
+    # The soft-delete options are keyword-only, so they cannot shift these.
+    assert [p.name for p in params if p.kind is not inspect.Parameter.KEYWORD_ONLY] == [
         "self", "record_id", "user_id", "org_id", "transaction",
     ]

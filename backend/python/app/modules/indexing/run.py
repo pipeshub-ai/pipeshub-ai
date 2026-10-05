@@ -1095,6 +1095,8 @@ class IndexingPipeline:
         self,
         virtual_record_ids: List[str],
         org_id: str | None = None,
+        *,
+        keep_mapping: bool = False,
     ) -> Dict[str, Any]:
         """
         Bulk delete embeddings for multiple records in a single operation.
@@ -1104,6 +1106,10 @@ class IndexingPipeline:
 
         Args:
             virtual_record_ids: List of virtual record IDs to delete embeddings for
+            keep_mapping: Delete the points only. The virtualRecordToDocIdMapping
+                row, and the stored content it leads to, stay for the purge. A
+                soft delete passes this: its records, files and storage documents
+                are kept until then.
 
         Returns:
             Dict with deletion statistics:
@@ -1298,9 +1304,12 @@ class IndexingPipeline:
 
             # Mapping last: it is how an orphaned point set (and its stored
             # content) is found again, so it must outlive the deletes it describes.
-            storage_pending = await self._forget_virtual_record_mappings(
-                deleted_virtual_record_ids, org_id=org_id
-            )
+            # A soft delete keeps both until the purge.
+            storage_pending: list[str] = []
+            if not keep_mapping:
+                storage_pending = await self._forget_virtual_record_mappings(
+                    deleted_virtual_record_ids, org_id=org_id
+                )
 
             safe_virtual_record_ids = deleted_virtual_record_ids
 
