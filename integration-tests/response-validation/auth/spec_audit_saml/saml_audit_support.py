@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from typing import Any
+from urllib.parse import unquote
 
 import jwt
 import requests
@@ -115,3 +116,17 @@ class SamlClient(APIClient):
                 "/updateAppConfig", auth=False, headers=bearer(token), **kwargs
             )
         return self.post("/updateAppConfig", auth=auth, **kwargs)
+
+
+UNKNOWN_STRATEGY = 'Unknown authentication strategy "saml"'
+
+
+def saml_strategy_registered(client: SamlClient) -> bool:
+    """Whether this deployment has a SAML IdP configured (passport "saml" strategy).
+
+    Read from the public callback: with nothing registered, passport's error is
+    the saml_error of the redirect; nothing is changed either way.
+    """
+    resp = client.sign_in_callback()
+    assert resp.status_code == 302, resp.text[:500]
+    return UNKNOWN_STRATEGY not in unquote(resp.headers.get("Location", ""))

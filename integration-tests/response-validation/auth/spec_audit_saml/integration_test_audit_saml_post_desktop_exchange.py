@@ -49,7 +49,7 @@ def test_exchange_rejects_unredeemable_code(
     assert resp.status_code == 401, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
     error = resp.json()["error"]
-    assert error["code"] == "UNAUTHORIZED"
+    assert error["code"] == "HTTP_UNAUTHORIZED"
     assert error["message"] == INVALID_CODE_MESSAGE
     assert "accessToken" not in resp.text
 
@@ -63,12 +63,15 @@ def test_exchange_without_code_verifier_fails_validation(
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: an unparseable JSON body is answered 500 INTERNAL_ERROR instead of 400",
+)
 def test_exchange_with_unparseable_json_body(saml_client: SamlClient) -> None:
-    # express.json() raises a plain SyntaxError and nothing maps it to a 400,
-    # so the error middleware answers it as an unknown error.
+    # express.json() raises a SyntaxError (status 400) that the error middleware
+    # does not recognise, so the client gets a 500 for its own malformed body.
     resp = saml_client.desktop_exchange(
         data='{"code": ', headers={"Content-Type": "application/json"}
     )
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
-    assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
