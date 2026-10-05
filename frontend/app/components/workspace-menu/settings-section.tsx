@@ -9,6 +9,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { SUPPORTED_LANGUAGES } from '@/lib/i18n/supported-languages';
 import { MenuItem } from './menu-item';
+import { useFeedbackDialogStore } from '@/app/(main)/feedback/store';
 
 interface SettingsSectionProps {
   onWorkspaceSettings: () => void;
@@ -47,6 +48,7 @@ export function SettingsSection({
   const isMobile = useIsMobile();
   const { appearance } = useThemeAppearance();
   const { language } = useLanguageStore();
+  const openFeedback = useFeedbackDialogStore((s) => s.open);
 
   const appearanceLabel = appearance === 'dark' ? t('workspaceMenu.darkMode') : t('workspaceMenu.lightMode');
   const languageLabel = SUPPORTED_LANGUAGES[language].menuName;
@@ -117,6 +119,21 @@ export function SettingsSection({
           onClick={onWorkspaceSettings}
         />
       )}
+
+      <MenuItem
+        icon={
+          <MaterialIcon
+            name="feedback"
+            size={ICON_SIZE_DEFAULT}
+            color="var(--slate-11)"
+          />
+        }
+        label={t('feedback.menuLabel')}
+        onClick={() => {
+          onWorkspaceSettings();
+          openFeedback();
+        }}
+      />
 
       <MenuItem
         icon={

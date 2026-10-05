@@ -16,6 +16,7 @@ import {
   suspiciousLoginAttempt,
   joinRequestNotify,
   joinRequestDecision,
+  feedbackReceived,
 } from '../utils/emailTemplates';
 import nodemailer from 'nodemailer';
 import { inject, injectable } from 'inversify';
@@ -94,6 +95,10 @@ export class MailController {
 
       case EmailTemplateType.JoinRequestDecision:
         emailContent = joinRequestDecision(templateData);
+        return emailContent;
+
+      case EmailTemplateType.FeedbackReceived:
+        emailContent = feedbackReceived(templateData);
         return emailContent;
 
       default:
