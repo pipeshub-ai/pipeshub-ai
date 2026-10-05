@@ -96,7 +96,7 @@ describe('StorageController', () => {
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
-    controller = new StorageController(mockConfig, mockLogger, mockKvs)
+    controller = new StorageController(mockConfig, mockLogger, mockKvs, 'test-scoped-secret')
     adapter = makeAdapter()
     initAdapterStub = sinon.stub(controller, 'initializeStorageAdapter').resolves(adapter as any)
   })
@@ -109,7 +109,7 @@ describe('StorageController', () => {
   describe('getStorageConfig', () => {
     it('should fetch config from CM service on first call', async () => {
       const fakeConfig = { mountName: 'test', baseUrl: 'http://storage' }
-      const cmStub = sinon.stub().resolves({ data: fakeConfig })
+      const cmStub = sinon.stub().resolves({ statusCode: 200, data: fakeConfig })
       const CMCommand = require('../../../../src/libs/commands/configuration_manager/cm.service.command').ConfigurationManagerServiceCommand
       sinon.stub(CMCommand.prototype, 'execute').callsFake(cmStub)
 
@@ -125,7 +125,7 @@ describe('StorageController', () => {
       // and clearing the cached value via getStorageConfig's code path
       const fakeConfig = { mountName: 'test-internal' }
       const CMCommand = require('../../../../src/libs/commands/configuration_manager/cm.service.command').ConfigurationManagerServiceCommand
-      const executeStub = sinon.stub(CMCommand.prototype, 'execute').resolves({ data: fakeConfig })
+      const executeStub = sinon.stub(CMCommand.prototype, 'execute').resolves({ statusCode: 200, data: fakeConfig })
 
       mockKvs.get.resolves(JSON.stringify({ cm: { endpoint: 'http://cm:3000' } }))
       const req = { tokenPayload: { orgId: makeOrgId() }, headers: { authorization: 'Bearer svc-token' }, params: {}, query: {}, body: {} }
