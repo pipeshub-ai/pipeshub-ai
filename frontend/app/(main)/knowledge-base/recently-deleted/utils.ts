@@ -5,6 +5,13 @@ import type { BulkRestoreResponse, RestoreResponse, RestoreResultEntry, TrashIte
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** The purge's default minimum age (softDeletePurge.minAgeDays). */
 export const DEFAULT_RETENTION_DAYS = 14;
+/** The roles the trash API lists and restores for (RESTORE_FILE_ROLES in kb_service.py); a file organizer sees single files only. */
+export const TRASH_ROLES: readonly string[] = ['OWNER', 'WRITER', 'FILEORGANIZER'];
+
+export function canOpenRecentlyDeleted(role: string | null | undefined): boolean {
+  return !!role && TRASH_ROLES.includes(role);
+}
+
 /** Failures named one by one in a message before the rest are counted. */
 const MAX_FAILURES_LISTED = 3;
 

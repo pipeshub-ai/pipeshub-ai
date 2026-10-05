@@ -112,6 +112,7 @@ import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
+import { canOpenRecentlyDeleted } from './recently-deleted/utils';
 
 function KnowledgeBasePageContent() {
   const { t } = useTranslation();
@@ -1854,7 +1855,8 @@ function KnowledgeBasePageContent() {
 
   const softDeleteEnabled = useFeatureFlagsStore(selectSoftDeleteEnabled);
   const showRecentlyDeleted =
-    softDeleteEnabled && !isAllRecordsMode && !!nodeId && !!selectedKbId && tableData?.permissions?.canDelete !== false;
+    softDeleteEnabled && !isAllRecordsMode && !!nodeId && !!selectedKbId &&
+    canOpenRecentlyDeleted(tableData?.permissions?.role);
   const handleRecentlyDeletedClick = useCallback(() => {
     if (!selectedKbId) return;
     router.push(`/knowledge-base/recently-deleted?kbId=${encodeURIComponent(selectedKbId)}`);

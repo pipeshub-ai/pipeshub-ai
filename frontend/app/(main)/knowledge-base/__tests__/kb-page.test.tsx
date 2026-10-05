@@ -12,7 +12,7 @@ import KnowledgeBasePage from '../page';
 import KnowledgeBaseSidebarSlot from '../../@sidebar/knowledge-base/page';
 import { loadMoreNodeChildrenPage, loadMoreRootAppList } from '../utils/sidebar-paginated-fetch';
 import { mergeChildrenIntoTree } from '../utils/tree-builder';
-import type { EnhancedFolderTreeNode } from '../types';
+import type { EnhancedFolderTreeNode, NodePermissions } from '../types';
 import {
   collection,
   createNavigation,
@@ -20,6 +20,7 @@ import {
   hubChildrenFake,
   hubNode,
   hubResponse,
+  OWNER_PERMISSIONS,
   openRowMenu,
   queryRow,
   installBrowserShims,
@@ -476,6 +477,29 @@ describe('Knowledge base page — inside a collection', () => {
 
     expect(router.push).toHaveBeenCalledWith('/knowledge-base/recently-deleted?kbId=kb-eng');
   });
+
+  for (const [role, canDelete, shown] of [
+    ['OWNER', true, true],
+    ['WRITER', true, true],
+    // Knowledge Hub gives a file organizer no canDelete, yet the trash API lists and restores their single files.
+    ['FILEORGANIZER', false, true],
+    ['READER', false, false],
+    ['COMMENTER', false, false],
+  ] as const) {
+    it(`${shown ? 'offers' : 'does not offer'} Recently deleted to a ${role.toLowerCase()} of the collection`, async () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } });
+      withCollections();
+      api.hub.loadFolderData.mockResolvedValue(
+        folderResponse({ id: 'kb-eng', name: 'Engineering', nodeType: 'app' }, ENGINEERING_TRAIL, [SPEC], {
+          permissions: { ...OWNER_PERMISSIONS, role: role as NodePermissions['role'], canDelete, canEdit: canDelete },
+        }),
+      );
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByRole('row', { name: SPEC.name });
+
+      expect(Boolean(screen.queryByRole('button', { name: /Recently deleted/ }))).toBe(shown);
+    });
+  }
 
   it('reloads the collection when Refresh is clicked', async () => {
     await openEngineering();
