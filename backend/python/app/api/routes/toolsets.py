@@ -1036,7 +1036,7 @@ async def get_toolset_schema(toolset_type: str, request: Request) -> dict[str, A
     oauth_registry = getattr(request.app.state, "oauth_config_registry", None)
     oauth_config = None
     if oauth_registry and oauth_registry.has_config(toolset_type):
-        oauth_config = oauth_registry.get_metadata(toolset_type)
+        oauth_config = oauth_registry.get_metadata(toolset_type, source="toolset")
 
     toolset_config = metadata.get("config", {}) or {}
     return {

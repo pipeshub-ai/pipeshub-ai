@@ -23,6 +23,7 @@ from app.connectors.core.registry.filters import (
     OptionSourceType,
     SyncFilterKey,
 )
+from app.connectors.core.registry.oauth_config_registry import CONNECTOR_SOURCE
 from app.edition_services import get_oauth_config_registry
 from app.connectors.core.registry.types import AuthField, CustomField, DocumentationLink
 
@@ -530,9 +531,9 @@ class ConnectorBuilder:
             # Ensure connector name matches final builder name
             if oauth_config.connector_name != self.name:
                 # Remove old registration if name changed and it's the same object
-                old_config = oauth_registry.get_config(oauth_config.connector_name)
+                old_config = oauth_registry.get_config(oauth_config.connector_name, source=CONNECTOR_SOURCE)
                 if old_config is oauth_config:
-                    del oauth_registry._configs[oauth_config.connector_name]
+                    oauth_registry.remove_config(oauth_config.connector_name, source=CONNECTOR_SOURCE)
                 oauth_config.connector_name = self.name
 
             # Auto-populate metadata from connector builder if not already set
@@ -564,8 +565,7 @@ class ConnectorBuilder:
                     for link in config.get("documentationLinks", [])
                 ]
 
-            # Register with final name (overwrites if already registered - allows sharing between connector/toolset)
-            oauth_registry.register(oauth_config)
+            oauth_registry.register(oauth_config, source=CONNECTOR_SOURCE)
 
         # Validate OAuth requirements for all OAuth supported auth types
         for auth_type in self.supported_auth_types:
