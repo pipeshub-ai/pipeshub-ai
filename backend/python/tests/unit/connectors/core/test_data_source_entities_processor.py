@@ -6203,6 +6203,15 @@ class TestPublishDeleteEvents:
         proc.messaging_producer.send_message.assert_awaited_once()
 
 
+    @pytest.mark.asyncio
+    async def test_an_event_the_broker_refuses_is_unpublished(self):
+        """send_message answers False without raising when the broker refuses an event."""
+        proc = _make_processor()
+        proc.messaging_producer.send_message = AsyncMock(return_value=False)
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            unpublished = await proc._publish_delete_events({"payloads": [{"recordId": "r1"}]})
+        assert unpublished == ["r1"]
+
 class TestProcessRecordOrgId:
     @pytest.mark.asyncio
     async def test_sets_org_id_when_missing(self):
