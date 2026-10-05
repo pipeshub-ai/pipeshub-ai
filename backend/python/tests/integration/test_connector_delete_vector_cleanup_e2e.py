@@ -36,8 +36,12 @@ import pytest
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    EventTypes,
     OriginTypes,
     ProgressStatus,
+)
+from app.connectors.core.base.data_processor import (
+    data_source_entities_processor as processor_module,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -293,3 +297,24 @@ async def test_an_outlook_personal_delete_by_external_id_removes_the_mail(world:
             world.vrid("personal_email"), world.vrid("personal_attachment"),
         }
     assert {e["payload"]["connectorName"] for e in world.producer.events} == {Connectors.OUTLOOK_INDIVIDUAL.value}
+
+
+async def test_an_outlook_personal_delete_by_external_id_with_the_trash_on_trashes_the_mail_and_its_attachment(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_id = await _seed_personal_mailbox(world)
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+
+    await world.processor.delete_record_by_external_id(
+        app_id, f"ext-{world.ids['personal_email']}", world.user_id
+    )
+
+    records = CollectionNames.RECORDS.value
+    docs = [await world.graph.get_document(world.ids[n], records) for n in ("personal_email", "personal_attachment")]
+    assert {(d["deleteSource"], d.get("deletedByUserId")) for d in docs} == {("CONNECTOR", None)}
+    assert len({d["deleteBatchId"] for d in docs}) == 1
+    (event,) = world.producer.events
+    assert event["eventType"] == EventTypes.SOFT_DELETE_RECORDS.value
+    assert set(event["payload"]["virtualRecordIds"]) == {
+        world.vrid("personal_email"), world.vrid("personal_attachment"),
+    }

@@ -423,7 +423,12 @@ class ReposSync:
         except Exception as e:
             self.logger.error("Failed to prune deleted code records in %s: %s", repo.full_name, e, exc_info=True)
             return
-        failed = [f.get("record_id") for f in (result or {}).get("failed_records") or []]
+        # With the trash on, a record already in it stays there for the purge.
+        already_trashed = set(stale_trashed.values()) if (result or {}).get("softDeleted") else set()
+        failed = [
+            f.get("record_id") for f in (result or {}).get("failed_records") or []
+            if f.get("record_id") not in already_trashed
+        ]
         if not (result or {}).get("success", False) or failed:
             self.logger.error(
                 "Could not prune %s of %s deleted code record(s) in %s: %s",

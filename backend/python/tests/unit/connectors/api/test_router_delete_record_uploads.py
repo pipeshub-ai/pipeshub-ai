@@ -101,3 +101,22 @@ async def test_a_record_that_cannot_be_read_deletes_nothing() -> None:
     assert provider.get_document.await_args.kwargs == {"raise_on_error": True}
     provider.delete_record.assert_not_awaited()
     kafka.publish_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_with_the_trash_on_the_uploaded_file_stays_until_the_purge() -> None:
+    """A restore needs the original upload, so a soft delete schedules no removal."""
+    provider, kafka = _provider(), AsyncMock()
+    provider.delete_record = AsyncMock(return_value={
+        "success": True, "softDeleted": True, "orgId": "org-a", "connectorId": "kb-1",
+        "batchId": "b1", "virtualRecordIds": ["v1"], "softDeletedRecords": [{"record_id": "r1"}],
+    })
+
+    with patch("app.connectors.api.router.is_soft_delete_enabled", AsyncMock(return_value=True)):
+        result = await delete_record("r1", _request(), provider, kafka)
+
+    assert result["softDeleted"] is True
+    assert provider.delete_record.await_args.kwargs["soft_delete"] is True
+    provider.get_uploaded_document_ids.assert_not_awaited()
+    published = [call.args[1]["eventType"] for call in kafka.publish_event.await_args_list]
+    assert published == [EventTypes.SOFT_DELETE_RECORDS.value]

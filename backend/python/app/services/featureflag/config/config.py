@@ -31,3 +31,7 @@ class CONFIG:
     # Defaults to enabled; admins may opt out from Labs. Agent Builder agents
     # use their own per-agent `sendUserContext` field instead of this flag.
     ENABLE_USER_CONTEXT = "ENABLE_USER_CONTEXT"
+    # Deleting a record moves it to the trash (kept, hidden, vectors removed)
+    # instead of removing it; a scheduled purge removes it later. Defaults to
+    # disabled; admins opt in from Labs.
+    ENABLE_SOFT_DELETE = "ENABLE_SOFT_DELETE"

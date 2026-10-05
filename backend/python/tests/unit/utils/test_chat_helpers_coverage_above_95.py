@@ -32,6 +32,11 @@ from app.utils.chat_helpers import (
 )
 
 
+def _all_live(record_ids: list[str], org_id: str, visibility: object = None) -> list[dict]:
+    """``get_records_by_record_ids`` when every related table is live."""
+    return [{"_key": rid, "orgId": org_id} for rid in record_ids]
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -198,6 +203,7 @@ class TestEnrichFkChildrenDeep:
     @pytest.mark.asyncio
     async def test_fetches_related_blob_and_appends_table_ddl(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_child", "childTable": "child_t"}]
         )
@@ -276,6 +282,7 @@ class TestEnrichFkChildrenDeep:
     @pytest.mark.asyncio
     async def test_child_and_parent_fetch_exceptions_are_handled(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             side_effect=RuntimeError("child boom")
         )
@@ -672,6 +679,7 @@ class TestEnrichFkChildrenEdgeBranches:
     @pytest.mark.asyncio
     async def test_related_vrid_skipped_when_already_flattened(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_known"}],
         )
@@ -704,6 +712,7 @@ class TestEnrichFkChildrenEdgeBranches:
     @pytest.mark.asyncio
     async def test_related_blob_missing_sets_none_placeholder(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_x"}],
         )
@@ -736,6 +745,7 @@ class TestEnrichFkChildrenEdgeBranches:
     @pytest.mark.asyncio
     async def test_graph_metadata_merge_failure_is_soft(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_y"}],
         )
@@ -774,6 +784,7 @@ class TestEnrichFkChildrenEdgeBranches:
     @pytest.mark.asyncio
     async def test_blob_fetch_exception_sets_none_placeholder(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_z"}],
         )
