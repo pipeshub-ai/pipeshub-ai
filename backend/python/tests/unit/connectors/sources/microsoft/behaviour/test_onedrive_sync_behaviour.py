@@ -622,11 +622,10 @@ class TestSharing:
         assert perms(db, "f1") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", "eng@acme.com", PermissionType.WRITE),
-            (EntityType.ANYONE_WITH_LINK, "anyone_with_link", None, PermissionType.READ),
             (EntityType.ORG, "anyone_in_org", None, PermissionType.READ),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
             (EntityType.GROUP, "g-ops", None, PermissionType.READ),
-        }
+        }, "the anonymous link names nobody, so it is not stored as a grant"
         assert db.records["f1"].is_shared is True
 
     async def test_new_sharing_on_a_stored_file_replaces_its_access(self, cloud, tenant, db, checkpoints) -> None:

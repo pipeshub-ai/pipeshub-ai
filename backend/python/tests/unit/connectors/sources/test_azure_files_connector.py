@@ -1519,6 +1519,18 @@ class TestProcessAzureFilesItem:
         assert record.is_internal is True
 
     @pytest.mark.asyncio
+    async def test_a_directory_is_text_directory_whatever_its_content_type(self, conn):
+        item = _file_item("subdir", "docs/subdir", is_directory=True, content_type="application/octet-stream")
+        record, _ = await conn._process_azure_files_item(item, "myshare")
+        assert record.mime_type == MimeTypes.FOLDER.value
+
+    @pytest.mark.asyncio
+    async def test_a_file_keeps_its_content_type(self, conn):
+        item = _file_item("a.bin", "docs/a.bin", content_type="application/octet-stream")
+        record, _ = await conn._process_azure_files_item(item, "myshare")
+        assert record.mime_type == "application/octet-stream"
+
+    @pytest.mark.asyncio
     async def test_process_root_level_item(self, conn):
         item = _file_item("root.txt", "root.txt", size=50)
         record, perms = await conn._process_azure_files_item(item, "myshare")

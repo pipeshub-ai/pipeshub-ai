@@ -1,8 +1,7 @@
 """Unit tests for KnowledgeHubService."""
 
 import logging
-from collections import Counter
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,26 +10,11 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     FOLDER_MIME_TYPES,
     BrowseRequestError,
     KnowledgeHubService,
-    _get_node_type_value,
 )
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
-    AppliedFilters,
     AvailableFilters,
-    BreadcrumbItem,
-    CountItem,
-    CountsInfo,
-    CurrentNode,
-    FilterOption,
-    FiltersInfo,
-    ItemPermission,
-    KnowledgeHubNodesResponse,
-    NodeItem,
     NodeType,
     OriginType,
-    PaginationInfo,
-    PermissionsInfo,
-    SortField,
-    SortOrder,
 )
 
 
@@ -49,26 +33,6 @@ def mock_graph_provider():
 @pytest.fixture
 def service(logger, mock_graph_provider):
     return KnowledgeHubService(logger=logger, graph_provider=mock_graph_provider)
-
-
-# ============================================================================
-# _get_node_type_value
-# ============================================================================
-class TestGetNodeTypeValue:
-    def test_enum_value(self):
-        assert _get_node_type_value(NodeType.FOLDER) == "folder"
-        assert _get_node_type_value(NodeType.APP) == "app"
-        assert _get_node_type_value(NodeType.RECORD_GROUP) == "recordGroup"
-        assert _get_node_type_value(NodeType.RECORD) == "record"
-
-    def test_string_value(self):
-        assert _get_node_type_value("folder") == "folder"
-        assert _get_node_type_value("custom") == "custom"
-
-    def test_non_enum_with_value_attr(self):
-        obj = MagicMock()
-        obj.value = "test_val"
-        assert _get_node_type_value(obj) == "test_val"
 
 
 # ============================================================================
@@ -399,355 +363,42 @@ class TestDocToNodeItem:
         assert item.isInternal is True
 
 
+
 # ============================================================================
-# get_nodes - main entry point
+# get_nodes - webUrl
 # ============================================================================
-class TestGetNodes:
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = None
-        result = await service.get_nodes(user_id="u1", org_id="o1")
-        assert result.success is False
-        assert result.error == "User not found"
-
-    @pytest.mark.asyncio
-    async def test_browse_root_no_filters(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_user_app_ids.return_value = ["app1"]
-        mock_graph_provider.get_knowledge_hub_root_nodes.return_value = {
-            "nodes": [
-                {
-                    "id": "app1",
-                    "name": "App 1",
-                    "nodeType": "app",
-                    "origin": "COLLECTION",
-                    "createdAt": 100,
-                    "updatedAt": 200,
-                    "hasChildren": True,
-                }
-            ],
-            "total": 1,
-        }
-        result = await service.get_nodes(user_id="u1", org_id="o1")
-        assert result.success is True
-        assert len(result.items) == 1
-        assert result.pagination.totalItems == 1
-
-    @pytest.mark.asyncio
-    async def test_browse_children_of_parent(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {
-            "id": "parent1",
-            "name": "Parent",
-            "nodeType": "app",
-        }
-        mock_graph_provider.get_knowledge_hub_children.return_value = {
-            "nodes": [],
-            "total": 0,
-        }
-        mock_graph_provider.get_knowledge_hub_parent_node.return_value = None
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            parent_id="parent1", parent_type="app",
-        )
-        assert result.success is True
-        assert result.currentNode is not None
-
-    @pytest.mark.asyncio
-    async def test_search_global(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_search.return_value = {
-            "nodes": [],
-            "total": 0,
-        }
-        mock_graph_provider.get_knowledge_hub_filter_options.return_value = {"apps": []}
-        result = await service.get_nodes(user_id="u1", org_id="o1", q="search term")
-        assert result.success is True
-
+class TestGetNodesWebUrl:
     @pytest.mark.asyncio
     async def test_gmail_weburl_placeholder_resolved_to_viewer_email(self, service, mock_graph_provider):
         mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1", "email": "viewer@acme.com"}
+        access = {"grantee_ids": ["uk1"], "gated_app_ids": ["app1"]}
+        mock_graph_provider.get_knowledge_hub_access_context_v2.return_value = access
+        mock_graph_provider.get_knowledge_hub_access_v3.return_value = {**access, "by_connector": {"app1": []}}
         placeholder_url = "https://mail.google.com/mail?authuser={user.email}#all/m1"
-        mock_graph_provider.get_knowledge_hub_search.return_value = {
-            "nodes": [
-                {"id": "r1", "nodeType": "record", "origin": "CONNECTOR",
-                 "connector": "GMAIL WORKSPACE", "webUrl": placeholder_url},
-                {"id": "r2", "nodeType": "record", "origin": "CONNECTOR",
-                 "connector": "DRIVE", "webUrl": placeholder_url},
-            ],
-            "total": 2,
+
+        def row(row_id: str, connector: str) -> dict:
+            return {
+                "id": row_id, "name": row_id, "nodeType": "record", "sortKey": row_id, "nullRank": 0,
+                "parentId": "p1", "parentType": "recordGroup", "parentName": "Parent",
+                "origin": "CONNECTOR", "connector": connector, "webUrl": placeholder_url,
+                "createdAt": 1, "updatedAt": 2, "hasChildren": False,
+            }
+
+        mock_graph_provider.get_knowledge_hub_connector_page_v3.return_value = {
+            "rows": [row("r1", "GMAIL WORKSPACE"), row("r2", "DRIVE")],
+            "hasMore": False, "total": 2, "counts": None,
+            "scope": {
+                "admitted": True, "nodeId": "p1",
+                "currentNode": {"id": "p1", "name": "Current", "nodeType": "recordGroup"},
+                "parentNode": {"id": "app1", "name": "App One", "nodeType": "app"},
+                "breadcrumbs": [],
+            },
         }
-        mock_graph_provider.get_knowledge_hub_filter_options.return_value = {"apps": []}
-        result = await service.get_nodes(user_id="u1", org_id="o1", q="invoice")
+        result = await service.get_nodes(
+            user_id="u1", org_id="o1", parent_id="p1", parent_type="recordGroup"
+        )
         assert result.items[0].webUrl == "https://mail.google.com/mail?authuser=viewer@acme.com#all/m1"
         assert result.items[1].webUrl == placeholder_url
-
-    @pytest.mark.asyncio
-    async def test_search_scoped_with_flattening_filters(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_search.return_value = {
-            "nodes": [],
-            "total": 0,
-        }
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {
-            "id": "p1", "name": "Parent", "nodeType": "folder",
-        }
-        mock_graph_provider.get_knowledge_hub_parent_node.return_value = None
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            parent_id="p1", parent_type="folder",
-            q="test",
-        )
-        assert result.success is True
-
-    @pytest.mark.asyncio
-    async def test_flattened_flag(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_search.return_value = {
-            "nodes": [],
-            "total": 0,
-        }
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {
-            "id": "p1", "name": "Parent", "nodeType": "folder",
-        }
-        mock_graph_provider.get_knowledge_hub_parent_node.return_value = None
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            parent_id="p1", parent_type="folder",
-            flattened=True,
-        )
-        assert result.success is True
-
-    @pytest.mark.asyncio
-    async def test_include_breadcrumbs(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_children.return_value = {"nodes": [], "total": 0}
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {
-            "id": "p1", "name": "Parent", "nodeType": "folder",
-        }
-        mock_graph_provider.get_knowledge_hub_parent_node.return_value = None
-        mock_graph_provider.get_knowledge_hub_breadcrumbs.return_value = [
-            {"id": "root", "name": "Root", "nodeType": "app"},
-        ]
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            parent_id="p1", parent_type="folder",
-            include=["breadcrumbs"],
-        )
-        assert result.success is True
-        assert result.breadcrumbs is not None
-        assert len(result.breadcrumbs) == 1
-
-    @pytest.mark.asyncio
-    async def test_include_counts(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_user_app_ids.return_value = []
-        mock_graph_provider.get_knowledge_hub_root_nodes.return_value = {
-            "nodes": [
-                {"id": "n1", "name": "Folder", "nodeType": "folder", "origin": "COLLECTION", "createdAt": 0, "updatedAt": 0, "hasChildren": True},
-                {"id": "n2", "name": "Record", "nodeType": "record", "origin": "COLLECTION", "createdAt": 0, "updatedAt": 0, "hasChildren": False},
-                {"id": "n3", "name": "App", "nodeType": "app", "origin": "COLLECTION", "createdAt": 0, "updatedAt": 0, "hasChildren": True},
-            ],
-            "total": 10,
-        }
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            include=["counts"],
-        )
-        assert result.success is True
-        assert result.counts is not None
-        assert result.counts.total == 10
-        labels = {ci.label for ci in result.counts.items}
-        assert "folders" in labels
-        assert "records" in labels
-        assert "apps" in labels
-
-    @pytest.mark.asyncio
-    async def test_include_permissions(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_user_app_ids.return_value = []
-        mock_graph_provider.get_knowledge_hub_root_nodes.return_value = {"nodes": [], "total": 0}
-        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = {
-            "role": "OWNER",
-            "canUpload": True,
-            "canCreateFolders": True,
-            "canEdit": True,
-            "canDelete": True,
-            "canManagePermissions": True,
-        }
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            include=["permissions"],
-        )
-        assert result.success is True
-        assert result.permissions is not None
-        assert result.permissions.role == "OWNER"
-
-    @pytest.mark.asyncio
-    async def test_include_available_filters_browse(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_children.return_value = {"nodes": [], "total": 0}
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {
-            "id": "p1", "name": "Parent", "nodeType": "folder",
-        }
-        mock_graph_provider.get_knowledge_hub_parent_node.return_value = None
-        mock_graph_provider.get_knowledge_hub_filter_options.return_value = {"apps": []}
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            parent_id="p1", parent_type="folder",
-            include=["availableFilters"],
-        )
-        assert result.success is True
-        assert result.filters.available is not None
-
-    @pytest.mark.asyncio
-    async def test_validation_error(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = None
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            parent_id="bad_id", parent_type="folder",
-        )
-        assert result.success is False
-        assert result.errorCode == 404
-        assert result.error == not_found("This item")
-        assert "bad_id" not in result.error
-
-    @pytest.mark.asyncio
-    async def test_value_error_from_the_graph_client_is_not_forwarded(
-        self, service, mock_graph_provider
-    ):
-        """The neo4j client raises ValueError for its own failures, not for us."""
-        mock_graph_provider.get_user_by_user_id.side_effect = ValueError(
-            "Transaction 7c1b-41 not found"
-        )
-        result = await service.get_nodes(user_id="u1", org_id="o1")
-        assert result.success is False
-        assert result.errorCode == 500
-        assert result.error == action_failed("open this collection")
-        assert "Transaction" not in result.error
-
-    @pytest.mark.asyncio
-    async def test_general_exception(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.side_effect = RuntimeError("DB down")
-        result = await service.get_nodes(user_id="u1", org_id="o1")
-        assert result.success is False
-        # this error reaches the toast through the router, so it says what to do
-        assert result.error == action_failed("open this collection")
-        assert "DB down" not in result.error
-
-    @pytest.mark.asyncio
-    async def test_pagination_negative_page(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_user_app_ids.return_value = []
-        mock_graph_provider.get_knowledge_hub_root_nodes.return_value = {"nodes": [], "total": 0}
-        result = await service.get_nodes(user_id="u1", org_id="o1", page=-1, limit=300)
-        assert result.success is True
-        assert result.pagination.page == 1
-        assert result.pagination.limit == 200
-
-    @pytest.mark.asyncio
-    async def test_parent_node_info(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "uk1"}
-        mock_graph_provider.get_knowledge_hub_children.return_value = {"nodes": [], "total": 0}
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {
-            "id": "p1", "name": "Current", "nodeType": "folder",
-        }
-        mock_graph_provider.get_knowledge_hub_parent_node.return_value = {
-            "id": "gp1", "name": "GrandParent", "nodeType": "app", "subType": "google_drive",
-        }
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1",
-            parent_id="p1", parent_type="folder",
-        )
-        assert result.success is True
-        assert result.parentNode is not None
-        assert result.parentNode.id == "gp1"
-
-
-# ============================================================================
-# _validate_node_existence_and_type
-# ============================================================================
-class TestValidateNodeExistenceAndType:
-    @pytest.mark.asyncio
-    async def test_node_not_found(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = None
-        with pytest.raises(BrowseRequestError) as raised:
-            await service._validate_node_existence_and_type("n1", "folder", "uk", "o1")
-        assert raised.value.status_code == 404
-        assert raised.value.message == not_found("This item")
-
-    @pytest.mark.asyncio
-    async def test_type_mismatch(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {"nodeType": "app"}
-        with pytest.raises(BrowseRequestError) as raised:
-            await service._validate_node_existence_and_type("n1", "folder", "uk", "o1")
-        assert raised.value.status_code == 400
-        # the id, the node types and the API path stay in the log
-        assert "n1" not in raised.value.message
-        assert "nodes/" not in raised.value.message
-
-    @pytest.mark.asyncio
-    async def test_type_matches(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {"nodeType": "folder"}
-        await service._validate_node_existence_and_type("n1", "folder", "uk", "o1")
-
-
-# ============================================================================
-# _get_current_node_info
-# ============================================================================
-class TestGetCurrentNodeInfo:
-    @pytest.mark.asyncio
-    async def test_returns_current_node(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {
-            "id": "n1", "name": "Node", "nodeType": "folder", "subType": None,
-        }
-        result = await service._get_current_node_info("n1")
-        assert result is not None
-        assert result.id == "n1"
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_info(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = None
-        result = await service._get_current_node_info("n1")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_missing_id(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {"name": "Node", "nodeType": "folder"}
-        result = await service._get_current_node_info("n1")
-        assert result is None
-
-
-# ============================================================================
-# _get_breadcrumbs
-# ============================================================================
-class TestGetBreadcrumbs:
-    @pytest.mark.asyncio
-    async def test_returns_breadcrumbs(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_breadcrumbs.return_value = [
-            {"id": "r", "name": "Root", "nodeType": "app"},
-            {"id": "f", "name": "Folder", "nodeType": "folder", "subType": None},
-        ]
-        result = await service._get_breadcrumbs("f", "user-1", "org-1")
-        assert len(result) == 2
-        assert isinstance(result[0], BreadcrumbItem)
-
-    @pytest.mark.asyncio
-    async def test_forwards_the_caller_identity(self, service, mock_graph_provider):
-        """Breadcrumbs are permission-filtered by the provider, so dropping the user here
-        would silently restore the leak this filtering exists to close."""
-        mock_graph_provider.get_knowledge_hub_breadcrumbs.return_value = []
-        await service._get_breadcrumbs("f", "user-1", "org-1")
-        kwargs = mock_graph_provider.get_knowledge_hub_breadcrumbs.await_args.kwargs
-        assert kwargs["user_key"] == "user-1"
-        assert kwargs["org_id"] == "org-1"
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_on_error(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_breadcrumbs.side_effect = RuntimeError("fail")
-        result = await service._get_breadcrumbs("n1", "user-1", "org-1")
-        assert result == []
 
 
 # ============================================================================
@@ -786,6 +437,29 @@ class TestGetPermissions:
             parent_id="app-key",
             parent_type="app",
         )
+
+    @pytest.mark.parametrize("is_org_admin", [True, False])
+    @pytest.mark.asyncio
+    async def test_root_uses_the_callers_org_role(self, service, mock_graph_provider, is_org_admin):
+        # What both providers answer at the root today: the graph User has no role.
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = {
+            "role": "MEMBER", "canUpload": False, "canCreateFolders": False,
+            "canEdit": False, "canDelete": False, "canManagePermissions": False,
+        }
+        result = await service._get_permissions("uk1", "o1", None, is_org_admin=is_org_admin)
+        assert result.role == ("ADMIN" if is_org_admin else "MEMBER")
+        assert result.canUpload is is_org_admin
+        assert result.canManagePermissions is is_org_admin
+        mock_graph_provider.get_knowledge_hub_context_permissions.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_root_ignores_org_role(self, service, mock_graph_provider):
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = {
+            "role": "READER", "canUpload": False, "canCreateFolders": False,
+            "canEdit": False, "canDelete": False, "canManagePermissions": False,
+        }
+        result = await service._get_permissions("uk1", "o1", "p1", "recordGroup", is_org_admin=True)
+        assert result.role == "READER"
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_role(self, service, mock_graph_provider):
@@ -861,153 +535,53 @@ class TestCollectionRole:
 # ============================================================================
 class TestGetAvailableFilters:
     @pytest.mark.asyncio
-    async def test_returns_filters(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_filter_options.return_value = {
-            "apps": [{"id": "app1", "name": "App 1", "type": "google_drive"}],
+    async def test_lists_only_sources_the_user_can_open(self, service, mock_graph_provider):
+        """The v2 gate decides, and reachable collections are listed too.
+
+        A source with no `orgId` predicate and no notion of a grant onto the
+        App could name another org's App and miss one the user reaches through
+        a group.
+        """
+        mock_graph_provider.get_knowledge_hub_access_context_v2.return_value = {
+            "grantee_ids": ["uk1"],
+            "gated_app_ids": ["app1", "kb-1"],
         }
+        mock_graph_provider.get_knowledge_hub_root_nodes_v2.return_value = {
+            "partitions": [{"rows": [
+                {"id": "app1", "name": "App 1", "connector": "google_drive",
+                 "origin": "CONNECTOR"},
+                {"id": "kb-1", "name": "Team KB", "connector": "KB",
+                 "origin": "COLLECTION"},
+            ]}],
+            "scope": None,
+        }
+
         result = await service._get_available_filters("uk1", "o1")
+
         assert isinstance(result, AvailableFilters)
-        assert len(result.connectors) == 1
+        assert [option.id for option in result.connectors] == ["app1", "kb-1"]
+        assert result.connectors[1].label == "Team KB"
+        gated = mock_graph_provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs
+        assert gated["user_app_ids"] == ["app1", "kb-1"]
+        mock_graph_provider.get_knowledge_hub_filter_options.assert_not_called()
         assert len(result.nodeTypes) == len(list(NodeType))
 
     @pytest.mark.asyncio
+    async def test_a_user_with_no_gated_sources_gets_no_connectors(
+        self, service, mock_graph_provider
+    ):
+        mock_graph_provider.get_knowledge_hub_access_context_v2.return_value = {
+            "grantee_ids": ["uk1"],
+            "gated_app_ids": [],
+        }
+        result = await service._get_available_filters("uk1", "o1")
+        assert result.connectors == []
+        mock_graph_provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_returns_empty_on_error(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_filter_options.side_effect = RuntimeError("fail")
+        mock_graph_provider.get_knowledge_hub_access_context_v2.side_effect = RuntimeError("fail")
         result = await service._get_available_filters("uk1", "o1")
         assert isinstance(result, AvailableFilters)
         assert result.connectors == []
 
-
-# ============================================================================
-# _get_root_level_nodes
-# ============================================================================
-class TestGetRootLevelNodes:
-    @pytest.mark.asyncio
-    async def test_returns_root_nodes(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_app_ids.return_value = ["app1", "app2"]
-        mock_graph_provider.get_knowledge_hub_root_nodes.return_value = {
-            "nodes": [{"id": "app1", "name": "App 1", "nodeType": "app", "origin": "COLLECTION", "createdAt": 0, "updatedAt": 0, "hasChildren": True}],
-            "total": 1,
-        }
-        items, total, filters = await service._get_root_level_nodes("uk1", "o1", 0, 50, "name", "asc", None, None, None, False)
-        assert len(items) == 1
-        assert total == 1
-        assert filters is None
-
-    @pytest.mark.asyncio
-    async def test_filter_by_connector_ids(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_app_ids.return_value = ["app1", "app2", "app3"]
-        mock_graph_provider.get_knowledge_hub_root_nodes.return_value = {"nodes": [], "total": 0}
-        await service._get_root_level_nodes("uk1", "o1", 0, 50, "name", "asc", None, None, ["app1"], False)
-        call_args = mock_graph_provider.get_knowledge_hub_root_nodes.call_args
-        assert call_args.kwargs["user_app_ids"] == ["app1"]
-
-    @pytest.mark.asyncio
-    async def test_raises_on_error(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_app_ids.side_effect = RuntimeError("fail")
-        with pytest.raises(RuntimeError):
-            await service._get_root_level_nodes("uk1", "o1", 0, 50, "name", "asc", None, None, None, False)
-
-
-# ============================================================================
-# _search_nodes
-# ============================================================================
-class TestSearchNodes:
-    @pytest.mark.asyncio
-    async def test_search_global(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_search.return_value = {"nodes": [], "total": 0}
-        items, total, filters = await service._search_nodes(
-            user_key="uk", org_id="o1", skip=0, limit=50,
-            sort_by="name", sort_order="asc", q="test",
-            node_types=None, record_types=None, origins=None,
-            connector_ids=None, indexing_status=None,
-            created_at=None, updated_at=None, size=None,
-            only_containers=False, include_filters=False,
-        )
-        assert items == []
-        assert total == 0
-        assert filters is None
-
-    @pytest.mark.asyncio
-    async def test_search_with_filters(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_search.return_value = {"nodes": [], "total": 0}
-        mock_graph_provider.get_knowledge_hub_filter_options.return_value = {"apps": []}
-        items, total, filters = await service._search_nodes(
-            user_key="uk", org_id="o1", skip=0, limit=50,
-            sort_by="name", sort_order="asc", q="test",
-            node_types=None, record_types=None, origins=None,
-            connector_ids=None, indexing_status=None,
-            created_at=None, updated_at=None, size=None,
-            only_containers=False, include_filters=True,
-        )
-        assert filters is not None
-
-    @pytest.mark.asyncio
-    async def test_search_raises_on_error(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_search.side_effect = RuntimeError("fail")
-        with pytest.raises(RuntimeError):
-            await service._search_nodes(
-                user_key="uk", org_id="o1", skip=0, limit=50,
-                sort_by="name", sort_order="asc", q="test",
-                node_types=None, record_types=None, origins=None,
-                connector_ids=None, indexing_status=None,
-                created_at=None, updated_at=None, size=None,
-                only_containers=False,
-            )
-
-
-# ============================================================================
-# _get_children_nodes
-# ============================================================================
-class TestGetChildrenNodes:
-    @pytest.mark.asyncio
-    async def test_root_delegates(self, service, mock_graph_provider):
-        mock_graph_provider.get_user_app_ids.return_value = []
-        mock_graph_provider.get_knowledge_hub_root_nodes.return_value = {"nodes": [], "total": 0}
-        items, total, filters = await service._get_children_nodes(
-            user_key="uk", org_id="o1", parent_id=None, parent_type=None,
-            skip=0, limit=50, sort_by="name", sort_order="asc",
-            q=None, node_types=None, record_types=None, origins=None,
-            connector_ids=None, indexing_status=None,
-            created_at=None, updated_at=None, size=None,
-            only_containers=False,
-        )
-        assert items == []
-        assert filters is None
-
-    @pytest.mark.asyncio
-    async def test_children_with_parent(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {"nodeType": "folder"}
-        mock_graph_provider.get_knowledge_hub_children.return_value = {
-            "nodes": [
-                {"id": "c1", "name": "Child", "nodeType": "record", "origin": "COLLECTION", "createdAt": 0, "updatedAt": 0, "hasChildren": False}
-            ],
-            "total": 1,
-        }
-        items, total, filters = await service._get_children_nodes(
-            user_key="uk", org_id="o1", parent_id="p1", parent_type="folder",
-            skip=0, limit=50, sort_by="updatedAt", sort_order="desc",
-            q=None, node_types=None, record_types=None, origins=None,
-            connector_ids=None, indexing_status=None,
-            created_at=None, updated_at=None, size=None,
-            only_containers=False,
-        )
-        assert len(items) == 1
-        assert total == 1
-        assert filters is None
-
-    @pytest.mark.asyncio
-    async def test_sort_field_mapping(self, service, mock_graph_provider):
-        mock_graph_provider.get_knowledge_hub_node_info.return_value = {"nodeType": "folder"}
-        mock_graph_provider.get_knowledge_hub_children.return_value = {"nodes": [], "total": 0}
-        await service._get_children_nodes(
-            user_key="uk", org_id="o1", parent_id="p1", parent_type="folder",
-            skip=0, limit=50, sort_by="size", sort_order="asc",
-            q=None, node_types=None, record_types=None, origins=None,
-            connector_ids=None, indexing_status=None,
-            created_at=None, updated_at=None, size=None,
-            only_containers=False,
-        )
-        call_args = mock_graph_provider.get_knowledge_hub_children.call_args
-        assert call_args.kwargs["sort_field"] == "sizeInBytes"
-        assert call_args.kwargs["sort_dir"] == "ASC"

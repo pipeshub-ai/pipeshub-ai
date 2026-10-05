@@ -205,7 +205,7 @@ class FakeDataStore:
         self.db = db
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[FakeDataStore]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator[FakeDataStore]:
         yield self
 
     async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any]) -> list[dict[str, Any]]:

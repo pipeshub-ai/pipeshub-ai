@@ -1366,7 +1366,9 @@ class AzureBlobConnector(BaseConnector):
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
             extension = get_file_extension(normalized_name) if is_file else None
-            mime_type = blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name))
 
             parent_path = get_parent_path_from_blob_name(normalized_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
@@ -1829,7 +1831,9 @@ class AzureBlobConnector(BaseConnector):
             is_file = not is_folder
 
             extension = get_file_extension(blob_name) if is_file else None
-            mime_type = blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name))
 
             parent_path = get_parent_path_from_blob_name(blob_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
