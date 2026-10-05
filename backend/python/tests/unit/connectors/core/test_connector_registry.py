@@ -1851,7 +1851,7 @@ class TestCreateConnectorInstanceDeep:
 
 
 class _FilteringGraphProvider:
-    """Filters and pages connector documents the way the graph query does."""
+    """Filters, sorts and pages connector documents the way the graph query does."""
 
     def __init__(self, documents: list[dict]) -> None:
         self.documents = documents
@@ -1863,13 +1863,18 @@ class _FilteringGraphProvider:
         limit: int = 20,
         is_configured: bool | None = None,
         is_agent_active: bool | None = None,
+        allowed_connector_types: list[str] | None = None,
         **_: object,
     ) -> tuple[list[dict], int]:
         matching = [
             d for d in self.documents
             if (is_configured is None or bool(d.get("isConfigured")) == is_configured)
             and (is_agent_active is None or bool(d.get("isAgentActive")) == is_agent_active)
+            and (allowed_connector_types is None or d.get("type") in allowed_connector_types)
         ]
+        # ORDER BY createdAtTimestamp DESC, then the id, so ties keep one order.
+        matching.sort(key=lambda d: d["_key"])
+        matching.sort(key=lambda d: d.get("createdAtTimestamp", 0), reverse=True)
         return matching[skip:skip + limit], len(matching)
 
 
@@ -1935,6 +1940,24 @@ class TestGetConfiguredConnectorInstances:
         assert result["pagination"]["totalPages"] == 3
         assert result["pagination"]["hasNext"] is True
         assert result["pagination"]["nextPage"] == 3
+
+    @pytest.mark.asyncio
+    async def test_unregistered_types_are_left_out_of_the_page_and_the_total(self) -> None:
+        unregistered = [
+            {"_key": f"u{i}", "type": "Retired Connector", "name": f"Retired {i}", "isConfigured": True}
+            for i in range(15)
+        ]
+        registry = _registry_over(unregistered + _MIXED_CONNECTORS)
+
+        result = await registry.get_configured_connector_instances(
+            "user-1", "org-1", is_admin=True, page=1, limit=10, search=None
+        )
+
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in range(0, 20, 2)
+        ]
+        assert result["pagination"]["totalCount"] == 25
+        assert result["pagination"]["totalPages"] == 3
 
     @pytest.mark.asyncio
     async def test_last_page_ends_the_list(self) -> None:

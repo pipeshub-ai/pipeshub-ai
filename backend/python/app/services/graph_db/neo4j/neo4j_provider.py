@@ -15278,6 +15278,7 @@ class Neo4jProvider(IGraphDBProvider):
         connector_type_filter: str | None = None,
         is_configured: bool | None = None,
         is_agent_active: bool | None = None,
+        allowed_connector_types: list[str] | None = None,
         transaction: str | None = None,
     ) -> tuple[list[dict], int]:
         """Get filtered connector instances with pagination."""
@@ -15353,6 +15354,10 @@ class Neo4jProvider(IGraphDBProvider):
                 conditions.append("coalesce(doc.isAgentActive, false) = $is_agent_active")
                 params["is_agent_active"] = is_agent_active
 
+            if allowed_connector_types is not None:
+                conditions.append("doc.type IN $allowed_connector_types")
+                params["allowed_connector_types"] = allowed_connector_types
+
             where_clause = " AND ".join(conditions)
 
             # Count query
@@ -15369,6 +15374,7 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (doc:{label})
             WHERE {where_clause}
             RETURN doc
+            ORDER BY doc.createdAtTimestamp DESC, doc.id
             SKIP $skip
             LIMIT $limit
             """

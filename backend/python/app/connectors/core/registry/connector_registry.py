@@ -1084,6 +1084,7 @@ class ConnectorRegistry:
                 connector_type_filter=connector_type,
                 is_configured=is_configured,
                 is_agent_active=is_agent_active,
+                allowed_connector_types=list(self._connectors),
             )
 
             connector_instances = []

@@ -1637,6 +1637,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_type_filter: str | None = None,
         is_configured: bool | None = None,
         is_agent_active: bool | None = None,
+        allowed_connector_types: list[str] | None = None,
         transaction: str | None = None,
     ) -> tuple[list[dict], int]:
         """Get filtered connector instances with pagination."""
@@ -1715,13 +1716,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query += " FILTER (doc.isAgentActive == true) == @is_agent_active\n"
                 bind_vars["is_agent_active"] = is_agent_active
 
+            if allowed_connector_types is not None:
+                query += " FILTER doc.type IN @allowed_connector_types\n"
+                bind_vars["allowed_connector_types"] = allowed_connector_types
+
             # Count query
             count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
             count_result = await self.execute_query(count_query, bind_vars=bind_vars, transaction=transaction)
             total_count = count_result[0] if count_result else 0
 
             # Main query with pagination
-            query += " LIMIT @skip, @limit\n RETURN doc"
+            query += " SORT doc.createdAtTimestamp DESC, doc._key\n LIMIT @skip, @limit\n RETURN doc"
             bind_vars["skip"] = skip
             bind_vars["limit"] = limit
 

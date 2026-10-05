@@ -4728,6 +4728,7 @@ class IGraphDBProvider(ABC):
         connector_type_filter: str | None = None,
         is_configured: bool | None = None,
         is_agent_active: bool | None = None,
+        allowed_connector_types: list[str] | None = None,
         transaction: str | None = None,
     ) -> tuple[list[dict], int]:
         """
@@ -4753,6 +4754,8 @@ class IGraphDBProvider(ABC):
             connector_type_filter: Optional exact match on connector type field
             is_configured: Optional filter on isConfigured field
             is_agent_active: Optional filter on isAgentActive field
+            allowed_connector_types: When set, only connectors whose type is in
+                this list are counted and returned
             transaction: Optional transaction ID
 
         Returns:

@@ -4032,6 +4032,33 @@ class TestNeo4jGetFilteredConnectorInstances:
             assert params["is_configured"] is True
             assert params["is_agent_active"] is True
 
+    @pytest.mark.asyncio
+    async def test_only_the_page_query_is_sorted_with_a_tie_break(self, neo4j_provider: Neo4jProvider) -> None:
+        """Pages are a stable slice; the count needs no order."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 0}], []])
+
+        await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", skip=20, limit=10,
+        )
+
+        count_call, page_call = neo4j_provider.client.execute_query.await_args_list
+        assert "ORDER BY doc.createdAtTimestamp DESC, doc.id" not in count_call.args[0]
+        assert "ORDER BY doc.createdAtTimestamp DESC, doc.id" in page_call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_registered_types_limit_both_the_count_and_the_page(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 0}], []])
+
+        await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", allowed_connector_types=["Gmail", "Slack"],
+        )
+
+        for call in neo4j_provider.client.execute_query.await_args_list:
+            assert "doc.type IN $allowed_connector_types" in call.args[0]
+            assert call.kwargs["parameters"]["allowed_connector_types"] == ["Gmail", "Slack"]
+
 
 # ---------------------------------------------------------------------------
 # _get_user_accessible_team_app_ids (Neo4j)
