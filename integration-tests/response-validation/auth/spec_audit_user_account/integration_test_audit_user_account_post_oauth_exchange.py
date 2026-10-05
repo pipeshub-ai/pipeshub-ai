@@ -42,15 +42,19 @@ def test_fake_code_is_bad_request_without_a_session(
     assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
 
 
-def test_malformed_json_body_is_internal_error(
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: malformed JSON body answers 500 INTERNAL_ERROR instead of 400",
+)
+def test_malformed_json_body_is_bad_request(
     user_account_audit_client: UserAccountAuditClient,
 ) -> None:
-    # express.json() raises a SyntaxError, which is not a BaseError, so the
-    # error middleware answers 500 rather than body-parser's own 400.
+    # express.json() raises a SyntaxError (status 400), which is not a BaseError,
+    # so the error middleware answers 500 rather than body-parser's own 400.
     resp = user_account_audit_client.oauth_exchange(
         data='{"code": "spec-audit", "provider": ',
         headers={"Content-Type": "application/json"},
     )
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
-    assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
