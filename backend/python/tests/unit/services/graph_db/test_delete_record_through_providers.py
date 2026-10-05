@@ -17,6 +17,10 @@ import app.connectors.api.router as router_mod
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
 from app.config.constants.arangodb import GraphNames
 from app.connectors.api.router import delete_record
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -49,6 +53,9 @@ CHAT_ATTACHMENT = _record(origin="UPLOAD", connectorName="ATTACHMENTS", connecto
 DRIVE_FILE = _record(origin="CONNECTOR", connectorName="DRIVE", connectorId="conn-1")
 GMAIL_MAIL = _record(origin="CONNECTOR", connectorName="GMAIL", recordType="MAIL", connectorId="conn-1")
 OUTLOOK_MAIL = _record(origin="CONNECTOR", connectorName="OUTLOOK", recordType="MAIL", connectorId="conn-1")
+OUTLOOK_PERSONAL_MAIL = _record(
+    origin="CONNECTOR", connectorName="OUTLOOK PERSONAL", recordType="MAIL", connectorId="conn-1"
+)
 LOCAL_FS_FILE = _record(origin="CONNECTOR", connectorName="LOCAL_FS", connectorId="conn-1")
 CONFLUENCE_PAGE = _record(origin="CONNECTOR", connectorName="CONFLUENCE", recordType="WEBPAGE", connectorId="conn-1")
 JIRA_TICKET = _record(origin="CONNECTOR", connectorName="JIRA", recordType="TICKET", connectorId="conn-1")
@@ -63,10 +70,48 @@ KB_CONTEXT = {"kb_id": "kb-1", "kb_name": "Handbook", "org_id": ORG_A}
 class _Neo4jDriver:
     def __init__(self, record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> None:
         self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
+        self.attachments: dict[str, dict] = {}
+        # attachment id -> the record its ATTACHMENT edge comes from (RECORD_ID unless set)
+        self.attachment_parents: dict[str, str] = {}
+        self.fail_reading: str | None = None
+        self.fail_deleting: str | None = None
+        # Each statement commits on its own, as with NEO4J_EXPLICIT_TRANSACTIONS off.
+        self.deleted: set[str] = set()
+        self.transactions: list[tuple[str, str]] = []
         self.statements: list[tuple[str, dict]] = []
+
+    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+        self.transactions.append(("begin", "txn-1"))
+        return "txn-1"
+
+    async def commit_transaction(self, txn_id: str) -> None:
+        self.transactions.append(("commit", txn_id))
+
+    async def abort_transaction(self, txn_id: str) -> None:
+        self.transactions.append(("abort", txn_id))
 
     async def execute_query(self, query: str, parameters: dict | None = None, txn_id: str | None = None) -> list:
         self.statements.append((query, parameters or {}))
+        parameters = parameters or {}
+        if "DETACH DELETE" in query:
+            keys = set(parameters.get("record_ids") or []) | {parameters.get("record_key")} - {None}
+            if self.fail_deleting in keys:
+                raise RuntimeError("lock wait timeout")
+            self.deleted |= keys
+            return []
+        if "relationshipType = 'ATTACHMENT'" in query:
+            # Filters only on what the query names, as the database would.
+            by_parent = "(:Record {id: $record_id})-[e:RECORD_RELATION]->(a:Record)" in query
+            by_org = "a.orgId = $org_id" in query
+            return [
+                {"id": key} for key, a in self.attachments.items()
+                if (not by_parent or self.attachment_parents.get(key, RECORD_ID) == parameters.get("record_id"))
+                and (not by_org or a.get("orgId") == parameters.get("org_id"))
+            ]
+        if parameters.get("key") in self.attachments and "DELETE" not in query:
+            if parameters["key"] == self.fail_reading:
+                raise RuntimeError("connection reset")
+            return [{"n": {"id": parameters["key"], **self.attachments[parameters["key"]]}}] if "n:Record" in query else []
         if "MATCH (u:User {userId: $user_id})" in query:
             return [{"u": dict(USER)}]
         if "RETURN allAccess" in query:
@@ -90,6 +135,7 @@ class _Neo4jDriver:
 class _ArangoDriver:
     def __init__(self, record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> None:
         self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
+        self.record_role: str | None = None
         self.statements: list[tuple[str, dict]] = []
 
     async def get_document(self, collection: str, key: str, txn_id: str | None = None, **_: Any) -> dict | None:
@@ -109,6 +155,8 @@ class _ArangoDriver:
             return [self.kb_context]
         if "all_roles" in query:
             return [self.kb_role]
+        if "RETURN edge.role" in query:
+            return [self.record_role] if self.record_role else []
         return []
 
     async def get_graph(self, graph_name: str) -> dict | None:
@@ -383,6 +431,142 @@ async def test_neo4j_sync_delete_by_external_id_still_removes_a_synced_record() 
     assert any("DETACH DELETE" in q for q in driver.destructive)
 
 
+def _attachment(connector_name: str = "OUTLOOK", **fields: str | None) -> dict:
+    return _record(origin="CONNECTOR", connectorName=connector_name, connectorId="conn-1", **fields)
+
+
+def _deleted_keys(driver: _Neo4jDriver) -> set[str]:
+    return driver.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mail", [OUTLOOK_MAIL, OUTLOOK_PERSONAL_MAIL, GMAIL_MAIL], ids=["outlook", "outlook-personal", "gmail"]
+)
+async def test_neo4j_mail_delete_removes_its_attachments_with_their_cleanup(mail: dict) -> None:
+    provider, driver = _neo4j(mail, None, None, None)
+    connector = mail["connectorName"]
+    driver.attachments = {
+        "att-1": _attachment(
+            connector, recordName="tickets.pdf", virtualRecordId="vr-att-1", summaryDocumentId="sum-att-1"
+        ),
+        "att-2": _attachment(connector, recordName="logo.png", virtualRecordId=None),
+    }
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(mail))
+
+    result = await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert result["success"] is True
+    assert _deleted_keys(driver) == {RECORD_ID, "att-1", "att-2"}
+    assert result["attachments_deleted"] == 2
+    payloads = result["eventData"]["payloads"]
+    assert [p["virtualRecordId"] for p in payloads] == ["vr-1", "vr-att-1"]
+    assert payloads[1]["recordId"] == "att-1"
+    assert payloads[1]["summaryDocumentId"] == "sum-att-1"
+    assert payloads[1]["connectorName"] == connector
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_leaves_another_mails_attachment() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    driver.attachments = {
+        "att-1": _attachment(virtualRecordId="vr-att-1"),
+        "att-sibling": _attachment(virtualRecordId="vr-att-sibling"),
+    }
+    driver.attachment_parents = {"att-sibling": "other-mail"}
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+
+    result = await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert _deleted_keys(driver) == {RECORD_ID, "att-1"}
+    assert [p["virtualRecordId"] for p in result["eventData"]["payloads"]] == ["vr-1", "vr-att-1"]
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_leaves_an_attachment_from_another_org() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    driver.attachments = {"att-b": _attachment(orgId=ORG_B, virtualRecordId="vr-att-b")}
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+
+    result = await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert _deleted_keys(driver) == {RECORD_ID}
+    assert [p["virtualRecordId"] for p in result["eventData"]["payloads"]] == ["vr-1"]
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_deletes_nothing_when_an_attachment_cannot_be_read() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    driver.attachments = {"att-1": _attachment(virtualRecordId="vr-att-1")}
+    driver.fail_reading = "att-1"
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+
+    with pytest.raises(Exception, match="Deletion failed"):
+        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert driver.destructive == []
+
+
+def _two_attachments_the_second_failing(driver: _Neo4jDriver) -> None:
+    driver.attachments = {
+        "att-1": _attachment(virtualRecordId="vr-att-1"),
+        "att-2": _attachment(virtualRecordId="vr-att-2"),
+    }
+    driver.fail_deleting = "att-2"
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_that_fails_part_way_deletes_nothing_and_raises() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    _two_attachments_the_second_failing(driver)
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+
+    with pytest.raises(Exception, match="Deletion failed"):
+        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a", transaction="txn-1")
+
+    assert driver.deleted == set()
+
+
+@pytest.mark.asyncio
+async def test_neo4j_mail_delete_without_a_transaction_that_fails_part_way_deletes_nothing() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    _two_attachments_the_second_failing(driver)
+
+    result = await provider.delete_record(RECORD_ID, "user-a", ORG_A)
+
+    assert result["success"] is False
+    assert driver.deleted == set()
+
+
+@pytest.mark.asyncio
+async def test_connector_mail_delete_that_fails_part_way_rolls_back_and_publishes_nothing() -> None:
+    provider, driver = _neo4j(OUTLOOK_MAIL, None, None, None)
+    _two_attachments_the_second_failing(driver)
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_MAIL))
+    processor = DataSourceEntitiesProcessor(MagicMock(), GraphDataStore(MagicMock(), provider), MagicMock())
+    processor.messaging_producer = AsyncMock()
+
+    with pytest.raises(Exception, match="Deletion failed"):
+        await processor.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert driver.transactions == [("begin", "txn-1"), ("abort", "txn-1")]
+    assert driver.deleted == set()
+    processor.messaging_producer.send_message.assert_not_awaited()
+    processor.messaging_producer.send_messages.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_neo4j_kb_delete_refused_for_a_reader_leaves_attachments_in_place() -> None:
+    provider, driver = _neo4j(KB_FILE, None, KB_CONTEXT, "READER")
+    driver.attachments = {"att-1": _attachment(virtualRecordId="vr-att-1")}
+
+    result = await provider.delete_record(RECORD_ID, "user-a", ORG_A)
+
+    assert result["code"] == 403
+    assert driver.destructive == []
+    assert not any("ATTACHMENT" in q for q, _ in driver.statements)
+
+
 @pytest.mark.asyncio
 async def test_arango_sync_delete_by_external_id_reaches_the_outlook_branch() -> None:
     provider, _ = _arango(OUTLOOK_MAIL, None, None, None)
@@ -392,6 +576,34 @@ async def test_arango_sync_delete_by_external_id_reaches_the_outlook_branch() ->
     await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
 
     provider.delete_outlook_record.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mail", [OUTLOOK_MAIL, OUTLOOK_PERSONAL_MAIL], ids=["outlook", "outlook-personal"])
+async def test_arango_sync_delete_by_external_id_removes_the_mailbox_owners_mail(mail: dict) -> None:
+    provider, driver = _arango(mail, None, None, None)
+    driver.record_role = "OWNER"
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(mail))
+
+    result = await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert result["success"] is True
+    assert result["connector"] == mail["connectorName"]
+    assert result["eventData"]["payload"]["connectorName"] == mail["connectorName"]
+    assert result["eventData"]["payload"]["virtualRecordId"] == "vr-1"
+    assert driver.destructive
+
+
+@pytest.mark.asyncio
+async def test_arango_sync_delete_of_an_outlook_personal_mail_still_needs_the_mailbox_owner() -> None:
+    provider, driver = _arango(OUTLOOK_PERSONAL_MAIL, None, None, None)
+    driver.record_role = "READER"
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_PERSONAL_MAIL))
+
+    with pytest.raises(Exception, match="Only mailbox owner can delete emails"):
+        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert driver.destructive == []
 
 
 @pytest.mark.asyncio
