@@ -716,8 +716,9 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
         except Exception:
             continue  # TLS error, connection reset -> next profile, from the start of the chain
         finally:
-            # Off the event loop, as before: freeing curl's handle is a call into libcurl.
-            loop.run_in_executor(_FETCH_THREADS, busy.close_when_idle)
+            # Off the event loop, as freeing curl's handle is a call into libcurl. Not on the fetch
+            # threads: they may be the ones that are all busy, and the guard never waits.
+            loop.run_in_executor(None, busy.close_when_idle)
     logger.warning(f"⚠️ [curl_cffi(h2=True)] All profiles exhausted for {walk.url}")
     return None
 
@@ -771,7 +772,7 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
         logger.warning(f"⚠️ [cloudscraper] Failed for {walk.url}")
         return None
     finally:
-        asyncio.get_running_loop().run_in_executor(_FETCH_THREADS, busy.close_when_idle)
+        asyncio.get_running_loop().run_in_executor(None, busy.close_when_idle)
 
 
 # ---------------------------------------------------------------------------

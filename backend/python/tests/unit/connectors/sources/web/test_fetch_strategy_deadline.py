@@ -617,3 +617,63 @@ async def test_a_page_goes_to_aiohttp_once_no_fetch_thread_comes_free(
     assert cap < elapsed < 3 * cap
     assert len(trickle.agents) == 1 and "aiohttp" in trickle.agents[0]
     assert caplog.text.count("Gave up waiting for a thread to fetch") == 1
+
+
+class _ClosingSession:
+    """A curl_cffi Session or cloudscraper scraper stand-in that only records being closed."""
+
+    def __init__(self) -> None:
+        from requests.adapters import HTTPAdapter
+
+        self.closed = threading.Event()
+        self.curl_options: dict = {}
+        self.adapters = {"https://": HTTPAdapter()}
+
+    def mount(self, prefix: str, adapter: object) -> None:
+        self.adapters[prefix] = adapter
+
+    def get(self, url: str, **kwargs: object) -> object:
+        raise AssertionError("no request should have been sent")
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+@pytest.mark.parametrize("strategy", ["curl_cffi", "cloudscraper"])
+async def test_sessions_of_pages_that_found_no_free_thread_are_closed_at_once(
+    strategy: str, one_fetch_thread: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    import curl_cffi.requests
+
+    sessions: list[_ClosingSession] = []
+
+    def new_session(**_: object) -> _ClosingSession:
+        sessions.append(_ClosingSession())
+        return sessions[-1]
+
+    monkeypatch.setattr(curl_cffi.requests, "Session", new_session)
+    monkeypatch.setitem(sys.modules, "cloudscraper", SimpleNamespace(create_scraper=new_session))
+    monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", ["chrome"])
+    monkeypatch.setattr(fetch_strategy, "_max_queue_wait", lambda timeout: 0.3, raising=False)
+    _resolve_to(monkeypatch, PublicTarget(
+        scheme="http", host="site.test", port=80, addresses=(ipaddress.ip_address("93.184.215.14"),),
+    ))
+    hops = fetch_strategy._hops_curl_cffi if strategy == "curl_cffi" else fetch_strategy._hops_cloudscraper
+    held = threading.Event()
+    one_fetch_thread.submit(held.wait, 30)
+
+    try:
+        for page in range(3):
+            with pytest.raises(fetch_strategy.FetchPoolBusy):
+                await asyncio.wait_for(
+                    hops(_walk(f"http://site.test/{page}"), 5, logging.getLogger("test_deadline")), 10,
+                )
+        # The only fetch thread is still held: the closes must not need it.
+        for session in sessions:
+            assert await asyncio.to_thread(session.closed.wait, 3), "a session waited for a fetch thread"
+        assert len(sessions) == 3
+    finally:
+        held.set()
