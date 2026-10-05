@@ -553,8 +553,26 @@ export class CrawlingSchedulerService {
       }
     }
 
+    // One type's failure must not leave the others' schedules running.
+    const notRemoved: string[] = [];
     for (const connector of connectorTypes) {
-      await this.removeJob(connector, connectorId, orgId);
+      try {
+        await this.removeJob(connector, connectorId, orgId);
+      } catch (error) {
+        notRemoved.push(connector);
+        this.logger.warn('Could not remove a schedule of a deleted connector', {
+          connector,
+          connectorId,
+          orgId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+    if (notRemoved.length > 0) {
+      throw new InternalServerError(SCHEDULE_NOT_REMOVED_MESSAGE, {
+        connectorId,
+        connectorTypes: notRemoved,
+      });
     }
   }
 

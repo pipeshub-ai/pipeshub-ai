@@ -34897,9 +34897,14 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: The caller is neither the connector's creator nor an admin
+          description: |
+            An OAuth or personal access token without the `connector:delete`
+            scope, or a beta connector while beta connectors are turned off.
         '404':
-          description: Connector not found
+          description: |
+            The connector doesn't exist, or the caller is neither its creator
+            nor an admin. The two answers are the same, so the route doesn't
+            reveal connectors the caller can't delete.
         '409':
           description: |
             A deletion is already in progress, a sync is running, or an agent

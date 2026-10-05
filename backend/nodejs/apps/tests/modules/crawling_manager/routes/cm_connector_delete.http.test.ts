@@ -96,6 +96,28 @@ describe('Deleting a connector clears its sync schedule', () => {
     expect(store.repeatables.size).to.equal(2)
   })
 
+  it('still removes the other schedules when one of them cannot be removed, and the delete still answers', async () => {
+    await scheduler.scheduleJob('Slack', 'drive-1', EVERY_HOUR, ORG_A, ADMIN._id)
+    const removeJob = scheduler.removeJob.bind(scheduler)
+    const attempted: string[] = []
+    sinon.stub(scheduler, 'removeJob').callsFake(async (connector: string, connectorId: string, orgId: string) => {
+      attempted.push(connector)
+      if (connector === TYPE) throw new Error('redis timed out')
+      return removeJob(connector, connectorId, orgId)
+    })
+    h.backend.on('DELETE', '/api/v1/connectors/drive-1', { status: 202, body: { success: true } })
+
+    expect((await call(h, 'DELETE', '/drive-1', sessionToken(h, ADMIN))).status).to.equal(202)
+
+    await until(() => attempted.length === 2, 'both schedules were tried')
+    await until(
+      () => !schedulesFor('drive-1').some((j) => j.data.connector === 'Slack'),
+      'the Slack schedule is removed',
+    )
+    expect(attempted[0]).to.equal(TYPE)
+    expect(schedulesFor('drive-1').map((j) => j.data.connector)).to.deep.equal([TYPE])
+  })
+
   describe("when an admin deletes a member's personal connector", () => {
     // The connector service shows a personal connector's config only to its
     // creator, so the admin's read of it is refused.
