@@ -41,7 +41,7 @@ def test_get_without_valid_token_is_unauthorized(
 def test_get_without_sse_accept_is_not_acceptable(
     mcp_endpoint_client: McpEndpointClient,
 ) -> None:
-    # The route comment and the spec promise 405; the stateless transport answers 406 instead.
+    # The transport checks Accept before anything else.
     resp = mcp_endpoint_client.get_root(accept=JSON_MEDIA_TYPE)
     assert resp.status_code == 406, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
@@ -71,13 +71,15 @@ def test_get_with_unsupported_protocol_version_is_bad_request(
     )
 
 
-def test_get_accepting_sse_opens_idle_stream(
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: stateless GET /mcp opens an SSE stream that can never carry an event "
+    "instead of the 405 its route documents",
+)
+def test_get_accepting_sse_is_method_not_allowed_in_stateless_mode(
     mcp_endpoint_client: McpEndpointClient,
 ) -> None:
+    # mcp.routes.ts documents 405 for the stateless transport; the SDK answers 200 and holds an idle stream.
     resp = mcp_endpoint_client.open_stream()
-    assert resp.status_code == 200, resp.text[:500]
-    assert resp.headers["Content-Type"].split(";")[0].strip() == SSE_MEDIA_TYPE
-    # Stateless transport: no session is ever issued, and nothing is pushed on the standalone stream.
-    assert "mcp-session-id" not in resp.headers
-    assert resp.content == b""
+    assert resp.status_code == 405, f"{resp.status_code} {resp.headers.get('Content-Type')} {resp.text[:500]}"
     assert_strict_openapi_response(resp, ROUTE)
