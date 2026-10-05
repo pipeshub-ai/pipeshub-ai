@@ -198,11 +198,14 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.services.graph_db.taxonomy import (
+    CATEGORY_HIERARCHY_PARENTS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     check_edge_move,
     check_edge_move_target,
+    global_department_key,
+    hierarchy_edge_key,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -993,13 +996,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Initialize departments collection with predefined department types if missing."""
         try:
             existing = await self.execute_query(
-                f"FOR d IN {CollectionNames.DEPARTMENTS.value} RETURN d.departmentName",
+                # Only global ones: an org's own department of the same name
+                # must not stop the global one being seeded.
+                f"FOR d IN {CollectionNames.DEPARTMENTS.value} FILTER d.orgId == null RETURN d.departmentName",
                 {},
             )
             existing_names = set() if not existing else {r for r in existing if r is not None}
 
             new_departments = [
-                {"id": str(uuid.uuid4()), "departmentName": dept.value, "orgId": None}
+                {"id": global_department_key(dept.value), "departmentName": dept.value, "orgId": None}
                 for dept in DepartmentNames
                 if dept.value not in existing_names
             ]
@@ -1051,6 +1056,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         indexing updating the same record. A stream transaction rolls back
         whole, so the block can be re-run."""
         return isinstance(error, Exception) and _is_write_conflict(error)
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return self.is_transient_error(error)
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -3163,7 +3171,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes by field filters - FULLY ASYNC.
@@ -3201,6 +3211,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_nodes_by_field_in(
@@ -3374,7 +3386,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -3411,6 +3425,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get edges from node with target name failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_related_nodes(
@@ -18475,6 +18491,45 @@ class ArangoHTTPProvider(IGraphDBProvider):
             raise RuntimeError(
                 f"create_taxonomy_node_if_absent failed for {collection}/{doc.get('_key')}"
             )
+
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.ensure_taxonomy_hierarchy_edge`.
+
+        An existing edge (older ones have random keys) is kept; otherwise the
+        edge is inserted under a deterministic key, so two writers that both
+        found none collide on one key instead of leaving two edges.
+        """
+        parent_collection = CATEGORY_HIERARCHY_PARENTS.get(child_collection)
+        if parent_collection is None:
+            raise ValueError(f"{child_collection!r} is not a subcategory level")
+        edges = CollectionNames.INTER_CATEGORY_RELATIONS.value
+        query = f"""
+            LET existing = FIRST(
+                FOR e IN {edges}
+                    FILTER e._from == @from AND e._to == @to
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER existing == null
+            INSERT {{_key: @key, _from: @from, _to: @to, createdAtTimestamp: @now}}
+                INTO {edges} OPTIONS {{overwriteMode: "ignore"}}
+        """
+        bind_vars = {
+            "key": hierarchy_edge_key(child_key, parent_key),
+            "from": f"{child_collection}/{child_key}",
+            "to": f"{parent_collection}/{parent_key}",
+            "now": get_epoch_timestamp_in_ms(),
+        }
+
+        async def _insert() -> None:
+            await self.execute_query(query, bind_vars=bind_vars)
+
+        await self._retry_write_conflicts(_insert, transaction=None)
 
     async def add_taxonomy_aliases(
         self,

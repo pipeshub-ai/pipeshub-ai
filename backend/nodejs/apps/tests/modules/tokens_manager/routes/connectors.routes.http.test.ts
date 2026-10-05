@@ -239,7 +239,7 @@ describe('Connector routes over HTTP', () => {
 
     it('uses a generic "in progress" message for any other lock', async () => {
       h.backend.on('GET', '/api/v1/connectors/active', activeWith(CONNECTOR_ID))
-      h.backend.on('GET', `/api/v1/connectors/${CONNECTOR_ID}`, instance({ isLocked: true, status: 'DELETING' }))
+      h.backend.on('GET', `/api/v1/connectors/${CONNECTOR_ID}`, instance({ isLocked: true, status: 'IDLE' }))
 
       const r = await call(h, 'POST', `/${CONNECTOR_ID}/resync`, sessionToken(h, member), {
         connectorName: 'Google Drive',
@@ -247,6 +247,19 @@ describe('Connector routes over HTTP', () => {
 
       expect(r.status).to.equal(409)
       expect(errorMessage(r)).to.equal('Another operation is in progress. Please wait and try again.')
+    })
+
+    it('says the connector is being deleted, locked or not', async () => {
+      h.backend.on('GET', '/api/v1/connectors/active', activeWith(CONNECTOR_ID))
+      h.backend.on('GET', `/api/v1/connectors/${CONNECTOR_ID}`, instance({ isLocked: false, status: 'DELETING' }))
+
+      const r = await call(h, 'POST', `/${CONNECTOR_ID}/resync`, sessionToken(h, member), {
+        connectorName: 'Google Drive',
+      })
+
+      expect(r.status).to.equal(409)
+      expect(errorMessage(r)).to.equal('This connector is being deleted.')
+      expect(h.syncEvents.published).to.have.length(0)
     })
 
     it('does not publish when the connector state cannot be read', async () => {

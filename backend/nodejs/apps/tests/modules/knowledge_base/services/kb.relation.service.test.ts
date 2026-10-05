@@ -791,4 +791,48 @@ describe('RecordRelationService - additional coverage', () => {
       expect(event.eventType).to.include('.resync')
     })
   })
+
+  describe('resync event type derivation', () => {
+    /**
+     * Node and Python must agree on this string or the event is published to a
+     * type nobody consumes. Python uses str.replace, which strips EVERY space;
+     * JavaScript's replace with a string pattern strips only the first, so a
+     * three-word type produced "confluencedata center.resync" and resync was
+     * silently dead for Confluence Data Center and Jira Data Center.
+     */
+    const publishedTypeFor = async (connectorName: string): Promise<string> => {
+      mockSyncEventProducer.publishEvent.resetHistory()
+      const service = new RecordRelationService(
+        mockEventProducer,
+        mockSyncEventProducer,
+        mockDefaultConfig,
+      )
+      await service.resyncConnectorRecords({
+        connectorName,
+        connectorId: 'conn-1',
+        orgId: 'org-1',
+        origin: 'CONNECTOR',
+        fullSync: false,
+      })
+      return mockSyncEventProducer.publishEvent.firstCall.args[0].eventType
+    }
+
+    it('strips every space, not just the first', async () => {
+      expect(await publishedTypeFor('Confluence Data Center')).to.equal('confluencedatacenter.resync')
+      expect(await publishedTypeFor('Jira Data Center')).to.equal('jiradatacenter.resync')
+    })
+
+    it('leaves one- and two-word types unchanged', async () => {
+      expect(await publishedTypeFor('Google Drive')).to.equal('googledrive.resync')
+      expect(await publishedTypeFor('MinIO')).to.equal('minio.resync')
+    })
+
+    it('never yields an event type containing a space', async () => {
+      const types = ['Confluence Data Center', 'Jira Data Center', 'Google Drive',
+                     'Local FS', 'MinIO', 'Azure Blob Storage']
+      for (const t of types) {
+        expect(await publishedTypeFor(t)).to.not.contain(' ')
+      }
+    })
+  })
 })

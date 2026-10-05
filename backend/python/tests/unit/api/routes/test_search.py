@@ -18,6 +18,7 @@ from app.api.routes.search import (
     health_check,
     search,
 )
+from app.utils.user_messages import action_failed
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +273,28 @@ class TestSearchEndpoint:
                 graph_provider=mock_graph,
             )
         assert exc_info.value.status_code == 500
-        assert "LLM" in exc_info.value.detail
+        assert exc_info.value.detail == "Failed to initialize LLM service. LLM configuration is missing."
+
+    @pytest.mark.asyncio
+    async def test_search_http_exception_keeps_its_status(self):
+        """An HTTPException raised inside the route is not re-wrapped as a 500."""
+        request = self._build_request()
+
+        with patch(
+            "app.api.routes.search.resolve_llm_for_search",
+            new_callable=AsyncMock,
+            side_effect=HTTPException(status_code=401, detail="Organization context required"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await search(
+                    request=request,
+                    body=SearchQuery(query="hello"),
+                    retrieval_service=MagicMock(),
+                    graph_provider=MagicMock(),
+                )
+
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Organization context required"
 
     @pytest.mark.asyncio
     async def test_search_llm_none_then_initialised(self):
@@ -310,18 +332,21 @@ class TestSearchEndpoint:
 
     @pytest.mark.asyncio
     async def test_search_exception_raises_http_500(self):
-        """Any unexpected exception in search is wrapped in HTTPException 500."""
+        """An unexpected exception becomes a 500 with fixed text; its own text goes to the log."""
         request = self._build_request()
 
         mock_retrieval = MagicMock()
         mock_retrieval.llm = MagicMock()
+        # Awaited by a resolver that does not read the cached .llm.
+        mock_retrieval.get_llm_instance = AsyncMock(return_value=MagicMock())
 
         mock_graph = MagicMock()
         body = SearchQuery(query="test")
 
+        error = RuntimeError("boom")
         with patch(
             "app.api.routes.search.setup_query_transformation",
-            side_effect=RuntimeError("boom"),
+            side_effect=error,
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await search(
@@ -331,7 +356,12 @@ class TestSearchEndpoint:
                     graph_provider=mock_graph,
                 )
             assert exc_info.value.status_code == 500
-            assert "boom" in exc_info.value.detail
+            assert exc_info.value.detail == action_failed("run this search")
+            assert "boom" not in exc_info.value.detail
+            assert exc_info.value.__cause__ is error
+            log_call = request.app.container.logger.return_value.error.call_args
+            assert log_call.kwargs["exc_info"] is True
+            assert error in log_call.args
 
     @pytest.mark.asyncio
     async def test_search_query_transformation_deduplicates(self):

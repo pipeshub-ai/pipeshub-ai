@@ -509,7 +509,12 @@ class DataSourceEntitiesProcessor:
                 # and its subtree stay reachable from the record group.
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
                 if record_group_id:
-                    await self._link_record_to_group(parent_record, record_group_id, tx_store)
+                    # parent_record was read from the store, so pass it as the
+                    # existing record: without it the stale inherit-permissions
+                    # edge this branch exists to repair is never deleted.
+                    await self._link_record_to_group(
+                        parent_record, record_group_id, tx_store, parent_record
+                    )
 
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
@@ -712,7 +717,10 @@ class DataSourceEntitiesProcessor:
 
             if record.inherit_permissions:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
-            else:
+            elif existing_record is not None:
+                # A record created moments ago cannot carry an inherit-permissions
+                # edge yet, so deleting one is a guaranteed no-op round trip —
+                # one per record, on the hot path of every full sync.
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.shared_with_me_record_group_ids:

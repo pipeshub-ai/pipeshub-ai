@@ -8,6 +8,7 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 from __future__ import annotations
 
 import asyncio
+import random
 import hashlib
 import json
 import os
@@ -142,11 +143,13 @@ from app.services.graph_db.neo4j.neo4j_client import (
     Neo4jClient,
 )
 from app.services.graph_db.taxonomy import (
+    CATEGORY_HIERARCHY_PARENTS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
     check_edge_move,
     check_edge_move_target,
+    global_department_key,
     is_taxonomy_collection,
     subcategory_level,
 )
@@ -170,6 +173,11 @@ EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge sing
 # of scanning a list property on every node of the org (see find_taxonomy_nodes).
 TAXONOMY_ALIAS_LABEL = "TaxonomyAlias"
 TAXONOMY_ALIAS_REL = "ALIAS_OF"
+# Marks a database whose list-only aliases (stored before TaxonomyAlias
+# nodes existed) have been given alias nodes; see heal_taxonomy_alias_nodes.
+TAXONOMY_ALIAS_HEAL_MARKER = "taxonomy_alias_nodes_v1"
+SCHEMA_MIGRATION_LABEL = "SchemaMigration"
+_ALIAS_HEAL_BATCH = 1000
 
 # Quantified path pattern walking child -> canonical parent. The step predicate
 # sits inside the pattern so expansion stops at the first non-canonical edge
@@ -204,6 +212,13 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
+# Idempotent shared writes retried on a deadlock or lock timeout.
+_TRANSIENT_WRITE_ATTEMPTS = 6
+_WRITE_CONFLICT_CODES = frozenset({
+    "Neo.TransientError.Transaction.DeadlockDetected",
+    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
+    "Neo.TransientError.Transaction.LockClientStopped",
+})
 
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
@@ -349,7 +364,8 @@ class Neo4jProvider(IGraphDBProvider):
             # Create departments from DepartmentNames enum
             departments = [
                 {
-                    "id": str(uuid.uuid4()),
+                    # Keyed by name: services seeding at once converge on one node.
+                    "id": global_department_key(dept.value),
                     "departmentName": dept.value,
                     "orgId": None,
                 }
@@ -418,6 +434,12 @@ class Neo4jProvider(IGraphDBProvider):
         if self.client is None or not self.client.explicit_transactions:
             return False
         return isinstance(error, TransientError)
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        """A deadlock or lock timeout, in either transaction mode. Other
+        transient errors (memory limits, a terminated transaction, an
+        unavailable database) are not collisions and are not retried here."""
+        return isinstance(error, TransientError) and getattr(error, "code", None) in _WRITE_CONFLICT_CODES
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -871,6 +893,13 @@ class Neo4jProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Created {len(indexes)} performance indexes")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
+
+            try:
+                await self.heal_taxonomy_alias_nodes()
+            except Exception:
+                # Not fatal: affected aliases keep missing tier 0 until the
+                # next start retries, as they did before the heal existed.
+                self.logger.warning("Taxonomy alias heal failed; will retry at next start", exc_info=True)
 
             # Seed departments collection with predefined department types
             try:
@@ -2003,7 +2032,9 @@ class Neo4jProvider(IGraphDBProvider):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes by field filters"""
         try:
@@ -2065,6 +2096,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_documents_by_status(
@@ -14602,7 +14635,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -14666,6 +14701,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
 
@@ -17539,6 +17576,100 @@ class Neo4jProvider(IGraphDBProvider):
         await self.client.execute_query(
             query, parameters={"id": node_id, "props": props}, txn_id=transaction,
         )
+
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.ensure_taxonomy_hierarchy_edge`."""
+        parent_collection = CATEGORY_HIERARCHY_PARENTS.get(child_collection)
+        if parent_collection is None:
+            raise ValueError(f"{child_collection!r} is not a subcategory level")
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        relationship = edge_collection_to_relationship(CollectionNames.INTER_CATEGORY_RELATIONS.value)
+        query = f"""
+            MATCH (child:{collection_to_label(child_collection)} {{id: $child}})
+            MATCH (parent:{collection_to_label(parent_collection)} {{id: $parent}})
+            MERGE (child)-[r:{relationship}]->(parent)
+            ON CREATE SET r.createdAtTimestamp = $now
+        """
+        parameters = {"child": child_key, "parent": parent_key, "now": get_epoch_timestamp_in_ms()}
+        # MERGE locks both end nodes before creating, so concurrent callers
+        # converge on one relationship; those locks are also what deadlocks
+        # them against each other, and re-running the MERGE is harmless.
+        await self._run_idempotent_write(query, parameters)
+
+    async def _run_idempotent_write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+        """Run an auto-commit query that is safe to repeat, re-running it when
+        it collides with a concurrent writer."""
+        for attempt in range(_TRANSIENT_WRITE_ATTEMPTS - 1):
+            try:
+                return await self.client.execute_query(query, parameters=parameters)
+            except TransientError as exc:
+                if not self.is_write_conflict(exc):
+                    raise
+                await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
+        return await self.client.execute_query(query, parameters=parameters)
+
+    async def heal_taxonomy_alias_nodes(self) -> int:
+        """Give every stored alias its TaxonomyAlias node, once per database.
+
+        Aliases written before TaxonomyAlias nodes existed live only in the
+        node's lists, which find_taxonomy_nodes no longer reads, so those
+        spellings stopped matching (KG-50). Runs in batches of committed
+        transactions and marks the database only when every collection was
+        healed. Returns the alias links created.
+        """
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self.client.execute_query(
+            f"OPTIONAL MATCH (m:{SCHEMA_MIGRATION_LABEL} {{id: $marker}}) RETURN count(m) > 0 AS done",
+            parameters={"marker": TAXONOMY_ALIAS_HEAL_MARKER},
+        )
+        if rows and rows[0].get("done"):
+            return 0
+        healed = 0
+        for collection in sorted(TAXONOMY_COLLECTIONS):
+            label = collection_to_label(collection)
+            # It takes the alias before the node and add_taxonomy_aliases the
+            # reverse, so a live writer can deadlock it; batches that committed
+            # are skipped on the re-run.
+            result = await self._run_idempotent_write(
+                f"""
+                MATCH (n:{label})
+                WHERE n.orgId IS NOT NULL AND size(coalesce(n.normalizedAliases, [])) > 0
+                UNWIND n.normalizedAliases AS normalized
+                CALL {{
+                    WITH n, normalized
+                    // Checked here, in the batch's transaction: in the outer
+                    // query the alias uniqueness constraint makes it a locking
+                    // seek, held across every batch, and each batch's MERGE
+                    // then waits on it for ever (an undetected self-deadlock).
+                    OPTIONAL MATCH (existing:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection,
+                                                                     normalized: normalized}})
+                                   -[:{TAXONOMY_ALIAS_REL}]->(n)
+                    WITH n, normalized, existing
+                    WHERE existing IS NULL
+                    MERGE (a:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection,
+                                                      normalized: normalized}})
+                    MERGE (a)-[:{TAXONOMY_ALIAS_REL}]->(n)
+                    RETURN 1 AS created
+                }} IN TRANSACTIONS OF {_ALIAS_HEAL_BATCH} ROWS
+                RETURN count(created) AS healed
+                """,
+                {"collection": collection},
+            )
+            healed += int((result or [{}])[0].get("healed") or 0)
+        await self.client.execute_query(
+            f"MERGE (m:{SCHEMA_MIGRATION_LABEL} {{id: $marker}}) ON CREATE SET m.completedAt = $now",
+            parameters={"marker": TAXONOMY_ALIAS_HEAL_MARKER, "now": get_epoch_timestamp_in_ms()},
+        )
+        if healed:
+            self.logger.info("Healed %d list-only taxonomy aliases into alias nodes", healed)
+        return healed
 
     async def add_taxonomy_aliases(
         self,
