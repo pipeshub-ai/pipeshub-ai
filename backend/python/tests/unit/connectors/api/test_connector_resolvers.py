@@ -177,7 +177,7 @@ class TestAuthorizeConnectorStats:
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == not_found("This connector")
 
-    async def test_kb_role_below_reader_stays_403(self) -> None:
+    async def test_kb_role_outside_owner_writer_reader_stays_403(self) -> None:
         """The caller can see this collection, so the refusal is about permission, not existence."""
         with pytest.raises(HTTPException) as exc_info:
             await _authorize(_app(type_="KB"), "member-b", is_admin=False, kb_role="COMMENTER")

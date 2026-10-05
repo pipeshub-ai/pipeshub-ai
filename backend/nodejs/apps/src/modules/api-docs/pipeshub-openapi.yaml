@@ -35225,7 +35225,7 @@ paths:
         '403':
           description: |
             Insufficient OAuth scope, or a collection the caller has a role on
-            below READER
+            other than OWNER, WRITER or READER
         '404':
           description: |
             Connector not found, or one the caller cannot open (another user's
