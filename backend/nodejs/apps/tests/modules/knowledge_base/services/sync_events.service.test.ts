@@ -341,17 +341,23 @@ describe('SyncEventProducer - coverage', () => {
       expect(message.key).to.equal('sync.all')
     })
 
-    it('does not let a publish failure escape', async () => {
+    it('logs a publish failure and passes it to the caller', async () => {
       const logger = loggerDouble()
       const svc = new SyncEventProducer(
         producerDouble(sinon.stub().rejects(new Error('broker down'))),
         logger as unknown as Logger,
       )
-      await svc.publishEvent({
-        eventType: 'confluence.resync',
-        timestamp: 1,
-        payload: { connectorId: 'c1' },
-      })
+      let caught: unknown
+      try {
+        await svc.publishEvent({
+          eventType: 'confluence.resync',
+          timestamp: 1,
+          payload: { connectorId: 'c1' },
+        })
+      } catch (error) {
+        caught = error
+      }
+      expect((caught as Error)?.message).to.equal('broker down')
       expect(logger.error.called).to.be.true
     })
   })
