@@ -67,6 +67,41 @@ describe('ConnectorServiceCommand', () => {
   })
 
   describe('execute', () => {
+    describe('SSRF hardening', () => {
+      it('rejects a mismatched origin before fetch is called', async () => {
+        const cmd = new ConnectorServiceCommand({
+          uri: 'http://malicious-origin.local/api',
+          method: HttpMethod.GET,
+        })
+
+        let error: any
+        try {
+          await cmd.execute()
+        } catch (e) {
+          error = e
+        }
+
+        expect(error).to.exist
+        expect(error.message).to.equal('Blocked connector request to an untrusted origin')
+        expect(fetchStub.called).to.be.false
+      })
+
+      it('prevents redirects by passing redirect: "error" to fetch', async () => {
+        fetchStub.resolves(makeFetchResponse(200, {}))
+
+        const cmd = new ConnectorServiceCommand({
+          uri: 'http://connector.local/api/test',
+          method: HttpMethod.GET,
+        })
+
+        await cmd.execute()
+
+        expect(fetchStub.calledOnce).to.be.true
+        const requestOptions = fetchStub.firstCall.args[1]
+        expect(requestOptions).to.have.property('redirect', 'error')
+      })
+    })
+
     it('should make a fetch call and return structured response on success', async () => {
       const responseData = { result: 'ok' }
       fetchStub.resolves(
