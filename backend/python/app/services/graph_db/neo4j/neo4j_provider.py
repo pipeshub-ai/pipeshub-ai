@@ -7914,6 +7914,37 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete records and relations failed: {str(e)}")
             raise
 
+    async def _attachments_to_delete(
+        self, record_id: str, org_id: str, transaction: str | None
+    ) -> tuple[list[str], list[dict]]:
+        """A record's direct ATTACHMENT children and their deleteRecord payloads, read before the delete."""
+        rows = await self.client.execute_query(
+            """
+            MATCH (:Record {id: $record_id})-[e:RECORD_RELATION]->(a:Record)
+            WHERE e.relationshipType = 'ATTACHMENT' AND a.orgId = $org_id
+            RETURN DISTINCT a.id AS id
+            """,
+            parameters={"record_id": record_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        attachment_ids = [row["id"] for row in rows or []]
+        payloads: list[dict] = []
+        for attachment_id in attachment_ids:
+            # Raises rather than answering None: an attachment deleted without its
+            # payload would keep its vectors.
+            attachment = await self.get_document(
+                attachment_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
+            if not attachment or not attachment.get("virtualRecordId"):
+                continue
+            file_doc = await self.get_document(attachment_id, CollectionNames.FILES.value, transaction)
+            payload = await self._create_deleted_record_event_payload(attachment, file_doc)
+            if payload:
+                payload["connectorName"] = attachment.get("connectorName")
+                payload["origin"] = attachment.get("origin")
+                payloads.append(payload)
+        return attachment_ids, payloads
+
     async def delete_record(
         self,
         record_id: str,
@@ -7974,7 +8005,14 @@ class Neo4jProvider(IGraphDBProvider):
             except Exception as e:
                 self.logger.debug(f"File record not found for record {record_id}: {e}")
 
-            # For Neo4j, use generic delete
+            # A mail's attachments go with it, as on ArangoDB: left behind, they stay
+            # searchable with nothing left to clean up their vectors.
+            attachment_ids, attachment_payloads = await self._attachments_to_delete(
+                record_id, org_id, transaction
+            )
+            for attachment_id in attachment_ids:
+                await self.delete_records_and_relations(attachment_id, hard_delete=True, transaction=transaction)
+
             await self.delete_records_and_relations(record_id, hard_delete=True, transaction=transaction)
 
             # Create event payload for router to publish
@@ -7994,7 +8032,8 @@ class Neo4jProvider(IGraphDBProvider):
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
-                        "payload": payload
+                        "payload": payload,
+                        "payloads": [payload, *attachment_payloads],
                     }
             except Exception as e:
                 self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
@@ -8004,6 +8043,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "success": True,
                 "record_id": record_id,
                 "message": "Record deleted successfully",
+                "attachments_deleted": len(attachment_ids),
                 "eventData": event_data,
                 # Lets the caller invalidate the right cache entry without
                 # re-reading the record it just deleted.

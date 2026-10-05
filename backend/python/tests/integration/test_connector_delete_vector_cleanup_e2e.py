@@ -7,6 +7,8 @@ Drives ``DataSourceEntitiesProcessor`` over a real ``GraphDataStore``:
   returns, found no ``virtualRecordId``, and published nothing.
 - ``delete_record_by_external_id`` (Outlook) dropped the cleanup event the
   provider returned, and on ArangoDB the Outlook delete returned none at all.
+- On Neo4j a mail delete removed the mail alone, leaving its attachments
+  searchable with their vectors; both backends now remove them.
 
 The invariant checked: every record the delete removed that had vectors gets a
 ``deleteRecord`` event carrying its ``virtualRecordId``.
@@ -90,6 +92,7 @@ class _World:
     user_key: str
     drive_id: str
     outlook_id: str
+    gmail_id: str
     ids: dict[str, str] = field(default_factory=dict)
 
     def vrid(self, name: str) -> str:
@@ -120,7 +123,7 @@ async def _connect_arango() -> IGraphDBProvider:
 
 
 async def _remove(graph: IGraphDBProvider, w: _World) -> None:
-    ids = [*w.ids.values(), w.user_key, w.drive_id, w.outlook_id]
+    ids = [*w.ids.values(), w.user_key, w.drive_id, w.outlook_id, w.gmail_id]
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query("MATCH (n) WHERE n.id IN $ids DETACH DELETE n", parameters={"ids": ids})
         return
@@ -158,7 +161,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         w = _World(
             graph=graph, processor=processor, producer=producer, org_id=f"org-del-{suffix}",
             user_id=f"user-del-{suffix}", user_key=f"ukey-del-{suffix}",
-            drive_id=f"drive-del-{suffix}", outlook_id=f"outlook-del-{suffix}",
+            drive_id=f"drive-del-{suffix}", outlook_id=f"outlook-del-{suffix}", gmail_id=f"gmail-del-{suffix}",
         )
         processor.org_id = w.org_id
         cleanup.push_async_callback(_remove, graph, w)
@@ -169,7 +172,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 async def _seed(w: _World) -> None:
     g = w.graph
     now = get_epoch_timestamp_in_ms()
-    for name in ("drive_file", "email", "attachment"):
+    for name in ("drive_file", "email", "attachment", "gmail_email", "gmail_attachment"):
         w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
     await g.batch_upsert_nodes(
         [{"id": w.user_key, "userId": w.user_id, "orgId": w.org_id, "email": f"{w.user_id}@example.com",
@@ -180,7 +183,8 @@ async def _seed(w: _World) -> None:
         [{"id": app_id, "name": name, "type": name, "appGroup": group, "scope": "team", "isActive": True,
           "createdAtTimestamp": now, "updatedAtTimestamp": now}
          for app_id, name, group in ((w.drive_id, "Drive", "Google Workspace"),
-                                     (w.outlook_id, "Outlook", "Microsoft 365"))],
+                                     (w.outlook_id, "Outlook", "Microsoft 365"),
+                                     (w.gmail_id, Connectors.GOOGLE_MAIL.value, "Google Workspace"))],
         collection=CollectionNames.APPS.value,
     )
     common = {"org_id": w.org_id, "version": 1, "origin": OriginTypes.CONNECTOR,
@@ -195,6 +199,12 @@ async def _seed(w: _World) -> None:
         FileRecord(id=w.ids["attachment"], record_name="numbers.xlsx", record_type=RecordType.FILE,
                    external_record_id=f"ext-{w.ids['attachment']}", connector_name=Connectors.OUTLOOK,
                    connector_id=w.outlook_id, is_file=True, **common),
+        MailRecord(id=w.ids["gmail_email"], record_name="Offsite agenda", record_type=RecordType.MAIL,
+                   external_record_id=f"ext-{w.ids['gmail_email']}", connector_name=Connectors.GOOGLE_MAIL,
+                   connector_id=w.gmail_id, subject="Offsite agenda", **common),
+        FileRecord(id=w.ids["gmail_attachment"], record_name="agenda.docx", record_type=RecordType.FILE,
+                   external_record_id=f"ext-{w.ids['gmail_attachment']}", connector_name=Connectors.GOOGLE_MAIL,
+                   connector_id=w.gmail_id, is_file=True, **common),
     ])
     for name in w.ids:
         await g.update_node(w.ids[name], CollectionNames.RECORDS.value, {"virtualRecordId": w.vrid(name)})
@@ -207,9 +217,10 @@ async def _seed(w: _World) -> None:
         collection=CollectionNames.PERMISSION.value,
     )
     await g.batch_create_edges(
-        [{"from_id": w.ids["email"], "from_collection": records, "to_id": w.ids["attachment"],
+        [{"from_id": w.ids[mail], "from_collection": records, "to_id": w.ids[attachment],
           "to_collection": records, "relationshipType": "ATTACHMENT",
-          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}
+         for mail, attachment in (("email", "attachment"), ("gmail_email", "gmail_attachment"))],
         collection=CollectionNames.RECORD_RELATIONS.value,
     )
 
@@ -224,11 +235,20 @@ async def test_a_per_record_connector_delete_publishes_its_vector_cleanup(world:
     assert event["payload"]["connectorId"] == world.drive_id
 
 
-async def test_a_delete_by_external_id_publishes_cleanup_for_everything_it_removed(world: _World) -> None:
-    await world.processor.delete_record_by_external_id(world.outlook_id, f"ext-{world.ids['email']}", world.user_id)
+@pytest.mark.parametrize("mailbox", ["outlook", "gmail"])
+async def test_a_mail_delete_by_external_id_removes_its_attachments_and_their_vectors(
+    world: _World, mailbox: str
+) -> None:
+    connector_id, mail, attachment = (
+        (world.outlook_id, "email", "attachment") if mailbox == "outlook"
+        else (world.gmail_id, "gmail_email", "gmail_attachment")
+    )
 
-    assert await world.graph.get_document(world.ids["email"], CollectionNames.RECORDS.value) is None
-    removed = {world.vrid("email")}
-    if await world.graph.get_document(world.ids["attachment"], CollectionNames.RECORDS.value) is None:
-        removed.add(world.vrid("attachment"))
-    assert world.producer.deleted_vrids() == removed
+    await world.processor.delete_record_by_external_id(connector_id, f"ext-{world.ids[mail]}", world.user_id)
+
+    records = CollectionNames.RECORDS.value
+    assert await world.graph.get_document(world.ids[mail], records) is None
+    assert await world.graph.get_document(world.ids[attachment], records) is None, "the attachment outlived its mail"
+    assert world.producer.deleted_vrids() == {world.vrid(mail), world.vrid(attachment)}
+    other = "gmail_attachment" if mailbox == "outlook" else "attachment"
+    assert await world.graph.get_document(world.ids[other], records) is not None
