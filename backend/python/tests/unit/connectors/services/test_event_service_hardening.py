@@ -224,7 +224,7 @@ class TestDeleteLeavesPendingResyncAlone:
         coordinator = MagicMock(cancel_and_wait=AsyncMock())
         with patch("app.connectors.services.event_service.get_coordinator", return_value=coordinator), \
                 patch("app.connectors.services.event_service.reindex_task_manager") as rtm, \
-                patch("app.connectors.services.event_service.build_connector_vector_cleanup_events", return_value=[]):
+                patch("app.connectors.services.event_service.build_connector_cleanup_events", return_value=[]):
             rtm.cancel_by_prefix = AsyncMock()
             assert await svc._handle_delete("gmail", {"orgId": "o1", "connectorId": "c1"}) is True
         return svc

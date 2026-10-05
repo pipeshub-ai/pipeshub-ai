@@ -243,6 +243,36 @@ class TestGraphTransactionStore:
         assert mock_graph_provider.get_record_by_external_id.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_each_visibility_is_cached_on_its_own(self, tx_store, mock_graph_provider) -> None:
+        """A trashed record answers ALL but not LIVE; one answer must not stand in for the other."""
+        trashed = MagicMock(id="rec-1")
+
+        async def lookup(connector_id, external_id, transaction=None, visibility=RecordVisibility.ALL):
+            return None if visibility is RecordVisibility.LIVE else trashed
+
+        mock_graph_provider.get_record_by_external_id = AsyncMock(side_effect=lookup)
+        assert await tx_store.get_record_by_external_id("conn-1", "ext-1") is trashed
+        assert await tx_store.get_record_by_external_id(
+            "conn-1", "ext-1", visibility=RecordVisibility.LIVE
+        ) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delete", ["soft_delete_records", "delete_record_by_external_id"])
+    async def test_trashing_drops_the_cached_record(self, tx_store, mock_graph_provider, delete) -> None:
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
+        mock_graph_provider.soft_delete_records = AsyncMock(return_value={})
+        mock_graph_provider.delete_record_by_external_id = AsyncMock(return_value={})
+        await tx_store.get_record_by_external_id("conn-1", "ext-1", visibility=RecordVisibility.LIVE)
+
+        if delete == "soft_delete_records":
+            await tx_store.soft_delete_records(["rec-1"], "conn-1", delete_source="sync", batch_id="b1")
+        else:
+            await tx_store.delete_record_by_external_id("conn-1", "ext-1", soft_delete=True)
+        await tx_store.get_record_by_external_id("conn-1", "ext-1", visibility=RecordVisibility.LIVE)
+
+        assert mock_graph_provider.get_record_by_external_id.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_deleting_other_nodes_keeps_cached_records(
         self, tx_store, mock_graph_provider
     ) -> None:

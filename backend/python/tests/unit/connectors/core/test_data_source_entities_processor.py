@@ -6930,13 +6930,13 @@ class TestMovesAgainstTheTransactionCache:
             for rid, ext in rows.items()
         }
 
-        async def get_record_by_external_id(connector_id, external_id, transaction=None):
+        async def get_record_by_external_id(connector_id, external_id, transaction=None, visibility=None):
             for row in graph.rows.values():
                 if row.connector_id == connector_id and row.external_record_id == external_id:
                     return row
             return None
 
-        async def batch_upsert_records(records, transaction=None):
+        async def batch_upsert_records(records, transaction=None, release_trashed_external_ids=False):
             for r in records:
                 row = graph.rows.get(r.id) or SimpleNamespace(id=r.id, connector_id=r.connector_id)
                 row.external_record_id = r.external_record_id
