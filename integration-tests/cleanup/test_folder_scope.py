@@ -35,6 +35,7 @@ import pytest_asyncio
 import requests
 
 from helper.clients.kb_client import KBClient
+from helper.stored_names import stored_name
 
 logger = logging.getLogger("cleanup-folder-scope")
 
@@ -200,7 +201,8 @@ class TestDeletingAFolderWithASubFolder:
             "Deleting folder A removed records that were never in it.",
         )
 
-        names = t["names"]
+        # The graph holds an uploaded file under its stored name, without the extension.
+        names = {label: stored_name(name) for label, name in t["names"].items()}
         for label in ("folder_a", "a", "sub_folder", "sub"):
             assert await graph_provider.get_record_by_name(t["kb_id"], names[label]) is None, (
                 f"{names[label]} is still in the graph after its folder was deleted."

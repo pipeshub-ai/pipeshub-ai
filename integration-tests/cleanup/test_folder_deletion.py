@@ -111,7 +111,7 @@ async def folder_tree_delete(
         sub/
           shared.md        uploaded first, so the shared content starts inside the folder
       sibling/
-        sibling.md
+        sibling-note.md    not sibling.md: stored without its extension it would share the folder's name
     """
     tag = uuid.uuid4().hex[:6]
     kb_id = kb_client.create_kb(f"cleanup-tree-{tag}")["id"]
@@ -126,7 +126,7 @@ async def folder_tree_delete(
             kb_client, vector_store, kb_id, f"own-{tag}.md", src.unique_text("own"), folder_id=target
         )
         sibling_file = await src.upload_to_kb(
-            kb_client, vector_store, kb_id, f"sibling-{tag}.md", src.unique_text("sibling"), folder_id=sibling
+            kb_client, vector_store, kb_id, f"sibling-note-{tag}.md", src.unique_text("sibling"), folder_id=sibling
         )
         root_copy = await src.upload_to_kb(kb_client, vector_store, kb_id, f"root-copy-{tag}.md", SHARED)
         assert root_copy.virtual_record_id == shared.virtual_record_id, (

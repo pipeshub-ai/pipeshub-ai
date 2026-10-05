@@ -100,6 +100,8 @@ export interface AgentConfiguredModel {
   isDefault: boolean;
   modelType: string;
   modelFriendlyName: string;
+  /** The model's own default effort, when the admin stored one. */
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /** Tool definition nested under `toolsets[].tools[]`. */

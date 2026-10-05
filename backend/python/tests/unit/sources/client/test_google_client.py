@@ -1,5 +1,6 @@
 """Unit tests for Google client module."""
 
+import importlib
 import logging
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -963,18 +964,49 @@ class TestBuildFromServicesIndividualScopeEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-class TestGmailToolsetRefreshScopes:
+class TestToolsetRefreshScopes:
+    @staticmethod
+    def _consent_scopes(module_path: str, class_name: str) -> list[str]:
+        toolset_cls = getattr(importlib.import_module(module_path), class_name)
+        return toolset_cls._toolset_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]["scopes"]
+
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("service_name", "version", "consent_screen"),
+        [
+            ("gmail", "v1", ("app.agents.actions.google.gmail.gmail", "Gmail")),
+            ("drive", "v3", ("app.agents.actions.google.drive.drive", "GoogleDrive")),
+            ("calendar", "v3", ("app.agents.actions.google.calendar.calendar", "GoogleCalendar")),
+            # The Meet toolset module does not import today (it names a ToolCategory
+            # that tool_builder no longer has), so its consent list is spelled out.
+            (
+                "meet",
+                "v2",
+                [
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.events",
+                    "https://www.googleapis.com/auth/meetings.space.created",
+                ],
+            ),
+        ],
+    )
     @patch("app.sources.client.google.google.build")
     @patch("app.sources.client.google.google.Credentials")
     async def test_refresh_asks_for_exactly_what_the_user_consented_to(
-        self, mock_credentials_cls, mock_build, logger, mock_config_service
+        self,
+        mock_credentials_cls,
+        mock_build,
+        logger,
+        mock_config_service,
+        service_name,
+        version,
+        consent_screen,
     ) -> None:
         # google-auth sends these scopes on every refresh, and Google answers
         # invalid_scope if one of them was not on the consent screen.
-        from app.agents.actions.google.gmail.gmail import Gmail
-
-        consented = Gmail._toolset_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]["scopes"]
+        consented = (
+            self._consent_scopes(*consent_screen) if isinstance(consent_screen, tuple) else consent_screen
+        )
         # Importing the real routes module alone trips a circular import.
         toolsets_routes = MagicMock()
         toolsets_routes.get_oauth_credentials_for_toolset = AsyncMock(
@@ -987,15 +1019,14 @@ class TestGmailToolsetRefreshScopes:
                     "credentials": {"access_token": "at", "refresh_token": "rt"},
                     "auth": {},
                 },
-                service_name="gmail",
+                service_name=service_name,
                 logger=logger,
                 config_service=mock_config_service,
-                version="v1",
+                version=version,
             )
 
         refresh_scopes = mock_credentials_cls.call_args.kwargs["scopes"]
         assert sorted(refresh_scopes) == sorted(consented)
-        assert "https://www.googleapis.com/auth/gmail.compose" not in refresh_scopes
 
 
 class TestBuildFromToolsetEdgeCases:
