@@ -4517,3 +4517,25 @@ class TestServiceAccountAgentRoutes:
 
         body = json.loads(result.body)
         assert body["pagination"]["totalItems"] == 2
+
+
+class TestAgentModelDefaultEffort:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stored", "expected"), [
+        ({"configuration": {"model": "qwen", "defaultReasoningEffort": "low"}}, "low"),
+        ({"configuration": {"model": "qwen"}, "defaultReasoningEffort": "medium"}, "medium"),
+        ({"configuration": {"model": "qwen", "defaultReasoningEffort": "extreme"}}, None),
+        ({"configuration": {"model": "qwen"}}, None),
+    ], ids=["in-configuration", "top-level", "invalid", "not-stored"])
+    async def test_a_models_own_default_effort_is_passed_on(self, stored, expected) -> None:
+        from app.api.routes.agent import _enrich_agent_models
+
+        agent = {"models": ["mk1_qwen"]}
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={
+            "llm": [{"modelKey": "mk1", "provider": "openAICompatible", "isReasoning": True, **stored}]
+        })
+
+        await _enrich_agent_models(agent, config_service, logging.getLogger("test"))
+        assert agent["models"][0].get("defaultReasoningEffort") == expected
+        assert agent["models"][0]["modelName"] == "qwen"

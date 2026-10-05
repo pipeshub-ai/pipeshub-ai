@@ -16,8 +16,8 @@ code method on for the org alongside passwords, and put the org's sign-in policy
 back afterwards.
 
 The expired-link test needs a stack whose links expire within two minutes. The
-integration compose sets that once ``PASSWORD_RESET_LINK_EXPIRY`` exists
-(#3681); until then, and on stacks with the 20-minute default, it skips.
+integration compose sets ``PASSWORD_RESET_LINK_EXPIRY`` to 60 seconds; on stacks
+with the 20-minute default it skips.
 """
 
 from __future__ import annotations
@@ -199,21 +199,10 @@ class TestExpiredResetLink:
         )
 
 
-RESET_LINK_RACE = (
-    "A reset link is single-use only through a comparison of its issue time with "
-    "the account's latest PASSWORD_CHANGED record (scopedTokenValidator in "
-    "auth.middleware.ts). That record is written at the end of updatePassword, "
-    "after a user lookup and two bcrypt operations, and nothing claims the link "
-    "atomically, so two requests arriving before it is written both succeed. "
-    "Fixed by #3681: remove this mark when it merges."
-)
-
-
 class TestResetLinkUsedTwiceAtOnce:
     """The sequential reuse check above cannot see the window before the first
     use is recorded; two simultaneous uses of one unused link can."""
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=RESET_LINK_RACE)
     def test_only_one_of_two_simultaneous_uses_succeeds(
         self, mail_user: SecondUser, user_account_client: UserAccountClient
     ) -> None:
@@ -232,8 +221,6 @@ class TestResetLinkUsedTwiceAtOnce:
                 f"Neither simultaneous use worked (HTTP {statuses}), so this says "
                 "nothing about single use."
             )
-        # The xfail stands for exactly one answer: both uses succeeding. A
-        # refusal other than 401 is a different problem and must not hide behind it.
         assert statuses.count(200) == 1, (
             f"Two simultaneous uses of one reset link both succeeded (HTTP "
             f"{statuses}). A link meant to work once worked twice."

@@ -146,11 +146,6 @@ def _wrong_login(user: SecondUser, attempt: int) -> None:
     )
 
 
-class StillListed(AssertionError):
-    """Raised only by the final check of the strict-xfail test, so a failed
-    precondition there is reported as a failure rather than as the known bug."""
-
-
 def _wait_past_token_issue(token: str) -> None:
     """Wait until the clock is safely past the token's ``iat``.
 
@@ -272,16 +267,6 @@ class TestADeletedMember:
 
         await _wait_until_inactive(graph_provider, person.user_id)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Deleting a user only marks the graph user inactive (entity.py "
-            "_handle_user_deleted); their permission edges stay, and list_kb_permissions "
-            "does not filter inactive users, so the knowledge base's sharing list keeps "
-            "showing a deleted person as having access."
-        ),
-        raises=StillListed,
-    )
     @pytest.mark.asyncio(loop_scope="session")
     async def test_is_no_longer_listed_on_what_was_shared_with_them(
         self, pipeshub_client: PipeshubClient, corpus: Corpus, person: SecondUser, graph_provider,
@@ -302,10 +287,9 @@ class TestADeletedMember:
             p for p in permissions
             if p.get("userId") == person.user_id or str(p.get("email") or "").lower() == person.email
         ]
-        if still_listed:
-            raise StillListed(
-                f"The deleted account is still listed on the knowledge base's sharing: {still_listed}"
-            )
+        assert not still_listed, (
+            f"The deleted account is still listed on the knowledge base's sharing: {still_listed}"
+        )
 
 
 class TestALockedMember:

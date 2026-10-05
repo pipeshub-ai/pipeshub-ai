@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
@@ -65,7 +64,9 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.google.common.apps import GmailIndividualApp
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleAuthError,
     GoogleMailError,
+    is_missing_scope_error,
 )
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
@@ -86,7 +87,7 @@ from app.models.entities import (
     USER_EMAIL_PLACEHOLDER,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
+from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 from app.utils.filename_utils import temp_path_for
@@ -848,6 +849,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
                             f"✅ Fetched Drive file metadata for {drive_file_id}: {filename} ({size} bytes, {mime_type})"
                         )
                 except Exception as e:
+                    if is_missing_scope_error(e):
+                        # A record here could never be downloaded, so it would only
+                        # sit in the index as a failed file.
+                        self.logger.info(
+                            f"Skipping the Google Drive file {drive_file_id} linked from message "
+                            f"{message_id}: this Gmail connection is allowed to read mail but "
+                            "not Google Drive, so the file can't be opened. The email itself "
+                            "is still indexed."
+                        )
+                        return None
                     self.logger.warning(
                         f"⚠️ Failed to fetch Drive file metadata for {drive_file_id}: {str(e)}"
                     )
@@ -1187,30 +1198,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 )
                 drive_service = user_drive_client.get_client()
                 self.logger.info("Using user OAuth credentials for Drive access")
+            # A personal connection has no service account to fall back on.
+            except GoogleAuthError as e:
+                self.logger.error(f"Failed to create Drive client: {e}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail="Couldn't connect to Google Drive to download this file. Reconnect the Gmail connector, then try again."
+                ) from e
             except Exception as e:
-                self.logger.warning(f"Failed to create Drive client: {e}, falling back to service account")
-                # Fallback to service account if user OAuth failed
-                if not self.config or "credentials" not in self.config:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Credentials not available for Drive access"
-                    )
-
-                from google.oauth2 import service_account
-                credentials_json = self.config.get("credentials", {}).get("auth", {})
-                if not credentials_json:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Service account credentials not found for Drive access"
-                    )
-
-                credentials = service_account.Credentials.from_service_account_info(
-                    credentials_json
-                )
-                drive_service = configure_google_http_timeout(
-                    build("drive", "v3", credentials=credentials)
-                )
-                self.logger.info("Using service account credentials for Drive access")
+                self.logger.error(f"Failed to load the Drive client's settings: {e}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Couldn't load the Gmail connector's settings to download this file. Try again in a moment; if it keeps failing, check the connector's configuration."
+                ) from e
 
             drive_data_source = GoogleDriveDataSource(
                 drive_service,

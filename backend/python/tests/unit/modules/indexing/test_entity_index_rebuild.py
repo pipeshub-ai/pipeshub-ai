@@ -123,8 +123,15 @@ class FakeStore:
         self.fail_ids: set[str] = set()
         self.points: list[EntityPointRef] = []
         self.page_calls: list[tuple[str, list[str], str | None, int]] = []
+        self.version_reads = 0
+        self.recreate_requests: list[bool] = []
 
-    async def embedding_fingerprint(self) -> str:
+    async def embedding_fingerprint(self, *, recreate: bool = False) -> str:
+        self.recreate_requests.append(recreate)
+        return self.fingerprint
+
+    async def embedding_config_version(self) -> str | None:
+        self.version_reads += 1
         return self.fingerprint
 
     async def upsert_entities_batch(
@@ -698,8 +705,10 @@ class TestLoop:
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("entity-index-test"))
-        container.entity_vector_store = AsyncMock(return_value=FakeStore())
+        store = FakeStore()
+        container.entity_vector_store = AsyncMock(return_value=store)
         with patch.object(mod.asyncio, "sleep", _sleep), \
+             patch.object(mod, "MODEL_CHECK_SECONDS", float("inf")), \
              patch.object(EntityIndexRebuilder, "tick", _tick), \
              patch.object(mod.MessagingUtils, "_get_redis_config", AsyncMock(return_value=MagicMock())):
             with pytest.raises(asyncio.CancelledError):
@@ -711,6 +720,32 @@ class TestLoop:
         assert idle == mod.IDLE_INTERVAL_SECONDS
         assert busy == mod.BUSY_INTERVAL_SECONDS
         assert busy < idle
+        assert store.version_reads > 0
+
+    async def test_a_model_switch_ends_the_wait_early(self) -> None:
+        """Recreating the collection promptly shortens the time every other
+        store refuses entity calls after a switch."""
+        store = FakeStore()
+        store.embedding_config_version = AsyncMock(side_effect=["a", "a", "b"])  # type: ignore[method-assign]
+        sleep = AsyncMock()
+        with patch.object(mod.asyncio, "sleep", sleep):
+            await mod._sleep_watching_model(store, mod.IDLE_INTERVAL_SECONDS)
+        assert [c.args[0] for c in sleep.await_args_list] == [mod.MODEL_CHECK_SECONDS] * 2
+
+    async def test_an_unreadable_config_does_not_end_the_wait(self) -> None:
+        store = FakeStore()
+        store.embedding_config_version = AsyncMock(side_effect=["a", None, None, None])  # type: ignore[method-assign]
+        sleep = AsyncMock()
+        with patch.object(mod.asyncio, "sleep", sleep):
+            await mod._sleep_watching_model(store, 12.0)
+        assert [c.args[0] for c in sleep.await_args_list] == [5.0, 5.0, 2.0]
+
+    async def test_only_a_leader_tick_asks_to_recreate(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        assert await _rebuilder(graph, store, FakeLock(leader=False)).tick() == "not_leader"
+        assert store.recreate_requests == []
+        assert await _rebuilder(graph, store).tick() == "idle"
+        assert store.recreate_requests == [True]
 
     async def test_store_unavailable_skips_the_tick(self) -> None:
         sleeps: list[float] = []
@@ -820,3 +855,109 @@ class TestSweepScanFailures:
         store.page_entity_points = AsyncMock(return_value=([], None))
         assert await rebuilder.tick() == "sweep"
         assert graph.docs[ORGS]["org-2"][EntityIndexState.SWEPT_AT] == NOW
+
+
+class TestAModelSwitchReRunsThePasses:
+    """With the real store over the real config service: switching model in
+    the admin UI changes the marker on the next tick, so every pass re-runs
+    and rewrites the points with the new model. Before, the store kept the
+    model it started with, so the marker never moved (nightly 37229085638)."""
+
+    async def test_points_are_rewritten_with_the_new_model(self) -> None:
+        from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+        from app.modules.transformers import entity_vectorstore
+        from app.modules.transformers.entity_vectorstore import (
+            EMBEDDING_MODEL_FIELD,
+            EntityVectorStore,
+        )
+        from tests.support.embedding_config import (
+            config_service,
+            embedding_config,
+            switch_embedding_model,
+        )
+        from tests.support.entity_vector_db import (
+            FakeEmbeddingModel,
+            FakeEntityVectorDB,
+            embedding_models,
+        )
+
+        bge, small = FakeEmbeddingModel(1.0, 4), FakeEmbeddingModel(2.0, 6)
+        db, config = FakeEntityVectorDB(), config_service()
+        store = EntityVectorStore(
+            logger=logging.getLogger("entity-index-test"), config_service=config,
+            vector_db_service=db, recreate_on_dimension_mismatch=True,
+        )
+        graph = FakeGraph()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
+
+        with embedding_models({"text-embedding-3-small": small}), \
+                patch.object(entity_vectorstore, "get_default_embedding_model", return_value=bge):
+            await _run_until_idle(_rebuilder(graph, store))
+            old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4")
+            assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == old
+
+            await switch_embedding_model(config, embedding_config("openAI", "text-embedding-3-small"))
+            outcomes = await _run_until_idle(_rebuilder(graph, store))
+
+        new = entity_index_marker("openAI:text-embedding-3-small:6")
+        assert "connector" in outcomes
+        assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == new
+        (point,) = db.points.values()
+        assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == "openAI:text-embedding-3-small:6"
+        assert point.dense_vector == small.embed_query("Q3 plan")
+
+    async def test_a_stale_replica_cannot_overwrite_what_the_leader_refilled(self) -> None:
+        """Two indexing replicas over one collection. The leader switches,
+        recreates and refills; the other missed the notification and still
+        embeds with the old model. Its write lands after the pass has moved
+        past the row, so the pass would never repair it."""
+        from app.models.entities import EntityRecord
+        from app.modules.transformers import entity_vectorstore
+        from app.modules.transformers.entity_vectorstore import (
+            EMBEDDING_MODEL_FIELD,
+            EntityVectorStore,
+        )
+        from tests.support.embedding_config import (
+            another_process,
+            config_service,
+            embedding_config,
+            switch_embedding_model,
+        )
+        from tests.support.entity_vector_db import (
+            FakeEmbeddingModel,
+            FakeEntityVectorDB,
+            embedding_models,
+        )
+
+        small, ada = FakeEmbeddingModel(2.0, 6), FakeEmbeddingModel(3.0, 6)
+        db, config_a = FakeEntityVectorDB(), config_service(embedding_config("openAI", "text-embedding-3-small"))
+        config_b = another_process(config_a)
+
+        def _replica(config: Any) -> EntityVectorStore:  # noqa: ANN401
+            return EntityVectorStore(
+                logger=logging.getLogger("entity-index-test"), config_service=config,
+                vector_db_service=db, recreate_on_dimension_mismatch=True,
+            )
+
+        leader, other = _replica(config_a), _replica(config_b)
+        graph = FakeGraph()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
+        models = {"text-embedding-3-small": small, "text-embedding-ada-002": ada}
+        with embedding_models(models), patch.object(entity_vectorstore, "get_default_embedding_model"):
+            await _run_until_idle(_rebuilder(graph, leader))
+            await other.embedding_fingerprint()
+
+            await switch_embedding_model(config_a, embedding_config("openAI", "text-embedding-ada-002"))
+            await _run_until_idle(_rebuilder(graph, leader))
+            await other.upsert_entities_batch(
+                [EntityRecord.for_record("r1", "Q3 plan", "org-1", "app-1", None)], merge_membership=False,
+            )
+
+        assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == entity_index_marker(
+            "openAI:text-embedding-ada-002:6"
+        )
+        (point,) = db.points.values()
+        assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == "openAI:text-embedding-ada-002:6"
+        assert point.dense_vector == ada.embed_query("Q3 plan")

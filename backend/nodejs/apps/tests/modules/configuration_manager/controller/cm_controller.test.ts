@@ -3252,6 +3252,68 @@ describe('ConfigurationManager Controller', () => {
       expect(response.models[0]).to.have.property('modelFriendlyName', 'GPT-4')
     })
 
+    describe('defaultReasoningEffort', () => {
+      async function availableLlms(entries: Record<string, unknown>[]): Promise<any[]> {
+        mockEncService.decrypt.returns(JSON.stringify({ llm: entries }))
+        const kvs = createMockKeyValueStore({
+          get: sinon.stub().resolves('encrypted:data'),
+        })
+        const res = createMockResponse()
+        await getAvailableModelsByType(kvs)(
+          createMockRequest({ params: { modelType: 'llm' } }),
+          res,
+          createMockNext(),
+        )
+        expect(res.status.calledWith(200)).to.be.true
+        return res.json.firstCall.args[0].models
+      }
+
+      const reasoningEntry = (extra: Record<string, unknown> = {}, configuration: Record<string, unknown> = {}) => ({
+        provider: 'openAICompatible',
+        modelKey: 'k-qwen',
+        isDefault: true,
+        isMultimodal: false,
+        isReasoning: true,
+        configuration: { model: 'qwen-a, qwen-b', ...configuration },
+        ...extra,
+      })
+
+      it('is returned on every model of the entry when stored in configuration', async () => {
+        const models = await availableLlms([reasoningEntry({}, { defaultReasoningEffort: 'low' })])
+
+        expect(models.map((m) => m.modelName)).to.deep.equal(['qwen-a', 'qwen-b'])
+        expect(models.map((m) => m.defaultReasoningEffort)).to.deep.equal(['low', 'low'])
+      })
+
+      it('falls back to a top-level value when configuration has none', async () => {
+        const models = await availableLlms([
+          reasoningEntry({ defaultReasoningEffort: 'medium' }, { defaultReasoningEffort: '  ' }),
+        ])
+
+        expect(models[0]).to.have.property('defaultReasoningEffort', 'medium')
+      })
+
+      it('is left out when no default is stored', async () => {
+        const models = await availableLlms([reasoningEntry()])
+
+        expect(models).to.have.length(2)
+        for (const model of models) {
+          expect(model).to.not.have.property('defaultReasoningEffort')
+        }
+      })
+
+      it('is left out when the stored value is blank or not a valid effort', async () => {
+        const models = await availableLlms([
+          reasoningEntry({ modelKey: 'k-blank' }, { defaultReasoningEffort: '' }),
+          reasoningEntry({ modelKey: 'k-bad' }, { defaultReasoningEffort: 'extreme' }),
+        ])
+
+        for (const model of models) {
+          expect(model).to.not.have.property('defaultReasoningEffort')
+        }
+      })
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
         get: sinon.stub().rejects(new Error('fetch failed')),

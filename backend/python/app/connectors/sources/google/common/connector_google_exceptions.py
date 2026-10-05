@@ -1,4 +1,21 @@
+from http import HTTPStatus
 from typing import Any, Dict, List, Optional
+
+from googleapiclient.errors import HttpError
+
+# Google's reasons for a 403 caused by the token lacking a scope, as opposed to the user
+# lacking access to the item.
+_MISSING_SCOPE_REASONS = frozenset({"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"})
+
+
+def is_missing_scope_error(error: BaseException) -> bool:
+    """Whether Google refused a call because the token was not granted the scope it needs."""
+    if not isinstance(error, HttpError) or error.resp.status != HTTPStatus.FORBIDDEN:
+        return False
+    details = getattr(error, "error_details", None)
+    if not isinstance(details, list):
+        return False
+    return any(isinstance(d, dict) and d.get("reason") in _MISSING_SCOPE_REASONS for d in details)
 
 
 class GoogleConnectorError(Exception):
