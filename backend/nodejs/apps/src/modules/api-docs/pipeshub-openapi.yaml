@@ -24907,7 +24907,9 @@ paths:
 
         **Search:** restored files are indexed again, so they return to search and
         chat once indexing finishes. `reindexPending` lists any that could not be
-        queued; reindex those by hand.
+        queued; reindex those by hand. A file that is back but whose indexing never
+        started is queued again when it is restored again, and the indexing service
+        queues it on its own after about an hour.
 
         A record that is not in the trash answers 200 with nothing restored.
       operationId: restoreRecord

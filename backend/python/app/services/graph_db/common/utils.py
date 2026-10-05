@@ -289,6 +289,11 @@ TRASH_STATE_FIELDS = (
 # Unique per record and never a source id, so no sync or move can land on it.
 TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
 
+# Stamped on a file in the same write that restores it from the trash. With the
+# file still NOT_STARTED it means the re-index its lost vectors need was never
+# taken up, which a retried restore and the stranded sweep both act on.
+RESTORED_AT_FIELD = "restoredAtTimestamp"
+
 
 def restore_items(
     restores: list[dict[str, Any]], connector_id: str | None

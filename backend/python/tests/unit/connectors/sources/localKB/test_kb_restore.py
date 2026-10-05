@@ -27,6 +27,7 @@ from app.connectors.sources.localKB.handlers.kb_service import (
     KnowledgeBaseService,
     restored_name,
 )
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -180,7 +181,9 @@ class TestWhatComesBack:
             "restore_source": DeleteSource.USER, "require_live_parent": True,
         }
         sets = {i["id"]: i["set"] for i in items}
-        assert sets == {"f1": {}, "c1": {"indexingStatus": ProgressStatus.NOT_STARTED.value}, "m1": {}}
+        assert (sets["f1"], sets["m1"]) == ({}, {})
+        assert sets["c1"]["indexingStatus"] == ProgressStatus.NOT_STARTED.value
+        assert sets["c1"][RESTORED_AT_FIELD] == sets["c1"]["queuedAtTimestamp"] > 0
         (reindexed,) = mock_processor.reindex_existing_records.await_args.args
         assert [r.id for r in reindexed] == ["c1"]
         assert "reindexPending" not in result
@@ -239,6 +242,50 @@ class TestWhatComesBack:
         assert result["success"] is True
         assert result["reindexPendingRecordIds"] == ["r1"]
         assert "Reindex" in result["reindexPendingReason"]
+
+    async def test_a_retry_queues_a_restored_file_whose_reindex_never_went_out(self, svc, mock_processor) -> None:
+        """The first restore committed, then its publish was lost: the retry finds the file live."""
+        _batch(svc, _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value,
+                         **{RESTORED_AT_FIELD: 1700}), [])
+
+        result = await svc.restore_record("r1", "u1", ORG)
+
+        assert (result["success"], result["restoredRecords"]) == (True, []), result
+        assert "queued for indexing" in result["message"]
+        assert "reindexPending" not in result
+        (reindexed,) = mock_processor.reindex_existing_records.await_args.args
+        assert [r.id for r in reindexed] == ["r1"]
+        mock_processor.restore_trashed_records.assert_not_called()
+
+    async def test_a_retry_whose_queueing_fails_again_reports_it_pending(self, svc, mock_processor) -> None:
+        _batch(svc, _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value,
+                         **{RESTORED_AT_FIELD: 1700}), [])
+        mock_processor.reindex_existing_records = AsyncMock(side_effect=TimeoutError("broker"))
+
+        result = await svc.restore_record("r1", "u1", ORG)
+
+        assert result["success"] is True
+        assert (result["reindexPending"], result["reindexPendingRecordIds"]) == (True, ["r1"])
+        assert "Try again" in result["message"]
+
+    @pytest.mark.parametrize("fields", [
+        {"indexingStatus": ProgressStatus.COMPLETED.value, RESTORED_AT_FIELD: 1700},
+        {"indexingStatus": ProgressStatus.NOT_STARTED.value},
+    ], ids=["indexed since", "never restored"])
+    async def test_a_retry_leaves_a_file_with_no_reindex_owed_alone(self, svc, mock_processor, fields) -> None:
+        _batch(svc, _doc("r1", deleted=False, **fields), [])
+        result = await svc.restore_record("r1", "u1", ORG)
+        assert result["success"] is True and result["restoredRecords"] == []
+        assert "nothing to restore" in result["message"]
+        mock_processor.reindex_existing_records.assert_not_called()
+
+    async def test_a_retry_queues_nothing_without_the_role_a_restore_needs(self, svc, mock_processor) -> None:
+        svc.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        _batch(svc, _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value,
+                         **{RESTORED_AT_FIELD: 1700}), [])
+        result = await svc.restore_record("r1", "u1", ORG)
+        assert result["code"] == 403
+        mock_processor.reindex_existing_records.assert_not_called()
 
     async def test_an_unexpected_failure_says_try_again(self, svc) -> None:
         svc.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("boom"))

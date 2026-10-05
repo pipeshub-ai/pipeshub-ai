@@ -26,6 +26,9 @@ provider, with the KB's ``DataSourceEntitiesProcessor`` on a real
   when the graph refuses one of the writes.
 - Taking an external id back from another record in the trash happens in the
   same write as the restore, so a refused restore leaves that record holding it.
+- A collection file whose re-index is lost after its restore committed is
+  queued again by a retried restore, or by the stranded sweep if nobody retries,
+  once.
 
 Arango enforces the records schema strictly, so its run also proves restore
 writes only declared fields.
@@ -646,6 +649,56 @@ async def test_the_stranded_sweep_republishes_a_restore_whose_index_event_was_lo
     assert (doc["isDeleted"], doc["indexingStatus"]) == (False, ProgressStatus.NOT_STARTED.value)
     assert doc.get("md5Checksum") is None
     assert doc["virtualRecordId"] == f"vr-{world.ids['drive_file']}"
+
+
+async def _restore_whose_reindex_is_lost(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A collection file is restored, and the re-index published after the write never lands."""
+    await world.graph.update_node(world.ids["solo"], CollectionNames.RECORDS.value, {"md5Checksum": "md5-solo"})
+    await world.trash("solo")
+
+    async def times_out(_topic: str, _messages: list) -> list[bool]:
+        raise TimeoutError("broker did not answer")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(world.producer, "send_messages", times_out)
+        await world.restore("solo")
+    doc = await world.stored("solo")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (False, ProgressStatus.NOT_STARTED.value)
+    assert world.reindexed() == set()
+
+
+async def test_a_retried_restore_queues_a_file_whose_reindex_was_lost(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The file's vectors went with the delete, so a retry that only said "not in the trash"
+    left it out of search for good."""
+    await _restore_whose_reindex_is_lost(world, monkeypatch)
+
+    retried = await world.restore("solo")
+
+    assert retried["success"] is True and "reindexPending" not in retried, retried
+    assert world.reindexed() == {world.ids["solo"]}
+    assert (await world.stored("solo"))["indexingStatus"] == ProgressStatus.QUEUED.value
+    again = await world.restore("solo")
+    assert "nothing to restore" in again["message"]
+    assert len(world.producer.of_type(EventTypes.REINDEX_RECORD.value)) == 1
+
+
+async def test_the_stranded_sweep_reindexes_a_restored_file_whose_reindex_was_lost(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nobody retries: the indexing service's sweep sends it, once, though it is an upload
+    with the checksum and content id it was indexed with."""
+    await _restore_whose_reindex_is_lost(world, monkeypatch)
+
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+    sent_again = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+
+    assert [(event, payload["virtualRecordId"]) for event, payload in sent
+            if payload["recordId"] == world.ids["solo"]] == [
+        (EventTypes.REINDEX_RECORD.value, f"vr-{world.ids['solo']}")
+    ]
+    assert not [payload for _event, payload in sent_again if payload["recordId"] == world.ids["solo"]]
 
 
 async def test_restore_records_changes_only_its_own_batch(world: _World) -> None:
