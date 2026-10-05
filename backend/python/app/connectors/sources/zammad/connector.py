@@ -1075,8 +1075,8 @@ class ZammadConnector(BaseConnector):
 
     def _window_bounds(self, low: int | None, high: int | None) -> tuple[int, int]:
         lo = low if low is not None else (self._date_filter_bounds(SyncFilterKey.MODIFIED)[0] or 0)
-        # An open window ends at the next whole second, an edge the query can state exactly.
-        hi = high if high is not None else -(-get_epoch_timestamp_in_ms() // 1000) * 1000
+        # An open window ends at the whole second after the clock's, an edge the query can state exactly.
+        hi = high if high is not None else (get_epoch_timestamp_in_ms() // 1000 + 1) * 1000
         return lo, hi
 
     def _split_window(self, low: int | None, high: int | None) -> list[tuple[int | None, int | None]] | None:
@@ -1188,8 +1188,10 @@ class ZammadConnector(BaseConnector):
                     continue
                 bounds = self._window_bounds(low, high)
                 if high is None:
-                    # Wait out the second, so no ticket is stamped below the edge after its ids are read.
+                    # The read by id is bounded by the edge a resume will use. Waiting out the second
+                    # means no ticket is stamped below that edge after its ids are read.
                     await asyncio.sleep(max(0, bounds[1] - get_epoch_timestamp_in_ms()) / 1000)
+                    query = self._build_ticket_search_query(group_id, low, until=bounds[1])
                 async for batch_records in self._read_dense_window(
                     datasource, query, group_name, bounds, read_until,
                     resume_from.get((low, high), 0), written, failures, limit, batch_size,

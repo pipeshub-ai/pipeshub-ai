@@ -16,6 +16,7 @@ from zammad_behaviour_fakes import (
     FakeStore,
     FakeZammad,
     epoch_ms,
+    iso,
 )
 
 from app.connectors.sources.zammad import connector as zammad_connector
@@ -315,6 +316,19 @@ async def test_an_excluded_group_ticket_that_cannot_be_read_back_is_retried(worl
     assert "20" not in world.db.external_ids()
 
 
+def _count_ticket_writes(world: World) -> list[str]:
+    """External ids of every record written from here on, one entry per write."""
+    writes: list[str] = []
+    record_writes = world.db.on_new_records
+
+    async def counted(records_with_permissions: list) -> None:
+        writes.extend(r.external_record_id for r, _ in records_with_permissions)
+        await record_writes(records_with_permissions)
+
+    world.db.on_new_records = counted
+    return writes
+
+
 def _group_point(world: World, group_name: str) -> dict:
     return next((v for k, v in world.store.sync_points.items() if k.endswith(group_name)), {})
 
@@ -404,14 +418,7 @@ async def test_a_burst_on_a_modified_before_filter_that_a_window_edge_lands_on_i
     for ticket_id in range(1000, 1150):
         world.zammad.add_ticket(ticket_id, 1, day=5)
     world.zammad.add_ticket(1200, 1, day=5, minute=1)
-    writes: list[str] = []
-    record_writes = world.db.on_new_records
-
-    async def counted(records_with_permissions: list) -> None:
-        writes.extend(r.external_record_id for r, _ in records_with_permissions)
-        await record_writes(records_with_permissions)
-
-    world.db.on_new_records = counted
+    writes = _count_ticket_writes(world)
     world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
 
     await world.save_filters({"modified": {
@@ -431,15 +438,20 @@ async def test_a_burst_on_a_modified_before_filter_that_a_window_edge_lands_on_i
     assert _group_point(world, "Support").get("burst_next_id") == 0
 
 
+@pytest.mark.parametrize("clock_past_burst_ms", [0, 500])
 async def test_a_burst_in_the_current_second_of_a_narrow_window_is_resumed_not_read_again(
-    world: World, monkeypatch: pytest.MonkeyPatch,
+    world: World, monkeypatch: pytest.MonkeyPatch, clock_past_burst_ms: int,
 ) -> None:
-    """A window too narrow to halve ends at the clock, which the query can't state to the millisecond."""
+    """A window too narrow to halve ends after the clock's second, which the query can state exactly."""
     _search_window(world, monkeypatch, 60)
     burst_at = epoch_ms(5)
-    _clock(monkeypatch, burst_at + 500)
+    _clock(monkeypatch, burst_at + clock_past_burst_ms)
     for ticket_id in range(1000, 1150):
         world.zammad.add_ticket(ticket_id, 1, day=5)
+    # Edited after the window's edge, while the burst is read: it belongs to the next window.
+    world.zammad.add_ticket(990, 1, day=5)
+    world.zammad.tickets[990]["updated_at"] = iso(burst_at + 2_000)
+    writes = _count_ticket_writes(world)
     world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
 
     await world.save_filters({"modified": {
@@ -451,9 +463,10 @@ async def test_a_burst_in_the_current_second_of_a_narrow_window_is_resumed_not_r
     world.zammad.search_queries.clear()
     await world.sync()
 
-    assert all(str(t) in world.db.external_ids() for t in range(1100, 1150))
     burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
     assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    expected = sorted(str(t) for t in [990, *range(1000, 1150)])
+    assert sorted(w for w in writes if w in expected) == expected, "every ticket is read once"
     assert _group_point(world, "Support").get("burst_next_id") == 0
 
 
