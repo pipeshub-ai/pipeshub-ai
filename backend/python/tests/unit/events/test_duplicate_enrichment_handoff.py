@@ -235,6 +235,44 @@ class TestTheTwinCannotBeReadAfterQueueing:
         assert decision.skip_indexing is False
 
 
+class TestTheTwinChangesBeforeTheReRead:
+    async def test_a_twin_whose_content_changed_is_not_copied(self, store, processor) -> None:
+        add_twin(store, processor, NOT_STARTED, indexingStatus=IN_PROGRESS)
+        store.before_write[("dup", QUEUED)] = lambda: store.records["twin"].update(
+            md5Checksum="md5-of-an-edited-file", indexingStatus=COMPLETED, extractionStatus=COMPLETED,
+            virtualRecordId="vr-edited",
+        )
+
+        decision = await dedup(store, processor)
+
+        assert decision.skip_indexing is False, "indexed itself rather than borrowing another file's identity"
+        assert store.records["dup"].get("virtualRecordId") != "vr-edited"
+        assert store.copied_relationships == []
+
+    async def test_a_twin_that_failed_first_leaves_the_duplicate_to_index_itself(self, store, processor) -> None:
+        add_twin(store, processor, NOT_STARTED, indexingStatus=IN_PROGRESS)
+
+        def twin_fails_and_propagates() -> None:
+            store.records["twin"].update(indexingStatus=FAILED, extractionStatus=FAILED)
+            assert store.promote_queued_duplicates("twin", FAILED) == 0, "the duplicate is not QUEUED yet"
+
+        store.before_write[("dup", QUEUED)] = twin_fails_and_propagates
+        store.add("dup", indexingStatus=NOT_STARTED, extractionStatus=NOT_STARTED)
+
+        decision = await dedup(store, processor)
+
+        assert decision.skip_indexing is False
+
+    async def test_a_twin_waiting_on_its_retry_still_holds_the_duplicate(self, store, processor) -> None:
+        add_twin(store, processor, NOT_STARTED, indexingStatus=IN_PROGRESS)
+        store.before_write[("dup", QUEUED)] = lambda: store.records["twin"].update(indexingStatus=QUEUED)
+
+        decision = await dedup(store, processor)
+
+        assert decision.skip_indexing is True
+        assert store.records["dup"]["indexingStatus"] == QUEUED
+
+
 class TestTwinFinishesWhileTheDuplicateIsQueued:
     async def test_a_twin_finishing_between_the_check_and_the_queued_write_is_not_missed(
         self, store, processor

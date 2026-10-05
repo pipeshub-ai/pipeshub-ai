@@ -78,6 +78,15 @@ def _make_event_payload(
     return data
 
 
+def _rereads_as_still_in_flight(twin, doc) -> AsyncMock:
+    """The post-QUEUED re-read of the twin: same content and org, still running.
+
+    Read at call time, after dedup has stored the computed md5 on ``doc``."""
+    return AsyncMock(side_effect=lambda *_a, **_k: {
+        **twin, "md5Checksum": doc.get("md5Checksum"), "orgId": doc.get("orgId"),
+    })
+
+
 async def _drain(async_gen):
     """Collect all items from an async generator."""
     items = []
@@ -514,6 +523,7 @@ class TestCheckDuplicateMd5CrossCollectionMatrix:
             "recordType": "FILE",
             "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(in_progress, doc)
 
         result = await ep._check_duplicate_by_md5(b"x", doc)
 
@@ -1823,12 +1833,12 @@ class TestOnEventDuplicate:
         ep, _, _, gp = _make_event_processor()
 
         # find_duplicate_records returns an in-progress duplicate (no processed one)
-        gp.find_duplicate_records = AsyncMock(return_value=[
-            {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
-        ])
+        twin = {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records = AsyncMock(return_value=[twin])
         gp.batch_update_nodes = AsyncMock()
 
         doc = {"_key": "rec-1", "md5Checksum": "abc123", "recordType": "FILE", "sizeInBytes": 100}
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
@@ -2442,15 +2452,17 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
     async def test_a_successful_in_flight_duplicate_still_skips(self):
         """The happy path is unchanged: raising is reserved for real failures."""
         ep, gp = _make_multi_collection_event_processor()
-        gp.find_duplicate_records.return_value = [{
+        twin = {
             "_key": "dup-1",
             "connectorName": "GOOGLE_DRIVE",
             "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-        }]
+        }
+        gp.find_duplicate_records.return_value = [twin]
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
 
         result = await ep._check_duplicate_by_md5(b"payload", doc)
 

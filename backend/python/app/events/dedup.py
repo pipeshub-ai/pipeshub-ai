@@ -95,6 +95,19 @@ def _is_in_progress(record: Mapping[str, Any], enrichment_live_after_ms: int | N
     return isinstance(started_at, (int, float)) and started_at >= enrichment_live_after_ms
 
 
+def will_promote_queued_copies(record: Mapping[str, Any], enrichment_live_after_ms: int | None) -> bool:
+    """Whether a twin still has processing ahead whose completion promotes QUEUED copies.
+
+    In flight as ``select_duplicate`` sees it, or QUEUED itself: a retry was
+    scheduled for it, or it waits on a third copy whose completion promotes
+    every QUEUED copy of the content.
+    """
+    return (
+        record.get("indexingStatus") == ProgressStatus.QUEUED.value
+        or _is_in_progress(record, enrichment_live_after_ms)
+    )
+
+
 def select_duplicate(
     duplicates: Iterable[Mapping[str, Any]],
     current_collection: str | None,

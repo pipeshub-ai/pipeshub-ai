@@ -33,7 +33,13 @@ from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
-from app.events.dedup import DedupDecision, DuplicateMatch, is_finished, select_duplicate
+from app.events.dedup import (
+    DedupDecision,
+    DuplicateMatch,
+    is_finished,
+    select_duplicate,
+    will_promote_queued_copies,
+)
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -813,12 +819,14 @@ class EventProcessor:
             return DedupDecision(virtual_record_id=None, skip_indexing=False)
 
         current_collection = self._resolve_write_collection(doc)
+        enrichment_live_after_ms = get_epoch_timestamp_in_ms() - int(
+            messaging_env.stale_recovery_after_seconds * 1000
+        )
         match = select_duplicate(
             duplicate_records,
             current_collection,
             self._resolve_write_collection,
-            enrichment_live_after_ms=get_epoch_timestamp_in_ms()
-            - int(messaging_env.stale_recovery_after_seconds * 1000),
+            enrichment_live_after_ms=enrichment_live_after_ms,
         )
         if match is None:
             self.logger.info(
@@ -865,16 +873,42 @@ class EventProcessor:
                 f"Could not re-read duplicate {twin_key} after queueing {_record_key(doc)}",
                 details={"record_id": _record_key(doc), "duplicate_id": twin_key},
             ) from e
-        if twin is None:
-            # Deleted meanwhile: no completion will ever promote this record.
-            self.logger.info("Duplicate %s is gone; indexing %s itself", twin_key, _record_key(doc))
+        if twin is None or not self._still_a_same_collection_copy(twin, doc, md5_checksum, current_collection):
+            # Deleted, or its content or org changed since it was selected: no
+            # completion of it will promote this record, and its identity is
+            # not this record's to copy.
+            self.logger.info("Duplicate %s no longer stands for %s; indexing it itself", twin_key, _record_key(doc))
             return DedupDecision()
-        if isinstance(twin, dict) and is_finished(twin):
+        if is_finished(twin):
             self.logger.info("Duplicate %s finished while %s was being queued; reusing it now", twin_key, _record_key(doc))
             return await self._reuse_finished_duplicate(
                 doc, DuplicateMatch(record=twin, same_collection=True, is_processed=True)
             )
-        return DedupDecision(skip_indexing=True)
+        if will_promote_queued_copies(twin, enrichment_live_after_ms):
+            return DedupDecision(skip_indexing=True)
+        # Ended without finishing (FAILED, or an end state such as an
+        # unsupported type) and already past promoting its copies. Indexed
+        # here rather than failed: whether the twin's failure would repeat on
+        # this content is not known here, and this record's own message can
+        # still find out.
+        self.logger.info(
+            "Duplicate %s ended %s while %s was being queued; indexing it itself",
+            twin_key, twin.get("indexingStatus"), _record_key(doc),
+        )
+        return DedupDecision()
+
+    def _still_a_same_collection_copy(
+        self,
+        twin: dict[str, Any],
+        doc: dict[str, Any],
+        md5_checksum: str,
+        current_collection: str | None,
+    ) -> bool:
+        return (
+            twin.get("md5Checksum") == md5_checksum
+            and (twin.get("orgId") or "") == (doc.get("orgId") or "")
+            and self._resolves_to_same_collection(twin, current_collection)
+        )
 
     async def _reuse_finished_duplicate(
         self, doc: dict[str, Any], match: DuplicateMatch
