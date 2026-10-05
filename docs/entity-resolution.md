@@ -185,25 +185,37 @@ cache, which the change notification clears, and reads the stored config at
 least once a minute in case a notification is missed. A config that cannot be
 read keeps the current model. On a change the store rebuilds its client, so
 the next write, search and rebuild tick use the new model and the marker
-moves. A write embedded by the old model while the switch happened is not
-stored; the passes write that entity again.
+moves.
+
+Writes are also checked against the stored config, not only the cache: just
+before it upserts, each written batch re-reads the config from the key-value
+store, as the records path does per record. A batch embedded with a model
+the stored config no longer names is refused, and so is one whose model
+changed in this process while it was embedding. This covers an indexing
+replica that missed the notification and still holds the old model while
+another has already recreated the collection. The passes write a refused
+entity again.
 
 A store checks the collection against its new model: the collection's
 dimension, and the model recorded on one stored point. The collection does
 not match when the dimension differs, or when the dimension is the same but
-that point was embedded by another model. Points from before
-`metadata.embeddingModel` existed are not counted as a mismatch; they are
-re-embedded in place.
+that point was embedded by another model. At the same dimension, the old
+vectors would otherwise answer new-model queries with no error. Points from
+before `metadata.embeddingModel` existed are not counted as a mismatch; they
+are re-embedded in place.
 
-- The indexing service drops and recreates a collection that does not match,
-  and the passes refill it. Its rebuild loop checks for a model switch every
-  5 seconds while it waits between ticks, so this happens within seconds of
-  the switch even when nothing is being indexed.
-- The query and connector services never recreate it. Until the indexing
-  service has, they fail entity calls with the mismatch (`The indexing
-  service recreates it`) and retry initialisation every 30 seconds. At the
-  same dimension the old vectors would otherwise answer new-model queries
-  with no error.
+- Only the rebuild leader drops and recreates a collection that does not
+  match, at the start of a tick while it holds `entity_index_rebuild:leader`.
+  The passes then refill it. Two replicas dropping in turn would lose the
+  points the first one had refilled.
+- While the rebuild loop waits between ticks, it checks the configured model
+  every 5 seconds (a cache read) and ends the wait on a change. So the leader
+  recreates within seconds of the switch, even when nothing is being indexed.
+- Every other store fails entity calls with the mismatch (`The indexing
+  service recreates it`) and retries initialisation every 30 seconds. That
+  includes the query and connector services and the other indexing replicas.
+  After a restart that finds a mismatched collection, entity writes fail
+  until the leader's first tick, which comes after a 60-second startup grace.
 - If the stored point cannot be read, the switch fails and is retried 30
   seconds later. The store does not adopt the new model on an unread
   collection.

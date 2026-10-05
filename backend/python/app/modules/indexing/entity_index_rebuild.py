@@ -74,8 +74,8 @@ STARTUP_GRACE_SECONDS = 60.0
 BUSY_INTERVAL_SECONDS = 2.0
 IDLE_INTERVAL_SECONDS = 60.0
 # While waiting between ticks, how often to check for an embedding model
-# switch. The check is a cache read; a switch makes this service recreate a
-# collection the query and connector services refuse to search until it does.
+# switch. The check is a cache read; a switch ends the wait, so the leader's
+# next tick recreates a collection every other store refuses until it does.
 MODEL_CHECK_SECONDS = 5.0
 SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 # A deleted connector's entity cleanup intent older than this, whose event
@@ -256,7 +256,9 @@ class EntityIndexRebuilder:
             return "not_leader"
         if await self._reconcile_entity_cleanup():
             return "entity_cleanup"
-        marker = entity_index_marker(await self.store.embedding_fingerprint())
+        # Holding the leader lock, this is the one place a collection another
+        # model wrote is dropped (see EntityVectorStore._ensure_initialized).
+        marker = entity_index_marker(await self.store.embedding_fingerprint(recreate=True))
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
@@ -649,9 +651,10 @@ async def _resolve_store(app_container: Any) -> EntityVectorStore | None:  # noq
     return store
 
 
-async def _sleep_watching_model(store: EntityVectorStore | None, seconds: float, logger: Logger) -> None:
-    """Sleep ``seconds``, returning early once ``store`` has switched model,
-    so the next tick runs the passes under the new marker."""
+async def _sleep_watching_model(store: EntityVectorStore | None, seconds: float) -> None:
+    """Sleep ``seconds``, returning early once the configured embedding model
+    changes, so the next tick runs the passes under the new marker."""
+    start = await store.embedding_config_version() if store is not None else None
     remaining = seconds
     while remaining > 0:
         step = min(MODEL_CHECK_SECONDS, remaining)
@@ -659,12 +662,9 @@ async def _sleep_watching_model(store: EntityVectorStore | None, seconds: float,
         remaining -= step
         if store is None:
             continue
-        try:
-            if await store.refresh_model():
-                return
-        except Exception as exc:
-            # The model cannot start; the next tick raises, logs and backs off.
-            logger.debug("entity_index_rebuild: model check failed: %s", exc)
+        version = await store.embedding_config_version()
+        if version is not None and version != start:
+            return
 
 
 async def run_entity_index_rebuild_loop(
@@ -712,7 +712,7 @@ async def run_entity_index_rebuild_loop(
                     lock = None
                 backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF_MULTIPLIER)
                 interval = IDLE_INTERVAL_SECONDS * backoff
-            await _sleep_watching_model(rebuilder.store if rebuilder else None, interval, logger)
+            await _sleep_watching_model(rebuilder.store if rebuilder else None, interval)
     finally:
         if lock is not None:
             await lock.release()

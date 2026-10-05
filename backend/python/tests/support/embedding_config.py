@@ -40,6 +40,14 @@ def config_service(*embedding: dict[str, Any]) -> ConfigurationService:
     return service
 
 
+def another_process(service: ConfigurationService) -> ConfigurationService:
+    """A ConfigurationService over the same key-value store as ``service``,
+    with its own cache: what a second replica sees."""
+    with patch.object(ConfigurationService, "_start_watch"), \
+            patch.dict("os.environ", {"SECRET_KEY": "test-secret-key"}):
+        return ConfigurationService(logger=logging.getLogger("test-config"), key_value_store=service.store)
+
+
 async def switch_embedding_model(
     service: ConfigurationService, *embedding: dict[str, Any], notify: bool = True,
 ) -> None:

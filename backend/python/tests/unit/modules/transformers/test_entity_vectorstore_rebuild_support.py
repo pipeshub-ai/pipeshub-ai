@@ -276,11 +276,18 @@ class TestDimensionChange:
             await store._ensure_initialized()
         db.delete_collection.assert_not_awaited()
 
+    async def test_mismatch_without_the_leader_request_raises_even_when_enabled(self) -> None:
+        store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
+        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
+             pytest.raises(VectorStoreError, match="dimension 768"):
+            await store._ensure_initialized()
+        db.delete_collection.assert_not_awaited()
+
     async def test_mismatch_recreates_when_enabled(self, caplog) -> None:
         store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
         with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
              caplog.at_level(logging.WARNING, logger="entity-store-test"):
-            await store._ensure_initialized()
+            await store._ensure_initialized(recreate=True)
         db.delete_collection.assert_awaited_once()
         assert db.create_collection.await_args.kwargs["config"].embedding_size == 1536
         assert any("768" in r.getMessage() and "1536" in r.getMessage() for r in caplog.records)

@@ -26,6 +26,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from tests.support.embedding_config import (
+    another_process,
     config_service,
     embedding_config,
     switch_embedding_model,
@@ -100,6 +101,12 @@ def _topic(entity_id: str = "t1") -> EntityRecord:
     )
 
 
+async def _leader_tick(store: EntityVectorStore) -> str:
+    """What the rebuild leader's tick does first: the one call allowed to
+    drop a collection another model wrote."""
+    return await store.embedding_fingerprint(recreate=True)
+
+
 def _models_of(db: FakeEntityVectorDB) -> dict[str, tuple[str, float]]:
     return {
         point.payload["metadata"]["entityId"]: (point.payload["metadata"][EMBEDDING_MODEL_FIELD], point.dense_vector[0])
@@ -116,6 +123,9 @@ class TestWrites:
         assert _models_of(db) == {"t1": (BGE_FP, BGE.value)}
 
         await switch_embedding_model(config, SMALL_CONFIG)
+        with pytest.raises(VectorStoreError, match="dimension 4"):
+            await store.upsert_entities_batch([_topic()], merge_membership=False)
+        assert await _leader_tick(store) == SMALL_FP
         outcome = await store.upsert_entities_batch([_topic()], merge_membership=False)
 
         assert outcome.written == 1
@@ -131,10 +141,24 @@ class TestWrites:
         await store.upsert_entities_batch([_topic("t1"), _topic("t2")], merge_membership=False)
 
         await switch_embedding_model(config, ADA_CONFIG)
+        assert await _leader_tick(store) == ADA_FP
         await store.upsert_entities_batch([_topic("t1")], merge_membership=False)
 
         assert db.deletions == 1
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
+
+    async def test_only_the_rebuild_leader_drops_the_collection(self) -> None:
+        """Every indexing replica owns the collection, but one dropping it
+        after another had refilled part of it would lose those points."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        await switch_embedding_model(config, ADA_CONFIG)
+        with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-3-small"):
+            await store.embedding_fingerprint()
+        assert db.deletions == 0
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
 
     async def test_points_from_before_the_model_was_recorded_keep_the_collection(self) -> None:
         """Their model is unknown; the rebuild re-embeds them in place."""
@@ -179,6 +203,7 @@ class TestWrites:
 
         # A corrected config is tried at once, not after the retry window.
         await switch_embedding_model(config, ADA_CONFIG)
+        assert await _leader_tick(store) == ADA_FP
         await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
         assert _models_of(db)["t2"] == (ADA_FP, ADA.value)
 
@@ -209,24 +234,47 @@ class TestQueries:
             await reader.search_entities("pricing", ORG, set(), {"c1"})
         assert db.deletions == 0
 
-        assert await indexing.refresh_model() is True
+        assert await _leader_tick(indexing) == ADA_FP
         monkeypatch.setattr(module, "_INIT_RETRY_SECONDS", 0.0)
         await reader.search_entities("pricing", ORG, set(), {"c1"})
         assert db.searches[-1].dense_query[0] == ADA.value
 
 
+class TestReplicas:
+    """Two indexing processes over one collection, each with its own config
+    cache, as Helm's default two replicas run."""
+
+    async def test_a_replica_with_a_stale_model_cannot_overwrite_the_new_points(self) -> None:
+        db, config_a = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        config_b = another_process(config_a)
+        leader, other = _store(db, config_a), _store(db, config_b)
+        await leader.upsert_entities_batch([_topic()], merge_membership=False)
+        await other.upsert_entities_batch([_topic("t2")], merge_membership=False)
+
+        # B misses the notification, so its cache still names the old model.
+        await switch_embedding_model(config_a, ADA_CONFIG)
+        assert await _leader_tick(leader) == ADA_FP
+        await leader.upsert_entities_batch([_topic()], merge_membership=False)
+
+        outcome = await other.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert (outcome.written, outcome.failed) == (0, 1)
+        assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
+
+    async def test_the_refused_replica_follows_the_new_model_next(self) -> None:
+        db, config_a = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        config_b = another_process(config_a)
+        leader, other = _store(db, config_a), _store(db, config_b)
+        await other.upsert_entities_batch([_topic("t2")], merge_membership=False)
+        await switch_embedding_model(config_a, ADA_CONFIG)
+        assert await _leader_tick(leader) == ADA_FP
+
+        assert (await other.upsert_entities_batch([_topic()], merge_membership=False)).failed == 1
+        await other.upsert_entities_batch([_topic()], merge_membership=False)
+        assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
+
+
 class TestRecreateOnSwitch:
-    async def test_refresh_model_recreates_without_waiting_for_a_write(self) -> None:
-        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
-        store = _store(db, config)
-        await store.upsert_entities_batch([_topic()], merge_membership=False)
-        assert await store.refresh_model() is False
-
-        await switch_embedding_model(config, ADA_CONFIG)
-        assert await store.refresh_model() is True
-        assert (db.deletions, db.points) == (1, {})
-        assert await store.refresh_model() is False
-
     async def test_a_failed_point_read_fails_the_switch_and_is_retried(self, monkeypatch) -> None:
         """An unread collection may still hold the old model's vectors, so the
         new model is not adopted on the strength of a failed read."""
@@ -244,8 +292,16 @@ class TestRecreateOnSwitch:
         assert db.deletions == 0
 
         monkeypatch.setattr(module, "_INIT_RETRY_SECONDS", 0.0)
-        assert await store.embedding_fingerprint() == ADA_FP
+        assert await _leader_tick(store) == ADA_FP
         assert (db.deletions, db.points) == (1, {})
+
+    async def test_the_config_version_changes_without_initialising(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        before = await store.embedding_config_version()
+        await switch_embedding_model(config, ADA_CONFIG)
+        assert await store.embedding_config_version() not in (None, before)
+        assert db.dimension is None
 
 
 class TestConfigReads:
@@ -261,10 +317,13 @@ class TestConfigReads:
             return await real_get_key(key, **kwargs)
 
         with patch.object(config.store, "get_key", side_effect=_counting_get_key):
+            for _ in range(3):
+                await store.search_entities("pricing", ORG, set(), {"c1"})
+            assert reads == 1
+            # A write re-reads the store once per batch, before it upserts.
             for entity_id in ("t1", "t2", "t3"):
                 await store.upsert_entities_batch([_topic(entity_id)], merge_membership=False)
-                await store.search_entities("pricing", ORG, set(), {"c1"})
-        assert reads == 1
+            assert reads == 4
 
     async def test_a_missed_notification_is_caught_by_the_periodic_read(self, monkeypatch) -> None:
         db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
@@ -275,7 +334,7 @@ class TestConfigReads:
         assert await store.embedding_fingerprint() == SMALL_FP
 
         monkeypatch.setattr(module, "_CONFIG_RECHECK_SECONDS", 0.0)
-        assert await store.embedding_fingerprint() == ADA_FP
+        assert await _leader_tick(store) == ADA_FP
 
     async def test_an_unreadable_config_keeps_the_model_and_the_collection(self, monkeypatch) -> None:
         """A failed read must not look like "no model configured", which would

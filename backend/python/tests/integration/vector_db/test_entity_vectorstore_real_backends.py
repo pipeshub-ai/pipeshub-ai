@@ -575,7 +575,10 @@ class TestRebuildSupport:
             await _wider(False)._ensure_initialized()
         assert await _point(store, org, "topic", "t1") is not None
 
-        await _wider(True)._ensure_initialized()
+        with pytest.raises(VectorStoreError):
+            await _wider(True)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+        await _wider(True)._ensure_initialized(recreate=True)
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM * 2
         assert await _point(store, org, "topic", "t1") is None
@@ -601,7 +604,8 @@ class TestRebuildSupport:
     ) -> None:
         """Every store reads the model one point records, through a scroll
         projected to that field, which every backend must answer. Only the
-        owner recreates; the others refuse the old vectors until it has."""
+        rebuild leader's request recreates; every other store, an indexing
+        replica included, refuses the old vectors until it has."""
         org = f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
         await _publish_writes(store)
@@ -626,7 +630,10 @@ class TestRebuildSupport:
             await _restarted("other:model", owner=False)._ensure_initialized()
         assert await _point(store, org, "topic", "t1") is not None
 
-        await _restarted("other:model", owner=True)._ensure_initialized()
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await _restarted("other:model", owner=True)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+        await _restarted("other:model", owner=True)._ensure_initialized(recreate=True)
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM
         assert await _point(store, org, "topic", "t1") is None
