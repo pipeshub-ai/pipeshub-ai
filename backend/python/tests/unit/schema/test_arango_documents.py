@@ -317,6 +317,22 @@ class TestAppSchemaVectorMembership:
             validator.validate(_valid_app_doc(notARealAppField=True))
 
 
+class TestAppSchemaSyncQueue:
+    """Arango applies this schema server-side and strictly, so a field it does not
+    list is not merely unvalidated -- the whole write is rejected. The sync layer
+    records owed resyncs this way, and losing that write strands a connector."""
+
+    def test_accepts_the_payloads_the_sync_layer_writes(self):
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        # _mark_queued / boot at capacity
+        validator.validate(
+            _valid_app_doc(status="QUEUED", pendingResync=True, pendingFullSync=True)
+        )
+        # _persist_pending_resync, then the re-issue and /sync/stop clearing it
+        validator.validate(_valid_app_doc(pendingResync=True))
+        validator.validate(_valid_app_doc(pendingResync=False, pendingFullSync=False))
+
+
 # ---------------------------------------------------------------------------
 # Artifact version bookkeeping
 # ---------------------------------------------------------------------------

@@ -396,7 +396,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node_with_target_name(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         pass
     
     @abstractmethod

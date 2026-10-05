@@ -1881,11 +1881,15 @@ async def perform_stt_health_check(
                         },
                     )
             except Exception as exc:  # pragma: no cover - defensive
+                logger.error("Failed to probe faster-whisper: %s", exc, exc_info=True)
                 return JSONResponse(
                     status_code=500,
                     content={
                         "status": "error",
-                        "message": f"Failed to probe faster-whisper: {exc}",
+                        "message": (
+                            "Couldn't check the local Whisper install. Reinstall the "
+                            "service's dependencies, then try again."
+                        ),
                         "details": {"provider": provider, "model": model_name},
                     },
                 )

@@ -300,21 +300,45 @@ class TestSameAsItem:
         assert resolution.stats.merges == 1
         assert resolution.stats.in_record_merges == 1
 
-    async def test_conflicting_winners_in_one_group_keep_first_and_count(
+    async def test_a_valid_target_wins_over_an_item_pointer(
         self, make_resolver, seeded_store, metadata_factory, ctx_factory
     ) -> None:
-        await seeded_store(_topic("k-a", "Alpha topic"), _topic("k-b", "Beta topic"))
+        """KG-39: the model named both the offered node and another item; the
+        node is the stronger answer and must not be dropped for the pointer."""
+        await seeded_store(_topic("k-bug", "Bug bash testing"))
         p1, p2 = _patched(_answer(
-            MergeDecision(i=0, same=True, target="k-a"),
-            MergeDecision(i=1, same=True, target="k-b"),
-            MergeDecision(i=2, same=True, same_as_item=0),
+            MergeDecision(i=0, same=False),
+            MergeDecision(i=1, same=True, target="k-bug", same_as_item=0),
         ))
         with p1, p2:
             resolution = await make_resolver().resolve(
-                ctx_factory("r1", "acme", metadata_factory(topics=["Alpha topic x", "Beta topic x", "Gamma"]))
+                ctx_factory("r1", "acme", metadata_factory(topics=["Release notes", "Bug bash testing session"]))
             )
-        # only a genuine group can conflict: bind item 1 to item 0 through 2
-        assert resolution.stats.rejected_decisions == 0  # 0 and 1 are separate components here
+        merged = resolution.entries[(TOPICS, "bug bash testing")]
+        assert merged.key == "k-bug" and merged.extracted_names == ["Bug bash testing session"]
+        assert resolution.entries[(TOPICS, "release notes")].is_new
+        assert resolution.stats.merges == 1 and resolution.stats.rejected_decisions == 0
+
+
+class TestEmptyAnswer:
+    async def test_an_answer_with_no_usable_decision_counts_as_a_failed_call(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        """KG-39: an empty (or all-invalid) decision list is not a success."""
+        from app.modules.entity_resolution import resolver as resolver_module
+
+        await seeded_store(_topic("k-bug", "Bug bash testing"))
+        p1, p2 = _patched(_answer(MergeDecision(i=7, same=True, target="k-bug")))
+        with p1, p2, patch.object(resolver_module.metrics, "record_model_call") as calls, \
+                patch.object(resolver_module.metrics, "record_fallback") as fallbacks:
+            resolver = make_resolver()
+            resolution = await resolver.resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
+            )
+        assert [c.args[0] for c in calls.call_args_list] == ["empty"]
+        assert ("model_empty", 1) in [tuple(c.args) for c in fallbacks.call_args_list]
+        assert resolution.stats.model_failures == 1
+        assert resolution.entries[(TOPICS, "bug bash testing session")].is_new
 
 
 class TestConcurrencyByConstruction:

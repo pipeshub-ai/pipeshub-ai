@@ -193,6 +193,12 @@ class TestPermittedEntityRows:
         )
         assert [r["_key"] for r in rows] == ["0", "1"] and rows.examined == 2
 
+    def test_a_zero_limit_returns_nothing_and_examines_nothing(self) -> None:
+        rows = PermittedEntityRows.from_window(
+            [{"pos": 0, "row": {"_key": "a"}}], limit=0, window_size=100, capped=False,
+        )
+        assert list(rows) == [] and rows.examined == 0 and rows.window_size == 100
+
 
 class TestAnyoneSharesGrantNothing:
     """As in every access check since #3691: an entity is not reached through

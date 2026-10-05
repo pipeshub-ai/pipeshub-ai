@@ -451,6 +451,13 @@ class IGraphDBProvider(ABC):
         cannot guarantee nothing landed answer False."""
         return False
 
+    def is_write_conflict(self, error: BaseException) -> bool:
+        """Whether *error* came from colliding with a concurrent writer (a
+        deadlock, a lock timeout, a write-write conflict). Unlike
+        :meth:`is_transient_error` it says nothing about what landed, so only
+        an idempotent block may be re-run on it."""
+        return False
+
     # ==================== Document Operations ====================
 
     @abstractmethod
@@ -1051,7 +1058,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -1062,6 +1071,7 @@ class IGraphDBProvider(ABC):
             node_id (str): Source node ID (e.g., "groups/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of edge documents enriched with target name
@@ -1153,7 +1163,9 @@ class IGraphDBProvider(ABC):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes from a collection matching multiple field filters.
@@ -1165,6 +1177,7 @@ class IGraphDBProvider(ABC):
             filters (Dict[str, Any]): Dictionary of field_name: value pairs to filter on
             return_fields (Optional[List[str]]): Optional list of fields to return (None = all fields)
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of matching node documents
@@ -6270,6 +6283,27 @@ class IGraphDBProvider(ABC):
 
         Raises:
             ValueError: when ``collection`` is not a taxonomy collection.
+            Exception: on write failure.
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """Link a subcategory node to its parent (``interCategoryRelations``)
+        unless the edge exists, outside any transaction.
+
+        ``child_collection`` is a subcategory level; the parent collection
+        follows from it (``CATEGORY_HIERARCHY_PARENTS``). Records sharing a
+        new chain call this at once: the write is idempotent, safe under
+        concurrent callers, and never leaves two edges for one pair.
+
+        Raises:
+            ValueError: when ``child_collection`` is not a subcategory level.
             Exception: on write failure.
         """
         pass
