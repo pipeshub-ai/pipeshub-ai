@@ -6,7 +6,7 @@ import logging
 import math
 import multiprocessing
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
@@ -937,52 +937,21 @@ class EventProcessor:
             )
 
         if match.same_collection:
-            # The vectors this record needs already exist. Take the
-            # duplicate's state wholesale and skip indexing.
-            duplicate_fields = {
-                "isDirty": False,
-                "summaryDocumentId": match.record.get("summaryDocumentId"),
-                "virtualRecordId": attached_vrid,
-                "indexingStatus": match.record.get("indexingStatus"),
-                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                # EMPTY duplicates never ran extraction, so this can be
-                # missing/None on the source record — don't propagate None.
-                "extractionStatus": (
-                    match.record.get("extractionStatus")
-                    or ProgressStatus.NOT_STARTED.value
-                ),
-                "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-            }
-        elif attached_vrid:
-            # Same content, different collection: reuse the content
-            # identity (and with it the stored blob), but leave
-            # indexingStatus alone so this record still gets vectors of its
-            # own in its own collection.
-            duplicate_fields = {"virtualRecordId": attached_vrid}
+            # The vectors this record needs already exist.
+            await self._attach_to_finished_twin(match.record, doc)
         else:
-            # A finished duplicate with no virtualRecordId has no content
-            # identity to lend. Writing the None would blank whatever this
-            # record already had.
-            duplicate_fields = {}
-
-        if duplicate_fields:
-            self._require_persisted(
-                await self.update_record_fields(doc, duplicate_fields),
-                "Failed to persist duplicate record fields",
-                doc,
-            )
-
-        # Copy all relationships from the duplicate to this document
-        self._require_persisted(
-            await self.graph_provider.copy_document_relationships(
-                _record_key(match.record),
-                _record_key(doc),
-            ),
-            "Failed to copy duplicate record relationships",
-            doc,
-        )
-        if attached_vrid and match.same_collection:
-            await self.sync_vector_membership(attached_vrid)
+            if attached_vrid:
+                # Same content, different collection: reuse the content
+                # identity (and with it the stored blob), but leave
+                # indexingStatus alone so this record still gets vectors of its
+                # own in its own collection. A twin with no virtualRecordId has
+                # no identity to lend, and writing its None would blank ours.
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"virtualRecordId": attached_vrid}),
+                    "Failed to persist duplicate record fields",
+                    doc,
+                )
+            await self._copy_twin_edges(match.record, doc)
         if match.same_collection and self.sink_orchestrator is not None:
             # The copy above only touched the graph — this record still
             # has no `record`/`record_group` point, and the taxonomy
@@ -1010,6 +979,118 @@ class EventProcessor:
         return DedupDecision(
             virtual_record_id=attached_vrid, skip_indexing=match.same_collection
         )
+
+    async def _copy_twin_edges(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
+        self._require_persisted(
+            await self.graph_provider.copy_document_relationships(
+                _record_key(twin),
+                _record_key(doc),
+            ),
+            "Failed to copy duplicate record relationships",
+            doc,
+        )
+
+    async def _attach_to_finished_twin(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
+        """Make ``doc`` a copy of a finished twin in the same collection.
+
+        Status is written last. The handler acknowledges a redelivered event
+        for a COMPLETED record, so writing it first turned any failure in the
+        edge copy or the membership sync into a permanent one: the record
+        claimed to be indexed while its connectorId was missing from the
+        VRID's points.
+        """
+        target_key = _record_key(doc)
+        vrid = twin.get("virtualRecordId")
+        prior_identity = {
+            "virtualRecordId": doc.get("virtualRecordId"),
+            "summaryDocumentId": doc.get("summaryDocumentId"),
+        }
+
+        # A QUEUED record with this md5 is what a finishing twin promotes. Left
+        # QUEUED for the length of the attach, this one could be promoted to
+        # COMPLETED underneath it, and a failure afterwards would then undo the
+        # identity of a record nothing retries. IN_PROGRESS takes it out of
+        # the promotion's reach; a failed attempt is retried by the handler,
+        # as for any record.
+        await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+
+        await self._copy_twin_edges(twin, doc)
+        self._require_persisted(
+            await self.update_record_fields(
+                doc,
+                {
+                    "virtualRecordId": vrid,
+                    "summaryDocumentId": twin.get("summaryDocumentId"),
+                },
+            ),
+            "Failed to persist duplicate record fields",
+            doc,
+        )
+        synced = False
+        try:
+            if vrid:
+                await self.sync_vector_membership(vrid)
+                synced = True
+            self._require_persisted(
+                await self.update_record_fields(
+                    doc,
+                    {
+                        "isDirty": False,
+                        "indexingStatus": twin.get("indexingStatus"),
+                        "processingStartedAt": None,
+                        "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                        # EMPTY duplicates never ran extraction, so this can be
+                        # missing/None on the source record — don't propagate None.
+                        "extractionStatus": (
+                            twin.get("extractionStatus") or ProgressStatus.NOT_STARTED.value
+                        ),
+                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                ),
+                "Failed to persist duplicate record fields",
+                doc,
+            )
+        except (Exception, asyncio.CancelledError):
+            # Left holding the twin's VRID after a failure, the record would
+            # keep its connectorId on that VRID's points, and a later reindex
+            # of it would overwrite the twin's vectors.
+            await self._restore_identity_after_failed_attach(
+                target_key, prior_identity, vrid if synced else None
+            )
+            raise
+
+    async def _restore_identity_after_failed_attach(
+        self,
+        record_key: str,
+        prior_identity: dict[str, Any],
+        synced_vrid: str | None,
+    ) -> None:
+        """Best effort: the event is already failing, and its retry redoes the attach."""
+        try:
+            current = await self.graph_provider.get_document(
+                record_key, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if (current or {}).get("indexingStatus") in (
+                ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value,
+            ):
+                # The status write landed and only its answer was lost. The
+                # attach is complete; taking its identity away now would leave
+                # a finished record with no VRID and nothing to retry it.
+                return
+            if not await self.graph_provider.update_node(
+                record_key, CollectionNames.RECORDS.value, prior_identity
+            ):
+                raise IndexingError("record no longer exists")
+            if synced_vrid:
+                await self.sync_vector_membership(synced_vrid)
+        except Exception as e:
+            self.logger.error(
+                "Could not restore the previous content identity of %s after a failed "
+                "duplicate attach; it may still hold VRID %s until its retry: %s",
+                record_key,
+                prior_identity.get("virtualRecordId"),
+                e,
+            )
 
     async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """
