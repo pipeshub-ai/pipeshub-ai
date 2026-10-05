@@ -42,7 +42,11 @@ def _assert_refused(
     assert message in resp.text, resp.text[:500]
 
 
-def test_send_email_unknown_template_fails_before_smtp(
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: an unknown emailTemplateType (a caller mistake) answers 500, not 400",
+)
+def test_send_email_unknown_template_is_a_bad_request(
     mail_client: MailClient,
     scoped_token: MintScopedToken,
     pipeshub_client: PipeshubClient,
@@ -51,8 +55,10 @@ def test_send_email_unknown_template_fails_before_smtp(
         unknown_template_body(pipeshub_client.org_id),
         token=scoped_token(SEND_MAIL_SCOPE),
     )
-    # Rendering fails, the sender reports status=false, the controller throws 500.
-    _assert_refused(resp, pipeshub_client, 500, "")
+    # Rendering fails before any SMTP connection is opened; the sender reports it
+    # as a failed send and the controller answers 500 for what is a caller mistake.
+    assert resp.status_code == 400, resp.text[:500]
+    assert_strict_openapi_response(resp, ROUTE)
 
 
 def test_send_email_without_token_is_unauthorized(

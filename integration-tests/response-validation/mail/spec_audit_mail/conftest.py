@@ -17,6 +17,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
 from mail_audit_support import (  # noqa: E402
+    OTHER_SCOPE,
     MailClient,
     MintScopedToken,
     mint_scoped_token,
@@ -30,12 +31,14 @@ def mail_client(pipeshub_client: PipeshubClient) -> MailClient:
 
 
 @pytest.fixture(scope="session")
-def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
+def scoped_token(
+    pipeshub_client: PipeshubClient, mail_client: MailClient
+) -> MintScopedToken:
     """Factory: ``scoped_token(SEND_MAIL_SCOPE)`` -> a service token the deployment accepts.
 
     Extra positional scopes and keyword claims are passed through; ``userId`` and
-    ``orgId`` default to the shared admin's. Skips when SCOPED_JWT_SECRET is unset,
-    since nothing can then get past these routes' token check.
+    ``orgId`` default to the shared admin's. Skips when SCOPED_JWT_SECRET is unset
+    or is not the secret this deployment verifies scoped tokens with.
     """
     secret = scoped_jwt_secret()
     if not secret:
@@ -47,5 +50,16 @@ def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
         claims.setdefault("userId", pipeshub_client.acting_user_id)
         claims.setdefault("orgId", pipeshub_client.org_id)
         return mint_scoped_token(secret, list(scopes), ttl_seconds=ttl_seconds, **claims)
+
+    # A wrong scope is refused either way, but a good signature gets "Invalid scope"
+    # and a bad one "Invalid token" (AuthTokenService.verifyScopedToken).
+    probe = mail_client.update_smtp_config(token=_mint(OTHER_SCOPE))
+    assert probe.status_code == 401, probe.text[:500]
+    if probe.json()["error"]["message"] != "Invalid scope":
+        pytest.skip(
+            "SCOPED_JWT_SECRET is not the scoped JWT secret this deployment verifies "
+            "with (it answers 'Invalid token' to a token signed with it), so a "
+            "scoped service token cannot be minted"
+        )
 
     return _mint
