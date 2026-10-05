@@ -1368,6 +1368,18 @@ class TestUpdateQueuedDuplicatesStatus:
         )
         assert result == 1
 
+    async def test_promoted_duplicates_take_the_primarys_enrichment_outcome(self, connected_provider) -> None:
+        ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "extractionStatus": "FAILED"}
+        dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
+        connected_provider.http_client.execute_aql.side_effect = [[ref], [dup]]
+        connected_provider.batch_update_nodes = AsyncMock(return_value=True)
+
+        await connected_provider.update_queued_duplicates_status(
+            record_id="r1", new_indexing_status="COMPLETED", virtual_record_id="v-1",
+        )
+
+        assert connected_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == "FAILED"
+
     async def test_with_duplicates_empty_status(self, connected_provider):
         ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}

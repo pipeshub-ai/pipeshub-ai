@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from app.config.constants.arangodb import ProgressStatus
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -121,6 +122,24 @@ DUPLICATE_RECONCILE_ATTEMPTS_FIELD = "duplicateReconcileAttempts"
 # The record handler reconciles within seconds of a promotion; only after this
 # is the primary the retry sweep's to take.
 DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
+
+
+def promoted_duplicate_extraction_status(
+    new_indexing_status: str, primary: Mapping[str, Any]
+) -> str:
+    """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished.
+
+    The duplicate shares the primary's enrichment, so an indexed primary lends
+    its own outcome: FAILED when enrichment failed, NOT_STARTED when deferred.
+    """
+    if new_indexing_status == ProgressStatus.COMPLETED.value:
+        primary_status = primary.get("extractionStatus")
+        if primary_status and primary_status != ProgressStatus.IN_PROGRESS.value:
+            return primary_status
+        return ProgressStatus.COMPLETED.value
+    if new_indexing_status == ProgressStatus.EMPTY.value:
+        return ProgressStatus.EMPTY.value
+    return ProgressStatus.FAILED.value
 
 
 def requested_scope_ids(filters: "Mapping[str, Any] | None") -> tuple[str, ...] | None:

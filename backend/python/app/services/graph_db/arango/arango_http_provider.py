@@ -170,6 +170,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
+    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
@@ -7172,14 +7173,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if not record_key:
                     continue
 
-                # Map indexing status to extraction status
-                # For EMPTY status, extraction status should also be EMPTY, not FAILED
-                if new_indexing_status == ProgressStatus.COMPLETED.value:
-                    extraction_status = ProgressStatus.COMPLETED.value
-                elif new_indexing_status == ProgressStatus.EMPTY.value:
-                    extraction_status = ProgressStatus.EMPTY.value
-                else:
-                    extraction_status = ProgressStatus.FAILED.value
+                extraction_status = promoted_duplicate_extraction_status(
+                    new_indexing_status, ref_record
+                )
 
                 dup_update = {
                     "id": record_key,
