@@ -9,6 +9,7 @@ import { ICrawlingSchedule } from '../../../../src/modules/crawling_manager/sche
 import {
   ADMIN,
   Harness,
+  MEMBER_ID,
   ORG_A,
   call,
   sessionToken,
@@ -93,5 +94,40 @@ describe('Deleting a connector clears its sync schedule', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(schedulesFor('drive-1')).to.have.length(1)
     expect(store.repeatables.size).to.equal(2)
+  })
+
+  describe("when an admin deletes a member's personal connector", () => {
+    // The connector service shows a personal connector's config only to its
+    // creator, so the admin's read of it is refused.
+    beforeEach(async () => {
+      h.backend.on('GET', '/api/v1/connectors/personal-1/config', {
+        status: 404,
+        body: { detail: 'This connector was not found.' },
+      })
+      h.backend.on('DELETE', '/api/v1/connectors/personal-1', {
+        status: 202,
+        body: { success: true, message: 'Connector deletion initiated', connectorId: 'personal-1', status: 'DELETING' },
+      })
+      await scheduler.scheduleJob(TYPE, 'personal-1', EVERY_HOUR, ORG_A, MEMBER_ID)
+    })
+
+    it('still removes its schedule, and leaves the other connectors alone', async () => {
+      const res = await call(h, 'DELETE', '/personal-1', sessionToken(h, ADMIN))
+      expect(res.status).to.equal(202)
+
+      await until(() => schedulesFor('personal-1').length === 0, 'the deleted connector has no pending run')
+      expect(store.repeatables.size).to.equal(2)
+      expect(schedulesFor('drive-1')).to.have.length(1)
+      expect(schedulesFor('drive-2')).to.have.length(1)
+    })
+
+    it('forgets its paused schedule too', async () => {
+      await scheduler.pauseJob(TYPE, 'personal-1', ORG_A)
+
+      expect((await call(h, 'DELETE', '/personal-1', sessionToken(h, ADMIN))).status).to.equal(202)
+
+      await until(() => scheduler.getPausedJobs().size === 0, 'the paused schedule is forgotten')
+      expect(schedulesFor('personal-1')).to.have.length(0)
+    })
   })
 })

@@ -34849,15 +34849,19 @@ paths:
         - Connector Instances
       summary: Delete connector instance
       description: |
-        Delete a connector instance and all associated data.<br><br>
+        Delete a connector instance and everything synced from it. The request
+        answers `202` as soon as the deletion has started; the deletion itself
+        runs in the background.<br><br>
         <b>Warning:</b><br>
-        This permanently removes the connector configuration.
-        Synced records in knowledge bases are NOT deleted.<br><br>
+        Deletion is permanent. The connector's records, record groups,
+        permissions and relations are removed from the graph database, its
+        embeddings are removed from the vector store, its stored configuration
+        and credentials are deleted, and its stored files are deleted (content
+        another connector still uses is kept). The records don't go to the
+        trash and can't be restored. Its sync schedule is removed too.<br><br>
         <b>Permissions:</b><br>
-        <ul>
-        <li>Team scope: Requires admin</li>
-        <li>Personal scope: Only creator can delete</li>
-        </ul>
+        The connector's creator or an admin, for either scope. An admin can
+        delete a member's personal connector.
       operationId: deleteConnectorInstance
       security:
         - bearerAuth: []
@@ -34869,8 +34873,8 @@ paths:
           schema:
             type: string
       responses:
-        '200':
-          description: Connector deleted
+        '202':
+          description: Deletion started
           content:
             application/json:
               schema:
@@ -34880,12 +34884,27 @@ paths:
                     type: boolean
                   message:
                     type: string
+                  connectorId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [DELETING]
+              example:
+                success: true
+                message: Connector deletion initiated
+                connectorId: 3f1c9a52-7d0e-4b8a-9c1e-2a6b5d4e7f80
+                status: DELETING
         '401':
           description: Unauthorized
         '403':
-          description: Permission denied
+          description: The caller is neither the connector's creator nor an admin
         '404':
           description: Connector not found
+        '409':
+          description: |
+            A deletion is already in progress, a sync is running, or an agent
+            uses the connector as a knowledge source (the message names the
+            agents; remove the connector from them first).
 
   /connectors/{connectorId}/stats:
     get:

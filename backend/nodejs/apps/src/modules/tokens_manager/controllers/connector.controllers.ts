@@ -894,12 +894,8 @@ export const updateConnectorInstanceFiltersSyncConfig = (
   );
 
 /**
- * Delete a connector instance.
- *
- * We fetch the connector snapshot *before* issuing the DELETE so we still
- * know its `type` after Python removes it (a post-delete GET would 404).
- * On success we fire a background job removal so any active BullMQ
- * repeatable job does not outlive the connector.
+ * Delete a connector instance. On success its sync schedule is removed in the
+ * background, found by connector id, so it does not outlive the connector.
  */
 export const deleteConnectorInstance =
   (appConfig: AppConfig, scheduler: CrawlingSchedulerService) =>
@@ -919,10 +915,6 @@ export const deleteConnectorInstance =
 
       const headers = buildProxyHeaders(req);
 
-      // Fetch snapshot before the DELETE so we still know the connector type
-      // once Python has removed it.
-      const snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
-
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
         HttpMethod.DELETE,
@@ -934,38 +926,23 @@ export const deleteConnectorInstance =
         connectorResponse.statusCode >= 200 &&
         connectorResponse.statusCode < 300;
 
-      // Remove any lingering BullMQ job in the background after a successful
-      // delete. We need the connector type from the pre-delete snapshot; if
-      // we could not fetch it we skip silently — worst case the job fires once
-      // more and will encounter a 404 from the connector service.
-      if (isSuccess && snapshot?.type) {
-        const orgId = req.user?.orgId;
-        if (orgId) {
-          setImmediate(async () => {
-            try {
-              const existing = await scheduler.getJobStatus(
-                snapshot.type,
-                connectorId,
-                orgId,
-              );
-              if (existing) {
-                await scheduler.removeJob(snapshot.type, connectorId, orgId);
-                logger.info('Removed BullMQ job after connector deletion', {
-                  connectorId,
-                  connectorType: snapshot.type,
-                  orgId,
-                });
-              }
-            } catch (err) {
-              logger.error('Failed to remove BullMQ job after connector deletion', {
-                connectorId,
-                connectorType: snapshot.type,
-                orgId,
-                error: err instanceof Error ? err.message : 'Unknown error',
-              });
-            }
-          });
-        }
+      const orgId = req.user?.orgId;
+      if (isSuccess && orgId) {
+        setImmediate(async () => {
+          try {
+            await scheduler.removeJobsForConnector(connectorId, orgId);
+            logger.info('Removed sync schedule after connector deletion', {
+              connectorId,
+              orgId,
+            });
+          } catch (err) {
+            logger.error('Failed to remove sync schedule after connector deletion', {
+              connectorId,
+              orgId,
+              error: err instanceof Error ? err.message : 'Unknown error',
+            });
+          }
+        });
       }
 
       handleConnectorResponse(
