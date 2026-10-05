@@ -727,6 +727,7 @@ async def synced_three_issues(
         issue(2, "2024-05-01T11:00:00.000+0000", attachments=[ATTACHMENT]),
         issue(3, "2024-05-01T12:00:00.000+0000"),
     ]})
+    listing.id_pages[None] = {"issues": ids(1, 2, 3), "isLast": True}
     connector, _ = await ready_connector(db, checkpoints)
     await connector.run_sync()
     assert set(tickets(db)) == {"1", "2", "3"} and "attachment_900" in db.records
@@ -763,9 +764,25 @@ class TestDeletedIssuesFoundByComparingIds:
         assert "attachment_900" not in site_db.records, "the attachment goes with its issue"
         assert issue_reads(api, 3) == 1 and "3" in tickets(site_db), "an issue Jira still has (moved, or not yet searchable) stays"
         assert issue_reads(api, 1) == 0 and issue_reads(api, 9) == 0, "listed issues and placeholders are not checked"
-        (body,) = listing.id_bodies
+        assert len(listing.id_bodies) == 2, "one listing per sync"
+        body = listing.id_bodies[-1]
         assert body["jql"] == 'project = "ENG" ORDER BY id ASC'
         assert body["maxResults"] == 5000 and "expand" not in body
+
+    async def test_the_first_sync_after_a_full_resync_still_removes_deleted_issues(
+        self, api, site_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector = await synced_three_issues(api, site_db, checkpoints, listing)
+        checkpoints.sync_points.clear()  # a full resync deletes every sync point, not the records
+        listing.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(3, "2024-05-01T12:00:00.000+0000")]})
+        listing.id_pages[None] = {"issues": ids(1, 3), "isLast": True}
+        gone(api, 2)
+
+        await connector.run_sync()
+
+        assert set(tickets(site_db)) == {"1", "3"}
+        assert checkpoints.values_for("issues_audit_deletions") is None
 
     @pytest.mark.parametrize("broken_listing", [
         pytest.param({None: {"issues": ids(1), "nextPageToken": "T2"}, "T2": json_response({"errorMessages": ["boom"]}, status=500)}, id="a-later-page-fails"),
@@ -803,6 +820,7 @@ class TestDeletedIssuesFoundByComparingIds:
             created_on(2, "2024-06-01T09:00:00.000+0000"),
             created_on(3, "2024-05-01T09:00:00.000+0000"),
         ]})
+        listing.id_pages[None] = {"issues": ids(1, 2, 3), "isLast": True}
         connector, config_service = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         listing.add("ENG", None, {"issues": []})

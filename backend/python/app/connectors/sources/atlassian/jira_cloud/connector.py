@@ -148,6 +148,9 @@ AUDIT_FREE_PLAN_NOTICE_SYNC_KEY: str = "issues_audit_free_plan_notice"
 ISSUE_ID_LISTING_FIELDS: list[str] = ["id"]
 ISSUE_ID_LISTING_PAGE_SIZE: int = 5000
 RECORD_SCAN_PAGE_SIZE: int = 1000
+# With no deletion checkpoint (first sync, or after a full resync) the audit log is read over
+# this short window only to learn whether Jira refuses it.
+AUDIT_PROBE_WINDOW_MS: int = 60_000
 
 # --- Permission-scheme vocabulary (GET /rest/api/3/permissionscheme/{id}/permission) ---
 # The only grant that decides who can see a project's issues at all; every other grant type
@@ -1078,8 +1081,18 @@ class JiraConnector(BaseConnector):
                     audit_sync_key,
                     {"last_sync_time": checkpoint_ms}
                 )
-            if self._audit_log_unavailable and projects:
-                await self._remove_issues_gone_from_jira(projects)
+        elif projects:
+            # A full resync clears every checkpoint but keeps the issue records, so one small
+            # audit read still tells whether deletions can only be found by comparing ids.
+            probe_ms = get_epoch_timestamp_in_ms()
+            await self._fetch_deleted_issues_from_audit(
+                self._audit_time(probe_ms - AUDIT_PROBE_WINDOW_MS), self._audit_time(probe_ms)
+            )
+        if self._audit_log_unavailable and projects:
+            await self._remove_issues_gone_from_jira(projects)
+
+    def _audit_time(self, epoch_ms: int) -> str:
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> tuple[int, bool]:
         """
@@ -1097,15 +1110,8 @@ class JiraConnector(BaseConnector):
         try:
             self.logger.info("🔍 Checking for deleted issues via Audit API...")
 
-            from_date = datetime.fromtimestamp(
-                last_sync_time / 1000,
-                tz=timezone.utc
-            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-            to_date = datetime.fromtimestamp(
-                checkpoint_ms / 1000,
-                tz=timezone.utc
-            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            from_date = self._audit_time(last_sync_time)
+            to_date = self._audit_time(checkpoint_ms)
 
             deleted_issue_keys, fetch_ok = await self._fetch_deleted_issues_from_audit(from_date, to_date)
 
