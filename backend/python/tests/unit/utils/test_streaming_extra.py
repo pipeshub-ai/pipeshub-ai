@@ -484,7 +484,6 @@ class TestVirtualRecordIdMapForwarding:
 
     @pytest.mark.asyncio
     async def test_handle_simple_mode_fast_path_forwards_vrid_map(self):
-        from langchain_core.messages import AIMessage
         from app.utils.streaming import handle_simple_mode
 
         vrid_map = {"vr2": {"id": "rec-2"}}

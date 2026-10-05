@@ -23,6 +23,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    DeleteSource,
     ProgressStatus,
     RecordRelations,
 )
@@ -103,6 +104,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -3764,6 +3766,7 @@ class LinearConnector(BaseConnector):
         when the parent record is deleted.
         """
         try:
+            soft_delete = await is_soft_delete_enabled(self.config_service)
             # Use transaction to delete parent and all children
             async with self.data_store_provider.transaction() as tx_store:
                 # Get the parent record within transaction
@@ -3782,29 +3785,50 @@ class LinearConnector(BaseConnector):
                     parent_external_record_id=external_record_id
                 )
 
-                for child_record in child_records:
-                    # Recursively delete grandchildren (e.g., files attached to comments)
-                    grandchild_records = await tx_store.get_records_by_parent(
-                        connector_id=self.connector_id,
-                        parent_external_record_id=child_record.external_record_id
-                    )
-                    for grandchild in grandchild_records:
-                        # Delete grandchild record and all its relations
+                if soft_delete:
+                    # The same two levels the hard delete walks, nothing deeper.
+                    trash_ids = [parent_record.id]
+                    for child_record in child_records:
+                        trash_ids.append(child_record.id)
+                        trash_ids.extend(
+                            grandchild.id
+                            for grandchild in await tx_store.get_records_by_parent(
+                                connector_id=self.connector_id,
+                                parent_external_record_id=child_record.external_record_id,
+                            )
+                        )
+                else:
+                    for child_record in child_records:
+                        # Recursively delete grandchildren (e.g., files attached to comments)
+                        grandchild_records = await tx_store.get_records_by_parent(
+                            connector_id=self.connector_id,
+                            parent_external_record_id=child_record.external_record_id
+                        )
+                        for grandchild in grandchild_records:
+                            # Delete grandchild record and all its relations
+                            await tx_store.delete_records_and_relations(
+                                record_key=grandchild.id,
+                                hard_delete=True
+                            )
+
+                        # Delete child record and all its relations
                         await tx_store.delete_records_and_relations(
-                            record_key=grandchild.id,
+                            record_key=child_record.id,
                             hard_delete=True
                         )
 
-                    # Delete child record and all its relations
+                    # Finally, delete the parent record and all its relations
                     await tx_store.delete_records_and_relations(
-                        record_key=child_record.id,
+                        record_key=parent_record.id,
                         hard_delete=True
                     )
 
-                # Finally, delete the parent record and all its relations
-                await tx_store.delete_records_and_relations(
-                    record_key=parent_record.id,
-                    hard_delete=True
+            if soft_delete:
+                await self.data_entities_processor.on_records_soft_deleted(
+                    list(dict.fromkeys(trash_ids)),
+                    self.connector_id,
+                    delete_source=DeleteSource.CONNECTOR,
+                    follow=(),
                 )
 
             self.logger.debug(

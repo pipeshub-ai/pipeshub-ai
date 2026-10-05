@@ -2165,23 +2165,18 @@ class TestGetMimeTypeFromRecord:
 
 class TestParseCommaSeparatedStr:
     def test_none_returns_none(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str(None) is None
 
     def test_empty_string_returns_none(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("") is None
 
     def test_single_value(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("pdf") == ["pdf"]
 
     def test_multiple_values(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("pdf, doc , xls") == ["pdf", "doc", "xls"]
 
     def test_empty_items_filtered(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("a,,b, ,c") == ["a", "b", "c"]
 
 
@@ -2192,7 +2187,6 @@ class TestParseCommaSeparatedStr:
 
 class TestSanitizeAppName:
     def test_removes_spaces_and_lowercases(self):
-        from app.connectors.api.router import _sanitize_app_name
         assert _sanitize_app_name("Google Drive") == "googledrive"
         assert _sanitize_app_name("SLACK") == "slack"
         assert _sanitize_app_name("Share Point Online") == "sharepointonline"
@@ -2205,43 +2199,34 @@ class TestSanitizeAppName:
 
 class TestTrimConfigValues:
     def test_trims_string_values(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj="  hello  ") == "hello"
 
     def test_none_returns_none(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=None) is None
 
     def test_preserves_bool(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=True) is True
 
     def test_preserves_int(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=42) == 42
 
     def test_preserves_float(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=3.14) == 3.14
 
     def test_trims_list_elements(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj=["  a  ", " b "])
         assert result == ["a", "b"]
 
     def test_trims_dict_values(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"key": "  val  ", "num": 1})
         assert result == {"key": "val", "num": 1}
 
     def test_skips_sensitive_fields(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"certificate": "  cert  ", "normal": " x "})
         assert result["certificate"] == "  cert  "
         assert result["normal"] == "x"
 
     def test_nested_dict_with_path(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"auth": {"token": "  tok  ", "url": "  http  "}}, path="config")
         assert result["auth"]["token"] == "  tok  "  # token is in skip list
         assert result["auth"]["url"] == "http"
@@ -2374,14 +2359,12 @@ class TestGetConfigPathForInstance:
 class TestValidateConnectorDeletionPermissions:
     def test_team_creator_passes(self):
         """Deletion is admin-or-creator: whoever set it up may remove it."""
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
             "u1", is_admin=False, logger=logging.getLogger("test")
         )
 
     def test_team_non_admin_non_creator_raises(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
@@ -2392,14 +2375,12 @@ class TestValidateConnectorDeletionPermissions:
     def test_personal_admin_passes(self):
         """An administrator can remove a personal connector whose creator is
         gone; reading or altering it stays blocked by _can_access_connector."""
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
             "u1", is_admin=True, logger=logging.getLogger("test")
         )
 
     def test_personal_non_creator_non_admin_raises(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
@@ -2408,14 +2389,12 @@ class TestValidateConnectorDeletionPermissions:
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     def test_personal_creator_passes(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.PERSONAL.value, "createdBy": "u1"},
             "u1", is_admin=False, logger=logging.getLogger("test")
         )
 
     def test_team_admin_passes(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
             "u1", is_admin=True, logger=logging.getLogger("test")
@@ -2526,14 +2505,12 @@ class TestGetUserContext:
 
 class TestValidateAdminOnly:
     def test_non_admin_raises(self):
-        from app.connectors.api.router import _validate_admin_only
         with pytest.raises(HTTPException) as exc_info:
             _validate_admin_only(is_admin=False, action="do stuff")
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
         assert "do stuff" in exc_info.value.detail
 
     def test_admin_passes(self):
-        from app.connectors.api.router import _validate_admin_only
         _validate_admin_only(is_admin=True, action="do stuff")
 
 

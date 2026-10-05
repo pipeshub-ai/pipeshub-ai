@@ -64,11 +64,3 @@ async def scenario_adapter(
 class TestGcsScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "GCS"
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}
-    KNOWN_BUGS = {
-        "incr_delete": (
-            "a deleted object's record is never removed. Each sync lists only the objects "
-            "that exist (GCSConnector._sync_bucket_prefix, google_cloud_storage/connector.py:850) "
-            "and nothing in that file calls on_record_deleted, so the record, its vectors and "
-            "its search hit outlive the object; a full sync does not prune it either (event_service.py:403)"
-        ),
-    }

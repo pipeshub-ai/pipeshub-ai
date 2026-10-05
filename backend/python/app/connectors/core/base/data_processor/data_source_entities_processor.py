@@ -7,6 +7,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    DeleteSource,
     EntityRelations,
     MimeTypes,
     OriginTypes,
@@ -50,12 +51,15 @@ from app.services.cache.invalidation_hooks import (
     notify_connector_sync_completed,
     notify_kb_records_changed,
 )
-from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.connectors.services.vector_cleanup_events import build_soft_delete_events
+from app.services.featureflag.platform_settings import is_soft_delete_enabled
+from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
 from app.utils.retry import retry_async
@@ -73,6 +77,7 @@ _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
 
 # ~39 bytes per vrid in the move-tree JSON body; Node accepts 10 MB.
 _MAX_FOLDER_MOVE_VRIDS = 100_000
+_GROUP_RECORD_PAGE = 1000
 
 
 def _owner_within(owner: str | tuple[str, ...] | None, vrids: set[str]) -> bool:
@@ -1371,6 +1376,28 @@ class DataSourceEntitiesProcessor:
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
+        if existing_record is None:
+            # A rename can arrive under a new external id but reuse the id of the
+            # record it renames; if that record is in the trash, upserting would
+            # bring it back live.
+            same_id = await tx_store.get_record_by_key(record.id, raise_on_error=True)
+            if same_id is not None and not is_live_record(same_id):
+                self.logger.info(
+                    "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
+                )
+                return None, []
+        if existing_record is not None and not is_live_record(existing_record):
+            # A user's delete holds until the purge even though the source still
+            # has the item. A connector-trashed item seen again is restored by the
+            # restore path; until then it is left alone too, since upserting it
+            # would bring it back live with its vectors already gone.
+            self.logger.info(
+                "Skipping %s (%s): it is in the trash (deleted by %s)",
+                record.record_name,
+                existing_record.id,
+                getattr(existing_record.delete_source, "value", existing_record.delete_source),
+            )
+            return None, []
 
         # Set org_id only when the caller didn't supply one. KB and cross-org
         # callers pass an explicit request org that must win over self.org_id.
@@ -1925,6 +1952,13 @@ class DataSourceEntitiesProcessor:
                         external_id=old_external_id,
                     )
 
+                    if old_record is not None and not is_live_record(old_record):
+                        # A move of a record in the trash leaves it where it is.
+                        self.logger.info(
+                            "Skipping move of %s: record %s is in the trash", old_external_id, old_record.id
+                        )
+                        continue
+
                     if old_record is None:
                         processed, process_moves = await self._process_record(new_record, permissions, tx_store)
                         fallback_pending_moves.extend(process_moves)
@@ -1938,9 +1972,13 @@ class DataSourceEntitiesProcessor:
                     # about to write. Records upsert by vertex id, not external id,
                     # so both would survive and every lookup would resolve to an
                     # arbitrary one of the pair.
+                    # A holder in the trash is never retired: that would destroy the
+                    # trash entry and publish deleteRecord for its content. It gives
+                    # the id up in the upsert below instead.
                     duplicate = await tx_store.get_record_by_external_id(
                         connector_id=new_record.connector_id,
                         external_id=new_record.external_record_id,
+                        visibility=RecordVisibility.LIVE,
                     )
                     if duplicate is not None and duplicate.id != old_record.id:
                         self.logger.warning(
@@ -2073,7 +2111,9 @@ class DataSourceEntitiesProcessor:
                                 (vrid, new_record.connector_id)
                             )
 
-                    await tx_store.batch_upsert_records([new_record])
+                    # The release shares this write: on Neo4j each statement commits on
+                    # its own, so a release written first outlived a refused move.
+                    await tx_store.batch_upsert_records([new_record], release_trashed_external_ids=True)
 
                     if record_group_id:
                         await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
@@ -2259,6 +2299,18 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
+        if await is_soft_delete_enabled(self.config_service):
+            async with self.data_store_provider.transaction() as tx_store:
+                # A failed read must raise: None would read as "already gone"
+                # and the caller does not deliver this delete again.
+                existing = await tx_store.get_record_by_key(record_id, raise_on_error=True)
+            connector_id = (existing or {}).get("connectorId")
+            if connector_id:
+                # The record alone, as the hard delete removes only its vertex.
+                await self.on_records_soft_deleted(
+                    [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
+                )
+            return
         # Connector per-record delete: remove the record vertex and its incoming
         # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
         # call is a no-op for root records with no parent). Capture VRID before the
@@ -2307,7 +2359,10 @@ class DataSourceEntitiesProcessor:
         cascade_children: bool = True,
         within_folder_id: str | None = None,
         *,
+        delete_source: DeleteSource = DeleteSource.CONNECTOR,
+        deleted_by_user_id: str | None = None,
         include_trashed_roots: bool = False,
+        soft_delete: bool | None = None,
     ) -> dict:
         """Recursively delete records — the single delete path for files, folders and
         multi-record deletes, generic across KB and connectors.
@@ -2328,6 +2383,15 @@ class DataSourceEntitiesProcessor:
 
         A root in the trash is refused unless *include_trashed_roots*, for a
         caller removing what the source no longer has.
+
+        With ``ENABLE_SOFT_DELETE`` on, the same set goes to the trash instead
+        (``on_records_soft_deleted``); ``delete_source`` and
+        ``deleted_by_user_id`` say who sent it there. A root already in the
+        trash stays there for the purge, and is reported in ``failed_records``
+        unless *include_trashed_roots*: then its live descendants are trashed
+        too and it counts as done.
+        A caller that has already read the flag passes it as *soft_delete*, so
+        both act on the same answer.
         """
         if not record_ids:
             return {
@@ -2339,13 +2403,25 @@ class DataSourceEntitiesProcessor:
                 "failed_count": 0,
             }
         try:
+            if soft_delete is None:
+                soft_delete = await is_soft_delete_enabled(self.config_service)
+            if soft_delete:
+                return await self.on_records_soft_deleted(
+                    record_ids,
+                    connector_id,
+                    delete_source=delete_source,
+                    deleted_by_user_id=deleted_by_user_id,
+                    follow=("PARENT_CHILD", "ATTACHMENT") if cascade_children else ("ATTACHMENT",),
+                    within_folder_id=within_folder_id,
+                    include_trashed_roots=include_trashed_roots,
+                )
             async with self.data_store_provider.transaction() as tx_store:
                 result = await tx_store.delete_records_recursive(
                     record_ids, connector_id, cascade_children=cascade_children,
                     within_folder_id=within_folder_id, include_trashed_roots=include_trashed_roots,
                 )
         except FolderChangedDuringDelete:
-            # The transaction rolled back, so nothing was deleted.
+            # The transaction rolled back, so nothing was deleted or trashed.
             return {"success": False, "code": 409, "reason": FOLDER_CHANGED_DURING_DELETE_MESSAGE, "eventData": None}
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
@@ -2365,6 +2441,123 @@ class DataSourceEntitiesProcessor:
             result["vectorCleanupFailedRecordIds"] = unpublished_record_ids
         return result
 
+
+    @retry_on_deadlock()
+    async def on_records_soft_deleted(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: DeleteSource,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
+    ) -> dict:
+        """Move records and their subtree to the trash, as one batch.
+
+        Every record the action reaches shares one ``deleteBatchId``, so a
+        restore brings back exactly that set. Nodes, edges, permissions and
+        files stay. After the transaction commits, ``softDeleteRecords`` events
+        (chunked) ask indexing to remove the vectors, and only the vectors.
+        """
+        batch_id = str(uuid.uuid4())
+        async with self.data_store_provider.transaction() as tx_store:
+            result = await tx_store.soft_delete_records(
+                record_ids,
+                connector_id,
+                delete_source=DeleteSource(delete_source).value,
+                batch_id=batch_id,
+                deleted_by_user_id=deleted_by_user_id,
+                follow=follow,
+                within_folder_id=within_folder_id,
+                include_trashed_roots=include_trashed_roots,
+            )
+        result = dict(result)
+        result["deleted_records"] = result.get("soft_deleted_records", [])
+        result["softDeleted"] = True
+        unpublished = await self._finish_soft_delete(
+            connector_id=connector_id,
+            org_id=result.get("org_id"),
+            marked=len(result["deleted_records"]),
+            virtual_record_ids=result.get("virtual_record_ids", []),
+            batch_id=batch_id,
+            delete_source=delete_source,
+        )
+        if unpublished:
+            # The hard path's key, so callers read one shape whichever path ran.
+            failed = set(unpublished)
+            result["vectorCleanupPending"] = True
+            result["vectorCleanupFailedRecordIds"] = [
+                r["record_id"] for r in result["deleted_records"] if r.get("virtual_record_id") in failed
+            ]
+            result["vectorCleanupFailedVirtualRecordIds"] = unpublished
+        return result
+
+    async def _finish_soft_delete(
+        self,
+        *,
+        connector_id: str,
+        org_id: str | None,
+        marked: int,
+        virtual_record_ids: list[str],
+        batch_id: str,
+        delete_source: DeleteSource,
+    ) -> list[str]:
+        """After the trash transaction commits: count it, refresh KB caches, publish the vector cleanup."""
+        source = DeleteSource(delete_source).value
+        record_soft_deleted(source, marked)
+        if marked:
+            await notify_kb_records_changed(connector_id)
+        return await self._publish_soft_delete_events(
+            org_id=org_id or self.org_id,
+            connector_id=connector_id,
+            virtual_record_ids=virtual_record_ids,
+            batch_id=batch_id,
+            delete_source=source,
+        )
+
+    async def _publish_soft_delete_events(
+        self,
+        *,
+        org_id: str | None,
+        connector_id: str | None,
+        virtual_record_ids: list[str],
+        batch_id: str,
+        delete_source: str,
+    ) -> list[str]:
+        """Publish the vectors-only cleanup; return the ids whose event did not go out.
+
+        The records are already in the trash, so a failure here cannot be undone
+        by raising: their points stay until the purge's own vector pass.
+        """
+        unpublished: list[str] = []
+        for event in build_soft_delete_events(
+            org_id=org_id,
+            connector_id=connector_id,
+            virtual_record_ids=virtual_record_ids,
+            batch_id=batch_id,
+            delete_source=delete_source,
+        ):
+            ids = event["payload"]["virtualRecordIds"]
+            try:
+                await retry_async(
+                    lambda event=event: self.messaging_producer.send_message(
+                        "record-events", event, key=batch_id
+                    ),
+                    logger=self.logger,
+                    description=f"publish softDeleteRecords for batch {batch_id}",
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Giving up publishing softDeleteRecords for batch %s (%d virtual record(s)); "
+                    "their vectors stay until the purge: %s",
+                    batch_id,
+                    len(ids),
+                    e,
+                )
+                unpublished.extend(ids)
+        return unpublished
 
     @staticmethod
     def _reindex_event_payload(record: Record, *, vector_db_only: bool) -> dict:
@@ -3912,7 +4105,9 @@ class DataSourceEntitiesProcessor:
     async def on_record_group_deleted(
         self,
         external_group_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        trash_live_records: bool = False,
     ) -> bool:
         """
         Delete a record group and all its associated edges from the database.
@@ -3920,11 +4115,22 @@ class DataSourceEntitiesProcessor:
         Args:
             external_group_id: The external ID of the group from the source system.
             connector_id: The ID of the connector (e.g., 'DROPBOX').
+            trash_live_records: With the trash on, first move the group's live
+                records to the trash, for a caller that removes a group before
+                it has deleted the group's records. Ignored with the trash off.
+
+        With the trash on, a group that a record in the trash still belongs to
+        is kept with its edges, so a restore puts the record back in it. The
+        purge removes the group once its last such record goes. Keeping it
+        counts as done and returns True.
 
         Returns:
             bool: True if the group was successfully deleted, False otherwise.
         """
         try:
+            soft_delete = await is_soft_delete_enabled(self.config_service)
+            if soft_delete and trash_live_records:
+                await self._trash_live_records_of_group(external_group_id, connector_id)
             async with self.data_store_provider.transaction() as tx_store:
                 # 1. Find the record group by its external ID
                 record_group = await tx_store.get_record_group_by_external_id(
@@ -3940,6 +4146,20 @@ class DataSourceEntitiesProcessor:
 
                 record_group_internal_id = record_group.id
                 record_group_name = record_group.name
+
+                if soft_delete and await tx_store.get_records_by_status(
+                    org_id=self.org_id,
+                    connector_id=connector_id,
+                    status_filters=None,
+                    record_group_id=record_group_internal_id,
+                    limit=1,
+                    visibility=RecordVisibility.DELETED,
+                ):
+                    self.logger.info(
+                        f"Keeping record group '{record_group_name}' (external_id: {external_group_id}): "
+                        "records in the trash still belong to it"
+                    )
+                    return True
 
                 self.logger.debug(
                     f"Deleting record group: '{record_group_name}' (internal_id: {record_group_internal_id})"
@@ -3962,6 +4182,24 @@ class DataSourceEntitiesProcessor:
                 exc_info=True
             )
             return False
+
+    async def _trash_live_records_of_group(self, external_group_id: str, connector_id: str) -> None:
+        record_ids: list[str] = []
+        after_key: str | None = None
+        while True:
+            page = await self.get_records_in_record_group(
+                connector_id, external_group_id, _GROUP_RECORD_PAGE, after_key
+            )
+            record_ids.extend(r.id for r in page)
+            if len(page) < _GROUP_RECORD_PAGE:
+                break
+            after_key = page[-1].id
+        if record_ids:
+            self.logger.info(
+                f"Moving {len(record_ids)} records of group {external_group_id} to the trash: "
+                "the source removed the group"
+            )
+            await self.on_records_soft_deleted(record_ids, connector_id, delete_source=DeleteSource.CONNECTOR)
 
 
     async def _delete_group_organization_edges(self, tx_store, group_internal_id: str) -> None:
@@ -4105,6 +4343,25 @@ class DataSourceEntitiesProcessor:
     async def delete_record_by_external_id(
         self, connector_id: str, external_id: str, user_id: str | None = None
     ) -> None:
+        if await is_soft_delete_enabled(self.config_service):
+            async with self.data_store_provider.transaction() as tx_store:
+                result = await tx_store.delete_record_by_external_id(
+                    connector_id, external_id, user_id, soft_delete=True
+                )
+            if not result:
+                return
+            if not result.get("success"):
+                # Arango raises on a refused delete; Neo4j reports it. Fail the same way on both.
+                raise RuntimeError(f"Could not move record {external_id} to the trash: {result.get('reason')}")
+            await self._finish_soft_delete(
+                connector_id=result.get("connectorId") or connector_id,
+                org_id=result.get("orgId"),
+                marked=len(result.get("softDeletedRecords") or []),
+                virtual_record_ids=result.get("virtualRecordIds") or [],
+                batch_id=result["batchId"],
+                delete_source=DeleteSource.CONNECTOR,
+            )
+            return
         async with self.data_store_provider.transaction() as tx_store:
             result = await tx_store.delete_record_by_external_id(connector_id, external_id, user_id)
         # After the commit, as the other delete paths do: the provider returns the

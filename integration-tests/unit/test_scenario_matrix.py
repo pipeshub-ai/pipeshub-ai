@@ -40,6 +40,7 @@ from connectors.scenario_matrix import (
     apply_static_marks,
     static_marks_for,
 )
+from connectors.web.web_scenario_matrix_test import WebAdapter
 from helper.vector_store import VectorStoreProbe
 
 pytestmark = pytest.mark.unit
@@ -194,8 +195,12 @@ class _Source:
     ``lag`` syncs, like a change feed that has not caught up yet.
     """
 
-    def __init__(self, lag: int = 0) -> None:
+    def __init__(self, lag: int = 0, *, placeholder_on_delete: bool = False, index_names: bool = False) -> None:
         self.lag = lag
+        # Like the Web crawler: a gone page still linked is listed again as a failed page.
+        self.placeholder_on_delete = placeholder_on_delete
+        # Like a connector that indexes a page's heading or a table's DDL with its body.
+        self.index_names = index_names
         self.files: dict[str, dict[str, Any]] = {}
         self.graph: dict[str, dict[str, Any]] = {}
         self.vectors: dict[str, list[str]] = {}
@@ -214,9 +219,17 @@ class _Source:
                     id=f"rec-{ext}", recordName=f["name"], virtualRecordId=vrid,
                     version=version, externalRecordId=ext, externalRevisionId=f["etag"],
                 )
-                self.vectors[vrid] = [f["text"]]
+                self.vectors[vrid] = [f"{f['name']}\n{f['text']}" if self.index_names else f["text"]]
         for ext in [e for e in self.graph if e not in self.files]:
-            self.vectors.pop(self.graph.pop(ext)["virtualRecordId"], None)
+            if self.graph[ext]["indexingStatus"] == "FAILED":
+                continue
+            gone = self.graph.pop(ext)
+            self.vectors.pop(gone["virtualRecordId"], None)
+            if self.placeholder_on_delete:
+                self.graph[ext] = _node(
+                    id=f"placeholder-{ext}", recordName=gone["recordName"], virtualRecordId=None,
+                    indexingStatus="FAILED", externalRecordId=ext, externalRevisionId=None,
+                )
 
 
 class _Graph:
@@ -230,7 +243,7 @@ class _Graph:
         return _model(
             id=node["id"], record_name=node["recordName"], external_record_id=ext,
             external_revision_id=node["externalRevisionId"], version=node["version"],
-            virtual_record_id=node["virtualRecordId"],
+            virtual_record_id=node["virtualRecordId"], indexing_status=node["indexingStatus"],
         )
 
     async def get_record_by_name(self, connector_id: str, name: str) -> dict[str, Any] | None:
@@ -276,8 +289,8 @@ class _Adapter(ScenarioAdapter):
         self.src.sync()
 
 
-def _run(src: _Source, unsupported: dict[str, str]) -> MatrixRun:
-    run = MatrixRun(_Adapter(src), unsupported=unsupported, vector=_Vectors(src))  # type: ignore[arg-type]
+def _run(src: _Source, unsupported: dict[str, str], adapter: _Adapter | None = None) -> MatrixRun:
+    run = MatrixRun(adapter or _Adapter(src), unsupported=unsupported, vector=_Vectors(src))  # type: ignore[arg-type]
 
     async def settle() -> None:
         return None
@@ -328,6 +341,87 @@ async def test_vectors_that_still_hold_the_old_text_do_not_count(monkeypatch) ->
     src.vectors[view.virtual_record_id] = ["new mxnew", "leftover mxold"]
     with pytest.raises(AssertionError, match=r"old text still present: \['mxold'\]"):
         await run.wait_vectors_hold(item, "mxnew", absent=["mxold"], timeout=1)
+
+
+class _WebLikeAdapter(_Adapter):
+    is_removed = WebAdapter.is_removed
+
+
+async def test_a_delete_that_leaves_a_failed_placeholder_counts_where_the_adapter_says_so() -> None:
+    src = _Source(placeholder_on_delete=True)
+    run = _run(src, _NO_SHARE_OR_FILTER, _WebLikeAdapter(src))
+    await run.add_round()
+    before = run.added[Role.DELETE]
+
+    await run.mutate_round()
+
+    left = await run.record(run.item(Role.DELETE))
+    assert left is not None and left.id != before.id and left.indexing_status == "FAILED"
+    assert await run.is_removed(run.item(Role.DELETE), before)
+    await run.wait_gone(run.item(Role.DELETE), timeout=1, before=before)
+
+    # Indexing retries the placeholder before it settles on FAILED; it is gone all along.
+    placeholder = src.graph[run.item(Role.DELETE).key]
+    for status in ("QUEUED", "IN_PROGRESS"):
+        placeholder["indexingStatus"] = status
+        assert await run.is_removed(run.item(Role.DELETE), before), status
+    # A replacement that indexed means the page is back.
+    placeholder["indexingStatus"] = "COMPLETED"
+    assert not await run.is_removed(run.item(Role.DELETE), before)
+
+
+async def test_a_record_that_is_still_there_is_never_removed() -> None:
+    src = _Source()
+    run = _run(src, _NO_SHARE_OR_FILTER, _WebLikeAdapter(src))
+    await run.add_round()
+    keep = run.item(Role.KEEP)
+    view = await run.record(keep)
+
+    assert not await run.is_removed(keep, run.added[Role.KEEP])
+    failed_in_place = RecordView.of(_node(id=view.id, indexingStatus="FAILED"))
+    assert not run.adapter.is_removed(failed_in_place, run.added[Role.KEEP])
+
+
+async def test_by_default_a_placeholder_left_behind_is_not_a_delete() -> None:
+    src = _Source(placeholder_on_delete=True)
+    run = _run(src, _NO_SHARE_OR_FILTER)
+    await run.add_round()
+
+    with pytest.raises(AssertionError, match="did not happen after 3 incremental syncs"):
+        await run.mutate_round()
+
+
+async def test_an_old_token_left_only_in_the_items_name_is_not_stale_text(monkeypatch) -> None:
+    monkeypatch.setattr(sm, "POLL_INTERVAL_SEC", 0.05)
+    src = _Source(index_names=True)
+    run = _run(src, _NO_SHARE_OR_FILTER)
+    await run.add_round()
+    old_token = run.item(Role.CONTENT).token
+    await run.mutate_round()
+    content = run.item(Role.CONTENT)
+    assert old_token in content.record_name
+
+    view = await run.wait_content_replaced(content)
+
+    assert view.changed_since(run.added[Role.CONTENT])
+    # The bare token is still there, in the name, so it cannot be what "old text" means.
+    with pytest.raises(AssertionError, match="never matched"):
+        await run.wait_vectors_hold(content, content.token, absent=[old_token], timeout=1)
+
+
+async def test_an_old_body_left_in_the_vectors_still_fails_the_edit(monkeypatch) -> None:
+    monkeypatch.setattr(sm, "POLL_INTERVAL_SEC", 0.05)
+    src = _Source(index_names=True)
+    run = _run(src, _NO_SHARE_OR_FILTER)
+    await run.add_round()
+    old_text = run.item(Role.CONTENT).text
+    await run.mutate_round()
+    content = run.item(Role.CONTENT)
+    view = await run.record(content)
+    src.vectors[view.virtual_record_id].append(old_text)
+
+    with pytest.raises(AssertionError, match=r"old text still present: \['The mx"):
+        await run.wait_content_replaced(content, timeout=1)
 
 
 class _ScrollClient:
@@ -458,3 +552,40 @@ async def test_github_adapter_searches_as_the_admin_and_commits_as_the_org(monke
     monkeypatch.setattr(sm, "search_connector_as", lambda *a: searched.append("user"))
     MatrixRun(adapter, unsupported={}, vector=None)._search("q", adapter.owner)  # type: ignore[arg-type]
     assert searched == ["admin"]
+
+
+class _Mongo:
+    """Storage documents as MongoStoreProbe finds them: by name, under the given folder or the flat one."""
+
+    def __init__(self, documents: dict[str, str]) -> None:
+        self.documents = documents
+        self.vendor_asked: list[str] = []
+
+    async def envelope_path(self, org_id: str, vrid: str, *, within: str) -> str:
+        flat = f"{org_id}/PipesHub/records/{vrid}"
+        paths = [p for name, p in self.documents.items()
+                 if name == f"record_{vrid}" and p.startswith((within + "/", flat))]
+        assert len(paths) == 1, f"record_{vrid} is not under {within!r} or {flat!r}"
+        return paths[0]
+
+    async def storage_vendor_under_path(self, prefix: str) -> str | None:
+        self.vendor_asked.append(prefix)
+        return "s3"
+
+
+async def test_filter_footprint_looks_where_indexing_filed_the_record() -> None:
+    src = _Source()
+    run = _run(src, _NO_SHARE_OR_FILTER)
+    run.org_id = "org-1"
+    item = await run.adapter.create_item(Role.FILTERED, "filtered mxf", "mxf")
+    src.sync()
+    view = await run.record(item)
+    filed = f"org-1/PipesHub/records/{CONNECTOR}/bucket/{item.record_name}"
+    run.mongo = _Mongo({f"record_{view.virtual_record_id}": filed})  # type: ignore[assignment]
+
+    footprint, vendor = await run.footprint(item, view)
+
+    assert footprint.storage_prefix == filed
+    assert footprint.virtual_record_id == view.virtual_record_id
+    assert footprint.connector_id == CONNECTOR
+    assert (vendor, run.mongo.vendor_asked) == ("s3", [filed])

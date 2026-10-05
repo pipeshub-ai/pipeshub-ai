@@ -53,7 +53,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def rollback(self):
         self._rolled_back = True
 
-    async def get_record_by_key(self, key):
+    async def get_record_by_key(self, key, *, raise_on_error=False):
         return self._records.get(key)
 
     async def get_record_by_external_id(self, connector_id, external_id):

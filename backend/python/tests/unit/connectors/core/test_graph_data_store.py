@@ -185,7 +185,16 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_batch_upsert_records(self, tx_store, mock_graph_provider) -> None:
         await tx_store.batch_upsert_records([])
-        mock_graph_provider.batch_upsert_records.assert_awaited_once_with([], transaction="txn-123")
+        mock_graph_provider.batch_upsert_records.assert_awaited_once_with(
+            [], transaction="txn-123", release_trashed_external_ids=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_records_releasing_trashed_external_ids(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.batch_upsert_records([], release_trashed_external_ids=True)
+        mock_graph_provider.batch_upsert_records.assert_awaited_once_with(
+            [], transaction="txn-123", release_trashed_external_ids=True
+        )
 
     @pytest.mark.asyncio
     async def test_batch_upsert_record_groups(self, tx_store, mock_graph_provider) -> None:
@@ -384,7 +393,7 @@ class TestGraphTransactionStore:
     async def test_delete_record_by_external_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_record_by_external_id("conn1", "ext1", "user1")
         mock_graph_provider.delete_record_by_external_id.assert_awaited_once_with(
-            "conn1", "ext1", "user1", transaction="txn-123"
+            "conn1", "ext1", "user1", transaction="txn-123", soft_delete=False
         )
 
     @pytest.mark.asyncio

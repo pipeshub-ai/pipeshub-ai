@@ -2268,7 +2268,7 @@ class TestUserAndOrganizationLookups:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_dedupes_rows_by_agent_key(self, neo4j_provider: Neo4jProvider):
+    async def test_web_search_agents_dedupe_rows_by_agent_key(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             return_value=[
                 {"name": "A", "_key": "a1", "creatorName": "Alice"},
@@ -2285,7 +2285,7 @@ class TestUserAndOrganizationLookups:
         ]
 
     @pytest.mark.asyncio
-    async def test_skips_rows_without_key(self, neo4j_provider: Neo4jProvider):
+    async def test_web_search_agents_skip_rows_without_key(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             return_value=[
                 {"name": "NoKeyA", "creatorName": "Alice"},
@@ -2309,7 +2309,7 @@ class TestUserAndOrganizationLookups:
         assert kwargs["parameters"] == {"org_id": "org-9", "provider": "tavily"}
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_web_search_agents_return_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
 
         result = await neo4j_provider.get_agents_by_web_search_provider("org-1", "serper")
@@ -4356,8 +4356,6 @@ class TestCreateRecordsDuplicateName:
         return neo4j_provider
 
 
-
-
 class TestBatchUpdateConnectorStatus:
     @pytest.mark.asyncio
     async def test_empty_keys_skips_query(self, neo4j_provider: Neo4jProvider):
@@ -4907,7 +4905,6 @@ class TestDeleteSingleRecord:
 
         mock_begin.assert_not_awaited()
         mock_commit.assert_not_awaited()
-
 
 
 # ---------------------------------------------------------------------------

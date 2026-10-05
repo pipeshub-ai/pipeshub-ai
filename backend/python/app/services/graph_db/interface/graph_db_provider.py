@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from app.config.constants.arangodb import DeleteSource
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -1382,7 +1383,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         external_revision_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Optional['Record']:
         """
         Get a record by its external revision ID (e.g., etag for S3).
@@ -1391,6 +1394,9 @@ class IGraphDBProvider(ABC):
             connector_id (str): Connector ID
             external_revision_id (str): External revision ID (e.g., etag)
             transaction (Optional[Any]): Optional transaction context
+            visibility: LIVE by default. Rename detection must not match a
+                record in the trash: after a hard delete there would be no
+                record to match, so the renamed item is a new record.
 
         Returns:
             Optional[Record]: Record data if found, None otherwise
@@ -3244,7 +3250,9 @@ class IGraphDBProvider(ABC):
     async def batch_upsert_records(
         self,
         records: list,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        release_trashed_external_ids: bool = False,
     ) -> None:
         """
         Batch upsert records (base record + specific type + IS_OF_TYPE edge).
@@ -3257,6 +3265,13 @@ class IGraphDBProvider(ABC):
         Args:
             records (List[Record]): List of Record objects
             transaction (Optional[Any]): Optional transaction context
+            release_trashed_external_ids: Records in the trash in the same
+                connector that hold a record's external id give it up, keeping
+                it in ``trashedExternalRecordId`` behind a
+                ``TRASHED_EXTERNAL_ID_PREFIX`` id. This happens in the same
+                statement as the base record's write, so a write the graph
+                refuses leaves them holding it, even where each statement
+                commits on its own (Neo4j by default).
         """
         pass
 
@@ -3373,6 +3388,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[str]:
         """Keys of every live record sharing this virtualRecordId.
 
@@ -3393,6 +3409,9 @@ class IGraphDBProvider(ABC):
 
         ``accessible_record_ids`` narrows to a permission-filtered set for read
         paths; the delete path passes nothing and sees everything.
+
+        ``visibility=DELETED`` asks the other question the orphan sweeper needs:
+        does a record in the trash still hold this content for the purge?
 
         Args:
             virtual_record_id: The content identity to look up
@@ -4189,7 +4208,10 @@ class IGraphDBProvider(ABC):
         record_id: str,
         user_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
@@ -4199,6 +4221,13 @@ class IGraphDBProvider(ABC):
             user_id (str): User ID performing the deletion
             org_id (str): Caller's organization; records outside it are reported as not found
             transaction (Optional[str]): Optional transaction context
+            soft_delete (bool): After the same permission checks, move to the trash
+                (``soft_delete_records``) exactly what the hard delete would remove,
+                instead of removing it. The caller publishes the vectors-only
+                cleanup from the result's ``virtualRecordIds``.
+            delete_source (DeleteSource): Who the soft delete is recorded as.
+                USER names ``user_id`` as the deleter; CONNECTOR (a sync delete)
+                names no one.
 
         Returns:
             Dict: Result with success status and reason
@@ -4211,7 +4240,9 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict | None:
         """
         Delete a record by external ID.
@@ -4221,6 +4252,9 @@ class IGraphDBProvider(ABC):
             external_id (str): External record ID
             user_id (str): User ID performing the deletion
             transaction (Optional[str]): Optional transaction context
+            soft_delete (bool): Move to the trash, as a CONNECTOR delete, exactly
+                what the hard delete would remove. A record already in the trash
+                is left alone.
 
         Returns:
             The ``delete_record`` result, whose ``eventData`` the caller publishes
@@ -4296,6 +4330,46 @@ class IGraphDBProvider(ABC):
         All edges touching the deleted nodes are swept regardless of
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
         record that carries a virtualRecordId (Qdrant cleanup).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        transaction: str | None = None,
+        within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
+    ) -> dict:
+        """Move live records, and their live descendants, to the trash.
+
+        Sets ``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
+        ``deleteBatchId`` and ``deletedByUserId`` in one transaction, in chunks.
+        Nodes, edges, permissions and type docs are kept, so the batch can be
+        restored as it was.
+
+        Roots are scoped by ``connector_id`` (the KB id for a KB) and must be
+        live, unless *include_trashed_roots*: a caller removing what the source
+        no longer has also walks from a root already in the trash, which keeps
+        its own batch while its live descendants are marked. Descendants are reached through ``RECORD_RELATION`` edges whose
+        ``relationshipType`` is in ``follow``: both kinds for a folder subtree,
+        ``("ATTACHMENT",)`` to leave PARENT_CHILD children alone, ``()`` for the
+        roots only. A descendant already in the trash keeps its own batch.
+        With *within_folder_id*, a root is taken only if that folder reaches it
+        through PARENT_CHILD / ATTACHMENT edges, as ``delete_records_recursive``
+        checks it.
+
+        Returns ``success``, ``soft_deleted_records`` ({record_id, name, virtual_record_id}),
+        ``failed_records`` (roots that were missing, trashed or out of scope),
+        ``total_requested``, ``successfully_deleted`` (roots),
+        ``failed_count``, ``virtual_record_ids`` (distinct, for vector cleanup),
+        ``org_id`` and ``batch_id``. A failure raises; nothing is marked.
         """
         raise NotImplementedError
 

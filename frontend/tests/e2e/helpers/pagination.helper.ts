@@ -89,16 +89,26 @@ export async function changeLimit(page: Page, limit: 10 | 25 | 50 | 100): Promis
     new RegExp(`^\\s*${limit}(?!\\d)`),
     { timeout: 10_000 },
   );
+  let shown = 0;
   await expect
     .poll(
       async () => {
         const { from, to, total } = await getShowingRange(page);
+        shown = to;
         return from === 1 && to === Math.min(limit, total) ? 'ok' : `Showing ${from}-${to} of ${total}`;
       },
       { timeout: 10_000, message: `the list should show the first ${limit} items` },
     )
     .toBe('ok');
-  expect(await page.locator('[role="row"]').count()).toBeLessThanOrEqual(limit);
+  // The "Showing" line updates before the next page's rows replace the old
+  // ones, so the rows are waited for separately. An exact count, because the
+  // old page already has at most `limit` rows when the limit grows.
+  await expect
+    .poll(() => page.locator('[role="row"]').count(), {
+      timeout: 10_000,
+      message: `the list should render the ${shown} rows its "Showing" line counts`,
+    })
+    .toBe(shown);
 }
 
 /** Assert the "Showing X-Y of Z" text matches expected range */

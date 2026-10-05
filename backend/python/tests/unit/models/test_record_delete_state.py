@@ -17,7 +17,10 @@ from app.models import entities
 from app.models.entities import FileRecord, Record, RecordType
 from app.schema.arango.documents import record_schema
 
-NEW_KEYS = ("deletedAtTimestamp", "deleteSource", "deleteBatchId", "purgeAttempts", "purgeLastError")
+NEW_KEYS = (
+    "deletedAtTimestamp", "deleteSource", "deleteBatchId", "purgeAttempts", "purgeLastError",
+    "trashedExternalRecordId",
+)
 
 
 def _record(**overrides) -> Record:
@@ -52,6 +55,7 @@ def test_a_trashed_record_writes_its_delete_state() -> None:
         delete_batch_id="batch-1",
         purge_attempts=2,
         purge_last_error="blob store timed out",
+        trashed_external_record_id="src/a.pdf",
     ).to_arango_base_record()
     assert doc["isDeleted"] is True
     assert doc["deletedByUserId"] == "u1"
@@ -61,6 +65,7 @@ def test_a_trashed_record_writes_its_delete_state() -> None:
         "deleteBatchId": "batch-1",
         "purgeAttempts": 2,
         "purgeLastError": "blob store timed out",
+        "trashedExternalRecordId": "src/a.pdf",
     }
 
 
@@ -71,11 +76,13 @@ def test_delete_state_round_trips() -> None:
         deleted_by_user_id="u1",
         delete_source=DeleteSource.CONNECTOR,
         delete_batch_id="b",
+        trashed_external_record_id="src/a.pdf",
     )
     back = Record.from_arango_base_record(original.to_arango_base_record())
     assert (back.is_deleted, back.deleted_at, back.deleted_by_user_id, back.delete_source, back.delete_batch_id) == (
         True, 5, "u1", DeleteSource.CONNECTOR, "b",
     )
+    assert back.trashed_external_record_id == "src/a.pdf"
 
 
 def test_a_stored_record_without_the_fields_is_live() -> None:

@@ -412,3 +412,57 @@ async def test_a_rebuilt_holder_missing_from_the_graph_is_reported() -> None:
 
     with pytest.raises(AssertionError, match="graph nodes 2 -> 1"):
         await _assert_rebuilt(before, stores)
+
+
+def _graph_reading(*snapshots: dict | None) -> AsyncMock:
+    """A graph whose record lookups answer *snapshots* in turn, then keep the last."""
+    graph = AsyncMock()
+    answers = list(snapshots)
+    graph.get_record_by_name.side_effect = lambda *_: answers.pop(0) if len(answers) > 1 else answers[0]
+    return graph
+
+
+@pytest.mark.asyncio
+async def test_an_indexed_record_is_waited_on_until_its_enrichment_finishes() -> None:
+    """Enrichment adds the summary vector and taxonomy edges after COMPLETED."""
+    graph = _graph_reading(
+        {"id": "r1", "recordName": "a", "indexingStatus": "COMPLETED", "extractionStatus": "IN_PROGRESS"},
+        {"id": "r1", "recordName": "a", "indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED"},
+    )
+
+    records = await fp.wait_for_connector_records(graph, "c1", ["a"], enriched=True)
+
+    assert graph.get_record_by_name.await_count == 2
+    assert records["a"].status == "COMPLETED"
+
+
+@pytest.mark.parametrize("record", [
+    {"id": "r1", "indexingStatus": "COMPLETED", "extractionStatus": "FAILED"},
+    {"id": "r1", "indexingStatus": "FAILED"},
+    {"id": "r1", "indexingStatus": "EMPTY", "extractionStatus": "NOT_STARTED"},
+])
+@pytest.mark.asyncio
+async def test_a_record_nothing_will_change_again_is_settled_at_once(record: dict) -> None:
+    graph = _graph_reading(record)
+
+    await fp.wait_for_connector_records(graph, "c1", ["a"], enriched=True)
+
+    assert graph.get_record_by_name.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_record_still_being_enriched_at_the_deadline_says_so() -> None:
+    graph = _graph_reading({"id": "r1", "indexingStatus": "COMPLETED", "extractionStatus": "IN_PROGRESS"})
+
+    with pytest.raises(AssertionError, match=r"'a': 'indexed, enrichment IN_PROGRESS'"):
+        await fp.wait_for_connector_records(graph, "c1", ["a"], timeout=0, enriched=True)
+
+
+@pytest.mark.asyncio
+async def test_without_enriched_an_indexed_record_is_settled_while_enrichment_runs() -> None:
+    """A same-collection duplicate keeps the extractionStatus it copied, so most waits must not hang on it."""
+    graph = _graph_reading({"id": "r1", "indexingStatus": "COMPLETED", "extractionStatus": "IN_PROGRESS"})
+
+    await fp.wait_for_connector_records(graph, "c1", ["a"])
+
+    assert graph.get_record_by_name.await_count == 1

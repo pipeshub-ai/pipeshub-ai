@@ -40,7 +40,7 @@ import logging
 import os
 import uuid
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -51,6 +51,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from app.services.vector_db.models import HealthStatus
+from tests.support.embedding_config import config_service as embedding_config_service
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -129,10 +130,10 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[EntityVectorSto
     service = await {"qdrant": _qdrant, "redis": _redis, "opensearch": _opensearch}[request.param]()
     collection = f"entities_it_{uuid.uuid4().hex[:8]}"
     store = EntityVectorStore(
-        logger=logger, config_service=MagicMock(), vector_db_service=service, collection_name=collection,
+        logger=logger, config_service=embedding_config_service(), vector_db_service=service, collection_name=collection,
     )
 
-    async def _stub_embeddings() -> None:
+    async def _stub_embeddings(embedding_configs: list | None = None) -> None:
         store._dense_embeddings = _StubEmbeddings()
         store._embedding_size = DIM
         store._model_id = "stub:hash"
@@ -366,7 +367,7 @@ class TestDeletesWithoutEmbeddings:
         await store.upsert_entities_batch([_entity("r1", EntityType.RECORD, org=org, connectors=["A"])])
         await _publish_writes(store)
         fresh = EntityVectorStore(
-            logger=logger, config_service=MagicMock(),
+            logger=logger, config_service=embedding_config_service(),
             vector_db_service=store.vector_db_service, collection_name=store.collection_name,
         )
         fresh._init_embeddings = AsyncMock(side_effect=RuntimeError("embedding endpoint down"))  # type: ignore[method-assign]
@@ -559,11 +560,11 @@ class TestRebuildSupport:
 
         def _wider(recreate: bool) -> EntityVectorStore:
             wider = EntityVectorStore(
-                logger=logger, config_service=MagicMock(), vector_db_service=store.vector_db_service,
+                logger=logger, config_service=embedding_config_service(), vector_db_service=store.vector_db_service,
                 collection_name=store.collection_name, recreate_on_dimension_mismatch=recreate,
             )
 
-            async def _stub() -> None:
+            async def _stub(embedding_configs: list | None = None) -> None:
                 wider._dense_embeddings = _StubEmbeddings()
                 wider._embedding_size = DIM * 2
 
@@ -574,7 +575,10 @@ class TestRebuildSupport:
             await _wider(False)._ensure_initialized()
         assert await _point(store, org, "topic", "t1") is not None
 
-        await _wider(True)._ensure_initialized()
+        with pytest.raises(VectorStoreError):
+            await _wider(True)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+        await _wider(True)._ensure_initialized(recreate=True)
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM * 2
         assert await _point(store, org, "topic", "t1") is None
@@ -594,6 +598,47 @@ class TestRebuildSupport:
         with pytest.raises(Exception):
             await store.search_entities("pricing", org, set(), {"c1"})
         assert store._initialized is False
+
+    async def test_a_same_dimension_model_change_waits_for_the_owner_to_recreate(
+        self, store: EntityVectorStore,
+    ) -> None:
+        """Every store reads the model one point records, through a scroll
+        projected to that field, which every backend must answer. Only the
+        rebuild leader's request recreates; every other store, an indexing
+        replica included, refuses the old vectors until it has."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
+        await _publish_writes(store)
+
+        def _restarted(model_id: str, *, owner: bool) -> EntityVectorStore:
+            restarted = EntityVectorStore(
+                logger=logger, config_service=embedding_config_service(), vector_db_service=store.vector_db_service,
+                collection_name=store.collection_name, recreate_on_dimension_mismatch=owner,
+            )
+
+            async def _stub(embedding_configs: list | None = None) -> None:
+                restarted._dense_embeddings = _StubEmbeddings()
+                restarted._embedding_size = DIM
+                restarted._model_id = model_id
+
+            restarted._init_embeddings = _stub  # type: ignore[method-assign]
+            return restarted
+
+        assert await _restarted(store._model_id, owner=True)._model_of_a_stored_point() == store._fingerprint()
+        await _restarted(store._model_id, owner=True)._ensure_initialized()
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await _restarted("other:model", owner=False)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await _restarted("other:model", owner=True)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+        await _restarted("other:model", owner=True)._ensure_initialized(recreate=True)
+        info = await store.vector_db_service.get_collection_info(store.collection_name)
+        assert info.exists and info.dense_dimension == DIM
+        assert await _point(store, org, "topic", "t1") is None
+        await _restarted("other:model", owner=False)._ensure_initialized()
+
 
 class TestWriteOutcomeAndLocks:
     """Embedding outside the locks, and the reported outcome, per backend."""

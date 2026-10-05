@@ -29,12 +29,13 @@ from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     AppGroups,
     CollectionNames,
-    ConnectorScopes,
     Connectors,
+    ConnectorScopes,
+    DeleteSource,
     DepartmentNames,
     OriginTypes,
-    PersonMigrationMode,
     PermissionModel,
+    PersonMigrationMode,
     ProgressStatus,
     RecordTypes,
 )
@@ -69,45 +70,55 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     Person,
     ProductRecord,
-    MessageRecord,
     ProjectRecord,
     PullRequestRecord,
     Record,
     RecordGroup,
+    SQLTableRecord,
+    SQLViewRecord,
     TicketRecord,
     User,
     WebpageRecord,
-    SQLTableRecord,
-    SQLViewRecord,
     substitute_user_email,
 )
 from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
-from app.services.graph_db.common.utils import (
-    CANONICAL_PARENT_RELATION_TYPES,
-    CONTAINER_INHERIT_MAX_DEPTH,
-    CONTAINMENT_MAX_DEPTH,
-    ENTITY_CANDIDATE_SCAN_CAP,
-    EntityCandidateRows,
-    KB_ROLE_PRIORITY,
-    MAX_DIRECT_GRANT_RECORDS,
-    PermittedEntityRows,
-    PATH_MAX_CANDIDATES,
-    ROOT_SCOPED_CONNECTOR_TYPES,
-    build_connector_stats_response,
-    dedupe_agents_by_id,
-    select_canonical_chain_names,
-    uploaded_document_id,
-)
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     cypher_live_record,
     cypher_record_visibility,
     is_live_record,
+)
+from app.services.graph_db.common.utils import (
+    CANONICAL_PARENT_RELATION_TYPES,
+    CONTAINER_INHERIT_MAX_DEPTH,
+    CONTAINMENT_MAX_DEPTH,
+    ENTITY_CANDIDATE_SCAN_CAP,
+    KB_ROLE_PRIORITY,
+    MAX_DIRECT_GRANT_RECORDS,
+    PATH_MAX_CANDIDATES,
+    ROOT_SCOPED_CONNECTOR_TYPES,
+    TRASHED_EXTERNAL_ID_PREFIX,
+    EntityCandidateRows,
+    PermittedEntityRows,
+    build_connector_stats_response,
+    dedupe_agents_by_id,
+    empty_soft_delete_result,
+    select_canonical_chain_names,
+    soft_delete_request_result,
+    soft_delete_result,
+    uploaded_document_id,
+)
+from app.services.graph_db.entity_index_queries import (
+    ENTITY_INDEX_SOURCES,
+    build_entity_index_candidate_cypher,
+    build_entity_index_source_page_cypher,
+    entity_index_source,
 )
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -131,17 +142,13 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
-    alias_pairs as _alias_pairs,
     check_edge_move,
     check_edge_move_target,
     is_taxonomy_collection,
     subcategory_level,
 )
-from app.services.graph_db.entity_index_queries import (
-    ENTITY_INDEX_SOURCES,
-    build_entity_index_candidate_cypher,
-    build_entity_index_source_page_cypher,
-    entity_index_source,
+from app.services.graph_db.taxonomy import (
+    alias_pairs as _alias_pairs,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
@@ -1130,20 +1137,6 @@ class Neo4jProvider(IGraphDBProvider):
 
             label = collection_to_label(collection)
 
-            # Convert nodes to Neo4j format
-            neo4j_nodes = []
-            for node in nodes:
-                neo4j_node = self._arango_to_neo4j_node(node, collection)
-                # Ensure id exists
-                if "id" not in neo4j_node:
-                    if "_key" in neo4j_node:
-                        neo4j_node["id"] = neo4j_node.pop("_key")
-                    else:
-                        neo4j_node["id"] = str(uuid.uuid4())
-                # Validate nodes before writing
-                self.validator.validate_node_update(collection, neo4j_node)
-                neo4j_nodes.append(neo4j_node)
-
             # Use UNWIND for batch upsert
             query = f"""
             UNWIND $nodes AS node
@@ -1154,7 +1147,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             await self.client.execute_query(
                 query,
-                parameters={"nodes": neo4j_nodes},
+                parameters={"nodes": self._nodes_for_upsert(nodes, collection)},
                 txn_id=transaction
             )
 
@@ -1163,6 +1156,54 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
             raise
+
+    def _nodes_for_upsert(self, nodes: list[dict], collection: str) -> list[dict]:
+        """*nodes* in Neo4j form, each with an ``id``, validated for *collection*."""
+        neo4j_nodes = []
+        for node in nodes:
+            neo4j_node = self._arango_to_neo4j_node(node, collection)
+            if "id" not in neo4j_node:
+                if "_key" in neo4j_node:
+                    neo4j_node["id"] = neo4j_node.pop("_key")
+                else:
+                    neo4j_node["id"] = str(uuid.uuid4())
+            self.validator.validate_node_update(collection, neo4j_node)
+            neo4j_nodes.append(neo4j_node)
+        return neo4j_nodes
+
+    async def _upsert_record_nodes_releasing_trash(
+        self, nodes: list[dict], transaction: str | None = None
+    ) -> None:
+        """Upsert record nodes; records in the trash holding one of their external ids give it up.
+
+        One statement: each statement commits on its own unless explicit
+        transactions are on, so a release written separately outlived a refused upsert.
+        """
+        records = self._nodes_for_upsert(nodes, CollectionNames.RECORDS.value)
+        await self.client.execute_query(
+            """
+            UNWIND $nodes AS node
+            WITH node, COLLECT {
+                MATCH (holder:Record {externalRecordId: node.externalRecordId, connectorId: node.connectorId})
+                WHERE holder.isDeleted = true AND NOT holder.id IN $ids
+                RETURN holder
+            } AS holders
+            FOREACH (holder IN holders |
+                SET holder += {
+                    trashedExternalRecordId: holder.externalRecordId,
+                    externalRecordId: $trashed_prefix + holder.id
+                })
+            MERGE (n:Record {id: node.id})
+            SET n += node
+            RETURN n.id
+            """,
+            parameters={
+                "nodes": records,
+                "ids": [node["id"] for node in records],
+                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+            },
+            txn_id=transaction,
+        )
 
     async def delete_nodes(
         self,
@@ -2433,6 +2474,7 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[str]:
         """
         Get all record keys that have the given virtualRecordId.
@@ -2455,13 +2497,12 @@ class Neo4jProvider(IGraphDBProvider):
             # "does anything still reference this content", and a tombstone
             # answering yes would keep its vectors alive for ever.
             #
-            # `coalesce(...)` rather than the `<> true` used elsewhere in this
-            # file: in Cypher `null <> true` is null, which WHERE treats as
-            # false, so `<> true` silently drops every record predating the
-            # field instead of keeping it.
-            query = """
-            MATCH (r:Record {virtualRecordId: $virtual_record_id})
-            WHERE coalesce(r.isDeleted, false) = false
+            # The shared predicate rather than the `<> true` used elsewhere in
+            # this file: in Cypher `null <> true` is null, which WHERE treats as
+            # false, so `<> true` silently drops every record predating the field.
+            query = f"""
+            MATCH (r:Record {{virtualRecordId: $virtual_record_id}})
+            WHERE {cypher_record_visibility("r", visibility)}
             """
 
             # Add optional filter for record IDs
@@ -6352,18 +6393,23 @@ class Neo4jProvider(IGraphDBProvider):
     async def batch_upsert_records(
         self,
         records: list[Record],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        release_trashed_external_ids: bool = False,
     ) -> None:
         """Batch upsert records (base + specific type + IS_OF_TYPE edge)"""
         try:
             for record in records:
                 # Upsert base record
                 record_dict = record.to_arango_base_record()
-                await self.batch_upsert_nodes(
-                    [record_dict],
-                    collection=CollectionNames.RECORDS.value,
-                    transaction=transaction
-                )
+                if release_trashed_external_ids:
+                    await self._upsert_record_nodes_releasing_trash([record_dict], transaction)
+                else:
+                    await self.batch_upsert_nodes(
+                        [record_dict],
+                        collection=CollectionNames.RECORDS.value,
+                        transaction=transaction
+                    )
 
                 # Upsert specific type if applicable
                 if record.record_type in RECORD_TYPE_COLLECTION_MAPPING:
@@ -7919,7 +7965,10 @@ class Neo4jProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
+        delete_source: DeleteSource = DeleteSource.USER,
     ) -> dict:
         """Main entry point for record deletion. KB records require OWNER, WRITER, or FILEORGANIZER."""
         try:
@@ -7966,6 +8015,28 @@ class Neo4jProvider(IGraphDBProvider):
                         "code": 403,
                         "reason": "User lacks permission to delete records",
                     }
+
+            if soft_delete:
+                deleted_by = None
+                if DeleteSource(delete_source) is DeleteSource.USER:
+                    deleter = await self.get_user_by_user_id(user_id) or {}
+                    deleted_by = deleter.get("id") or deleter.get("_key")
+                # What the hard delete removes: the record and its direct attachments, as on
+                # ArangoDB. One statement marks them all with one batch, so a restore of the
+                # mail brings its attachments back with it.
+                trash_ids = [record_id]
+                if is_live_record(record):
+                    trash_ids += await self._direct_attachment_ids(record_id, org_id, transaction)
+                result = await self.soft_delete_records(
+                    trash_ids,
+                    record.get("connectorId") or "",
+                    delete_source=DeleteSource(delete_source).value,
+                    batch_id=str(uuid.uuid4()),
+                    deleted_by_user_id=deleted_by,
+                    follow=(),
+                    transaction=transaction,
+                )
+                return soft_delete_request_result(record_id, record, result)
 
             # Get file record for event publishing before deletion
             file_record = None
@@ -8025,17 +8096,27 @@ class Neo4jProvider(IGraphDBProvider):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        soft_delete: bool = False,
     ) -> dict | None:
-        """Delete a record by external ID"""
+        """Delete a record by external ID; ``soft_delete`` trashes, as a CONNECTOR delete, what the hard delete removes."""
         try:
             record = await self.get_record_by_external_id(
-                connector_id, external_id, transaction, visibility=RecordVisibility.ALL
+                connector_id,
+                external_id,
+                transaction,
+                visibility=RecordVisibility.LIVE if soft_delete else RecordVisibility.ALL,
             )
             if not record:
                 self.logger.warning(f"⚠️ Record {external_id} not found for connector {connector_id}")
                 return None
 
+            if soft_delete:
+                return await self.delete_record(
+                    record.id, user_id, record.org_id, transaction,
+                    soft_delete=True, delete_source=DeleteSource.CONNECTOR,
+                )
             return await self.delete_record(record.id, user_id, record.org_id, transaction)
 
         except Exception as e:
@@ -11734,6 +11815,112 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
+    async def _direct_attachment_ids(
+        self, record_id: str, org_id: str, transaction: str | None
+    ) -> list[str]:
+        rows = await self.client.execute_query(
+            """
+            MATCH (:Record {id: $record_id})-[e:RECORD_RELATION]->(a:Record)
+            WHERE e.relationshipType = 'ATTACHMENT' AND a.orgId = $org_id
+            RETURN DISTINCT a.id AS id
+            """,
+            parameters={"record_id": record_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return [row["id"] for row in rows or []]
+
+    async def soft_delete_records(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        *,
+        delete_source: str,
+        batch_id: str,
+        deleted_by_user_id: str | None = None,
+        follow: tuple[str, ...] = ("PARENT_CHILD", "ATTACHMENT"),
+        transaction: str | None = None,
+        within_folder_id: str | None = None,
+        include_trashed_roots: bool = False,
+    ) -> dict:
+        """See ``IGraphDBProvider.soft_delete_records``."""
+        if not record_ids:
+            return empty_soft_delete_result(batch_id)
+        root_check = f"""
+            ($include_trashed OR {cypher_live_record("rec")}) AND rec.connectorId = $connector_id
+            AND ($folder_id IS NULL OR EXISTS {{
+                MATCH (:Record {{id: $folder_id}})
+                      (()-[c:RECORD_RELATION WHERE c.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->()){{1,{CONTAINMENT_MAX_DEPTH}}}
+                      (rec)
+            }})
+        """
+        txn_id = transaction
+        if transaction is None:
+            txn_id = await self.begin_transaction(read=[], write=[CollectionNames.RECORDS.value])
+        try:
+            checked = await self.client.execute_query(
+                f"""
+                UNWIND $record_ids AS rid
+                MATCH (rec:Record {{id: rid}})
+                WHERE {root_check}
+                RETURN collect(DISTINCT rec.id) AS root_keys
+                """,
+                parameters={
+                    "record_ids": record_ids, "connector_id": connector_id, "folder_id": within_folder_id,
+                    "include_trashed": include_trashed_roots,
+                },
+                txn_id=txn_id,
+            )
+            root_keys = (checked[0] if checked else {}).get("root_keys") or []
+            found: dict = {"root_keys": [], "marked": []}
+            if root_keys:
+                # Each statement commits on its own unless explicit transactions are on,
+                # so the check above may be stale and a mark split over statements could
+                # stop halfway. One statement re-checks, walks and marks: all or nothing.
+                rows = await self.client.execute_query(
+                    f"""
+                    UNWIND $root_ids AS rid
+                    MATCH (rec:Record {{id: rid}})
+                    WHERE {root_check}
+                    WITH collect(DISTINCT rec) AS roots
+                    UNWIND CASE WHEN size(roots) = 0 THEN [null] ELSE roots END AS root
+                    OPTIONAL MATCH (root)
+                          (()-[c:RECORD_RELATION WHERE c.relationshipType IN $follow]->()){{0,{CONTAINMENT_MAX_DEPTH}}}
+                          (v:Record)
+                    WHERE root IS NOT NULL AND {cypher_live_record("v")}
+                    WITH roots, collect(DISTINCT v) AS vertices
+                    FOREACH (r IN vertices |
+                        SET r.isDeleted = true,
+                            r.deletedAtTimestamp = $now,
+                            r.deleteSource = $source,
+                            r.deleteBatchId = $batch_id,
+                            r.deletedByUserId = $user_id)
+                    RETURN [r IN roots | r.id] AS root_keys,
+                           [r IN vertices | {{id: r.id, name: r.recordName, vrid: r.virtualRecordId, orgId: r.orgId}}]
+                               AS marked
+                    """,
+                    parameters={
+                        "root_ids": root_keys,
+                        "connector_id": connector_id,
+                        "folder_id": within_folder_id,
+                        "include_trashed": include_trashed_roots,
+                        "follow": list(follow),
+                        "now": get_epoch_timestamp_in_ms(),
+                        "source": delete_source,
+                        "batch_id": batch_id,
+                        "user_id": deleted_by_user_id,
+                    },
+                    txn_id=txn_id,
+                )
+                found = rows[0] if rows else found
+            if transaction is None:
+                await self.commit_transaction(txn_id)
+        except Exception as e:
+            if transaction is None and txn_id:
+                await self.rollback_transaction(txn_id)
+            self.logger.error("❌ Failed to move records to the trash: %s", e)
+            raise
+        return soft_delete_result(record_ids, found.get("root_keys") or [], found.get("marked") or [], batch_id)
+
     async def delete_single_record(
         self,
         record_id: str,
@@ -15058,12 +15245,15 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_revision_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> Record | None:
         """Get record by external revision ID."""
         try:
-            query = """
-            MATCH (r:Record {connectorId: $connector_id, externalRevisionId: $external_revision_id})
+            query = f"""
+            MATCH (r:Record {{connectorId: $connector_id, externalRevisionId: $external_revision_id}})
+            WHERE {cypher_record_visibility("r", visibility)}
             RETURN r
             LIMIT 1
             """

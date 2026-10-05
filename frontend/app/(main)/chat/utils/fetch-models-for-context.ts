@@ -29,6 +29,7 @@ export function mapAgentModelToAvailable(model: AgentConfiguredModel): Available
     isReasoning: model.isReasoning,
     isMultimodal: model.isMultimodal,
     modelType: model.modelType,
+    ...(model.defaultReasoningEffort && { defaultReasoningEffort: model.defaultReasoningEffort }),
   };
 }
 

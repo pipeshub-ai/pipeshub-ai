@@ -26,6 +26,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.vector_db.models import ScrollResult
 from app.utils.chat_helpers import (
     TEXT_FRAGMENT_DIRECTIVE_PREFIX,
@@ -4976,6 +4977,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         parent_relations=None,
         vrid_map=None,
         graph_doc=None,
+        trashed=(),
     ):
         gp = AsyncMock()
         gp.get_child_record_ids_by_relation_type = AsyncMock(
@@ -4988,7 +4990,84 @@ class TestEnrichVirtualRecordIdFKChildren:
             return_value=vrid_map or {}
         )
         gp.get_document = AsyncMock(return_value=graph_doc or {})
+
+        async def live_records(
+            record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE
+        ) -> list[dict]:
+            assert visibility is RecordVisibility.LIVE
+            return [{"_key": rid, "orgId": org_id} for rid in record_ids if rid not in trashed]
+
+        gp.get_records_by_record_ids = AsyncMock(side_effect=live_records)
         return gp
+
+    @pytest.mark.asyncio
+    async def test_leaves_out_a_related_table_in_the_trash(self) -> None:
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(
+            child_relations=[{"record_id": "rec-dropped", "childTable": "orders"}],
+            parent_relations=[{"record_id": "rec-parent", "parentTable": "departments"}],
+            vrid_map={"rec-parent": "vr-parent"},
+            trashed={"rec-dropped"},
+        )
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda **kw: {
+            "vr-dropped": self._sql_table_record(vrid="vr-dropped", record_id="rec-dropped"),
+            "vr-parent": self._sql_table_record(vrid="vr-parent", record_id="rec-parent"),
+        }.get(kw.get("virtual_record_id")))
+        flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+
+        gp.get_virtual_record_ids_for_record_ids.assert_awaited_once_with(["rec-parent"])
+        assert flattened[0]["fk_child_relations"] == []
+        assert [r["record_id"] for r in flattened[0]["fk_parent_relations"]] == ["rec-parent"]
+        added = [r["record_id"] for r in flattened if r.get("metadata", {}).get("source") == "FK_ENRICHMENT"]
+        assert added == ["rec-parent"]
+        assert "vr-dropped" not in vr_map
+        assert gp.get_records_by_record_ids.await_args_list[0].args[1] == "org-1"
+
+    @pytest.mark.asyncio
+    async def test_leaves_a_trashed_table_out_of_a_related_tables_own_relations(self) -> None:
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(vrid_map={"rec-parent": "vr-parent"}, trashed={"rec-dropped"})
+        parents = {
+            "rec-sql-1": [{"record_id": "rec-parent", "parentTable": "departments"}],
+            "rec-parent": [{"record_id": "rec-dropped", "parentTable": "regions"},
+                           {"record_id": "rec-live", "parentTable": "companies"}],
+        }
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(
+            side_effect=lambda record_id, _relation: parents.get(record_id, [])
+        )
+        blob_store = self._make_blob_store(self._sql_table_record(vrid="vr-parent", record_id="rec-parent"))
+        flattened = []
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+
+        (entry,) = [r for r in flattened if r.get("metadata", {}).get("source") == "FK_ENRICHMENT"]
+        assert entry["record_id"] == "rec-parent"
+        assert [r["record_id"] for r in entry["fk_parent_relations"]] == ["rec-live"]
+
+    @pytest.mark.asyncio
+    async def test_adds_no_related_table_when_the_live_check_fails(self) -> None:
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(
+            child_relations=[{"record_id": "rec-child"}], vrid_map={"rec-child": "vr-child"},
+        )
+        gp.get_records_by_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        blob_store = self._make_blob_store(self._sql_table_record(vrid="vr-child", record_id="rec-child"))
+        flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+        )
+
+        assert flattened[0]["fk_child_relations"] == []
+        assert len(flattened) == 1
+        blob_store.get_record_from_storage.assert_not_awaited()
 
     def _sql_table_record(self, vrid="vr-1", record_id="rec-sql-1", **overrides):
         rec = _make_record_blob(

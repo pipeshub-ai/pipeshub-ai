@@ -24,20 +24,16 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordType, User
+from app.models.entities import User
 from app.models.permission import EntityType, Permission, PermissionType
 import base64
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from datetime import timedelta
+from unittest.mock import PropertyMock
+from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
-    FilterCollection,
-    FilterOperator,
     IndexingFilterKey,
-    MultiselectOperator,
-    SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.models.entities import RecordGroupType
 
 
 # ---------------------------------------------------------------------------
@@ -46,66 +42,6 @@ from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 @pytest.fixture()
 def mock_logger():
     return logging.getLogger("test.azure_files")
-
-
-@pytest.fixture()
-def mock_data_entities_processor():
-    from app.models.entities import AppMetadata
-    
-    proc = MagicMock(spec=AzureFilesDataSourceEntitiesProcessor)
-    proc.org_id = "org-azf-1"
-    proc.on_new_app_users = AsyncMock()
-    proc.on_new_record_groups = AsyncMock()
-    proc.on_new_records = AsyncMock()
-    proc.get_all_active_users = AsyncMock(return_value=[])
-    proc.account_name = "teststorage"
-    proc.get_record_by_external_id = AsyncMock(return_value=None)
-    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
-    proc.delete_parent_child_edge_to_record = AsyncMock()
-    proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
-        connector_id="az-files-1",
-        name="Azure Files",
-        type="azure_files",
-        app_group="STORAGE",
-        scope="PERSONAL",
-        created_by="user-1",
-        created_at_timestamp=1234567890,
-        updated_at_timestamp=1234567890,
-    ))
-    proc.get_user_by_user_id = AsyncMock(
-        return_value=User(
-            email="user@test.com",
-            source_user_id="src-1",
-            org_id="org-azf-1",
-            full_name="Test User",
-            title="Title",
-        )
-    )
-    return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    provider = MagicMock()
-    mock_tx = MagicMock()
-    mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    provider.transaction.return_value = mock_tx
-    return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc;EndpointSuffix=core.windows.net"
-        },
-        "scope": "TEAM",
-    })
-    return svc
 
 
 @pytest.fixture()
