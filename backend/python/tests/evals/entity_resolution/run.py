@@ -50,6 +50,7 @@ from app.modules.entity_resolution.resolver import EntityResolver
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from tests.evals.entity_resolution.metrics import bcubed, pairwise
+from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.fake_entity_graph import FakeGraph
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 
@@ -153,10 +154,11 @@ def _model(spec: str) -> object | None:
 
 async def _store(service: InMemoryVectorDBService, embeddings: Embeddings) -> EntityVectorStore:
     store = EntityVectorStore(
-        logger=logger, config_service=MagicMock(), vector_db_service=service, collection_name="entities_eval",
+        logger=logger, config_service=embedding_config_service(), vector_db_service=service,
+        collection_name="entities_eval",
     )
 
-    async def _use_embeddings() -> None:
+    async def _use_embeddings(embedding_configs: list | None = None) -> None:
         store._dense_embeddings = embeddings
         store._embedding_size = embeddings.dimension
         store._model_id = "eval"

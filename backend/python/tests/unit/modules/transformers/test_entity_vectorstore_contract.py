@@ -12,11 +12,10 @@ from __future__ import annotations
 import logging
 import uuid
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
-
 import pytest
 
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
+from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 from tests.integration.vector_db import test_entity_vectorstore_real_backends as suite
 
@@ -30,11 +29,11 @@ logger = logging.getLogger("entity-store-contract")
 async def store() -> AsyncIterator[EntityVectorStore]:
     service = InMemoryVectorDBService()
     entity_store = EntityVectorStore(
-        logger=logger, config_service=MagicMock(), vector_db_service=service,
+        logger=logger, config_service=embedding_config_service(), vector_db_service=service,
         collection_name=f"entities_{uuid.uuid4().hex[:8]}",
     )
 
-    async def _stub_embeddings() -> None:
+    async def _stub_embeddings(embedding_configs: list | None = None) -> None:
         entity_store._dense_embeddings = suite._StubEmbeddings()
         entity_store._embedding_size = suite.DIM
         entity_store._model_id = "stub:hash"
