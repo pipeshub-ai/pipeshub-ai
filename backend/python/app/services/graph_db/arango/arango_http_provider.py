@@ -13790,13 +13790,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # Dynamic edge sweep: remove every edge touching the deleted records
                     # (recordRelations, isOfType, belongsTo, inheritPermissions, permission,
                     # entityRelations, link relations, ...).
-                    await self._delete_edges_by_node_ids(txn_id, node_ids, edge_collections)
+                    _, failed_edges = await self._delete_edges_by_node_ids(txn_id, node_ids, edge_collections)
+                    # Both helpers log a failed batch and go on; raising rolls the transaction
+                    # back instead of committing records without their edges or types.
+                    if failed_edges:
+                        raise RuntimeError(f"Could not delete the records' edges in {failed_edges}")
                 if type_targets:
                     # Remove the isOfType type docs (files/mails/webpages/...); raises on
                     # partial failure so the transaction rolls back.
                     await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
                 if record_keys:
-                    await self._delete_nodes_by_keys(txn_id, record_keys, CollectionNames.RECORDS.value)
+                    _, failed_batches = await self._delete_nodes_by_keys(
+                        txn_id, record_keys, CollectionNames.RECORDS.value
+                    )
+                    if failed_batches:
+                        raise RuntimeError(f"Could not delete {failed_batches} batch(es) of records")
                 if within_folder_id and valid_root_keys:
                     # Again after the deletes: a move committed while they ran is outside
                     # this transaction's snapshot, so its new edge was left in place.

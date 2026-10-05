@@ -4174,9 +4174,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()), \
              patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(return_value={"recordId": "r1"})):
             result = await connected_provider.delete_records_recursive(["r1"], "kb-1")
@@ -4207,9 +4207,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             result = await connected_provider.delete_records_recursive(["r1"], "kb-1")
 
@@ -4269,9 +4269,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()), \
              patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(return_value={"recordId": "x"})):
             result = await connected_provider.delete_records_recursive(["r1", "r2", "r-missing"], "kb-1")
@@ -4297,9 +4297,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()), \
              patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(side_effect=RuntimeError("bad payload"))):
             result = await connected_provider.delete_records_recursive(["r1"], "kb-1")
@@ -4334,9 +4334,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(side_effect=exec_query)), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             result = await connected_provider.delete_records_recursive(
                 ["epic-1"], "conn-1", cascade_children=False
@@ -4372,9 +4372,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             await connected_provider.delete_records_recursive(
                 ["epic-1"], "conn-1", cascade_children=True
@@ -4396,9 +4396,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             await connected_provider.delete_records_recursive(
                 ["epic-1"], "conn-1", cascade_children=False
