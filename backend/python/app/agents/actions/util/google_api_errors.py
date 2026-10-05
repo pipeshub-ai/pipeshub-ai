@@ -8,8 +8,11 @@ from http import HTTPStatus
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    is_missing_scope_error,
+)
+
 _RATE_LIMIT_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED"}
-_SCOPE_REASONS = {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}
 
 
 @dataclass(frozen=True)
@@ -46,7 +49,7 @@ def google_error_message(error: Exception, action: str, wording: GoogleToolWordi
         return f"{wording.product} is receiving too many requests right now, so it could not {action}. {wait} and try again."
     if status == HTTPStatus.UNAUTHORIZED:
         return f"Could not {action}: Google did not accept the saved sign-in. {reconnect}"
-    if status == HTTPStatus.FORBIDDEN and reasons & _SCOPE_REASONS:
+    if is_missing_scope_error(error):
         return (
             f"Could not {action}: the connected Google account has not given this app permission to do that. "
             f"Reconnect the {wording.toolset} toolset in Settings > Toolsets and allow {wording.access}."

@@ -224,13 +224,4 @@ class TestConfluenceScenarioMatrix(ConnectorScenarioMatrix):
             "restriction needs a second Confluence user whose email is also a PipesHub user"
         ),
     }
-    KNOWN_BUGS = {
-        "filter_change": FILTER_KEEPS_EXCLUDED_ITEM,
-        "incr_delete": (
-            "A page deleted in Confluence is never removed: the connector finds changes "
-            "with a lastModified content search (sources/atlassian/confluence_cloud/"
-            "connector.py, _sync_content), which does not return deleted or trashed "
-            "pages, and nothing in the connector calls on_record_deleted, so the record "
-            "and its vectors stay searchable."
-        ),
-    }
+    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}

@@ -1635,6 +1635,20 @@ export function isModelReasoningCapable(
 }
 
 /**
+ * The model's own default reasoning effort for `model` in `ctxKey`'s list, or
+ * `null` when none is stored.
+ */
+export function getModelDefaultReasoningEffort(
+  ctxKey: string,
+  model: import('./types').ModelOverride | null,
+): import('./types').ReasoningEffort | null {
+  if (!model) return null;
+  const models = useChatStore.getState().settings.availableModels[ctxKey]?.models ?? [];
+  const match = models.find((m) => m.modelKey === model.modelKey && m.modelName === model.modelName);
+  return normalizeReasoningEffort(match?.defaultReasoningEffort ?? null);
+}
+
+/**
  * The agent-configured default reasoning effort for `ctxKey`, populated when
  * `fetchModelsForContext` loads an agent's config. Returns `null` when the
  * context is the universal assistant or the agent has no default configured.

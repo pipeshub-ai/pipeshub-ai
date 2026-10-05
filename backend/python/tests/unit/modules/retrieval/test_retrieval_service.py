@@ -1425,6 +1425,96 @@ class TestSearchWithFilters:
         sr = result["searchResults"][0]
         assert sr["metadata"]["webUrl"] == "https://sharepoint.com/doc"
 
+    @staticmethod
+    def _sql_table_without_link(mock_graph_provider) -> None:
+        """A PostgreSQL table indexed while FRONTEND_PUBLIC_URL was unset: its webUrl is ""."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "CONNECTOR",
+                "recordName": "mx_keep",
+                "recordType": "SQL_TABLE",
+                "mimeType": "application/vnd.sql.table",
+                "connectorName": "POSTGRESQL",
+                "webUrl": "",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_link_that_is_not_a_file_or_mail_is_still_a_hit(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        self._sql_table_without_link(mock_graph_provider)
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "Scenario matrix keep note",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "blockType": "table_row"},
+            }
+        ])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["keep note"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.SUCCESS.value
+        [hit] = result["searchResults"]
+        assert hit["metadata"]["recordId"] == "rec1"
+        assert hit["metadata"]["webUrl"] == ""
+        mock_graph_provider.get_nodes_by_field_in.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_sql_table_with_no_link_reaches_the_knowledge_search_flattening(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """The search API runs with knowledge_search=True; a table's row hits must be flattened, not dropped."""
+        self._sql_table_without_link(mock_graph_provider)
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "Scenario matrix keep note",
+                "citationType": "vectordb|document",
+                "metadata": {
+                    "virtualRecordId": "vr1", "orgId": "o1", "blockId": "row-1",
+                    "isBlock": True, "isBlockGroup": False, "blockType": "table_row",
+                },
+            }
+        ])
+        row = {
+            "score": 0.9,
+            "content": "Scenario matrix keep note",
+            "citationType": "vectordb|document",
+            "virtual_record_id": "vr1",
+            "metadata": {
+                "virtualRecordId": "vr1", "orgId": "o1", "origin": "CONNECTOR",
+                "recordName": "mx_keep", "recordId": "rec1",
+                "mimeType": "application/vnd.sql.table",
+            },
+        }
+        from app.models.blocks import GroupType
+
+        async def fake_get_record(vid, vid_to_record, *_args) -> None:
+            vid_to_record[vid] = {"record_type": "SQL_TABLE"}
+
+        flatten = AsyncMock(return_value=[
+            {"block_type": GroupType.TABLE.value, "content": ("DDL", [row])},
+        ])
+        with patch("app.modules.retrieval.retrieval_service.get_record",
+                   new=AsyncMock(side_effect=fake_get_record)), \
+             patch("app.modules.retrieval.retrieval_service.get_flattened_results", new=flatten):
+            result = await retrieval_service.search_with_filters(
+                queries=["keep note"], user_id="u1", org_id="o1", knowledge_search=True,
+            )
+
+        assert flatten.await_count == 1
+        [flattened_input] = flatten.await_args.args[0]
+        assert flattened_input["metadata"]["recordId"] == "rec1"
+        assert [hit["virtual_record_id"] for hit in result["searchResults"]] == ["vr1"]
+
     @pytest.mark.asyncio
     async def test_virtual_to_record_map_carries_substituted_weburl(
         self, retrieval_service, mock_graph_provider
