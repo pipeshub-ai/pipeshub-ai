@@ -92,3 +92,29 @@ async def test_publish_error_swallows_broker_failure() -> None:
     )
 
     logger.warning.assert_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("broker", "expected"),
+    [
+        (AsyncMock(return_value=True), True),
+        (AsyncMock(return_value=False), False),
+        (AsyncMock(side_effect=RuntimeError("broker down")), False),
+    ],
+)
+async def test_publish_says_whether_the_broker_took_it(broker: AsyncMock, expected: bool) -> None:
+    kafka_service = MagicMock()
+    kafka_service.publish_notification = broker
+    svc = NotificationService(kafka_service, MagicMock())
+
+    taken = await svc.publish_notification(
+        org_id="507f191e810c19729de860ea",
+        origin=NotificationOrigin.CONNECTOR,
+        type=NotificationType.CONNECTOR_WARNING,
+        severity=NotificationSeverity.WARNING,
+        title="t",
+        message="m",
+    )
+
+    assert taken is expected

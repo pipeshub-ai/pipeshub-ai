@@ -585,6 +585,55 @@ class TestDeletedIssuesOnAFreePlan:
         assert len(api.calls("GET", AUDIT)) == 3, "every sync still asks Jira"
         assert len(connector._notification_service.sent) + len(restarted._notification_service.sent) == 1
 
+    async def test_the_marker_is_written_only_once_the_notice_is_sent(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+
+        assert len(connector._notification_service.sent) == 1
+        assert (checkpoints.values_for("issues_audit_free_plan_notice") or {}).get("sent") is True
+
+    async def test_a_notice_the_broker_refused_is_sent_again_later(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._notification_service = RecordingNotifications(broker_answers=[False])
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+        assert checkpoints.values_for("issues_audit_free_plan_notice") is None
+
+        fresh_notification_memory()
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        assert len(connector._notification_service.refused) == 1
+        assert len(connector._notification_service.sent) == 1
+
+    async def test_a_suppressed_notice_is_not_marked_sent(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        checkpoints.sync_points.clear()  # a full resync deletes every sync point
+        resynced, _ = await ready_connector(db, checkpoints)
+        await resynced._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(resynced)
+        assert resynced._notification_service.sent == [], "the in-memory backoff still holds it back"
+        assert checkpoints.values_for("issues_audit_free_plan_notice") is None
+
+        fresh_notification_memory()
+        await resynced._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(resynced)
+        assert len(resynced._notification_service.sent) == 1
+
     async def test_a_real_permission_refusal_still_asks_for_the_permission(
         self, api, db, checkpoints, fresh_notification_memory
     ) -> None:

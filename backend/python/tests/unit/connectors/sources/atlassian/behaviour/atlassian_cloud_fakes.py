@@ -167,11 +167,21 @@ class CloudRecordsDb(FakeRecordsDb):
 
 
 class RecordingNotifications:
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
+    """Like NotificationService: returns whether the broker took the notice.
 
-    async def publish_notification(self, **kwargs: object) -> None:
-        self.sent.append(kwargs)
+    ``broker_answers`` are served in order (True once they run out); a False
+    is a notice the broker refused, so it is not in ``sent``.
+    """
+
+    def __init__(self, broker_answers: list[bool] | None = None) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.refused: list[dict[str, Any]] = []
+        self._answers = list(broker_answers or [])
+
+    async def publish_notification(self, **kwargs: object) -> bool:
+        taken = self._answers.pop(0) if self._answers else True
+        (self.sent if taken else self.refused).append(kwargs)
+        return taken
 
 
 async def drain_notifications(connector: object) -> None:

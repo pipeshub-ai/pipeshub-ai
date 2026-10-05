@@ -27,8 +27,11 @@ class NotificationService:
         redirect_link: str | None = None,
         recipient_user_ids: list[str] | None = None,
         recipient_roles: list[NotificationRecipientRole] | None = None,
-    ) -> None:
-        """Publish a user-visible connector notification. Swallows broker errors after logging."""
+    ) -> bool:
+        """Publish a user-visible connector notification; returns whether the broker took it.
+
+        Swallows broker errors after logging.
+        """
         try:
             document: dict[str, Any] = {
                 "orgId": org_id,
@@ -44,7 +47,7 @@ class NotificationService:
                 "recipientRoles": [role.value for role in recipient_roles] if recipient_roles else [],
                 "isDeleted": False,
             }
-            await self._kafka_service.publish_notification(document)
+            return await self._kafka_service.publish_notification(document) is True
         except Exception as exc:  # noqa: BLE001 — must not break connector sync
             self._logger.warning(
                 "Failed to publish connector notification: \n Title: %s \n type: %s",
@@ -52,3 +55,4 @@ class NotificationService:
                 type.value,
                 exc_info=True,
             )
+            return False

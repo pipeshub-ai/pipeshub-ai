@@ -108,6 +108,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.notification.types import (
+    NotificationOutcome,
     NotificationSeverity,
     NotificationType,
 )
@@ -1221,7 +1222,7 @@ class JiraConnector(BaseConnector):
             )
             return
 
-        await self.notify(
+        outcome = await self.notify_and_wait(
             type=NotificationType.CONNECTOR_WARNING,
             severity=NotificationSeverity.WARNING,
             title=self._notification_title("can't detect deleted issues on Jira's Free plan"),
@@ -1237,6 +1238,9 @@ class JiraConnector(BaseConnector):
                 "redirect_link": None,
             }
         )
+        if outcome is not NotificationOutcome.SENT:
+            self.logger.info("Free-plan notice not delivered (%s); a later sync tries again", outcome.value)
+            return
         try:
             await self.issues_sync_point.update_sync_point(
                 AUDIT_FREE_PLAN_NOTICE_SYNC_KEY, {"sent": True}
