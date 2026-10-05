@@ -30,9 +30,19 @@ class _MemoryConfigService:
         self.failing_reads = failing_reads
         self.writes: list[str] = []
 
-    async def get_config(self, path: str, default: list | dict | None = None, use_cache: bool = True) -> list | dict | None:
+    async def get_config(
+        self,
+        path: str,
+        default: list | dict | None = None,
+        use_cache: bool = True,
+        *,
+        raise_on_error: bool = False,
+    ) -> list | dict | None:
+        # Like ConfigurationService: a failed read answers the default unless asked to raise.
         if path in self.failing_reads:
-            raise ConnectionError(f"store did not answer for {path}")
+            if raise_on_error:
+                raise ConnectionError(f"store did not answer for {path}")
+            return default
         return copy.deepcopy(self.store.get(path, default))
 
     async def set_config(self, path: str, value: list | dict) -> bool:
@@ -189,3 +199,12 @@ class TestFailures:
         assert retried["apps_repaired"] == 1
         assert config_service.store[SALESFORCE_PATH][0]["redirectUri"] == f"{BASE_URL}/connectors/oauth/callback/Salesforce"
         assert config_service.store[MIGRATION_FLAG_KEY]["done"] is True
+
+    async def test_a_saved_value_that_is_not_a_list_is_retried(self) -> None:
+        config_service = _MemoryConfigService({SALESFORCE_PATH: {"unexpected": "shape"}, SLACK_PATH: [_broken_slack_app()]})
+
+        result = await _repair(config_service)
+
+        assert result["success"] is False
+        assert config_service.store[SLACK_PATH][0]["redirectUri"] == f"{BASE_URL}/connectors/oauth/callback/Slack"
+        assert MIGRATION_FLAG_KEY not in config_service.store

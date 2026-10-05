@@ -123,9 +123,14 @@ class ConnectorOAuthToolsetFieldsRepair:
             return 0, 1
 
         path = ConfigPaths.OAUTH_CONFIG.format(connector_type=connector_type.lower().replace(" ", ""))
-        apps = await self.config_service.get_config(path, default=[], use_cache=False)
+        # Without raise_on_error a failed read answers the default, and an empty list would mark this done.
+        apps = await self.config_service.get_config(path, default=[], use_cache=False, raise_on_error=True)
         if not isinstance(apps, list):
-            return 0, 0
+            self.logger.error(
+                f"Connector OAuth app repair: the saved {connector_type} OAuth apps are not a list; "
+                "they will be checked again on the next start."
+            )
+            return 0, 1
 
         repaired_ids: list[str] = []
         failed = 0
