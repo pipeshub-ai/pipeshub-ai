@@ -239,23 +239,85 @@ _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # record_connector_deleted_at, which holds only the trash, so a candidate costs one
 # parent lookup and, for a file organizer, one look for a second member of its
 # batch; a deleted folder's files are never counted.
-_TRASH_BATCH_ROOTS = """
-MATCH (r:Record)
+#
+# Hinted, with the parent unlabelled so it can only be reached from r (only
+# records carry deleteBatchId): with the trash indexes sampled while empty, the
+# planner estimated 0 rows everywhere and scanned a whole trash index for every
+# candidate, its parent and its batch mates, 16k to 69k hits for 344 records.
+# The CASE fixes the order, so a file organizer's list drops a deleted folder's
+# files on their batch mate before reading their parent or type.
+_TRASH_LIST_INDEXES = "record_connector_deleted_at and record_delete_batch"
+_TRASH_ROOTS_HINT = "USING INDEX SEEK r:Record(connectorId, deletedAtTimestamp)"
+_TRASH_BATCH_HINT = "USING INDEX SEEK x:Record(deleteBatchId)"
+_TRASH_LIST_HINT_WARNING = (
+    "The trash list's indexes %s are not ready; reading the trash without them until they are: %s"
+)
+
+
+def _trash_batch_roots(*, hinted: bool) -> str:
+    roots_hint = _TRASH_ROOTS_HINT if hinted else ""
+    batch_hint = _TRASH_BATCH_HINT if hinted else ""
+    return f"""
+MATCH (r:Record) {roots_hint}
 WHERE r.connectorId = $connector_id AND r.deletedAtTimestamp IS NOT NULL
   AND r.orgId = $org_id AND r.isDeleted = true AND r.deleteBatchId IS NOT NULL
-  AND NOT EXISTS {
-      MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
-      WHERE rel.relationshipType IN $containment
-        AND p.isDeleted = true AND p.deleteBatchId = r.deleteBatchId
-  }
-  AND (NOT $single_only OR (
-      EXISTS { MATCH (r)-[:IS_OF_TYPE]->(t) WHERE t.isFile = true }
-      AND NOT EXISTS {
-          MATCH (x:Record {deleteBatchId: r.deleteBatchId})
-          WHERE x.id <> r.id AND x.isDeleted = true
-      }
-  ))
+  AND CASE
+      WHEN $single_only AND EXISTS {{
+          MATCH (x:Record) {batch_hint}
+          WHERE x.deleteBatchId = r.deleteBatchId AND x.id <> r.id AND x.isDeleted = true
+      }} THEN false
+      WHEN EXISTS {{
+          MATCH (r)<-[rel:RECORD_RELATION]-(p)
+          WHERE rel.relationshipType IN $containment
+            AND p.isDeleted = true AND p.deleteBatchId = r.deleteBatchId
+      }} THEN false
+      ELSE NOT $single_only OR EXISTS {{ MATCH (r)-[:IS_OF_TYPE]->(t) WHERE t.isFile = true }}
+  END
 """
+
+
+def _trash_list_page_query(*, hinted: bool) -> str:
+    batch_hint = _TRASH_BATCH_HINT if hinted else ""
+    return f"""
+    {_trash_batch_roots(hinted=hinted)}
+    WITH r.deleteBatchId AS batch, max(r.deletedAtTimestamp) AS deleted_at,
+         min(r.id) AS first_id, count(r) AS root_count
+    ORDER BY deleted_at DESC, batch DESC SKIP $skip LIMIT $limit
+    MATCH (r:Record {{id: first_id}})
+    OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
+    WHERE rel.relationshipType IN $containment
+    WITH batch, deleted_at, root_count, r, head(collect(p)) AS p
+    OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+    WITH batch, deleted_at, root_count, r, p, head(collect(t)) AS t
+    OPTIONAL MATCH (u:User {{id: r.deletedByUserId}})
+    WITH batch, deleted_at, root_count, r, p, t, head(collect(u)) AS u
+    RETURN properties(r) AS rec,
+           p.id AS parent_id, p.recordName AS parent_name, p.isDeleted AS parent_deleted,
+           t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
+           root_count,
+           CASE WHEN root_count < 2 THEN [] ELSE COLLECT {{
+               MATCH (x:Record) {batch_hint}
+               WHERE x.deleteBatchId = batch
+                 AND x.id <> r.id AND x.isDeleted = true AND x.connectorId = $connector_id
+                 AND NOT EXISTS {{
+                     MATCH (x)<-[xrel:RECORD_RELATION]-(xp)
+                     WHERE xrel.relationshipType IN $containment
+                       AND xp.isDeleted = true AND xp.deleteBatchId = batch
+                 }}
+               RETURN x.recordName ORDER BY x.id LIMIT $names
+           }} END AS other_names,
+           COUNT {{
+               MATCH (x:Record) {batch_hint}
+               WHERE x.deleteBatchId = batch AND x.isDeleted = true AND x.connectorId = $connector_id
+           }} AS batch_size,
+           CASE WHEN u IS NULL THEN null
+                WHEN coalesce(u.fullName, '') <> '' THEN u.fullName
+                ELSE trim(coalesce(u.firstName, '') + ' ' + coalesce(u.lastName, '')) END AS user_name,
+           u.email AS user_email
+    ORDER BY deleted_at DESC, batch DESC
+    """
+
+
 # The purge walk's index, created by ensure_schema; it holds only the trash.
 _PURGE_WALK_INDEX = "record_org_deleted_at"
 _PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
@@ -331,8 +393,8 @@ class Neo4jProvider(IGraphDBProvider):
         self.client: Neo4jClient | None = None
         self.validator = NodeSchemaValidator()
         self.accessible_records_cache = accessible_records_cache
-        # Set while the purge walk runs without its hinted index, so that is logged once.
-        self._purge_walk_hint_missing = False
+        # The hinted indexes being read without, so each is logged once.
+        self._hint_indexes_missing: set[str] = set()
 
 
     # ==================== Connection Management ====================
@@ -12184,51 +12246,21 @@ class Neo4jProvider(IGraphDBProvider):
         # One row per delete batch, as restore brings a batch back whole. Batches are
         # aggregated and paged first, holding no roots; only a page's batches then
         # read their first root (by id) and the names of a few others.
-        rows = await self.client.execute_query(
-            f"""
-            {_TRASH_BATCH_ROOTS}
-            WITH r.deleteBatchId AS batch, max(r.deletedAtTimestamp) AS deleted_at,
-                 min(r.id) AS first_id, count(r) AS root_count
-            ORDER BY deleted_at DESC, batch DESC SKIP $skip LIMIT $limit
-            MATCH (r:Record {{id: first_id}})
-            OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
-            WHERE rel.relationshipType IN $containment
-            WITH batch, deleted_at, root_count, r, head(collect(p)) AS p
-            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
-            WITH batch, deleted_at, root_count, r, p, head(collect(t)) AS t
-            OPTIONAL MATCH (u:User {{id: r.deletedByUserId}})
-            WITH batch, deleted_at, root_count, r, p, t, head(collect(u)) AS u
-            RETURN properties(r) AS rec,
-                   p.id AS parent_id, p.recordName AS parent_name, p.isDeleted AS parent_deleted,
-                   t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
-                   root_count,
-                   CASE WHEN root_count < 2 THEN [] ELSE COLLECT {{
-                       MATCH (x:Record {{deleteBatchId: batch}})
-                       WHERE x.id <> r.id AND x.isDeleted = true AND x.connectorId = $connector_id
-                         AND NOT EXISTS {{
-                             MATCH (xp:Record)-[xrel:RECORD_RELATION]->(x)
-                             WHERE xrel.relationshipType IN $containment
-                               AND xp.isDeleted = true AND xp.deleteBatchId = batch
-                         }}
-                       RETURN x.recordName ORDER BY x.id LIMIT $names
-                   }} END AS other_names,
-                   COUNT {{
-                       MATCH (x:Record {{deleteBatchId: batch}})
-                       WHERE x.isDeleted = true AND x.connectorId = $connector_id
-                   }} AS batch_size,
-                   CASE WHEN u IS NULL THEN null
-                        WHEN coalesce(u.fullName, '') <> '' THEN u.fullName
-                        ELSE trim(coalesce(u.firstName, '') + ' ' + coalesce(u.lastName, '')) END AS user_name,
-                   u.email AS user_email
-            ORDER BY deleted_at DESC, batch DESC
-            """,
-            parameters={**parameters, "names": TRASH_LIST_OTHER_ROOT_NAMES},
-            txn_id=transaction,
+        rows = await self._execute_hinted(
+            _trash_list_page_query(hinted=True),
+            _trash_list_page_query(hinted=False),
+            {**parameters, "names": TRASH_LIST_OTHER_ROOT_NAMES},
+            transaction,
+            index=_TRASH_LIST_INDEXES,
+            warning=_TRASH_LIST_HINT_WARNING,
         )
-        counted = await self.client.execute_query(
-            f"{_TRASH_BATCH_ROOTS} RETURN count(DISTINCT r.deleteBatchId) AS total",
-            parameters=parameters,
-            txn_id=transaction,
+        counted = await self._execute_hinted(
+            f"{_trash_batch_roots(hinted=True)} RETURN count(DISTINCT r.deleteBatchId) AS total",
+            f"{_trash_batch_roots(hinted=False)} RETURN count(DISTINCT r.deleteBatchId) AS total",
+            parameters,
+            transaction,
+            index=_TRASH_LIST_INDEXES,
+            warning=_TRASH_LIST_HINT_WARNING,
         )
         items = [
             {
@@ -12333,6 +12365,31 @@ class Neo4jProvider(IGraphDBProvider):
             # A deadlock with a sync that links a record here: Neo4j aborted this side.
             raise GraphLockUnavailableError(f"The purge lost a lock race and will try again: {exc}") from exc
 
+    async def _execute_hinted(
+        self,
+        hinted: str,
+        unhinted: str,
+        parameters: dict[str, Any],
+        transaction: str | None,
+        *,
+        index: str,
+        warning: str,
+    ) -> list[dict[str, Any]]:
+        """Run *hinted*; if its hinted *index* is not ready, run *unhinted* and log *warning* once."""
+        try:
+            rows = await self.client.execute_query(hinted, parameters=parameters, txn_id=transaction)
+        except ClientError as exc:
+            # Raised only where the server sets dbms.cypher.hints_error; elsewhere a
+            # missing or building index is a notification and the plan goes without it.
+            if exc.code != _INDEX_NOT_FOUND:
+                raise
+            if index not in self._hint_indexes_missing:
+                self.logger.warning(warning, index, exc)
+                self._hint_indexes_missing.add(index)
+            return await self.client.execute_query(unhinted, parameters=parameters, txn_id=transaction)
+        self._hint_indexes_missing.discard(index)
+        return rows
+
     async def get_purgeable_trashed_records(
         self,
         org_id: str,
@@ -12359,25 +12416,14 @@ class Neo4jProvider(IGraphDBProvider):
             "deleting": APP_STATUS_DELETING,
             "containment": list(_CONTAINMENT_RELATIONS),
         }
-        try:
-            rows = await self.client.execute_query(
-                _purge_walk_query(_PURGE_WALK_HINT), parameters=parameters, txn_id=transaction
-            )
-            self._purge_walk_hint_missing = False
-        except ClientError as exc:
-            # Raised only where the server sets dbms.cypher.hints_error; elsewhere a
-            # missing or building index is a notification and the plan goes without it.
-            if exc.code != _INDEX_NOT_FOUND:
-                raise
-            if not self._purge_walk_hint_missing:
-                self.logger.warning(
-                    "The purge's index %s is not ready; walking the trash without it until it is: %s",
-                    _PURGE_WALK_INDEX, exc,
-                )
-                self._purge_walk_hint_missing = True
-            rows = await self.client.execute_query(
-                _purge_walk_query(""), parameters=parameters, txn_id=transaction
-            )
+        rows = await self._execute_hinted(
+            _purge_walk_query(_PURGE_WALK_HINT),
+            _purge_walk_query(""),
+            parameters,
+            transaction,
+            index=_PURGE_WALK_INDEX,
+            warning="The purge's index %s is not ready; walking the trash without it until it is: %s",
+        )
         rows = rows or []
         records = [
             await self._trash_purge_row(row["rec"], row.get("type_doc"))

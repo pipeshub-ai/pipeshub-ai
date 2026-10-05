@@ -11,6 +11,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from neo4j.exceptions import Neo4jError
 
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -106,3 +107,50 @@ async def test_a_failed_read_raises(backend) -> None:
     _query(provider).side_effect = RuntimeError("graph down")
     with pytest.raises(RuntimeError, match="graph down"):
         await provider.list_trashed_records("kb1", "o1")
+
+
+ROOTS_HINT = "USING INDEX SEEK r:Record(connectorId, deletedAtTimestamp)"
+BATCH_HINT = "USING INDEX SEEK x:Record(deleteBatchId)"
+
+
+def _index_not_found() -> Neo4jError:
+    return Neo4jError._hydrate_neo4j(code="Neo.ClientError.Schema.IndexNotFound", message="No such index")
+
+
+async def test_neo4j_hints_the_trash_indexes_in_both_reads() -> None:
+    """On a fresh install the planner scanned the whole batch index per candidate; the hints stop it."""
+    provider = _neo4j()
+    provider.client.execute_query = AsyncMock(side_effect=[[], [{"total": 0}]])
+
+    await provider.list_trashed_records("kb1", "o1", single_file_batches_only=True)
+
+    page, count = (call.args[0] for call in provider.client.execute_query.await_args_list)
+    for statement in (page, count):
+        assert ROOTS_HINT in statement
+        assert BATCH_HINT in statement
+
+
+async def test_neo4j_without_its_indexes_reads_unhinted_and_says_so_once(caplog: pytest.LogCaptureFixture) -> None:
+    provider = Neo4jProvider(logger=logging.getLogger("trash-list-test"), config_service=MagicMock())
+    provider.client = AsyncMock()
+    missing = _index_not_found()
+    provider.client.execute_query = AsyncMock(side_effect=[missing, [], missing, [{"total": 3}]] * 2)
+
+    with caplog.at_level(logging.WARNING):
+        first = await provider.list_trashed_records("kb1", "o1")
+        second = await provider.list_trashed_records("kb1", "o1")
+
+    statements = [call.args[0] for call in provider.client.execute_query.await_args_list]
+    assert [ROOTS_HINT in s for s in statements] == [True, False, True, False] * 2
+    assert first == second == {"items": [], "total": 3}
+    assert caplog.text.count("reading the trash without them") == 1
+
+
+async def test_neo4j_raises_any_other_error_from_a_hinted_read() -> None:
+    provider = _neo4j()
+    provider.client.execute_query = AsyncMock(
+        side_effect=Neo4jError._hydrate_neo4j(code="Neo.ClientError.Statement.SyntaxError", message="bad"),
+    )
+    with pytest.raises(Neo4jError):
+        await provider.list_trashed_records("kb1", "o1")
+    assert provider.client.execute_query.await_count == 1
