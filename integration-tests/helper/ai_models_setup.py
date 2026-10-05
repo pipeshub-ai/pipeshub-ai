@@ -489,27 +489,19 @@ def _active_embedding_entry(entries: List[Dict[str, Any]]) -> Optional[Dict[str,
     return next((e for e in entries if e.get("isDefault")), entries[0] if entries else None)
 
 
-def _same_setting(a: Any, b: Any) -> bool:
-    return str(a).strip().rstrip("/").lower() == str(b).strip().rstrip("/").lower()
-
-
 def _entry_matches(entry: Dict[str, Any], candidate: _ProviderCandidate) -> bool:
-    """Whether ``entry`` is the model ``candidate`` would add.
+    """Whether ``entry`` embeds with the model ``candidate`` would add.
 
-    The list response strips secrets, so the key is not compared; the endpoint
-    and deployment are, when the entry still carries them.
+    Provider and model only. The list response keeps only the public config keys
+    (``AI_PUBLIC_CONFIG_KEYS`` in maskConfigSecrets.ts), so the endpoint and
+    deployment cannot be compared, and the product's own guard treats the same
+    model name as no change. Each CI stack configures one Azure deployment, so
+    a match there is the suite's own model.
     """
     if entry.get("provider") != candidate.provider:
         return False
-    if not _same_setting(_parse_model_name_from_config(entry), candidate.model_name):
-        return False
-    configuration = _as_dict(entry.get("configuration"))
-    for field in ("endpoint", "deploymentName"):
-        wanted = candidate.configuration.get(field)
-        have = configuration.get(field)
-        if wanted and have and not _same_setting(wanted, have):
-            return False
-    return True
+    have = _parse_model_name_from_config(entry).strip().lower()
+    return bool(have) and have == candidate.model_name.strip().lower()
 
 
 def _describe_entry(entry: Optional[Dict[str, Any]]) -> str:
@@ -690,7 +682,7 @@ def setup_test_embedding_model(
 ) -> SeededAIModel:
     """Make the wanted embedding model the one the org embeds with.
 
-    When the org already embeds with it (same provider and model), that entry is
+    When the org already embeds with it (same provider and model name), that entry is
     reused as it is and teardown leaves it: the stack is shared by every pytest
     session and the Playwright run, and PipesHub refuses to delete or replace
     the embedding model while the vector store holds its vectors. Otherwise the

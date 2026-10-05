@@ -69,15 +69,12 @@ class _Backend:
         return self.delete_response
 
 
-def _entry(**configuration: str) -> dict[str, Any]:
+def _entry(provider: str = "azureOpenAI", model: str = "text-embedding-3-small") -> dict[str, Any]:
+    """A list entry as GET /ai-models/embedding returns it: configuration cut to
+    the public keys (AI_PUBLIC_CONFIG_KEYS), so no endpoint or deployment."""
     return {
-        "provider": "azureOpenAI",
-        "configuration": {
-            "model": "text-embedding-3-small",
-            "endpoint": _ENDPOINT,
-            "deploymentName": _DEPLOYMENT,
-            **configuration,
-        },
+        "provider": provider,
+        "configuration": {"model": model},
         "isDefault": True,
         "modelKey": "existing-key",
     }
@@ -119,11 +116,11 @@ def test_the_model_the_org_already_embeds_with_is_reused_and_left_in_place(
     assert backend.deletes == []
 
 
-def test_the_same_model_in_another_deployment_is_added_rather_than_reused(
+def test_the_same_model_from_another_provider_is_added_rather_than_reused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = _Backend(
-        [_entry(deploymentName="someone-elses")],
+        [_entry(provider="openAI")],
         post=_Response(200, {"details": {"modelKey": "new-key"}}),
     )
     _install(monkeypatch, backend)
@@ -138,12 +135,7 @@ def test_a_store_held_by_another_model_fails_once_and_names_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "openai-key")
-    other = {
-        "provider": "openAI",
-        "configuration": {"model": "text-embedding-3-large"},
-        "isDefault": True,
-        "modelKey": "other-key",
-    }
+    other = {**_entry(provider="openAI", model="text-embedding-3-large"), "modelKey": "other-key"}
     backend = _Backend([other], post=_Response(400, text=_IN_USE))
     _install(monkeypatch, backend)
 
