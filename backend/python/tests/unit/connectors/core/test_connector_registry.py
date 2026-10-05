@@ -280,7 +280,7 @@ class TestCanAccessConnector:
     async def test_team_scope_admin_has_access(self):
         """Admin can access team-scoped connectors."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "admin-1", "org-1", is_admin=True)
 
@@ -290,7 +290,7 @@ class TestCanAccessConnector:
     async def test_team_scope_creator_has_access(self):
         """Creator can access their own team-scoped connector."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -310,7 +310,7 @@ class TestCanAccessConnector:
     async def test_personal_scope_creator_has_access(self):
         """Creator can access their personal connector."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -350,7 +350,7 @@ class TestCanAccessConnector:
     async def test_default_scope_is_personal(self):
         """Missing scope defaults to personal."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "createdBy": "user-1"}  # No scope key
+        instance = {"_key": "conn-1", "orgId": "org-1", "createdBy": "user-1"}  # No scope key
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -1276,7 +1276,7 @@ class TestGetConnectorInstance:
 
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "My Gmail",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "My Gmail",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
 
@@ -1517,7 +1517,7 @@ class TestUpdateConnectorInstance:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old Name",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old Name",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.update_node.return_value = True
@@ -1576,7 +1576,7 @@ class TestUpdateConnectorInstance:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.check_connector_name_exists.return_value = True
@@ -2017,7 +2017,7 @@ class TestUpdateConnectorInstanceDeep:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": name,
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": name,
             "scope": ConnectorScope.TEAM.value, "createdBy": "user-1",
         }
         gp.update_node.return_value = True
@@ -2063,7 +2063,7 @@ class TestUpdateConnectorInstanceDeep:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old Name",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old Name",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.update_node.return_value = True
@@ -2086,7 +2086,7 @@ class TestUpdateConnectorInstanceDeep:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old Name",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old Name",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.check_connector_name_exists.return_value = False

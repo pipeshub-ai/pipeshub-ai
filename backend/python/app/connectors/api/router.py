@@ -996,6 +996,14 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
     return trimmed_config
 
 
+_OWNER_TOKEN_KEYS = frozenset({OAuthConfigKeys.CREDENTIALS, "oauth"})
+
+
+def _config_for_response(config: dict[str, Any]) -> dict[str, Any]:
+    """Copy of a stored connector config without the owner's tokens, which never leave the server."""
+    return {key: value for key, value in config.items() if key not in _OWNER_TOKEN_KEYS}
+
+
 def _require_filter_sections_are_objects(filters: object) -> None:
     """400 when ``filters.sync`` / ``filters.indexing`` is present but not an object.
 
@@ -2303,9 +2311,13 @@ async def delete_record(
                 batch_id=result.get("batchId") or "",
                 delete_source=DeleteSource.USER.value,
             ):
+                async def publish(event: dict = event) -> None:
+                    if await kafka_service.publish_event("record-events", event) is False:
+                        raise RuntimeError("the message broker did not accept the event")
+
                 try:
                     await retry_async(
-                        lambda event=event: kafka_service.publish_event("record-events", event),
+                        publish,
                         logger=logger,
                         description=f"publish softDeleteRecords for record {record_id}",
                     )
@@ -2361,9 +2373,13 @@ async def delete_record(
                         "timestamp": timestamp,
                         "payload": payload,
                     }
+                    async def publish(event: dict = event) -> None:
+                        if await kafka_service.publish_event(event_data["topic"], event) is False:
+                            raise RuntimeError("the message broker did not accept the event")
+
                     try:
                         await retry_async(
-                            lambda event=event: kafka_service.publish_event(event_data["topic"], event),
+                            publish,
                             logger=logger,
                             description=f"publish {event_data['eventType']} event for record {record_id}",
                         )
@@ -4553,10 +4569,7 @@ async def get_connector_instance_config(
         if not config:
             config = {"auth": {}, "sync": {}, "filters": {}}
 
-        # Remove sensitive data and internal fields
-        config = config.copy()
-        config.pop("credentials", None)
-        config.pop("oauth", None)
+        config = _config_for_response(config)
 
         # Clean auth section in config (remove redundant OAuth fields that aren't needed)
         if OAuthConfigKeys.AUTH in config:
@@ -5146,7 +5159,7 @@ async def update_connector_instance_auth_config(
 
         return {
             "success": True,
-            "config": new_config,
+            "config": _config_for_response(new_config),
             "message": "Authentication configuration saved successfully."
         }
 
@@ -5299,7 +5312,7 @@ async def update_connector_instance_filters_sync_config(
 
         return {
             "success": True,
-            "config": new_config,
+            "config": _config_for_response(new_config),
             "message": "Filters and sync configuration saved successfully.",
             "syncFiltersChanged": needs_full_resync,
         }
@@ -5602,7 +5615,7 @@ async def update_connector_instance_config(
 
         return {
             "success": True,
-            "config": new_config,
+            "config": _config_for_response(new_config),
             "message": "Configuration saved successfully."
         }
 

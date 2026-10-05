@@ -1356,6 +1356,35 @@ class TestDeleteRecord:
         assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
         assert kafka.publish_event.await_count == 3  # retried before giving up (#3008)
 
+    async def test_an_event_the_broker_refuses_flags_pending(self) -> None:
+        """publish_event answers False without raising when the broker refuses an event."""
+        from app.connectors.api.router import delete_record
+
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        gp.delete_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {
+                "eventType": "record.deleted",
+                "topic": "sync-events",
+                "payload": {"recordId": "rec-1"},
+            },
+        })
+
+        kafka = AsyncMock()
+        kafka.publish_event = AsyncMock(return_value=False)
+
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        request = _mock_request(container=container)
+
+        with patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=999), \
+             patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            result = await delete_record("rec-1", request, gp, kafka)
+        assert result["success"] is True
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
+
     async def test_malformed_event_data_skips_publish_and_flags_pending(self):
         """eventData missing a required field (eventType/topic/payload) must not
         crash a completed deletion via KeyError — skip publishing and flag

@@ -3009,6 +3009,7 @@ class IGraphDBProvider(ABC):
         active: bool = True,
         is_external: bool = False,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all organizations.
@@ -3017,6 +3018,8 @@ class IGraphDBProvider(ABC):
             active (bool): Filter by active status
             is_external (bool): Filter by external flag (default False)
             transaction (Optional[str]): Optional transaction ID
+            raise_on_error (bool): Raise a failed read instead of answering
+                [], which is also the answer for an install with no orgs
 
         Returns:
             List[Dict]: List of organizations
@@ -4433,6 +4436,45 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_trashed_records(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        skip: int = 0,
+        limit: int = 25,
+        single_file_batches_only: bool = False,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """One page of what delete actions put in the trash in one connector (a KB), newest first.
+
+        One item per delete batch, as restore brings a batch back whole. A
+        batch's roots are its records in the trash, in ``org_id`` and
+        ``connector_id``, with a ``deletedAtTimestamp`` and a ``deleteBatchId``,
+        whose ``PARENT_CHILD`` or ``ATTACHMENT`` parent is not in the same batch:
+        a folder deleted with its contents has one, a multi-select delete one
+        per item selected. With ``single_file_batches_only``, only batches of
+        one file are listed (what a file organizer may restore). Sorted by the
+        batch's ``deletedAtTimestamp``, then batch id, both descending, and
+        paged inside the query; ``total`` counts batches in a separate read.
+        Each read walks only this connector's trash, through an index that
+        holds only the trash, at a fixed cost per record, so a deleted folder's
+        files never cost a read of their whole batch.
+
+        Returns ``items`` and ``total``. Each item stands for one batch through
+        its first root by key: ``record`` (that root's stored document, ``_key``
+        set on both backends), ``parentId``, ``parentName`` and
+        ``parentIsDeleted`` for the record it hangs under (None at the KB
+        root), ``isFile``, ``fileMimeType`` and ``sizeInBytes`` from its type
+        doc, ``rootCount`` (the batch's roots), ``otherRootNames`` (up to
+        ``TRASH_LIST_OTHER_ROOT_NAMES`` other roots' names, by key),
+        ``batchSize`` (records in the batch in this connector) and
+        ``deletedByName`` and ``deletedByEmail`` for the user in
+        ``deletedByUserId`` (None when unknown). A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def restore_records(
         self,
         restores: list[dict[str, Any]],
@@ -4463,6 +4505,135 @@ class IGraphDBProvider(ABC):
         delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
         ``deleteBatchId``, ``deletedByUserId``, the purge counters and
         ``trashedExternalRecordId``) are cleared. A failure raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_purgeable_trashed_records(
+        self,
+        org_id: str,
+        deleted_before: int,
+        *,
+        after: tuple[int, str] | None = None,
+        limit: int = 500,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """One page of this org's trash that the purge may remove, oldest first.
+
+        A record qualifies while ``isDeleted`` is true and its
+        ``deletedAtTimestamp`` is set and at most ``deleted_before``, and it has
+        failed fewer than ``max_attempts`` purges. The walk is keyset by
+        (``deletedAtTimestamp``, key), starting after ``after``. Records of a
+        connector being deleted (``status`` DELETING), and records that still
+        have a PARENT_CHILD or ATTACHMENT child of any state, are left out of
+        the page but still move the cursor; ``held`` counts the second kind,
+        which wait until their children are purged. Returns ``records``
+        (``trash_purge_row`` shapes), ``held`` and ``next``, the ``after`` for
+        the next page, or None after the last one. A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def is_trash_walk_index_ready(self) -> bool:
+        """Whether the index ``get_purgeable_trashed_records`` walks is built and usable.
+
+        Without it the walk still answers correctly, but reads the whole trash for
+        every page, so the purge waits for it instead. A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_trashed_records(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        deleted_before: int,
+        *,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove records from the trash for good: every edge, the type doc and the vertex.
+
+        Each record is checked again inside the delete, after its write lock is
+        taken: it must still be in the trash in ``org_id``, since
+        ``deleted_before`` or earlier, under ``max_attempts`` failures, with its
+        connector not being deleted and no record under it at all (PARENT_CHILD
+        or ATTACHMENT, live or trashed), including one linked while the purge
+        runs. A record restored meanwhile is left alone. All or nothing; a
+        failure raises and removes nothing, and ``GraphLockUnavailableError``
+        means the locks could not be taken, which says nothing about the
+        records. Returns ``purged`` (the ``trash_purge_row`` of each record
+        removed, read in the same write) and ``kept`` (records still stored in
+        ``org_id`` and left in place). An id in neither is not stored, which
+        includes one an earlier attempt removed although its answer was lost.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def record_purge_failure(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        error: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Count one failed purge on each record still in the trash; return how many were counted.
+
+        Adds one to ``purgeAttempts`` and stores ``error`` in ``purgeLastError``.
+        A record restored meanwhile is not touched. A failure raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_trash_purge_stats(
+        self,
+        org_id: str,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """This org's trash, for the purge's gauges.
+
+        ``trashed`` counts records in the trash with a ``deletedAtTimestamp``,
+        ``stuck`` those that failed ``max_attempts`` purges, and
+        ``oldestDeletedAt`` is the earliest ``deletedAtTimestamp`` among the rest
+        (None when there are none). A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def take_back_kept_record_group(self, group_id: str, transaction: str | None = None) -> bool:
+        """Clear a record group's kept-for-the-trash mark, before a sync files a record under it.
+
+        A write on the group itself, so it waits for a purge that is deleting the
+        group (Neo4j locks the node; ArangoDB's purge locks the collections), and
+        the purge, which checks the mark again under that lock, keeps a group taken
+        back first. Returns False when the group is gone, deleted meanwhile, and
+        the caller makes a new one; the answer comes from a read made after the
+        write, since a Neo4j write that waited on a node deleted meanwhile still
+        reports its row. A failure of any other kind raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_trash_kept_record_groups(
+        self,
+        org_id: str,
+        *,
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Delete record groups kept only for the trash, once nothing belongs to them.
+
+        A group the source removed while records in the trash still belonged to
+        it is kept with ``isDeletedAtSource`` set (``on_record_group_deleted``).
+        It goes with its edges once no record, live or trashed, and no child
+        group belongs to it (BELONGS_TO, INHERIT_PERMISSIONS or
+        ``recordGroupId``) and its connector is not being deleted, checked again
+        inside the delete, so a record attached while it runs keeps the group. A group the source lists again has the mark cleared
+        by its upsert and is never removed here. A group with no ``orgId`` (one
+        a sync created from a record) belongs to its connector's org. Returns
+        the ids removed, at most ``limit``. A failure raises.
         """
         raise NotImplementedError
 
@@ -4711,7 +4882,7 @@ class IGraphDBProvider(ABC):
         Args:
             collection: Collection name (e.g., "apps")
             user_id: User ID
-            org_id: Organization ID
+            org_id: Organization ID; only apps linked to it by an org-app edge are returned
             team_scope: Team scope value (e.g., "team")
             personal_scope: Personal scope value (e.g., "personal")
             transaction: Optional transaction ID
@@ -4747,7 +4918,7 @@ class IGraphDBProvider(ABC):
         Args:
             collection: Collection name (e.g., "apps")
             edge_collection: Edge collection for org-app relation
-            org_id: Organization ID
+            org_id: Organization ID; only apps linked to it through ``edge_collection`` are returned
             user_id: User ID
             scope: Optional scope filter ("personal" or "team")
             search: Optional search query (searches name, type, appGroup)

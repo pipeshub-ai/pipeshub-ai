@@ -167,8 +167,8 @@ class GraphDBTransformer(Transformer):
             # Every metadata name was rewritten by the resolver, so a miss is
             # a keying bug; the per-org node is still the right target.
             self.logger.warning(
-                "entity_resolution: %r missing from the resolution for %s; "
-                "linking its per-org node", name, kind.collection,
+                "entity_resolution: a %s name is missing from the resolution; "
+                "linking its per-org node", kind.collection,
             )
             normalized = normalize_name(name)
             key = taxonomy_node_key(resolution.org_id, kind.collection, normalized)
@@ -328,7 +328,7 @@ class GraphDBTransformer(Transformer):
         existing_edges = await tx_store.get_edges_from_node_with_target_name(
             record_from, edge_collection, raise_on_error=True
         )
-        self.logger.debug(f"Existing edges with adjacent node names : {existing_edges}")
+        self.logger.debug("%d existing %s edges for record %s", len(existing_edges), label, record_id)
         existing_by_to: Dict[str, Dict] = {e["_to"]: e for e in existing_edges}
 
         # 2. Create edges that are new (in new but not in existing)
@@ -337,7 +337,7 @@ class GraphDBTransformer(Transformer):
             new_tos.items(),
             key=lambda item: item[1],
         )
-        for to_full, name in sorted_new_targets:
+        for to_full, _name in sorted_new_targets:
             if to_full not in existing_by_to:
                 to_collection, to_id = to_full.split("/", 1)
                 edge = {
@@ -351,7 +351,7 @@ class GraphDBTransformer(Transformer):
                 if extracted:
                     edge["extractedName"] = extracted
                 edges_to_create.append(edge)
-                self.logger.debug(f"🔗 Created {label} edge: {record_id} -> {name}")
+                self.logger.debug("Creating %s edge: %s -> %s", label, record_id, to_full)
         if edges_to_create:
             await tx_store.batch_create_edges(
                 edges_to_create, edge_collection

@@ -46,6 +46,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.exceptions.graph_db_exceptions import (
+    GraphLockUnavailableError,
     GraphQueryError,
     PermissionVerificationUnavailableError,
 )
@@ -161,6 +162,7 @@ from app.services.graph_db.common.utils import (
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
     SOFT_DELETE_CHUNK,
+    TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
@@ -173,9 +175,11 @@ from app.services.graph_db.common.utils import (
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
+    trash_purge_row,
     uploaded_document_id,
 )
 from app.services.graph_db.entity_index_queries import (
+    APP_STATUS_DELETING,
     ENTITY_INDEX_SOURCES,
     build_entity_index_candidate_aql,
     build_entity_index_source_page_aql,
@@ -283,6 +287,7 @@ _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
 _PERMITTED_WALK_CHUNK = 100
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
+_LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
 
 # Each inlined permission lookup gives this rule 16 loop orders to try, and the
@@ -295,6 +300,11 @@ _APP_CHILDREN_QUERY_OPTIONS = {"optimizer": {"rules": ["-interchange-adjacent-en
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
     return bool(_WRITE_CONFLICT_RE.search(str(exc)))
+
+
+def _is_lock_timeout(exc: Exception) -> bool:
+    """ArangoDB errorNum 18: a transaction's collection locks were not granted within its lockTimeout."""
+    return bool(_LOCK_TIMEOUT_RE.search(str(exc)))
 
 
 EDGE_COLLECTIONS = [
@@ -344,6 +354,55 @@ _EDGE_MOVE_BATCH = 5000
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 
 
+# A record with any of these children waits for them to be purged first.
+_CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
+# The roots of a connector's delete batches: records in the trash whose parent is
+# not in the same batch. A multi-select delete has several. The walk goes through the sparse
+# records[connectorId, deletedAtTimestamp] index, which holds only the trash (a
+# sparse index serves only conditions that leave null out, hence "> 0"). A
+# candidate costs one parent lookup and, for a file organizer, one look for a
+# second member of its batch; a deleted folder's files are never counted.
+TRASH_LIST_INDEX = "records_connector_deleted_at"
+_TRASH_BATCH_ROOTS = f"""
+FOR r IN @@records OPTIONS {{ indexHint: "{TRASH_LIST_INDEX}" }}
+    FILTER r.connectorId == @connector_id AND r.deletedAtTimestamp > 0
+    FILTER r.orgId == @org_id AND r.isDeleted == true AND r.deleteBatchId != null
+    LET in_batch_parent = FIRST(
+        FOR e IN @@record_relations
+            FILTER e._to == r._id AND e.relationshipType IN @containment
+            LET p = DOCUMENT(e._from)
+            FILTER p != null AND p.isDeleted == true AND p.deleteBatchId == r.deleteBatchId
+            LIMIT 1
+            RETURN 1
+    )
+    FILTER in_batch_parent == null
+    LET single_file = NOT @single_only OR (
+        FIRST(
+            FOR e IN @@is_of_type
+                FILTER e._from == r._id
+                LET t = DOCUMENT(e._to)
+                FILTER t != null
+                LIMIT 1
+                RETURN t.isFile
+        ) == true
+        AND FIRST(
+            FOR x IN @@records
+                FILTER x.deleteBatchId == r.deleteBatchId AND x.deleteBatchId != null
+                FILTER x._key != r._key AND x.isDeleted == true
+                LIMIT 1
+                RETURN 1
+        ) == null
+    )
+    FILTER single_file
+"""
+# records[orgId, deletedAtTimestamp, _key]: one org's trash, in purge order. An
+# index with these fields that already exists keeps its own name.
+PURGE_WALK_INDEX = "records_org_deleted_at"
+_PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
+# Waiting this long for the purge's exclusive locks means syncs are busy; the next tick tries again.
+_PURGE_LOCK_TIMEOUT_SECONDS = 30
+
+
 class ArangoHTTPProvider(IGraphDBProvider):
     """
     ArangoDB implementation using REST API for fully async operations.
@@ -367,6 +426,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger = logger
         self.config_service = config_service
         self.http_client: ArangoHTTPClient | None = None
+        # The walk index's actual name, found by its fields (is_trash_walk_index_ready).
+        self._purge_walk_index = PURGE_WALK_INDEX
 
 
         # Connector-specific delete permissions
@@ -874,12 +935,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
             sparse=True,
         )
 
+        # COMPOSITE: the purge's walk of one org's trash, in (deletedAtTimestamp,
+        # _key) order, one page of index entries per page. Not sparse: 3.12
+        # cannot serve a range from a sparse index that ends in _key. Live
+        # records hold null here, which sorts before every timestamp. Hinted by
+        # name; without it the planner took the orgId index and sorted every
+        # record of the org on each page.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            list(_PURGE_WALK_FIELDS),
+            name=PURGE_WALK_INDEX,
+        )
+
         # SPARSE: restore reads a whole delete batch; the field is cleared on
         # restore, so only the trash is in it.
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["deleteBatchId"],
             sparse=True,
+        )
+
+        # SPARSE: a collection's Recently deleted list, newest first. Only the
+        # trash has deletedAtTimestamp, so only the trash is in it.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "deletedAtTimestamp"],
+            sparse=True,
+            name=TRASH_LIST_INDEX,
         )
 
         # COMPOSITE: orgId + recordType — gallery listing filters ARTIFACT
@@ -1534,6 +1616,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = """
             FOR doc IN @@collection
                 FILTER doc._id != null
+                FILTER LENGTH(
+                    FOR e IN @@org_edge_collection
+                        FILTER e._to == doc._id AND e._from == @org_handle
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
                 FILTER (
                     doc.scope == @team_scope OR
                     (doc.scope == @personal_scope AND doc.createdBy == @user_id)
@@ -1542,6 +1630,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             bind_vars = {
                 "@collection": collection,
+                "@org_edge_collection": CollectionNames.ORG_APP_RELATION.value,
+                "org_handle": f"{CollectionNames.ORGS.value}/{org_id}",
                 "team_scope": team_scope,
                 "personal_scope": personal_scope,
                 "user_id": user_id,
@@ -1653,13 +1743,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # reused for both the main query and the scope-count sub-query.
             accessible_team_keys: list[str] | None = None
 
-            # Build base query
+            # The org edge is the tenant boundary: connector apps created before
+            # August 2026 carry no orgId property.
             query = """
             FOR doc IN @@collection
                 FILTER doc._id != null
+                FILTER LENGTH(
+                    FOR e IN @@org_edge_collection
+                        FILTER e._to == doc._id AND e._from == @org_handle
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
             """
             bind_vars = {
                 "@collection": collection,
+                "@org_edge_collection": edge_collection,
+                "org_handle": f"{CollectionNames.ORGS.value}/{org_id}",
             }
 
             # Exclude KB if requested
@@ -6264,6 +6363,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         active: bool = True,
         is_external: bool = False,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Retrieve all organisations from the graph.
@@ -6300,6 +6400,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results if results else []
         except Exception as e:
             self.logger.error(f"❌ Get all orgs failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def batch_upsert_records(
@@ -13952,6 +14054,113 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction,
         ) or []
 
+    async def list_trashed_records(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        skip: int = 0,
+        limit: int = 25,
+        single_file_batches_only: bool = False,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.list_trashed_records``."""
+        if not connector_id or not org_id or limit <= 0:
+            return {"items": [], "total": 0}
+        bind_vars = {
+            "connector_id": connector_id,
+            "org_id": org_id,
+            "single_only": single_file_batches_only,
+            "containment": list(_CONTAINMENT_RELATIONS),
+            "@records": CollectionNames.RECORDS.value,
+            "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+        }
+        # One row per delete batch, as restore brings a batch back whole. Batches are
+        # aggregated and paged first, holding no roots; only a page's batches then
+        # read their first root (by key) and the names of a few others.
+        rows = await self.execute_query(
+            f"""
+            {_TRASH_BATCH_ROOTS}
+                COLLECT batch = r.deleteBatchId
+                    AGGREGATE deleted_at = MAX(r.deletedAtTimestamp), first_key = MIN(r._key),
+                        root_count = COUNT(1)
+                SORT deleted_at DESC, batch DESC
+                LIMIT @skip, @limit
+                LET r = DOCUMENT(@@records, first_key)
+                LET other_names = root_count < 2 ? [] : (
+                    FOR x IN @@records
+                        FILTER x.deleteBatchId == batch AND x.deleteBatchId != null
+                        FILTER x._key != first_key AND x.isDeleted == true AND x.connectorId == @connector_id
+                        LET in_batch_parent = FIRST(
+                            FOR e IN @@record_relations
+                                FILTER e._to == x._id AND e.relationshipType IN @containment
+                                LET xp = DOCUMENT(e._from)
+                                FILTER xp != null AND xp.isDeleted == true AND xp.deleteBatchId == batch
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER in_batch_parent == null
+                        SORT x._key
+                        LIMIT @names
+                        RETURN x.recordName
+                )
+                LET parent = FIRST(
+                    FOR e IN @@record_relations
+                        FILTER e._to == r._id AND e.relationshipType IN @containment
+                        LET p = DOCUMENT(e._from)
+                        FILTER p != null AND IS_SAME_COLLECTION(@@records, p)
+                        LIMIT 1
+                        RETURN p
+                )
+                LET t = FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == r._id
+                        LET d = DOCUMENT(e._to)
+                        FILTER d != null
+                        LIMIT 1
+                        RETURN d
+                )
+                LET u = r.deletedByUserId == null ? null : DOCUMENT(@@users, r.deletedByUserId)
+                RETURN {{
+                    record: r,
+                    parentId: parent._key,
+                    parentName: parent.recordName,
+                    parentIsDeleted: parent == null ? null : parent.isDeleted == true,
+                    isFile: t.isFile,
+                    fileMimeType: t.mimeType,
+                    sizeInBytes: t.sizeInBytes,
+                    rootCount: root_count,
+                    otherRootNames: other_names,
+                    batchSize: LENGTH(
+                        FOR x IN @@records
+                            FILTER x.deleteBatchId == batch AND x.deleteBatchId != null
+                            FILTER x.isDeleted == true AND x.connectorId == @connector_id
+                            RETURN 1
+                    ),
+                    deletedByName: u == null ? null
+                        : (u.fullName ? u.fullName : TRIM(CONCAT_SEPARATOR(" ", u.firstName, u.lastName))),
+                    deletedByEmail: u.email
+                }}
+            """,
+            bind_vars={
+                **bind_vars,
+                "skip": max(skip, 0),
+                "limit": limit,
+                "names": TRASH_LIST_OTHER_ROOT_NAMES,
+                "@users": CollectionNames.USERS.value,
+            },
+            transaction=transaction,
+        ) or []
+        counted = await self.execute_query(
+            f"{_TRASH_BATCH_ROOTS} COLLECT batch = r.deleteBatchId COLLECT WITH COUNT INTO total RETURN total",
+            bind_vars=bind_vars,
+            transaction=transaction,
+        )
+        for item in rows:
+            item["deletedByName"] = item.get("deletedByName") or None
+        return {"items": rows, "total": (counted[0] if counted else 0) or 0}
+
     async def restore_records(
         self,
         restores: list[dict[str, Any]],
@@ -14040,6 +14249,379 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction,
         ) or []
         return [key for key in rows if key is not None]
+
+    async def _trash_purge_row(self, rec: dict, type_doc: dict | None) -> dict:
+        payload = await self._create_deleted_record_event_payload(rec, type_doc)
+        return trash_purge_row(rec["_key"], rec, type_doc, payload)
+
+    async def _begin_purge_transaction(self, *, read: list[str], write: list[str], exclusive: list[str]) -> str:
+        try:
+            return await self.http_client.begin_transaction(
+                read, write, exclusive=exclusive, lock_timeout_seconds=_PURGE_LOCK_TIMEOUT_SECONDS
+            )
+        except Exception as exc:
+            if not (_is_lock_timeout(exc) or _is_write_conflict(exc)):
+                raise
+            raise GraphLockUnavailableError(f"Could not lock {exclusive} for the purge: {exc}") from exc
+
+    async def get_purgeable_trashed_records(
+        self,
+        org_id: str,
+        deleted_before: int,
+        *,
+        after: tuple[int, str] | None = None,
+        limit: int = 500,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.get_purgeable_trashed_records``."""
+        after_ts, after_key = after if after else (None, None)
+        # Two reads of the PURGE_WALK_INDEX range, each in index order and cut at
+        # the page: the rest of the cursor's timestamp, then later ones. One OR
+        # over both made the planner read and sort every record of the org per
+        # page; one folder delete gives thousands of records the same timestamp.
+        # No cursor yet means a timestamp no record has. The connector check runs
+        # after the LIMIT, so a deleting connector's rows still move the cursor.
+        def walk(range_filter: str) -> str:
+            return (
+                f'FOR r IN @@records OPTIONS {{ indexHint: "{self._purge_walk_index}" }}\n'
+                f"    FILTER r.orgId == @org_id AND {range_filter}\n"
+                # null sorts below every number, so this keeps a missing count with
+                # no OR, which would split the read in two and lose the index order.
+                "    FILTER r.isDeleted == true AND r.purgeAttempts < @max_attempts\n"
+                "    SORT r.orgId, r.deletedAtTimestamp, r._key\n"
+                "    LIMIT @limit\n"
+                "    RETURN r"
+            )
+
+        rows = await self.execute_query(
+            "LET tied = (" + walk("r.deletedAtTimestamp == @after_ts AND r._key > @after_key") + ")\n"
+            "LET later = (" + walk("r.deletedAtTimestamp > @lower AND r.deletedAtTimestamp <= @cutoff") + ")\n"
+            + """
+            FOR r IN SLICE(APPEND(tied, later), 0, @limit)
+                LET app = DOCUMENT(CONCAT(@apps, "/", r.connectorId))
+                LET held = LENGTH(
+                    FOR child, e IN 1..1 OUTBOUND r._id @@record_relations
+                        FILTER e.relationshipType IN @containment
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+                LET type_doc = FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == r._id
+                        LET t = DOCUMENT(e._to)
+                        FILTER t != null
+                        RETURN t
+                )
+                RETURN { rec: r, type_doc: type_doc, held: held, skip: app != null AND app.status == @deleting }
+            """,
+            bind_vars={
+                "org_id": org_id,
+                # Below every timestamp on the first page, so a record trashed at 0 is read.
+                "lower": after_ts if after_ts is not None else -1,
+                "cutoff": deleted_before,
+                "after_ts": after_ts if after_ts is not None else -1,
+                "after_key": after_key or "",
+                "max_attempts": max_attempts,
+                "limit": limit,
+                "deleting": APP_STATUS_DELETING,
+                "apps": CollectionNames.APPS.value,
+                "containment": list(_CONTAINMENT_RELATIONS),
+                "@records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            },
+            transaction=transaction,
+        ) or []
+        records = [
+            await self._trash_purge_row(row["rec"], row.get("type_doc"))
+            for row in rows if not row.get("skip") and not row.get("held")
+        ]
+        last = rows[-1]["rec"] if len(rows) >= limit else None
+        return {
+            "records": records,
+            "held": sum(1 for row in rows if row.get("held") and not row.get("skip")),
+            "next": (last["deletedAtTimestamp"], last["_key"]) if last else None,
+        }
+
+    async def is_trash_walk_index_ready(self) -> bool:
+        """See ``IGraphDBProvider.is_trash_walk_index_ready``. ArangoDB builds an index before it lists it.
+
+        Found by its definition, not its name: ensureIndex answers a definition
+        that already exists under another name with that index, so the walk's
+        index may carry that name. The walk then hints the name found here.
+        """
+        for index in await self.http_client.get_indexes(CollectionNames.RECORDS.value):
+            if (
+                index.get("type") == "persistent"
+                and index.get("fields") == list(_PURGE_WALK_FIELDS)
+                and not index.get("sparse")
+                and index.get("name")
+            ):
+                self._purge_walk_index = index["name"]
+                return True
+        return False
+
+    async def purge_trashed_records(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        deleted_before: int,
+        *,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.purge_trashed_records``."""
+        keys_in = list(dict.fromkeys(record_ids))
+        if not keys_in:
+            return {"purged": [], "kept": []}
+        edge_collections = await self._get_all_edge_collections()
+        node_collections = [CollectionNames.RECORDS.value, *set(RECORD_TYPE_COLLECTION_MAPPING.values())]
+        txn_id = transaction
+        if transaction is None:
+            # Exclusive on the containment edges: a snapshot cannot see a child
+            # edge another transaction adds, and adding one writes nothing this
+            # REMOVE conflicts with. Every sync transaction declares that
+            # collection at its begin, so it waits for this one, or this one for it.
+            txn_id = await self._begin_purge_transaction(
+                read=[*edge_collections, *node_collections, CollectionNames.APPS.value],
+                write=[*edge_collections, *node_collections],
+                exclusive=[CollectionNames.RECORD_RELATIONS.value],
+            )
+        try:
+            # Checked inside the transaction. A restore of the record that commits
+            # after its snapshot conflicts with the REMOVE below, which aborts the
+            # purge rather than delete a live record. Any child, trashed or not,
+            # keeps it: restoring a child writes only the child.
+            due = await self.execute_query(
+                """
+                FOR key IN @keys
+                    LET rec = DOCUMENT(@records, key)
+                    FILTER rec != null AND rec.orgId == @org_id
+                    LET app = DOCUMENT(CONCAT(@apps, "/", rec.connectorId))
+                    LET due = rec.isDeleted == true
+                        AND rec.deletedAtTimestamp != null AND rec.deletedAtTimestamp <= @cutoff
+                        AND (rec.purgeAttempts == null OR rec.purgeAttempts < @max_attempts)
+                        AND (app == null OR app.status != @deleting)
+                        AND LENGTH(
+                            FOR child, e IN 1..1 OUTBOUND rec._id @@record_relations
+                                FILTER e.relationshipType IN @containment
+                                LIMIT 1
+                                RETURN 1
+                        ) == 0
+                    LET target = !due ? null : FIRST(
+                        FOR e IN @@is_of_type
+                            FILTER e._from == rec._id
+                            LET t = DOCUMENT(e._to)
+                            FILTER t != null
+                            RETURN {
+                                collection: PARSE_IDENTIFIER(e._to).collection,
+                                key: PARSE_IDENTIFIER(e._to).key,
+                                full_id: e._to,
+                                doc: t
+                            }
+                    )
+                    RETURN { record: rec, type_target: target, due: due }
+                """,
+                bind_vars={
+                    "keys": keys_in,
+                    "org_id": org_id,
+                    "cutoff": deleted_before,
+                    "max_attempts": max_attempts,
+                    "containment": list(_CONTAINMENT_RELATIONS),
+                    "deleting": APP_STATUS_DELETING,
+                    "records": CollectionNames.RECORDS.value,
+                    "apps": CollectionNames.APPS.value,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                transaction=txn_id,
+            ) or []
+            kept = [row["record"]["_key"] for row in due if not row["due"]]
+            due = [row for row in due if row["due"]]
+            keys = [row["record"]["_key"] for row in due]
+            if keys:
+                _, failed_edges = await self._delete_edges_by_node_ids(
+                    txn_id, [f"{CollectionNames.RECORDS.value}/{k}" for k in keys], edge_collections
+                )
+                if failed_edges:
+                    raise RuntimeError(f"Could not remove the edges of purged records from {failed_edges}")
+                targets = [row["type_target"] for row in due if row.get("type_target")]
+                if targets:
+                    await self._delete_isoftype_targets_from_collected(txn_id, targets, edge_collections)
+                removed, failed_batches = await self._delete_nodes_by_keys(
+                    txn_id, keys, CollectionNames.RECORDS.value
+                )
+                if failed_batches or removed != len(keys):
+                    raise RuntimeError(f"Removed {removed} of {len(keys)} purged records")
+            if transaction is None:
+                await self.commit_transaction(txn_id)
+        except Exception:
+            if transaction is None and txn_id:
+                await self.rollback_transaction(txn_id)
+            raise
+        purged = [
+            await self._trash_purge_row(row["record"], (row.get("type_target") or {}).get("doc")) for row in due
+        ]
+        # A missing id is in neither list: it may be one an earlier attempt already removed.
+        return {"purged": purged, "kept": kept}
+
+    async def record_purge_failure(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        error: str,
+        transaction: str | None = None,
+    ) -> int:
+        """See ``IGraphDBProvider.record_purge_failure``."""
+        if not record_ids:
+            return 0
+        rows = await self.execute_query(
+            """
+            FOR key IN @keys
+                LET r = DOCUMENT(@records, key)
+                FILTER r != null AND r.orgId == @org_id AND r.isDeleted == true
+                UPDATE r WITH { purgeAttempts: (r.purgeAttempts || 0) + 1, purgeLastError: @error } IN @@records
+                RETURN NEW._key
+            """,
+            bind_vars={
+                "keys": list(dict.fromkeys(record_ids)),
+                "org_id": org_id,
+                "error": error,
+                "records": CollectionNames.RECORDS.value,
+                "@records": CollectionNames.RECORDS.value,
+            },
+            transaction=transaction,
+        ) or []
+        return len(rows)
+
+    async def get_trash_purge_stats(
+        self,
+        org_id: str,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.get_trash_purge_stats``."""
+        rows = await self.execute_query(
+            """
+            FOR r IN @@records
+                FILTER r.deletedAtTimestamp >= 0 AND r.isDeleted == true AND r.orgId == @org_id
+                LET stuck = r.purgeAttempts != null AND r.purgeAttempts >= @max_attempts
+                COLLECT AGGREGATE
+                    trashed = COUNT(1),
+                    stuck_count = SUM(stuck ? 1 : 0),
+                    oldest = MIN(stuck ? null : r.deletedAtTimestamp)
+                RETURN { trashed: trashed, stuck: stuck_count, oldest: oldest }
+            """,
+            bind_vars={
+                "org_id": org_id,
+                "max_attempts": max_attempts,
+                "@records": CollectionNames.RECORDS.value,
+            },
+            transaction=transaction,
+        ) or []
+        row = rows[0] if rows else {}
+        return {
+            "trashed": int(row.get("trashed") or 0),
+            "stuck": int(row.get("stuck") or 0),
+            "oldestDeletedAt": row.get("oldest"),
+        }
+
+    async def take_back_kept_record_group(self, group_id: str, transaction: str | None = None) -> bool:
+        """See ``IGraphDBProvider.take_back_kept_record_group``."""
+        rows = await self.execute_query(
+            """
+            FOR g IN @@groups
+                FILTER g._key == @id
+                UPDATE g WITH { isDeletedAtSource: false, deletedAtSourceTimestamp: null } IN @@groups
+                RETURN NEW._key
+            """,
+            bind_vars={"id": group_id, "@groups": CollectionNames.RECORD_GROUPS.value},
+            transaction=transaction,
+        ) or []
+        return bool(rows)
+
+    async def purge_trash_kept_record_groups(
+        self,
+        org_id: str,
+        *,
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See ``IGraphDBProvider.purge_trash_kept_record_groups``."""
+        edge_collections = await self._get_all_edge_collections()
+        membership = [
+            CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value, CollectionNames.RECORDS.value,
+        ]
+        txn_id = transaction
+        if transaction is None:
+            # Exclusive on what makes a group non-empty: a new BELONGS_TO edge, or a
+            # record naming the group, written by a transaction this snapshot
+            # cannot see would not conflict with the REMOVE. Sync transactions
+            # declare these collections at their begin, so they wait for this one.
+            txn_id = await self._begin_purge_transaction(
+                read=[*(c for c in edge_collections if c not in membership), CollectionNames.APPS.value],
+                write=[*(c for c in edge_collections if c not in membership), CollectionNames.RECORD_GROUPS.value],
+                exclusive=membership,
+            )
+        try:
+            # A sync that lists the group again clears the mark in its upsert;
+            # committed after this snapshot, that write conflicts with the REMOVE.
+            keys = await self.execute_query(
+                """
+                FOR g IN @@groups
+                    FILTER g.isDeletedAtSource == true
+                    LET app = DOCUMENT(CONCAT(@apps, "/", g.connectorId))
+                    // A group a sync creates from a record carries no orgId; its connector does.
+                    FILTER g.orgId == @org_id OR (g.orgId IN [null, ""] AND app != null AND app.orgId == @org_id)
+                    FILTER app == null OR app.status != @deleting
+                    FILTER LENGTH(
+                        FOR member IN 1..1 INBOUND g._id @@belongs_to, @@inherit_permissions
+                            FILTER IS_SAME_COLLECTION(@records, member) OR IS_SAME_COLLECTION(@groups, member)
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
+                    FILTER LENGTH(
+                        FOR r IN @@records_c
+                            FILTER r.connectorId == g.connectorId AND r.recordGroupId == g._key
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
+                    LIMIT @limit
+                    RETURN g._key
+                """,
+                bind_vars={
+                    "org_id": org_id,
+                    "limit": limit,
+                    "deleting": APP_STATUS_DELETING,
+                    "apps": CollectionNames.APPS.value,
+                    "records": CollectionNames.RECORDS.value,
+                    "groups": CollectionNames.RECORD_GROUPS.value,
+                    "@groups": CollectionNames.RECORD_GROUPS.value,
+                    "@records_c": CollectionNames.RECORDS.value,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                },
+                transaction=txn_id,
+            ) or []
+            if keys:
+                _, failed_edges = await self._delete_edges_by_node_ids(
+                    txn_id, [f"{CollectionNames.RECORD_GROUPS.value}/{k}" for k in keys], edge_collections
+                )
+                if failed_edges:
+                    raise RuntimeError(f"Could not remove the edges of kept record groups from {failed_edges}")
+                removed, failed_batches = await self._delete_nodes_by_keys(
+                    txn_id, keys, CollectionNames.RECORD_GROUPS.value
+                )
+                if failed_batches or removed != len(keys):
+                    raise RuntimeError(f"Removed {removed} of {len(keys)} kept record groups")
+            if transaction is None:
+                await self.commit_transaction(txn_id)
+        except Exception:
+            if transaction is None and txn_id:
+                await self.rollback_transaction(txn_id)
+            raise
+        return list(keys)
 
     async def delete_single_record(
         self,

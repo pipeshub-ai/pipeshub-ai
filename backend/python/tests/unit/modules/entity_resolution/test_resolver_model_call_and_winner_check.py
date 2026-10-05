@@ -3,12 +3,15 @@
 - The merge call's timeout covers the provider call, not the wait for
   the shared model slot, so a busy slot does not turn names into duplicates.
 - A failed winner check is reported as an error, not as stale winners.
-- A call that returns nothing drops the cached model handle.
+- A call that returns nothing, or no usable decision, drops the cached
+  model handle.
 """
 from __future__ import annotations
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType
@@ -92,6 +95,25 @@ class TestModelHandleReset:
              patch.object(resolver_module, "get_llm_for_role", get_llm):
             resolver = make_resolver()
             await resolver.resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash session"])))
+            assert resolver._llm is None
+            await resolver.resolve(ctx_factory("r2", "acme", metadata_factory(topics=["Bug bash day"])))
+        assert get_llm.await_count == 2
+
+    @pytest.mark.parametrize("answer", [
+        MergeDecisions(decisions=[]),
+        MergeDecisions(decisions=[MergeDecision(i=99, same=False)]),
+    ], ids=["empty", "all-invalid"])
+    async def test_an_unusable_answer_drops_the_cached_model(
+        self, answer, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory,
+    ) -> None:
+        await _seed_winner(fake_graph, fake_store)
+        get_llm = AsyncMock(return_value=(MagicMock(), {}))
+        with patch.object(resolver_module, "invoke_with_structured_output_and_reflection",
+                          AsyncMock(return_value=answer)), \
+             patch.object(resolver_module, "get_llm_for_role", get_llm):
+            resolver = make_resolver()
+            first = await resolver.resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash session"])))
+            assert first.stats.model_failures == 1
             assert resolver._llm is None
             await resolver.resolve(ctx_factory("r2", "acme", metadata_factory(topics=["Bug bash day"])))
         assert get_llm.await_count == 2

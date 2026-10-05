@@ -4,6 +4,7 @@ import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
 import {
   InternalServerError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
@@ -38,6 +39,9 @@ import {
 const logger = Logger.getInstance({
   service: 'Knowledge Base Service',
 });
+
+export const RESYNC_NOT_QUEUED_MESSAGE =
+  "We couldn't start this sync because PipesHub couldn't queue it. Nothing was synced. Try again in a minute; if it keeps happening, ask your admin to check the services page.";
 
 @injectable()
 export class RecordRelationService {
@@ -312,8 +316,7 @@ export class RecordRelationService {
       if (eventError?.statusCode === 409) {
         throw eventError;
       }
-      // Don't throw the error to avoid affecting the main operation
-      return { success: false, error: eventError.message };
+      throw markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE));
     }
   }
 

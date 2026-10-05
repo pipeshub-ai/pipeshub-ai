@@ -241,7 +241,8 @@ class TestWhatComesBack:
         result = await svc.restore_record("r1", "u1", ORG)
         assert result["success"] is True
         assert result["reindexPendingRecordIds"] == ["r1"]
-        assert "Reindex" in result["reindexPendingReason"]
+        assert "within about an hour" in result["reindexPendingReason"]
+        assert "Start indexing" in result["reindexPendingReason"]
 
     async def test_a_retry_queues_a_restored_file_whose_reindex_never_went_out(self, svc, mock_processor) -> None:
         """The first restore committed, then its publish was lost: the retry finds the file live."""

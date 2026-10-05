@@ -375,6 +375,7 @@ export const KB_ROUTES: KbRoute[] = [
   { method: 'GET', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, scope: 'kb:read', forwards: `GET /api/v1/kb/${KB_ID}/permissions`, reply: { status: 200, body: { permissions: [], totalCount: 0 } } },
   { method: 'PUT', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, json: { userIds: [MEMBER._id], teamIds: [], role: 'WRITER' }, scope: 'kb:write', forwards: `PUT /api/v1/kb/${KB_ID}/permissions`, reply: { status: 200, body: { userIds: [MEMBER._id], teamIds: [], newRole: 'WRITER' } } },
   { method: 'DELETE', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, json: { userIds: [MEMBER._id], teamIds: [] }, scope: 'kb:delete', forwards: `DELETE /api/v1/kb/${KB_ID}/permissions`, reply: { status: 200, body: { userIds: [MEMBER._id], teamIds: [] } } },
+  { method: 'GET', pattern: '/:kbId/trash', path: `/${KB_ID}/trash`, scope: 'kb:delete', forwards: `GET /api/v1/kb/${KB_ID}/trash`, reply: { status: 200, body: { success: true, items: [], pagination: { page: 1, limit: 25, totalCount: 0, totalPages: 0 }, retention: { minAgeMs: 1209600000 } } } },
   { method: 'PUT', pattern: '/:kbId/record/:recordId/move', path: `/${KB_ID}/record/${RECORD_ID}/move`, json: { newParentId: FOLDER_ID }, scope: 'kb:write', forwards: `PUT /api/v1/kb/${KB_ID}/record/${RECORD_ID}/move`, reply: { status: 200, body: { success: true } } },
 ]
 

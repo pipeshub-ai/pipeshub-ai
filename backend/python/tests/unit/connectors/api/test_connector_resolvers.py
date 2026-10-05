@@ -144,6 +144,31 @@ class TestAuthorizeConnectorStats:
                 )
             assert exc_info.value.status_code == 404
 
+    async def test_another_orgs_connector_answers_like_a_missing_one(self) -> None:
+        """An admin passing a team connector id from another org must not learn its stats."""
+        from app.connectors.api.connector_resolvers import authorize_connector_stats
+        from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+        request = MagicMock()
+        request.state.user = {"userId": "admin-1"}
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "_key": "conn-1", "type": "GOOGLE_DRIVE", "scope": "team",
+            "createdBy": "someone", "orgId": "org-2",
+        })
+        connector_registry = ConnectorRegistry.__new__(ConnectorRegistry)
+        connector_registry.logger = MagicMock()
+
+        with patch(
+            "app.connectors.api.connector_resolvers.is_request_admin",
+            return_value=True,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await authorize_connector_stats(
+                    request, graph_provider, connector_registry, "conn-1", "org-1"
+                )
+            assert exc_info.value.status_code == 404
+
     async def test_no_view_permission_raises_403(self) -> None:
         from app.connectors.api.connector_resolvers import authorize_connector_stats
 

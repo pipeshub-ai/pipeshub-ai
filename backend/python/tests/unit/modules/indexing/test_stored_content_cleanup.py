@@ -25,6 +25,10 @@ from app.connectors.services.vector_cleanup_events import (
 from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
 from app.modules.transformers import blob_storage as blob_module
 from app.modules.transformers.blob_storage import BlobStorage, TransientStorageError
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.services.graph_db.common.utils import uploaded_document_id
 
 MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
@@ -34,8 +38,11 @@ DOC_ID = "65f1c0ffee0123456789abcd"
 def _cleanup(*, records_by_vrid=None, mapping_org="org-1", purge=None):
     graph = AsyncMock()
     records_by_vrid = records_by_vrid or {}
+    # The store filters by visibility in its query; LIVE by default.
     graph.get_records_by_virtual_record_id = AsyncMock(
-        side_effect=lambda virtual_record_id, raise_on_error: records_by_vrid.get(virtual_record_id, [])
+        side_effect=lambda virtual_record_id, raise_on_error, visibility=RecordVisibility.LIVE: [
+            r for r in records_by_vrid.get(virtual_record_id, []) if matches_visibility(r, visibility)
+        ]
     )
     graph.get_document = AsyncMock(
         side_effect=lambda key, collection, raise_on_error: {"orgId": mapping_org} if mapping_org else None
@@ -66,6 +73,18 @@ class TestReleaseVirtualRecords:
         assert failed == []
         blob.purge_virtual_record_documents.assert_awaited_once_with("org-1", "vr-gone")
         graph.delete_nodes.assert_awaited_once_with(keys=["vr-gone"], collection=MAPPING)
+
+    @pytest.mark.asyncio
+    async def test_content_a_record_in_the_trash_still_holds_waits_for_its_purge(self) -> None:
+        cleanup, graph, blob = _cleanup(
+            records_by_vrid={"vr-twin": [{"_key": "twin", "isDeleted": True}]}
+        )
+
+        failed = await cleanup.release_virtual_records(["vr-twin"], org_id="org-1")
+
+        assert failed == []
+        blob.purge_virtual_record_documents.assert_not_awaited()
+        graph.delete_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_purge_keeps_the_mapping_row_for_a_retry(self):

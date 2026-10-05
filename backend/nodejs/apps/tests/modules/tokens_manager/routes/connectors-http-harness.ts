@@ -136,7 +136,10 @@ export class RecordingProducer {
   async stop(): Promise<void> {
     this.stopped += 1
   }
+  /** When set, publishing rejects, as it does with the message broker down. */
+  failWith: Error | null = null
   async publishEvent(event: PublishedEvent): Promise<void> {
+    if (this.failWith) throw this.failWith
     this.published.push(event)
   }
 }

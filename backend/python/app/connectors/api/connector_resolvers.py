@@ -52,13 +52,13 @@ async def authorize_connector_stats(
     connector_id: str,
     org_id: str,
 ) -> None:
-    """OSS: KB role or can_user_view_connector (no is_connector_in_org)."""
-    del org_id
+    """OSS: the caller's org, then KB role or can_user_view_connector."""
     user_id = request.state.user.get("userId")
     is_admin = is_request_admin(request)
 
     app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-    if not app_doc:
+    # Another org's connector answers like a missing one, so its id is not confirmed.
+    if not app_doc or not await connector_registry.belongs_to_org(app_doc, org_id):
         raise HTTPException(
             status_code=404,
             detail=f"Connector instance {connector_id} not found",

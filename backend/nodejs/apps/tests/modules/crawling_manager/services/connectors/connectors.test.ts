@@ -2,7 +2,10 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { ConnectorsCrawlingService } from '../../../../../src/modules/crawling_manager/services/connectors/connectors';
-import type { SyncEventProducer } from '../../../../../src/modules/knowledge_base/services/sync_events.service';
+import {
+  SyncEventProducer as RealSyncEventProducer,
+  type SyncEventProducer,
+} from '../../../../../src/modules/knowledge_base/services/sync_events.service';
 import { CrawlingScheduleType } from '../../../../../src/modules/crawling_manager/schema/enums';
 import type { ICrawlingSchedule } from '../../../../../src/modules/crawling_manager/schema/interface';
 import { registerDesktopPresence } from '../../../../../src/libs/services/desktop-presence.provider';
@@ -57,6 +60,23 @@ describe('ConnectorsCrawlingService', () => {
       expect(event.payload.connector).to.equal('slack');
       expect(event.payload.connectorId).to.equal(connectorId);
       expect(event.payload.origin).to.equal('CONNECTOR');
+    });
+
+    it('fails the scheduled run when the broker refuses the sync event, so BullMQ retries it', async () => {
+      const producer = { publish: sinon.stub().rejects(new Error('broker unreachable')) };
+      const logger = { info: sinon.stub(), error: sinon.stub() };
+      const syncEvents = new RealSyncEventProducer(producer as any, logger as any);
+      const service = new ConnectorsCrawlingService(syncEvents);
+
+      let thrown: unknown;
+      await service
+        .crawl(orgId, userId, scheduleConfig, 'slack', connectorId)
+        .catch((e: unknown) => {
+          thrown = e;
+        });
+
+      expect(thrown).to.be.instanceOf(Error);
+      expect((thrown as Error).message).to.equal('broker unreachable');
     });
 
     // Local FS is server-driven like every other connector now: a scheduled

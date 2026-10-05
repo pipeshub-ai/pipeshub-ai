@@ -62,6 +62,7 @@ import {
   writeToStorage,
 } from '../utils/utils';
 import { UploadDocumentService } from './storage.upload.service';
+import { scopedStorageServiceJwtGenerator } from '../../../libs/utils/createJwt';
 import { storedServiceEndpoint } from '../utils/service-endpoint';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import { DocumentModel } from '../schema/document.schema';
@@ -98,6 +99,7 @@ export class StorageController {
     private logger: Logger,
     @inject('KeyValueStoreService')
     private keyValueStoreService: KeyValueStoreService,
+    private readonly scopedJwtSecret: string,
   ) {}
 
   async getStorageConfig(
@@ -109,29 +111,38 @@ export class StorageController {
       return storageConfig;
     }
 
-    let storageConfigRoute;
-    if ('user' in req && req.user && 'userId' in req.user) {
-      storageConfigRoute = 'api/v1/configurationManager/storageConfig';
-    } else {
-      storageConfigRoute = 'api/v1/configurationManager/internal/storageConfig';
-    }
     const cmUrl = await storedServiceEndpoint(
       keyValueStoreService,
       'cm',
       defaultConfig.endpoint,
     );
 
-    const token = req.headers.authorization?.split(' ')[1];
+    // The user-facing config route answers {} so storage secrets never reach a
+    // browser, and every caller shares what is cached here. A user's request
+    // therefore reads the internal route too, with a storage token for its org.
+    const token =
+      'user' in req && req.user
+        ? scopedStorageServiceJwtGenerator(
+            extractOrgId(req),
+            this.scopedJwtSecret,
+          )
+        : req.headers.authorization?.split(' ')[1];
     const configurationManagerServiceCommand =
       new ConfigurationManagerServiceCommand({
-        uri: `${cmUrl}/${storageConfigRoute}`,
+        uri: `${cmUrl}/api/v1/configurationManager/internal/storageConfig`,
         method: HttpMethod.GET,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
       });
-    storageConfig = (await configurationManagerServiceCommand.execute()).data;
+    const response = await configurationManagerServiceCommand.execute();
+    if (response.statusCode !== HTTP_STATUS.OK) {
+      throw new InternalServerError(
+        `Could not read the storage configuration (status ${response.statusCode})`,
+      );
+    }
+    storageConfig = response.data;
     return storageConfig;
   }
   async cloneDocument(

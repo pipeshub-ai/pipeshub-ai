@@ -1739,6 +1739,95 @@ class TestOnRecordGroupDeleted:
         assert result is False
         proc.logger.error.assert_called()
 
+    @staticmethod
+    def _kept_for_the_trash(marked: bool | None) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = MagicMock()
+        group.id = "rg-internal-1"
+        group.name = "Team"
+        tx_store.get_record_group_by_external_id.return_value = group
+        tx_store.get_records_by_status = AsyncMock(return_value=[MagicMock()])
+        tx_store.batch_update_nodes = AsyncMock(return_value=marked)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_group_kept_for_the_trash_is_marked_for_the_purge(self) -> None:
+        proc, tx_store = self._kept_for_the_trash(marked=True)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=True),
+        ):
+            result = await proc.on_record_group_deleted("ext-grp-1", "conn-1")
+
+        assert result is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
+        [nodes, collection] = tx_store.batch_update_nodes.await_args.args
+        assert collection == CollectionNames.RECORD_GROUPS.value
+        assert nodes[0]["id"] == "rg-internal-1" and nodes[0]["isDeletedAtSource"] is True
+        assert isinstance(nodes[0]["deletedAtSourceTimestamp"], int)
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_the_store_would_not_mark_is_retried(self) -> None:
+        """Unmarked, the purge would never remove it, so the removal is reported as not done."""
+        proc, tx_store = self._kept_for_the_trash(marked=False)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=True),
+        ):
+            result = await proc.on_record_group_deleted("ext-grp-1", "conn-1")
+
+        assert result is False
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
+
+
+class TestHandleRecordGroupKeptForTheTrash:
+    """A sync filing a record under a group kept only for the trash takes the group back first."""
+
+    @staticmethod
+    def _found(kept: bool) -> MagicMock:
+        group = MagicMock()
+        group.id = "rg-kept"
+        group.is_deleted_at_source = kept
+        return group
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_still_there_is_taken_back_and_used(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=True)
+        record = _make_record(external_record_group_id="ext-g")
+
+        assert await proc._handle_record_group(record, tx_store) == "rg-kept"
+
+        tx_store.take_back_kept_record_group.assert_awaited_once_with("rg-kept")
+        tx_store.batch_upsert_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_the_purge_removed_meanwhile_is_made_again(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=False)
+        record = _make_record(external_record_group_id="ext-g")
+
+        group_id = await proc._handle_record_group(record, tx_store)
+
+        assert group_id and group_id != "rg-kept"
+        [created] = tx_store.batch_upsert_record_groups.await_args.args[0]
+        assert created.id == group_id and created.external_group_id == "ext-g"
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_is_not_kept_costs_no_extra_write(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=False)
+        tx_store.take_back_kept_record_group = AsyncMock()
+
+        assert await proc._handle_record_group(_make_record(external_record_group_id="ext-g"), tx_store) == "rg-kept"
+        tx_store.take_back_kept_record_group.assert_not_awaited()
+
 
 # ===========================================================================
 # _delete_group_organization_edges (lines 1905-1921)
@@ -6202,6 +6291,15 @@ class TestPublishDeleteEvents:
         assert "r3" not in unpublished
         proc.messaging_producer.send_message.assert_awaited_once()
 
+
+    @pytest.mark.asyncio
+    async def test_an_event_the_broker_refuses_is_unpublished(self) -> None:
+        """send_message answers False without raising when the broker refuses an event."""
+        proc = _make_processor()
+        proc.messaging_producer.send_message = AsyncMock(return_value=False)
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            unpublished = await proc._publish_delete_events({"payloads": [{"recordId": "r1"}]})
+        assert unpublished == ["r1"]
 
 class TestProcessRecordOrgId:
     @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from app.connectors.sources.localKB.api.models import (
     ListKnowledgeBaseResponse,
     ListPermissionsResponse,
     ListRecordsResponse,
+    ListTrashResponse,
     RemovePermissionResponse,
     RestoreRecordResponse,
     RestoreRecordsResponse,
@@ -1721,6 +1722,47 @@ async def restore_records(
     except Exception as e:
         _log.error("restore_records failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("restore these items")) from e
+
+
+@kb_router.get(
+    "/{kb_id}/trash",
+    response_model=ListTrashResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+    # The same scope as restore: the list is what this caller may restore.
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
+)
+@inject
+async def list_trash(
+    kb_id: str,
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=100),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+) -> ListTrashResponse:
+    try:
+        result = await kb_service.list_trash(
+            kb_id=kb_id,
+            user_id=request.state.user.get("userId"),
+            org_id=request.state.user.get("orgId"),
+            page=page,
+            limit=limit,
+        )
+        if not result or result.get("success") is False:
+            error_code = int((result or {}).get("code", HTTP_INTERNAL_SERVER_ERROR))
+            raise HTTPException(
+                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+                detail=(result or {}).get("reason") or action_failed("load the recently deleted items"),
+            )
+        return ListTrashResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.error("list_trash failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("load the recently deleted items")) from e
 
 
 @kb_router.get(

@@ -387,6 +387,49 @@ class RestoreRecordsResponse(BaseModel):
     results: list[dict[str, Any]] = Field(..., description="Outcome per requested id")
 
 
+class TrashDeletedBy(BaseModel):
+    """The user who deleted an item"""
+    name: str | None = Field(None, description="Their name")
+    email: str | None = Field(None, description="Their email address")
+
+
+class TrashItem(BaseModel):
+    """What one delete action put in the trash (a folder with its contents, or a whole
+    multi-select); restoring it brings back all of it"""
+    id: str = Field(..., description="Record id to restore")
+    name: str | None = Field(None, description="Name when it was deleted")
+    recordType: str | None = Field(None, description="Record type")
+    isFolder: bool = Field(..., description="A folder, deleted with everything in it")
+    mimeType: str | None = Field(None, description="File type, for files")
+    sizeInBytes: int | None = Field(None, description="File size, for files")
+    parentId: str | None = Field(None, description="Folder it was in; none at the collection's top level")
+    parentName: str | None = Field(None, description="Name of that folder")
+    parentInTrash: bool = Field(..., description="That folder is in the trash too and must be restored first")
+    itemCount: int = Field(..., description="Records the delete removed, all of which a restore brings back")
+    rootCount: int = Field(1, description="Items selected in the delete: more than one for a multi-select")
+    otherRootNames: list[str] = Field(
+        default_factory=list, description="Names of some of the other items selected with this one"
+    )
+    deletedAtTimestamp: int = Field(..., description="When it was deleted (epoch ms)")
+    deletedBy: TrashDeletedBy | None = Field(None, description="Who deleted it, when known")
+    removableAfterTimestamp: int | None = Field(
+        None, description="From when the scheduled cleanup may remove it for good (epoch ms); none when unknown"
+    )
+
+
+class TrashRetention(BaseModel):
+    """How long the trash keeps items"""
+    minAgeMs: int = Field(..., description="Items stay at least this long before the cleanup may remove them")
+
+
+class ListTrashResponse(BaseModel):
+    """One page of a collection's recently deleted items"""
+    success: bool = Field(True, description="Success status")
+    items: list[TrashItem] = Field(..., description="Deleted items, newest first")
+    pagination: PaginationResponse = Field(..., description="Pagination information")
+    retention: TrashRetention | None = Field(None, description="Retention; none when it can't be read")
+
+
 class ListAllRecordsResponse(ListRecordsResponse):
     """Response model for listing all records (across KBs)"""
     pass
