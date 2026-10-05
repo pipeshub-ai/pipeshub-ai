@@ -15819,11 +15819,14 @@ class Neo4jProvider(IGraphDBProvider):
             # August 2026 carry no orgId property.
             org_label = collection_to_label(CollectionNames.ORGS.value)
             org_rel = self._get_relationship_type(edge_collection)
+            # Only the creator sees a personal connector, admins included: the
+            # read gate refuses the rest, and count and page must agree.
             conditions = [
                 "doc.id IS NOT NULL",
                 f"EXISTS {{ MATCH (:{org_label} {{id: $org_id}})-[:{org_rel}]->(doc) }}",
+                "(doc.scope = $team_scope OR doc.createdBy = $user_id)",
             ]
-            params = {"org_id": org_id}
+            params = {"org_id": org_id, "team_scope": "team", "user_id": user_id}
 
             # Exclude KB if requested
             if exclude_kb and kb_connector_type:

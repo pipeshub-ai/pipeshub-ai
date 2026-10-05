@@ -4922,7 +4922,9 @@ class IGraphDBProvider(ABC):
             collection: Collection name (e.g., "apps")
             edge_collection: Edge collection for org-app relation
             org_id: Organization ID; only apps linked to it through ``edge_collection`` are returned
-            user_id: User ID
+            user_id: User ID. With or without ``scope``, a connector that is not
+                team-scoped is returned only when this user created it, admins
+                included.
             scope: Optional scope filter ("personal" or "team")
             search: Optional search query (searches name, type, appGroup)
             skip: Number of items to skip

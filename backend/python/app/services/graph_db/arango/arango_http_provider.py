@@ -1757,11 +1757,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LIMIT 1
                         RETURN 1
                 ) > 0
+                FILTER doc.scope == @team_scope OR doc.createdBy == @user_id
             """
+            # Only the creator sees a personal connector, admins included: the
+            # read gate refuses the rest, and count and page must agree.
             bind_vars = {
                 "@collection": collection,
                 "@org_edge_collection": edge_collection,
                 "org_handle": f"{CollectionNames.ORGS.value}/{org_id}",
+                "team_scope": "team",
+                "user_id": user_id,
             }
 
             # Exclude KB if requested
