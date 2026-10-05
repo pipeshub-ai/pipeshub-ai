@@ -481,7 +481,7 @@ export const getActiveConnectorInstances =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/active`,
         HttpMethod.GET,
-        req.headers as Record<string, string>,
+        buildProxyHeaders(req),
       );
 
       handleConnectorResponse(
@@ -527,7 +527,7 @@ export const getInactiveConnectorInstances =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/inactive`,
         HttpMethod.GET,
-        req.headers as Record<string, string>,
+        buildProxyHeaders(req),
       );
 
       handleConnectorResponse(
