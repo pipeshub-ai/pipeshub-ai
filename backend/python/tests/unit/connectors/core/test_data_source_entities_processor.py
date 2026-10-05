@@ -1784,6 +1784,51 @@ class TestOnRecordGroupDeleted:
         tx_store.delete_nodes_and_edges.assert_not_awaited()
 
 
+class TestHandleRecordGroupKeptForTheTrash:
+    """A sync filing a record under a group kept only for the trash takes the group back first."""
+
+    @staticmethod
+    def _found(kept: bool) -> MagicMock:
+        group = MagicMock()
+        group.id = "rg-kept"
+        group.is_deleted_at_source = kept
+        return group
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_still_there_is_taken_back_and_used(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=True)
+        record = _make_record(external_record_group_id="ext-g")
+
+        assert await proc._handle_record_group(record, tx_store) == "rg-kept"
+
+        tx_store.take_back_kept_record_group.assert_awaited_once_with("rg-kept")
+        tx_store.batch_upsert_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_the_purge_removed_meanwhile_is_made_again(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=False)
+        record = _make_record(external_record_group_id="ext-g")
+
+        group_id = await proc._handle_record_group(record, tx_store)
+
+        assert group_id and group_id != "rg-kept"
+        [created] = tx_store.batch_upsert_record_groups.await_args.args[0]
+        assert created.id == group_id and created.external_group_id == "ext-g"
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_is_not_kept_costs_no_extra_write(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=False)
+        tx_store.take_back_kept_record_group = AsyncMock()
+
+        assert await proc._handle_record_group(_make_record(external_record_group_id="ext-g"), tx_store) == "rg-kept"
+        tx_store.take_back_kept_record_group.assert_not_awaited()
+
+
 # ===========================================================================
 # _delete_group_organization_edges (lines 1905-1921)
 # ===========================================================================

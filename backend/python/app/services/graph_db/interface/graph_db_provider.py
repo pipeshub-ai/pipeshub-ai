@@ -4550,6 +4550,20 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def take_back_kept_record_group(self, group_id: str, transaction: str | None = None) -> bool:
+        """Clear a record group's kept-for-the-trash mark, before a sync files a record under it.
+
+        A write on the group itself, so it waits for a purge that is deleting the
+        group (Neo4j locks the node; ArangoDB's purge locks the collections), and
+        the purge, which checks the mark again under that lock, keeps a group taken
+        back first. Returns False when the group is gone, deleted meanwhile, and
+        the caller makes a new one; the answer comes from a read made after the
+        write, since a Neo4j write that waited on a node deleted meanwhile still
+        reports its row. A failure of any other kind raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def purge_trash_kept_record_groups(
         self,
         org_id: str,

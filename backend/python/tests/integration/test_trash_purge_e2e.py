@@ -671,6 +671,95 @@ async def test_a_kept_group_that_gets_a_record_while_the_purge_runs_stays(world:
         assert await world.graph.get_document(group_id, GROUPS) is not None
 
 
+async def test_a_sync_that_adopts_a_kept_group_while_the_purge_deletes_it_gets_a_group(world: _World) -> None:
+    """A sync filing a record under a kept, empty group the purge is deleting right now.
+
+    The sync finds the group by its source id and writes the record's
+    recordGroupId before it links it; on Neo4j each of those commits on its own,
+    and only the link would wait for the purge's lock. The record must end up in
+    a group that exists, never pointing at the one the purge removed.
+    """
+    group_id = f"rg-{uuid.uuid4().hex[:12]}"
+    external = f"ext-{group_id}"
+    now = get_epoch_timestamp_in_ms()
+    await world.graph.batch_upsert_nodes(
+        [{"id": group_id, "groupName": "Team", "externalGroupId": external,
+          "groupType": RecordGroupType.DRIVE.value, "connectorName": Connectors.GOOGLE_DRIVE.value,
+          "connectorId": world.drive_id, "createdAtTimestamp": now, "updatedAtTimestamp": now,
+          "isDeletedAtSource": True, "deletedAtSourceTimestamp": now}],
+        collection=GROUPS,
+    )
+    record = FileRecord(
+        id=str(uuid.uuid4()), org_id=world.org_id, record_name="late.pdf", record_type=RecordType.FILE,
+        record_group_type=RecordGroupType.DRIVE.value, external_record_group_id=external,
+        external_record_id=f"ext-late-{uuid.uuid4().hex[:8]}", external_revision_id="rev-1", version=1,
+        origin=OriginTypes.CONNECTOR.value, connector_name=Connectors.GOOGLE_DRIVE, connector_id=world.drive_id,
+        mime_type="application/pdf", indexing_status=ProgressStatus.COMPLETED.value, is_file=True, extension="pdf",
+    )
+    world.ids["late"] = record.id
+
+    # The purge's write on the group, held open: it has decided the group is empty
+    # and removed it, and has not committed yet.
+    if isinstance(world.graph, Neo4jProvider):
+        held = await _neo4j_tx(world, "MATCH (g:RecordGroup {id: $id}) DETACH DELETE g", id=group_id)
+    else:
+        http = world.graph.http_client
+        held = await http.begin_transaction(
+            [CollectionNames.APPS.value], [GROUPS],
+            exclusive=[CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value, RECORDS],
+        )
+        await http.execute_aql(f"REMOVE @key IN {GROUPS}", {"key": group_id}, txn_id=held)
+
+    async def sync() -> None:
+        with contextlib.suppress(Exception):
+            # A sync that fails here retries on its next run; what matters is what it left.
+            await world.processor.on_new_records([(record, [])])
+
+    await _while_held(world, held, sync())
+
+    stored = await world.graph.get_document(record.id, RECORDS)
+    assert stored is not None, "the sync files the record"
+    group = stored.get("recordGroupId")
+    assert group != group_id, "the record points at the group the purge removed"
+    assert group and await world.graph.get_document(group, GROUPS) is not None, stored
+    assert await world.graph.get_edge(record.id, RECORDS, group, GROUPS, CollectionNames.BELONGS_TO.value)
+
+
+async def test_a_sync_that_files_a_record_under_a_kept_group_takes_it_back(world: _World) -> None:
+    """The source has the group again, by its records alone: it is no longer kept only for the trash."""
+    group_id = f"rg-{uuid.uuid4().hex[:12]}"
+    external = f"ext-{group_id}"
+    now = get_epoch_timestamp_in_ms()
+    await world.graph.batch_upsert_nodes(
+        [{"id": group_id, "groupName": "Team", "externalGroupId": external,
+          "groupType": RecordGroupType.DRIVE.value, "connectorName": Connectors.GOOGLE_DRIVE.value,
+          "connectorId": world.drive_id, "createdAtTimestamp": now, "updatedAtTimestamp": now,
+          "isDeletedAtSource": True, "deletedAtSourceTimestamp": now}],
+        collection=GROUPS,
+    )
+    world.ids["group"] = group_id
+    record = FileRecord(
+        id=str(uuid.uuid4()), org_id=world.org_id, record_name="back.pdf", record_type=RecordType.FILE,
+        record_group_type=RecordGroupType.DRIVE.value, external_record_group_id=external,
+        external_record_id=f"ext-back-{uuid.uuid4().hex[:8]}", external_revision_id="rev-1", version=1,
+        origin=OriginTypes.CONNECTOR.value, connector_name=Connectors.GOOGLE_DRIVE, connector_id=world.drive_id,
+        mime_type="application/pdf", indexing_status=ProgressStatus.COMPLETED.value, is_file=True, extension="pdf",
+    )
+    world.ids["back"] = record.id
+
+    await world.processor.on_new_records([(record, [])])
+
+    group = await world.graph.get_document(group_id, GROUPS)
+    assert group["isDeletedAtSource"] is not True
+    assert (await world.graph.get_document(record.id, RECORDS))["recordGroupId"] == group_id
+
+    # Its record going to the trash and being purged leaves the group: the source has it.
+    await world.trash("back")
+    assert await world.tick(15) == Outcome.FINISHED
+    assert await world.graph.get_document(record.id, RECORDS) is None
+    assert await world.graph.get_document(group_id, GROUPS) is not None
+
+
 async def _children(world: _World, name: str) -> set[str]:
     edges = await world.graph.get_edges_from_node(f"{RECORDS}/{world.ids[name]}", CollectionNames.RECORD_RELATIONS.value)
     return {(e.get("_to") or e.get("to_id") or "").split("/")[-1] for e in edges}
