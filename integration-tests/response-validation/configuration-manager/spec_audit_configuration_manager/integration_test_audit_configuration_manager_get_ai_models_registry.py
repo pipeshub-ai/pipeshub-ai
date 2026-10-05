@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from configuration_manager_audit_support import request_as
+from configuration_manager_audit_support import (
+    assert_strict_openapi_response_keeping_field_names,
+    request_as,
+)
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
 from strict_openapi import assert_strict_openapi_response
@@ -17,7 +20,8 @@ PATH = "/ai-models/registry"
 def test_admin_lists_every_registered_provider(config_client: ConfigClient) -> None:
     resp = config_client.get(PATH)
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    # Some field descriptors carry an "examples" list, which the shared check cannot see in the spec.
+    assert_strict_openapi_response_keeping_field_names(resp, ROUTE)
     body = resp.json()
     assert body["success"] is True
     # The registry is filled at import time on the Python side, so it is never empty.
@@ -29,7 +33,7 @@ def test_admin_lists_every_registered_provider(config_client: ConfigClient) -> N
 def test_capability_filter_keeps_only_matching_providers(config_client: ConfigClient) -> None:
     resp = config_client.get(PATH, params={"capability": "embedding"})
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_response_keeping_field_names(resp, ROUTE)
     body = resp.json()
     assert body["providers"], "no provider advertises the embedding capability"
     assert body["total"] == len(body["providers"])

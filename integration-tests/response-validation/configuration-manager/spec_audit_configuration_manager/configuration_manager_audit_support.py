@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
+from functools import lru_cache
 from typing import Any, Callable
 
 import requests
+import strict_openapi
+from openapi_schema_validator import (
+    _make_registry,
+    adapt_openapi_nullable,
+    load_openapi_document,
+)
+from referencing import Registry
 
 from helper.second_user import SecondUser
 
@@ -36,6 +45,8 @@ SECRET_PLACEHOLDER = "****************"
 SeedSlackBot = Callable[..., dict[str, Any]]
 MetricsCollectionConfig = dict[str, Any]
 
+_OPENAPI_ANNOTATION_KEYS = frozenset({"example", "examples", "discriminator", "xml", "externalDocs"})
+
 
 def slack_bot_body(**overrides: Any) -> dict[str, Any]:
     """A body createSlackBotConfigSchema accepts; no agentId, so it never collides."""
@@ -63,3 +74,43 @@ def request_as(
         headers=headers,
         **kwargs,
     )
+
+
+def _strip_annotations(node: Any, *, field_names: bool = False) -> Any:
+    """Drop OpenAPI annotation keys, except where the key is a field name in a ``properties`` map."""
+    if isinstance(node, list):
+        return [_strip_annotations(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    return {
+        key: _strip_annotations(value, field_names=key == "properties" and not field_names)
+        for key, value in node.items()
+        if field_names or key not in _OPENAPI_ANNOTATION_KEYS
+    }
+
+
+@lru_cache(maxsize=1)
+def _spec_keeping_field_names() -> tuple[dict[str, Any], Registry]:
+    doc = adapt_openapi_nullable(_strip_annotations(copy.deepcopy(load_openapi_document())))
+    return doc, _make_registry(doc)
+
+
+def assert_strict_openapi_response_keeping_field_names(resp: requests.Response, path: str) -> None:
+    """``assert_strict_openapi_response`` for a body that has a field literally named ``examples``.
+
+    The shared helper removes every ``examples`` key from the spec before checking, including
+    the documented ``AIModelFieldSchema.properties.examples``, and then reports that field as
+    undocumented. This runs the same strict check on a spec that keeps field names.
+    """
+    doc, registry = _spec_keeping_field_names()
+    problems = strict_openapi.strict_response_problems(
+        doc,
+        registry,
+        resp.request.method or "",
+        path,
+        resp.status_code,
+        resp.headers.get("Content-Type", ""),
+        resp.content,
+    )
+    if problems:
+        raise AssertionError(f"{len(problems)} OpenAPI problem(s):\n" + "\n".join(problems))
