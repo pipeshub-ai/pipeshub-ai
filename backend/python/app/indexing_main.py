@@ -29,7 +29,8 @@ from app.modules.indexing.vector_membership_backfill import (
 )
 from app.containers.indexing import initialize_container
 from app.edition_containers import IndexingAppContainer
-from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     ConsumerType,
@@ -971,10 +972,18 @@ async def _republish_stranded_records(
             for record in page:
                 record_key = record.get("_key") or record.get("id")
                 connector_id = record.get("connectorId")
+                # Uploads are otherwise left alone: a new one waits on its file
+                # reaching storage. A restored file's content is already there,
+                # and its restore was the only thing that would have queued it.
+                restored_upload = (
+                    status_value == ProgressStatus.NOT_STARTED.value
+                    and bool(record.get(RESTORED_AT_FIELD))
+                    and is_live_record(record)
+                )
                 if (
                     not record_key
                     or not connector_id
-                    or record.get("origin") != OriginTypes.CONNECTOR.value
+                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
                 ):
                     continue
 
@@ -1014,7 +1023,9 @@ async def _republish_stranded_records(
                 # A duplicate parked behind an in-flight twin is legitimately
                 # QUEUED with its message already acked — it is released by the
                 # twin's completion, not by us.
-                if record.get("md5Checksum") and record.get("virtualRecordId"):
+                # Parking writes QUEUED, so a restored file still NOT_STARTED is
+                # not parked, though it keeps the checksum and content id it had.
+                if record.get("md5Checksum") and record.get("virtualRecordId") and not restored_upload:
                     continue
 
                 record_owner = f"stranded:{uuid4().hex}"
@@ -1046,9 +1057,10 @@ async def _republish_stranded_records(
                         "virtualRecordId": record.get("virtualRecordId"),
                     }
                     version = int(payload.get("version", 0) or 0)
+                    # An upload keeps version 0; a restored one was indexed before.
                     event_type = (
                         EventTypes.REINDEX_RECORD.value
-                        if version > 0 and payload.get("virtualRecordId")
+                        if (version > 0 or restored_upload) and payload.get("virtualRecordId")
                         else EventTypes.NEW_RECORD.value
                     )
 

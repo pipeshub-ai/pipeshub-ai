@@ -1424,10 +1424,11 @@ class LocalFsConnector(BaseConnector):
             try:
                 if record is not None:
                     document_id = await self._storage_document_id_of(record)
-                    await self.data_entities_processor.on_record_deleted(
+                    in_trash = await self.data_entities_processor.on_record_deleted(
                         record_id=record.id,
                     )
-                    if document_id:
+                    # A record in the trash keeps its stored copy; the purge removes both.
+                    if document_id and not in_trash:
                         await self._delete_storage_document(document_id)
                 elif ids_known_to_exist:
                     # This id came from the sync point, so a record for it did

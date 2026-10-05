@@ -271,12 +271,45 @@ def build_connector_stats_response(
     }
 
 
-# ArangoDB marks a subtree in pages of this many keys, one UPDATE each, inside
-# one stream transaction.
+# Trash writes go in pages of this many keys, one statement each: the ArangoDB
+# mark (inside one stream transaction) and restores.
 SOFT_DELETE_CHUNK = 1000
+
+# Cleared when a record leaves the trash; ``isDeleted`` is set to false instead.
+TRASH_STATE_FIELDS = (
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "deletedByUserId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+)
 
 # Unique per record and never a source id, so no sync or move can land on it.
 TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
+# Stamped on a file in the same write that restores it from the trash. With the
+# file still NOT_STARTED it means the re-index its lost vectors need was never
+# taken up, which a retried restore and the stranded sweep both act on.
+RESTORED_AT_FIELD = "restoredAtTimestamp"
+
+
+def restore_items(
+    restores: list[dict[str, Any]], connector_id: str | None
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """``restore_records`` items as ``{id, set}``, and the ``{id, ext}`` external ids they take back."""
+    items: list[dict[str, Any]] = []
+    reclaims: list[dict[str, str]] = []
+    for item in restores:
+        fields = dict(item.get("set") or {})
+        if external_id := item.get("reclaimExternalRecordId"):
+            fields["externalRecordId"] = external_id
+            reclaims.append({"id": item["id"], "ext": external_id})
+        items.append({"id": item["id"], "set": fields})
+    if reclaims and not connector_id:
+        raise ValueError("restore_records needs connector_id to take an external id back")
+    return items, reclaims
 
 
 def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:

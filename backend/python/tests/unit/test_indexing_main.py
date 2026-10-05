@@ -2284,6 +2284,47 @@ class TestRepublishStrandedRecords:
 
         producer.send_event.assert_not_awaited()
 
+    @staticmethod
+    def _restored_upload(**overrides) -> dict:
+        return TestRepublishStrandedRecords._old_record(**{
+            "origin": "UPLOAD",
+            "connectorName": "KB",
+            "md5Checksum": "abc",
+            "virtualRecordId": "vr-1",
+            "restoredAtTimestamp": 1,
+            **overrides,
+        })
+
+    @pytest.mark.asyncio
+    async def test_a_restored_upload_whose_reindex_was_lost_is_reindexed(self) -> None:
+        """Its restore committed, then the publish was lost; nothing else would queue it."""
+        graph = _sweep_graph(
+            {ProgressStatus.NOT_STARTED.value: [self._restored_upload()]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        kwargs = producer.send_event.await_args.kwargs
+        assert (kwargs["event_type"], kwargs["payload"]["recordId"]) == (EventTypes.REINDEX_RECORD.value, "r1")
+        assert kwargs["payload"]["virtualRecordId"] == "vr-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status, overrides", [
+        (ProgressStatus.NOT_STARTED.value, {"restoredAtTimestamp": None}),
+        (ProgressStatus.NOT_STARTED.value, {"isDeleted": True}),
+        (ProgressStatus.QUEUED.value, {}),
+    ], ids=["never restored", "in the trash again", "parked behind a twin"])
+    async def test_other_uploads_are_still_left_alone(self, status, overrides) -> None:
+        graph = _sweep_graph({status: [self._restored_upload(**overrides)]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_republishing_marks_the_row(self):
         """Publishing changes nothing about the record on its own.

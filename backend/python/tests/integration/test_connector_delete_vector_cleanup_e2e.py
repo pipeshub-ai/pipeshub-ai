@@ -7,6 +7,8 @@ Drives ``DataSourceEntitiesProcessor`` over a real ``GraphDataStore``:
   returns, found no ``virtualRecordId``, and published nothing.
 - ``delete_record_by_external_id`` (Outlook) dropped the cleanup event the
   provider returned, and on ArangoDB the Outlook delete returned none at all.
+- On Neo4j a mail delete removed the mail alone, leaving its attachments
+  searchable with their vectors; both backends now remove them.
 
 The invariant checked: every record the delete removed that had vectors gets a
 ``deleteRecord`` event carrying its ``virtualRecordId``.
@@ -29,7 +31,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -94,6 +96,7 @@ class _World:
     user_key: str
     drive_id: str
     outlook_id: str
+    gmail_id: str
     ids: dict[str, str] = field(default_factory=dict)
 
     def vrid(self, name: str) -> str:
@@ -124,7 +127,7 @@ async def _connect_arango() -> IGraphDBProvider:
 
 
 async def _remove(graph: IGraphDBProvider, w: _World) -> None:
-    ids = [*w.ids.values(), w.user_key, w.drive_id, w.outlook_id]
+    ids = [*w.ids.values(), w.user_key, w.drive_id, w.outlook_id, w.gmail_id]
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query("MATCH (n) WHERE n.id IN $ids DETACH DELETE n", parameters={"ids": ids})
         return
@@ -162,7 +165,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         w = _World(
             graph=graph, processor=processor, producer=producer, org_id=f"org-del-{suffix}",
             user_id=f"user-del-{suffix}", user_key=f"ukey-del-{suffix}",
-            drive_id=f"drive-del-{suffix}", outlook_id=f"outlook-del-{suffix}",
+            drive_id=f"drive-del-{suffix}", outlook_id=f"outlook-del-{suffix}", gmail_id=f"gmail-del-{suffix}",
         )
         processor.org_id = w.org_id
         cleanup.push_async_callback(_remove, graph, w)
@@ -173,7 +176,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 async def _seed(w: _World) -> None:
     g = w.graph
     now = get_epoch_timestamp_in_ms()
-    for name in ("drive_file", "email", "attachment"):
+    for name in ("drive_file", "email", "attachment", "attachment_2", "gmail_email", "gmail_attachment"):
         w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
     await g.batch_upsert_nodes(
         [{"id": w.user_key, "userId": w.user_id, "orgId": w.org_id, "email": f"{w.user_id}@example.com",
@@ -184,7 +187,8 @@ async def _seed(w: _World) -> None:
         [{"id": app_id, "name": name, "type": name, "appGroup": group, "scope": "team", "isActive": True,
           "createdAtTimestamp": now, "updatedAtTimestamp": now}
          for app_id, name, group in ((w.drive_id, "Drive", "Google Workspace"),
-                                     (w.outlook_id, "Outlook", "Microsoft 365"))],
+                                     (w.outlook_id, "Outlook", "Microsoft 365"),
+                                     (w.gmail_id, Connectors.GOOGLE_MAIL.value, "Google Workspace"))],
         collection=CollectionNames.APPS.value,
     )
     common = {"org_id": w.org_id, "version": 1, "origin": OriginTypes.CONNECTOR,
@@ -199,6 +203,15 @@ async def _seed(w: _World) -> None:
         FileRecord(id=w.ids["attachment"], record_name="numbers.xlsx", record_type=RecordType.FILE,
                    external_record_id=f"ext-{w.ids['attachment']}", connector_name=Connectors.OUTLOOK,
                    connector_id=w.outlook_id, is_file=True, **common),
+        FileRecord(id=w.ids["attachment_2"], record_name="chart.png", record_type=RecordType.FILE,
+                   external_record_id=f"ext-{w.ids['attachment_2']}", connector_name=Connectors.OUTLOOK,
+                   connector_id=w.outlook_id, is_file=True, **common),
+        MailRecord(id=w.ids["gmail_email"], record_name="Offsite agenda", record_type=RecordType.MAIL,
+                   external_record_id=f"ext-{w.ids['gmail_email']}", connector_name=Connectors.GOOGLE_MAIL,
+                   connector_id=w.gmail_id, subject="Offsite agenda", **common),
+        FileRecord(id=w.ids["gmail_attachment"], record_name="agenda.docx", record_type=RecordType.FILE,
+                   external_record_id=f"ext-{w.ids['gmail_attachment']}", connector_name=Connectors.GOOGLE_MAIL,
+                   connector_id=w.gmail_id, is_file=True, **common),
     ])
     for name in w.ids:
         await g.update_node(w.ids[name], CollectionNames.RECORDS.value, {"virtualRecordId": w.vrid(name)})
@@ -211,9 +224,11 @@ async def _seed(w: _World) -> None:
         collection=CollectionNames.PERMISSION.value,
     )
     await g.batch_create_edges(
-        [{"from_id": w.ids["email"], "from_collection": records, "to_id": w.ids["attachment"],
+        [{"from_id": w.ids[mail], "from_collection": records, "to_id": w.ids[attachment],
           "to_collection": records, "relationshipType": "ATTACHMENT",
-          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}
+         for mail, attachment in (("email", "attachment"), ("email", "attachment_2"),
+                                  ("gmail_email", "gmail_attachment"))],
         collection=CollectionNames.RECORD_RELATIONS.value,
     )
 
@@ -228,14 +243,83 @@ async def test_a_per_record_connector_delete_publishes_its_vector_cleanup(world:
     assert event["payload"]["connectorId"] == world.drive_id
 
 
-async def test_a_delete_by_external_id_publishes_cleanup_for_everything_it_removed(world: _World) -> None:
+MAILBOXES = {
+    "outlook": ("outlook_id", "email", ("attachment", "attachment_2")),
+    "gmail": ("gmail_id", "gmail_email", ("gmail_attachment",)),
+}
+
+
+@pytest.mark.parametrize("mailbox", sorted(MAILBOXES))
+async def test_a_mail_delete_by_external_id_removes_its_attachments_and_their_vectors(
+    world: _World, mailbox: str
+) -> None:
+    connector_attr, mail, attachments = MAILBOXES[mailbox]
+
+    await world.processor.delete_record_by_external_id(
+        getattr(world, connector_attr), f"ext-{world.ids[mail]}", world.user_id
+    )
+
+    records = CollectionNames.RECORDS.value
+    assert await world.graph.get_document(world.ids[mail], records) is None
+    assert await world.graph.get_document(world.ids[mail], CollectionNames.MAILS.value) is None
+    for attachment in attachments:
+        assert await world.graph.get_document(world.ids[attachment], records) is None, f"{attachment} outlived its mail"
+        assert await world.graph.get_document(world.ids[attachment], CollectionNames.FILES.value) is None
+    assert world.producer.deleted_vrids() == {world.vrid(n) for n in (mail, *attachments)}
+    others = {n for _, m, a in MAILBOXES.values() if m != mail for n in (m, *a)}
+    for other in others:
+        assert await world.graph.get_document(world.ids[other], records) is not None
+
+
+def _failing_on(graph: IGraphDBProvider, record_id: str) -> contextlib.AbstractContextManager:
+    """Fail the first destructive statement that names ``record_id``, before it runs."""
+    if isinstance(graph, Neo4jProvider):
+        target, name, marker = graph.client, "execute_query", "DELETE"
+    else:
+        target, name, marker = graph.http_client, "execute_aql", "REMOVE"
+    real = getattr(target, name)
+
+    async def failing(query: str, *args: object, **kwargs: object) -> object:
+        if marker in query and record_id in repr((args, kwargs)):
+            raise RuntimeError("injected failure deleting the second attachment")
+        return await real(query, *args, **kwargs)
+
+    return patch.object(target, name, failing)
+
+
+async def test_a_mail_delete_that_fails_part_way_leaves_everything_and_publishes_nothing(world: _World) -> None:
+    with _failing_on(world.graph, world.ids["attachment_2"]), pytest.raises(Exception, match="Deletion failed"):
+        await world.processor.delete_record_by_external_id(
+            world.outlook_id, f"ext-{world.ids['email']}", world.user_id
+        )
+
+    for name in ("email", "attachment", "attachment_2"):
+        assert await world.graph.get_document(world.ids[name], CollectionNames.RECORDS.value) is not None, name
+    assert world.producer.events == []
+
+
+async def _unlink_type_node(graph: IGraphDBProvider, record_id: str) -> None:
+    """Drop a record's IS_OF_TYPE edge, as an upsert that failed before writing it leaves things."""
+    if isinstance(graph, Neo4jProvider):
+        await graph.client.execute_query(
+            "MATCH (:Record {id: $id})-[e:IS_OF_TYPE]->() DELETE e", parameters={"id": record_id}
+        )
+        return
+    await graph.http_client.execute_aql(
+        f"FOR e IN {CollectionNames.IS_OF_TYPE.value} FILTER e._from == @from "
+        f"REMOVE e IN {CollectionNames.IS_OF_TYPE.value}",
+        {"from": f"{CollectionNames.RECORDS.value}/{record_id}"},
+    )
+
+
+async def test_a_mail_delete_removes_type_nodes_that_lost_their_link(world: _World) -> None:
+    for name in ("email", "attachment"):
+        await _unlink_type_node(world.graph, world.ids[name])
+
     await world.processor.delete_record_by_external_id(world.outlook_id, f"ext-{world.ids['email']}", world.user_id)
 
-    assert await world.graph.get_document(world.ids["email"], CollectionNames.RECORDS.value) is None
-    removed = {world.vrid("email")}
-    if await world.graph.get_document(world.ids["attachment"], CollectionNames.RECORDS.value) is None:
-        removed.add(world.vrid("attachment"))
-    assert world.producer.deleted_vrids() == removed
+    assert await world.graph.get_document(world.ids["email"], CollectionNames.MAILS.value) is None
+    assert await world.graph.get_document(world.ids["attachment"], CollectionNames.FILES.value) is None
 
 
 async def _seed_personal_mailbox(w: _World) -> str:
@@ -286,16 +370,11 @@ async def test_an_outlook_personal_delete_by_external_id_removes_the_mail(world:
 
     records = CollectionNames.RECORDS.value
     assert await world.graph.get_document(world.ids["personal_email"], records) is None
-    attachment = await world.graph.get_document(world.ids["personal_attachment"], records)
-    if isinstance(world.graph, Neo4jProvider):
-        # Neo4j's delete_record removes the record alone, as it does for Outlook.
-        assert attachment is not None
-        assert world.producer.deleted_vrids() == {world.vrid("personal_email")}
-    else:
-        assert attachment is None, "ArangoDB's Outlook delete removes the mail's attachments"
-        assert world.producer.deleted_vrids() == {
-            world.vrid("personal_email"), world.vrid("personal_attachment"),
-        }
+    # Both backends remove a mail's direct attachments with it.
+    assert await world.graph.get_document(world.ids["personal_attachment"], records) is None
+    assert world.producer.deleted_vrids() == {
+        world.vrid("personal_email"), world.vrid("personal_attachment"),
+    }
     assert {e["payload"]["connectorName"] for e in world.producer.events} == {Connectors.OUTLOOK_INDIVIDUAL.value}
 
 

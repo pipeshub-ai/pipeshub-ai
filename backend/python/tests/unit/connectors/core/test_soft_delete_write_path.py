@@ -307,9 +307,12 @@ class TestDeleteByExternalId:
 
 
 class TestSyncSkipsTheTrash:
-    @pytest.mark.parametrize("source", [DeleteSource.USER, DeleteSource.CONNECTOR])
+    @pytest.mark.parametrize("source", [DeleteSource.USER, DeleteSource.SYSTEM])
     async def test_an_upsert_of_a_trashed_record_is_skipped(self, source) -> None:
-        """A user's delete holds until the purge, though the source still has the item."""
+        """A user's delete holds until the purge, though the source still has the item.
+
+        An item the connector deleted comes back instead: test_restore_write_path.py.
+        """
         proc = _processor()
         store = AsyncMock()
         # A plain Record, as get_record_by_external_id returns on both providers.
