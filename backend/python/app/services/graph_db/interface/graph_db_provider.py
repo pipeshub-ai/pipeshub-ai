@@ -892,6 +892,24 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def replace_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """Delete every *collection* edge into the node, then create *edges*.
+
+        Concrete by design: a provider with real transactions keeps the two calls.
+        Neo4j overrides it with one statement, since with NEO4J_EXPLICIT_TRANSACTIONS
+        off a failure after the delete left the node with no edges at all.
+        """
+        await self.delete_edges_to(to_id, to_collection, collection, transaction)
+        if edges:
+            await self.batch_create_edges(edges, collection, transaction)
+
     @abstractmethod
     async def delete_edges_to_groups(
         self,

@@ -1363,18 +1363,22 @@ class Neo4jProvider(IGraphDBProvider):
             neo4j_nodes.append(neo4j_node)
         return neo4j_nodes
 
-    async def _upsert_record_nodes_releasing_trash(
-        self, nodes: list[dict], transaction: str | None = None
+    async def _upsert_record_with_type(
+        self, record: Record, transaction: str | None, *, release_trashed_external_ids: bool
     ) -> None:
-        """Upsert record nodes; records in the trash holding one of their external ids give it up.
+        """Upsert a record, its type node and the IS_OF_TYPE edge between them.
 
         One statement: each statement commits on its own unless explicit
-        transactions are on, so a release written separately outlived a refused upsert.
+        transactions are on, so a type node or edge that failed left a record
+        without its type, and a trash release outlived a refused upsert.
+        Records in the trash holding the record's external id give it up when
+        *release_trashed_external_ids* is set.
         """
-        records = self._nodes_for_upsert(nodes, CollectionNames.RECORDS.value)
-        await self.client.execute_query(
-            """
-            UNWIND $nodes AS node
+        node = self._nodes_for_upsert([record.to_arango_base_record()], CollectionNames.RECORDS.value)[0]
+        parameters: dict[str, Any] = {
+            "nodes": [node], "ids": [node["id"]], "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+        }
+        release = """
             WITH node, COLLECT {
                 MATCH (holder:Record {externalRecordId: node.externalRecordId, connectorId: node.connectorId})
                 WHERE holder.isDeleted = true AND NOT holder.id IN $ids
@@ -1385,15 +1389,29 @@ class Neo4jProvider(IGraphDBProvider):
                     trashedExternalRecordId: holder.externalRecordId,
                     externalRecordId: $trashed_prefix + holder.id
                 })
-            MERGE (n:Record {id: node.id})
+        """ if release_trashed_external_ids else ""
+        typed = ""
+        collection = RECORD_TYPE_COLLECTION_MAPPING.get(record.record_type)
+        if collection:
+            parameters["type_node"] = self._nodes_for_upsert([record.to_arango_record()], collection)[0]
+            now = get_epoch_timestamp_in_ms()
+            parameters["edge"] = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
+            typed = f"""
+            MERGE (t:{collection_to_label(collection)} {{id: $type_node.id}})
+            SET t += $type_node
+            MERGE (n)-[e:{edge_collection_to_relationship(CollectionNames.IS_OF_TYPE.value)}]->(t)
+            SET e = $edge
+            """
+        await self.client.execute_query(
+            f"""
+            UNWIND $nodes AS node
+            {release}
+            MERGE (n:Record {{id: node.id}})
             SET n += node
+            {typed}
             RETURN n.id
             """,
-            parameters={
-                "nodes": records,
-                "ids": [node["id"] for node in records],
-                "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
-            },
+            parameters=parameters,
             txn_id=transaction,
         )
 
@@ -1590,6 +1608,73 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Edge Operations ====================
 
+    def _edges_by_labels(self, edges: list[dict]) -> dict[tuple[str, str], list[dict]]:
+        """*edges* as {from_key, to_key, props} rows, grouped by (from label, to label)."""
+        grouped: dict[tuple[str, str], list[dict]] = {}
+        for edge in edges:
+            # Try ArangoDB format first (_from, _to)
+            if "_from" in edge and "_to" in edge:
+                from_collection, from_key = self._parse_arango_id(edge["_from"])
+                to_collection, to_key = self._parse_arango_id(edge["_to"])
+            # Fallback to generic format
+            elif "from_id" in edge and "to_id" in edge:
+                from_key = edge["from_id"]
+                to_key = edge["to_id"]
+                from_collection = edge.get("from_collection", "")
+                to_collection = edge.get("to_collection", "")
+            else:
+                self.logger.warning(f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}")
+                continue
+
+            if not from_key or not to_key or not from_collection or not to_collection:
+                self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
+                continue
+
+            # Extract edge properties (excluding format-specific fields)
+            props = {k: v for k, v in edge.items() if k not in [
+                "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
+            ]}
+
+            key = (collection_to_label(from_collection), collection_to_label(to_collection))
+            grouped.setdefault(key, []).append({"from_key": from_key, "to_key": to_key, "props": props})
+        return grouped
+
+    async def replace_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
+        # off (the default) a separate delete committed before the new edges were
+        # written, and a group whose rewrite failed was left with no members.
+        relationship_type = edge_collection_to_relationship(collection)
+        parameters: dict[str, Any] = {"to_id": to_id}
+        creates = []
+        for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
+            parameters[f"edges_{i}"] = rows
+            creates.append(f"""
+            CALL {{
+                UNWIND $edges_{i} AS edge
+                MATCH (from:{from_label} {{id: edge.from_key}})
+                MATCH (to:{to_label} {{id: edge.to_key}})
+                MERGE (from)-[r:{relationship_type}]->(to)
+                SET r = edge.props
+            }}""")
+        await self.client.execute_query(
+            f"""
+            OPTIONAL MATCH ()-[old:{relationship_type}]->(:{collection_to_label(to_collection)} {{id: $to_id}})
+            DELETE old
+            WITH count(*) AS _
+            {"".join(creates)}
+            RETURN count(*) AS done
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+
     async def batch_create_edges(
         self,
         edges: list[dict],
@@ -1613,55 +1698,8 @@ class Neo4jProvider(IGraphDBProvider):
 
             relationship_type = edge_collection_to_relationship(collection)
 
-            # Process edges - support both ArangoDB format (_from, _to) and generic format (from_id, to_id)
-            edge_data = []
-            for edge in edges:
-                # Try ArangoDB format first (_from, _to)
-                if "_from" in edge and "_to" in edge:
-                    from_collection, from_key = self._parse_arango_id(edge["_from"])
-                    to_collection, to_key = self._parse_arango_id(edge["_to"])
-                # Fallback to generic format
-                elif "from_id" in edge and "to_id" in edge:
-                    from_key = edge["from_id"]
-                    to_key = edge["to_id"]
-                    from_collection = edge.get("from_collection", "")
-                    to_collection = edge.get("to_collection", "")
-                else:
-                    self.logger.warning(f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}")
-                    continue
-
-                if not from_key or not to_key or not from_collection or not to_collection:
-                    self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
-                    continue
-
-                from_label = collection_to_label(from_collection)
-                to_label = collection_to_label(to_collection)
-
-                # Extract edge properties (excluding format-specific fields)
-                props = {k: v for k, v in edge.items() if k not in [
-                    "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
-                ]}
-
-                edge_data.append({
-                    "from_key": from_key,
-                    "to_key": to_key,
-                    "from_label": from_label,
-                    "to_label": to_label,
-                    "props": props
-                })
-
-            if not edge_data:
-                return True
-
-            # Group edges by label combination for efficient batch processing
-            from collections import defaultdict
-            grouped_edges = defaultdict(list)
-            for edge in edge_data:
-                key = (edge["from_label"], edge["to_label"])
-                grouped_edges[key].append(edge)
-
             # Process each group separately
-            for (from_label, to_label), group_edges in grouped_edges.items():
+            for (from_label, to_label), group_edges in self._edges_by_labels(edges).items():
                 query = f"""
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
@@ -6593,42 +6631,9 @@ class Neo4jProvider(IGraphDBProvider):
         """Batch upsert records (base + specific type + IS_OF_TYPE edge)"""
         try:
             for record in records:
-                # Upsert base record
-                record_dict = record.to_arango_base_record()
-                if release_trashed_external_ids:
-                    await self._upsert_record_nodes_releasing_trash([record_dict], transaction)
-                else:
-                    await self.batch_upsert_nodes(
-                        [record_dict],
-                        collection=CollectionNames.RECORDS.value,
-                        transaction=transaction
-                    )
-
-                # Upsert specific type if applicable
-                if record.record_type in RECORD_TYPE_COLLECTION_MAPPING:
-                    collection = RECORD_TYPE_COLLECTION_MAPPING[record.record_type]
-                    type_dict = record.to_arango_record()
-                    await self.batch_upsert_nodes(
-                        [type_dict],
-                        collection=collection,
-                        transaction=transaction
-                    )
-
-                    # Create IS_OF_TYPE edge
-                    is_of_type_edge = {
-                        "from_id": record.id,
-                        "from_collection": CollectionNames.RECORDS.value,
-                        "to_id": record.id,
-                        "to_collection": collection,
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    await self.batch_create_edges(
-                        [is_of_type_edge],
-                        collection=CollectionNames.IS_OF_TYPE.value,
-                        transaction=transaction
-                    )
-
+                await self._upsert_record_with_type(
+                    record, transaction, release_trashed_external_ids=release_trashed_external_ids
+                )
         except Exception as e:
             self.logger.error(f"❌ Batch upsert records failed: {str(e)}")
             raise
@@ -11941,9 +11946,9 @@ class Neo4jProvider(IGraphDBProvider):
                     for rid in record_ids if rid not in valid_root_keys
                 ]
 
+                parent_external_ids: list[str] = []
                 if not cascade_children and valid_root_keys:
                     valid_root_key_set = set(valid_root_keys)
-                    parent_external_ids: list[str] = []
                     seen_parent_ids: set[str] = set()
                     for rt in records_with_type:
                         rec = rt.get("record") or {}
@@ -11954,23 +11959,24 @@ class Neo4jProvider(IGraphDBProvider):
                             continue
                         seen_parent_ids.add(peid)
                         parent_external_ids.append(peid)
-                    if parent_external_ids:
-                        await self.client.execute_query(
-                            """
-                            UNWIND $parent_external_ids AS peid
-                            MATCH (survivor:Record)-[:BELONGS_TO]->(:RecordGroup)
-                            WHERE survivor.connectorId = $connector_id
-                              AND survivor.externalParentId = peid
-                              AND NOT survivor.id IN $deleted_ids
-                            SET survivor.externalParentId = null
-                            """,
-                            parameters={
-                                "parent_external_ids": parent_external_ids,
-                                "connector_id": connector_id,
-                                "deleted_ids": record_keys,
-                            },
-                            txn_id=txn_id,
-                        )
+                # Leads each delete statement below rather than running on its own: the
+                # client auto-commits each query unless explicit transactions are on, so
+                # a separate clear outlived a delete that failed.
+                clear_survivors = """
+                CALL {
+                    UNWIND $parent_external_ids AS peid
+                    MATCH (survivor:Record)-[:BELONGS_TO]->(:RecordGroup)
+                    WHERE survivor.connectorId = $connector_id
+                      AND survivor.externalParentId = peid
+                      AND NOT survivor.id IN $deleted_ids
+                    SET survivor.externalParentId = null
+                }
+                """ if parent_external_ids else ""
+                survivor_parameters = {
+                    "parent_external_ids": parent_external_ids,
+                    "connector_id": connector_id,
+                    "deleted_ids": record_keys,
+                }
 
                 if within_folder_id and record_keys:
                     # The client auto-commits each query unless explicit transactions
@@ -11978,7 +11984,7 @@ class Neo4jProvider(IGraphDBProvider):
                     # until a separate delete ran. One statement re-checks containment
                     # and deletes, and reports what it actually removed.
                     rows = await self.client.execute_query(
-                        """
+                        clear_survivors + """
                         UNWIND $root_ids AS rid
                         MATCH (root:Record {id: rid, connectorId: $connector_id})
                         WHERE coalesce(root.isDeleted, false) = false
@@ -12000,8 +12006,8 @@ class Neo4jProvider(IGraphDBProvider):
                         RETURN root_ids, collect({record: record, type_doc: head(type_docs)}) AS deleted
                         """,
                         parameters={
+                            **survivor_parameters,
                             "root_ids": valid_root_keys,
-                            "connector_id": connector_id,
                             "folder_id": within_folder_id,
                         },
                         txn_id=txn_id,
@@ -12016,16 +12022,19 @@ class Neo4jProvider(IGraphDBProvider):
                     ]
                     valid_root_keys = [r for r in valid_root_keys if r not in kept_roots]
                 elif record_keys:
-                    # Delete the isOfType type docs (any label) via the record, then the
-                    # records themselves; DETACH DELETE removes every relationship on each
-                    # node (the dynamic edge sweep — inheritPermissions/permissions/etc.).
+                    # The isOfType type docs (any label) and the records in one statement,
+                    # so a failure cannot leave live records without their type; DETACH
+                    # DELETE removes every relationship on each node (the dynamic edge
+                    # sweep — inheritPermissions/permissions/etc.).
                     await self.client.execute_query(
-                        "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
-                        parameters={"record_ids": record_keys}, txn_id=txn_id,
-                    )
-                    await self.client.execute_query(
-                        "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
-                        parameters={"record_ids": record_keys}, txn_id=txn_id,
+                        clear_survivors + """
+                        MATCH (r:Record) WHERE r.id IN $deleted_ids
+                        OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+                        WITH r, collect(t) AS types
+                        FOREACH (t IN types | DETACH DELETE t)
+                        DETACH DELETE r
+                        """,
+                        parameters=survivor_parameters, txn_id=txn_id,
                     )
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)

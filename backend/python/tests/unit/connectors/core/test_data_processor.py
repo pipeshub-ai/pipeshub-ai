@@ -1940,7 +1940,10 @@ class TestOnNewUserGroups:
         )
         await proc.on_new_user_groups([(group, [])])
         assert group.id == "existing-ug-id"
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "existing-ug-id", CollectionNames.GROUPS.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
 
 # ===========================================================================

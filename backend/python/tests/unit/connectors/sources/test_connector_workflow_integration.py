@@ -461,6 +461,11 @@ class MockTransactionStore:
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return self._s.delete_edges_to(collection, to_id, to_collection)
 
+    async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
+        self._s.delete_edges_to(collection, to_id, to_collection)
+        for edge in edges:
+            self._s.add_edge(collection, edge)
+
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
 
