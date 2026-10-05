@@ -49,6 +49,9 @@ CHAT_ATTACHMENT = _record(origin="UPLOAD", connectorName="ATTACHMENTS", connecto
 DRIVE_FILE = _record(origin="CONNECTOR", connectorName="DRIVE", connectorId="conn-1")
 GMAIL_MAIL = _record(origin="CONNECTOR", connectorName="GMAIL", recordType="MAIL", connectorId="conn-1")
 OUTLOOK_MAIL = _record(origin="CONNECTOR", connectorName="OUTLOOK", recordType="MAIL", connectorId="conn-1")
+OUTLOOK_PERSONAL_MAIL = _record(
+    origin="CONNECTOR", connectorName="OUTLOOK PERSONAL", recordType="MAIL", connectorId="conn-1"
+)
 LOCAL_FS_FILE = _record(origin="CONNECTOR", connectorName="LOCAL_FS", connectorId="conn-1")
 CONFLUENCE_PAGE = _record(origin="CONNECTOR", connectorName="CONFLUENCE", recordType="WEBPAGE", connectorId="conn-1")
 JIRA_TICKET = _record(origin="CONNECTOR", connectorName="JIRA", recordType="TICKET", connectorId="conn-1")
@@ -90,6 +93,7 @@ class _Neo4jDriver:
 class _ArangoDriver:
     def __init__(self, record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> None:
         self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
+        self.record_role: str | None = None
         self.statements: list[tuple[str, dict]] = []
 
     async def get_document(self, collection: str, key: str, txn_id: str | None = None, **_: Any) -> dict | None:
@@ -109,6 +113,8 @@ class _ArangoDriver:
             return [self.kb_context]
         if "all_roles" in query:
             return [self.kb_role]
+        if "RETURN edge.role" in query:
+            return [self.record_role] if self.record_role else []
         return []
 
     async def get_graph(self, graph_name: str) -> dict | None:
@@ -392,6 +398,34 @@ async def test_arango_sync_delete_by_external_id_reaches_the_outlook_branch() ->
     await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
 
     provider.delete_outlook_record.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mail", [OUTLOOK_MAIL, OUTLOOK_PERSONAL_MAIL], ids=["outlook", "outlook-personal"])
+async def test_arango_sync_delete_by_external_id_removes_the_mailbox_owners_mail(mail: dict) -> None:
+    provider, driver = _arango(mail, None, None, None)
+    driver.record_role = "OWNER"
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(mail))
+
+    result = await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert result["success"] is True
+    assert result["connector"] == mail["connectorName"]
+    assert result["eventData"]["payload"]["connectorName"] == mail["connectorName"]
+    assert result["eventData"]["payload"]["virtualRecordId"] == "vr-1"
+    assert driver.destructive
+
+
+@pytest.mark.asyncio
+async def test_arango_sync_delete_of_an_outlook_personal_mail_still_needs_the_mailbox_owner() -> None:
+    provider, driver = _arango(OUTLOOK_PERSONAL_MAIL, None, None, None)
+    driver.record_role = "READER"
+    provider.get_record_by_external_id = AsyncMock(return_value=_typed(OUTLOOK_PERSONAL_MAIL))
+
+    with pytest.raises(Exception, match="Only mailbox owner can delete emails"):
+        await provider.delete_record_by_external_id("conn-1", "ext-1", "user-a")
+
+    assert driver.destructive == []
 
 
 @pytest.mark.asyncio
