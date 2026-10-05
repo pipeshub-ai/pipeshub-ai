@@ -68,7 +68,10 @@ def test_resend_invite_to_logged_in_user_is_rejected(
 
 
 def test_member_resends_invite_to_pending_user(
-    second_user: SecondUser, seed_user: SeedUser, past_route_gates: None
+    second_user: SecondUser,
+    seed_user: SeedUser,
+    past_route_gates: None,
+    smtp_relay_reachable: None,
 ) -> None:
     # Reserved domain: a real relay accepts the submission without delivering mail.
     pending = seed_user(email=f"spec-audit-{uuid.uuid4().hex[:10]}@example.com")

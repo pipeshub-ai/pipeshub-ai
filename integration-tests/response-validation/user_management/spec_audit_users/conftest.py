@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import socket
 import sys
 import uuid
 from pathlib import Path
@@ -19,10 +21,12 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
 from users_audit_support import (  # noqa: E402
+    USER_LOOKUP_SCOPE,
     MintScopedToken,
     SeededUser,
     SeedUser,
     mint_scoped_token,
+    request_with_token,
     scoped_jwt_secret,
 )
 
@@ -32,8 +36,9 @@ def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
     """Factory: ``scoped_token(USER_LOOKUP_SCOPE)`` -> a service token the deployment accepts.
 
     Extra positional scopes and keyword claims are passed through; ``userId`` and
-    ``orgId`` default to the shared admin's. Skips when SCOPED_JWT_SECRET is unset,
-    since nothing can then get past a scoped route's token check.
+    ``orgId`` default to the shared admin's. Skips when SCOPED_JWT_SECRET is unset
+    or is not the secret the deployment verifies with, since nothing can then get
+    past a scoped route's signature check.
     """
     secret = scoped_jwt_secret()
     if not secret:
@@ -46,7 +51,39 @@ def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
         claims.setdefault("orgId", pipeshub_client.org_id)
         return mint_scoped_token(secret, list(scopes), ttl_seconds=ttl_seconds, **claims)
 
+    # A deployment that generated its own secret keeps it in the KV store, so the
+    # env value can be set and still be the wrong key.
+    probe = request_with_token(
+        pipeshub_client,
+        _mint(USER_LOOKUP_SCOPE),
+        "GET",
+        "/email/exists",
+        json={"email": f"spec-audit-probe-{uuid.uuid4().hex[:10]}@test-pipeshub.com"},
+    )
+    if probe.status_code == 401:
+        pytest.skip(
+            "SCOPED_JWT_SECRET is not the secret this deployment verifies scoped "
+            f"tokens with (a correctly scoped probe token got 401: {probe.text[:120]})"
+        )
+
     return _mint
+
+
+@pytest.fixture(scope="session")
+def smtp_relay_reachable() -> None:
+    """Skip when nothing accepts connections on SMTP_HOST:SMTP_PORT.
+
+    Saving an SMTP config does not check the relay, so a route that really sends
+    mail answers 500 when the configured relay is down.
+    """
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = os.getenv("SMTP_PORT", "").strip()
+    if not host or not port.isdigit():
+        pytest.skip("SMTP_HOST/SMTP_PORT not set: no relay to deliver the mail to")
+    try:
+        socket.create_connection((host, int(port)), timeout=5).close()
+    except OSError as exc:
+        pytest.skip(f"no SMTP relay is listening on {host}:{port} ({exc})")
 
 
 @pytest.fixture
