@@ -95,12 +95,12 @@ GOOGLE_SERVICE_SCOPES = {
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/calendar",
     ],
+    # The Gmail toolset consents to exactly this list and google-auth asks for all of it
+    # on every refresh; Google refuses a refresh naming a scope the user never approved.
     "gmail": [
-        # Gmail API - optimized for common operations
+        "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/gmail.compose",
-        "https://www.googleapis.com/auth/gmail.send",
     ],
     "drive": [
         # Google Drive API - optimized for file operations
@@ -141,6 +141,16 @@ GOOGLE_SERVICE_SCOPES = {
         "https://www.googleapis.com/auth/forms.readonly",
         "https://www.googleapis.com/auth/forms",
     ],
+}
+
+# What the Gmail Workspace connector's service account asks for when it impersonates a
+# mailbox. Google refuses the whole token request (unauthorized_client) if any scope here
+# is missing from the admin's domain-wide delegation grant, so this must match the grant
+# list in the Gmail Workspace setup docs. It only reads mail and the Drive files linked
+# from it.
+GMAIL_WORKSPACE_DELEGATED_SCOPES = {
+    "gmail": ["https://www.googleapis.com/auth/gmail.readonly"],
+    "drive": ["https://www.googleapis.com/auth/drive.readonly"],
 }
 
 # Services that need parser scopes (for document parsing functionality)
