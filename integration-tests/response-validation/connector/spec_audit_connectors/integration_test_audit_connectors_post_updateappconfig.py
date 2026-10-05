@@ -30,6 +30,30 @@ def _service_headers(org_id: str, scope: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture
+def deployment_signing_secret(
+    connectors_client: ConnectorsAuditClient, pipeshub_client: PipeshubClient
+) -> None:
+    """Skip unless SCOPED_JWT_SECRET is the secret this deployment verifies with.
+
+    A token with the wrong scope is refused either way, but a good signature gets
+    "Invalid scope" and a bad one "Invalid token" (AuthTokenService.verifyScopedToken).
+    """
+    probe = connectors_client.post(
+        PATH,
+        auth=False,
+        headers=_service_headers(pipeshub_client.org_id, OTHER_SERVICE_SCOPE),
+    )
+    assert probe.status_code == 401, probe.text[:500]
+    if probe.json()["error"]["message"] != "Invalid scope":
+        pytest.skip(
+            "SCOPED_JWT_SECRET is not the scoped JWT secret this deployment verifies "
+            "with (it answers 'Invalid token' to a token signed with it), so a "
+            "fetch:config service token cannot be minted"
+        )
+
+
+@pytest.mark.usefixtures("deployment_signing_secret")
 def test_fetch_config_service_token_reloads_app_config(
     connectors_client: ConnectorsAuditClient, pipeshub_client: PipeshubClient
 ) -> None:

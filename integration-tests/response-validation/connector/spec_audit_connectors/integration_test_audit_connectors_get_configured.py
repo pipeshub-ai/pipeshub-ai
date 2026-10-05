@@ -11,7 +11,17 @@ pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/api/v1/connectors/configured"
 
+# The Python handler returns {"success", "connectors": <registry result>} where the
+# registry result is itself {"connectors": [...], "pagination": {...}}; GET / and
+# GET /agents/active spread the same result instead.
+NESTED_LISTING_BUG = (
+    "API bug: GET /connectors/configured nests the page under connectors "
+    "(connectors.connectors, connectors.pagination) instead of returning the list "
+    "and pagination at the top level like the other connector lists"
+)
 
+
+@pytest.mark.xfail(strict=True, reason=NESTED_LISTING_BUG)
 def test_admin_lists_configured_connectors(
     connectors_client: ConnectorsAuditClient,
 ) -> None:
@@ -21,14 +31,13 @@ def test_admin_lists_configured_connectors(
 
     body = resp.json()
     assert body["success"] is True
-    # Python nests the registry result, so the list and pagination sit one level down.
-    listing = body["connectors"]
-    assert isinstance(listing["connectors"], list)
-    assert all(item["isConfigured"] for item in listing["connectors"])
-    assert listing["pagination"]["page"] == 1
-    assert listing["pagination"]["limit"] == 5
+    assert isinstance(body["connectors"], list)
+    assert all(item["isConfigured"] for item in body["connectors"])
+    assert body["pagination"]["page"] == 1
+    assert body["pagination"]["limit"] == 5
 
 
+@pytest.mark.xfail(strict=True, reason=NESTED_LISTING_BUG)
 def test_member_lists_own_personal_configured_connectors(
     second_user: SecondUser,
 ) -> None:
