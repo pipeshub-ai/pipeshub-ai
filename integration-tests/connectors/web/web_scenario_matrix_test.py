@@ -41,7 +41,7 @@ HTML = "text/html; charset=utf-8"
 TEXT = "text/plain; charset=utf-8"
 # The exclusion filter drops plain-text pages; every other item is HTML.
 FILTERED_EXTENSION = "txt"
-FAILED = "FAILED"
+COMPLETED = "COMPLETED"
 
 
 def title_from_file_name(path: str) -> str:
@@ -100,8 +100,10 @@ class WebAdapter(ScenarioAdapter):
 
     def is_removed(self, now: RecordView | None, before: RecordView) -> bool:
         # A still-linked page that is gone is listed again as a failed page with nothing
-        # indexed (WebConnector._retry_urls_generator creates the placeholder).
-        return now is None or (now.id != before.id and now.indexing_status == FAILED)
+        # indexed (WebConnector._retry_urls_generator creates the placeholder). Indexing
+        # retries the placeholder (QUEUED, IN_PROGRESS) before it settles on FAILED, so
+        # only a replacement that indexed means the page came back.
+        return now is None or (now.id != before.id and now.indexing_status != COMPLETED)
 
     async def exclusion_filter(self, excluded: SourceItem, kept: list[SourceItem]) -> dict[str, Any]:
         assert excluded.key.endswith(f".{FILTERED_EXTENSION}")

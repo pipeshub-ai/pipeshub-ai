@@ -903,9 +903,14 @@ class ConnectorScenarioMatrix:
         # repeating that here would hide every other full-sync check behind it.
         if (Role.DELETE in run.items and run.supports(Action.DELETE)
                 and not run.is_known_bug("incr_delete")):
-            assert await run.is_removed(run.item(Role.DELETE), run.added[Role.DELETE]), (
+            deleted, gone = run.item(Role.DELETE), run.added[Role.DELETE]
+            assert await run.is_removed(deleted, gone), (
                 f"{run.adapter.source}: the full sync brought back an item deleted at the source"
             )
+            assert gone.virtual_record_id
+            await run.vector.assert_embeddings_gone(gone.virtual_record_id)
+            await run.wait_search(deleted.text, gone.virtual_record_id, expect=False,
+                                  as_user=run.adapter.owner)
 
     @pytest.mark.order(7)
     @needs(Action.CREATE, Action.SET_FILTER)

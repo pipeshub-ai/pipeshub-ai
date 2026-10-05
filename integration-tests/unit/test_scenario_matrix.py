@@ -360,6 +360,15 @@ async def test_a_delete_that_leaves_a_failed_placeholder_counts_where_the_adapte
     assert await run.is_removed(run.item(Role.DELETE), before)
     await run.wait_gone(run.item(Role.DELETE), timeout=1, before=before)
 
+    # Indexing retries the placeholder before it settles on FAILED; it is gone all along.
+    placeholder = src.graph[run.item(Role.DELETE).key]
+    for status in ("QUEUED", "IN_PROGRESS"):
+        placeholder["indexingStatus"] = status
+        assert await run.is_removed(run.item(Role.DELETE), before), status
+    # A replacement that indexed means the page is back.
+    placeholder["indexingStatus"] = "COMPLETED"
+    assert not await run.is_removed(run.item(Role.DELETE), before)
+
 
 async def test_a_record_that_is_still_there_is_never_removed() -> None:
     src = _Source()
