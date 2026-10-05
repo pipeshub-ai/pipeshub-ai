@@ -20837,11 +20837,19 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: User not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             Bearer token is an OAuth access token or personal access token
             rather than a user session, or the client is not authorized /
             the redirect URI is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth2/token:
     post:
@@ -21643,6 +21651,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthAppListResponse'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
           content:
@@ -23166,6 +23180,12 @@ paths:
       responses:
         '200':
           description: Logged out successfully (empty response body)
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
           content:
@@ -24024,6 +24044,12 @@ paths:
                                 enum: [admin, standard, everyone, custom]
                   pagination:
                     $ref: '#/components/schemas/PaginationMetadata'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -32746,6 +32772,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden — the token lacks the `conversation:write` OAuth scope.
         '413':
@@ -32855,8 +32885,16 @@ paths:
             Invalid request — `query` is missing, empty, or exceeds the
             100000-character limit, or another field fails validation
             (for example a malformed `recordIds` or `currentTime`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             Forbidden — the caller's token does not include the
@@ -33458,6 +33496,10 @@ paths:
           description: |
             Bad request — for example, missing or invalid `source` (must be `owned` or `shared`),
             invalid date query params, invalid `search` shape, or search text over the length limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
 
@@ -33874,8 +33916,18 @@ paths:
                       duration:
                         type: integer
                         description: Server processing time in milliseconds
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/show/archives/search:
     get:
@@ -34020,8 +34072,16 @@ paths:
                         description: Server processing time in milliseconds
         '400':
           description: Search parameter missing, empty, not a string, or longer than 1000 characters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/{conversationId}:
     get:
@@ -34591,12 +34651,22 @@ paths:
                       messageCount:
                         type: integer
                         description: Total number of messages in the conversation
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - No access to this conversation
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -34673,12 +34743,20 @@ paths:
                         description: Server processing time in milliseconds
         '400':
           description: Invalid `conversationId` path parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - token is missing the `conversation:write` scope
         '404':
           description: Conversation not found, already deleted, or caller has no delete access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while deleting the conversation
 
@@ -34860,8 +34938,16 @@ paths:
             Invalid request — `query` is missing, empty or over 100,000
             characters, or another field fails validation (for example a
             malformed `currentTime`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             Forbidden — the caller's token does not include the
@@ -34983,8 +35069,16 @@ paths:
                         description: Server-side processing time in milliseconds.
         '400':
           description: Invalid request - userIds array required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Only owner can share
         '404':
@@ -35247,12 +35341,20 @@ paths:
 
             - `title` missing, empty, or longer than 200 characters.
             - `conversationId` path parameter is not a valid ObjectId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - token is missing the `conversation:write` scope
         '404':
           description: Conversation not found, soft-deleted, or not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Persistence layer failed to update the conversation document.
 
@@ -35332,10 +35434,18 @@ paths:
                         description: Server processing time in milliseconds
         '400':
           description: Conversation is already archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '404':
           description: Conversation not found or caller lacks archive permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/{conversationId}/unarchive:
     patch:
@@ -35402,6 +35512,10 @@ paths:
                         description: Server processing time in milliseconds
         '400':
           description: Conversation is not currently archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
@@ -35494,8 +35608,16 @@ paths:
             Cannot regenerate. Common causes: target message is not the last
             message in the conversation, target message is not of type
             `bot_response`, or no preceding `user_query` exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation or message not found
 
@@ -35646,6 +35768,10 @@ paths:
             - Feedback target is not a `bot_response` message.
             - A `categories` value is not in the allowed list.
             - `conversationId` or `messageId` is not a valid ObjectId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized.
         '404':
@@ -35772,6 +35898,10 @@ paths:
 
             - `userIds` empty, missing, or not an array.
             - One or more `userIds` is not a valid ObjectId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '404':
@@ -35863,6 +35993,10 @@ paths:
           description: |
             Conversation not found or caller is not the initiator, or the
             target project does not exist or is not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/{conversationId}/project-visibility:
     patch:
@@ -36110,6 +36244,10 @@ paths:
           description: Unauthorized
         '404':
           description: Project not found or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       tags:
         - Projects
@@ -36155,6 +36293,10 @@ paths:
           description: Unauthorized
         '403':
           description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Project not found or not visible to the caller.
     delete:
@@ -36554,10 +36696,18 @@ paths:
                       $ref: '#/components/schemas/ProjectMember'
         '400':
           description: A `principalId` does not exist in this org's IAM service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
           description: Caller has access but is not the owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Project not found or not visible to the caller.
 
@@ -37000,6 +37150,10 @@ paths:
           description: |
             A referenced knowledge base or app filter could not be
             resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Unexpected server error while executing the search, or the
@@ -37338,6 +37492,10 @@ paths:
           description: |
             No matching rows. Returned when the caller has no owned or
             shared searches that satisfy the filter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Server error. Possible causes:
@@ -37660,6 +37818,10 @@ paths:
           description: |
             No search matched. Returned when the id does not exist for
             this caller, or when the row is archived or already deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Server error. Possible causes:
@@ -38083,6 +38245,10 @@ paths:
                 $ref: '#/components/schemas/AgentCreateResponse'
         '400':
           description: Invalid agent configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
 
@@ -38491,6 +38657,10 @@ paths:
                 $ref: '#/components/schemas/AgentArchivedGroupsResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/show/archives:
     get:
@@ -38562,6 +38732,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/attachments/upload:
     post:
@@ -38738,8 +38912,16 @@ paths:
                 $ref: '#/components/schemas/AgentStreamSSEEvent'
         '400':
           description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/messages/stream:
     post:
@@ -38786,8 +38968,16 @@ paths:
                 $ref: '#/components/schemas/AgentMessageStreamSSEEvent'
         '400':
           description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found
 
@@ -38894,6 +39084,10 @@ paths:
             that require content, malformed `filters`, invalid `tools`
             entries, or `currentTime` values that are not ISO 8601 datetimes
             with offset information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
 
@@ -39059,6 +39253,10 @@ paths:
             - Feedback target is not a `bot_response` message.
             - A `categories` value is not in the allowed list.
             - `conversationId` or `messageId` is not a valid ObjectId.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '404':
@@ -39680,10 +39878,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentConversationDetailResponse'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations:
     get:
@@ -39887,6 +40099,12 @@ paths:
           description: Unauthorized — valid bearer token required.
         '403':
           description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: The request is larger than the selected model accepts.
           headers:
@@ -41218,10 +41436,24 @@ paths:
                     description: Normalized connector type/name.
                   eventPublished:
                     type: boolean
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflict — the connector instance is disabled or locked.
 
@@ -47696,10 +47928,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetModelsByTypeResponse'
+        '400':
+          description: Bad request — the request failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /configurationManager/ai-models/available/{modelType}:
     get:
@@ -48293,8 +48539,16 @@ paths:
                       message: "This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed."
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Model provider not found, or no AI models configuration exists.
@@ -50566,8 +50820,16 @@ paths:
                 $ref: '#/components/schemas/GetAIModelsProvidersResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- AI Model Role Assignments --------------------
   /configurationManager/ai-models/roles:
@@ -51968,6 +52230,10 @@ paths:
                         type: string
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
     get:
