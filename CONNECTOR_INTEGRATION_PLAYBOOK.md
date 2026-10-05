@@ -312,13 +312,13 @@ Connector data is stored in Graph DB as a **property graph** - a network of node
 | Edge Type                                                                                                                        | Collection        | From → To                           | Purpose                                | Example                                      |
 | -------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------- | -------------------------------------- | -------------------------------------------- |
 | **[Permissions](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/models/permission.py)**              | `permissions`     | User → Record                       | Access control (READER, WRITER, OWNER) | User has READ access to a file               |
-| **[RecordRelations](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)** | `recordRelations` | Record → Record                     | Record-to-record relationships         | Folder contains file, email has attachment   |
+| **[NodeRelations](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)** | `nodeRelations` | App/RecordGroup/Record → RecordGroup/Record | Hierarchy and node-to-node relationships | Space contains page, folder contains file, email has attachment |
 | **IsOfType**                                                                                                                     | `isOfType`        | Record → FileRecord/MailRecord/etc. | Links base record to specific type     | Base record is a FileRecord                  |
 | **BelongsTo**                                                                                                                    | `belongsTo`       | Record/User → RecordGroup           | Membership in a container              | File belongs to a drive, user belongs to org |
 
-#### RecordRelations Types
+#### NodeRelations Types
 
-The `recordRelations` edge has a `relationshipType` field that defines the relationship (see [`RecordRelations` enum](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)):
+The `nodeRelations` edge has a `relationshipType` field that defines the relationship (see [`RecordRelations` enum](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/config/constants/arangodb.py)). The hierarchy the knowledge hub walks is the `PARENT_CHILD`/`ATTACHMENT` subset; every other type rides the same edge and is filtered out of navigation:
 
 | Relationship Type | Use Case                     | Example                                      |
 | ----------------- | ---------------------------- | -------------------------------------------- |
@@ -445,9 +445,9 @@ graph LR
     R3 -->|"isOfType"| F3
 
 
-    R1 -->|"recordRelations
+    R1 -->|"nodeRelations
     PARENT_CHILD"| R2
-    R1 -->|"recordRelations
+    R1 -->|"nodeRelations
     PARENT_CHILD"| R3
 
 
@@ -480,7 +480,7 @@ graph LR
 
 3. **Hierarchical Relationships**:
 
-   - Parent-child relationships use `recordRelations` edge with `relationshipType: PARENT_CHILD`
+   - Parent-child relationships use the `nodeRelations` edge with `relationshipType: PARENT_CHILD`
    - Alternative: Store `externalParentId` in the record (for initial sync), then create edge
 
 4. **Permissions are Directional**:
@@ -501,7 +501,7 @@ graph LR
 ```
 RecordGroup (Drive)
   └─ belongsTo ─ Record (Folder)
-                   └─ recordRelations (PARENT_CHILD) ─ Record (File)
+                   └─ nodeRelations (PARENT_CHILD) ─ Record (File)
                                                          └─ isOfType ─ FileRecord
 ```
 
@@ -511,14 +511,14 @@ RecordGroup (Drive)
 RecordGroup (Mailbox)
   └─ belongsTo ─ Record (Email)
                    ├─ isOfType ─ MailRecord
-                   └─ recordRelations (ATTACHMENT) ─ Record (File)
+                   └─ nodeRelations (ATTACHMENT) ─ Record (File)
                                                         └─ isOfType ─ FileRecord
 ```
 
 #### Pattern 3: Email Thread (Sibling Relationship)
 
 ```
-Record (Email 1) ←─ recordRelations (SIBLING) ─→ Record (Email 2)
+Record (Email 1) ←─ nodeRelations (SIBLING) ─→ Record (Email 2)
      ↓                                                    ↓
   MailRecord                                          MailRecord
   (threadId: "thread-123")                           (threadId: "thread-123")
