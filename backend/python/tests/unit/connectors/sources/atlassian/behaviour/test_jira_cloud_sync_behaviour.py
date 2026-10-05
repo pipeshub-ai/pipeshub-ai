@@ -847,8 +847,9 @@ class TestDeletedIssuesFoundByComparingIds:
     async def test_a_paid_plan_site_finds_deletions_in_the_audit_log_without_listing_ids(
         self, api, keyed_db, checkpoints, listing, fresh_notification_memory
     ) -> None:
-        api.on("GET", AUDIT, [{"records": [], "total": 0}, ENG_2_DELETED])
+        api.on("GET", AUDIT, {"records": [], "total": 0})
         connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
+        api.on("GET", AUDIT, ENG_2_DELETED)
         gone(api, "ENG-2", 3)
         listing.id_pages[None] = {"issues": ids(1), "isLast": True}
 
@@ -861,8 +862,9 @@ class TestDeletedIssuesFoundByComparingIds:
     async def test_a_paid_plan_site_acts_on_the_audit_log_in_the_first_sync_after_a_full_resync(
         self, api, keyed_db, checkpoints, listing, fresh_notification_memory
     ) -> None:
-        api.on("GET", AUDIT, [{"records": [], "total": 0}, ENG_2_DELETED])
+        api.on("GET", AUDIT, {"records": [], "total": 0})
         connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
+        api.on("GET", AUDIT, ENG_2_DELETED)
         checkpoints.sync_points.clear()  # a full resync deletes every sync point, not the records
         listing.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(3, "2024-05-01T12:00:00.000+0000")]})
         gone(api, "ENG-2")
