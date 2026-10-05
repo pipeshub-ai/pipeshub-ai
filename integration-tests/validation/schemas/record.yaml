@@ -170,6 +170,9 @@ fields:
   summary_document_id:
     required: false
     type: string
+  trashed_external_record_id:
+    required: false
+    type: string
   updated_at:
     required: false
     type: integer
