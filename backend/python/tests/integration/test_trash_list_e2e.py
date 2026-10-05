@@ -19,7 +19,8 @@ the KB's own ``DataSourceEntitiesProcessor`` with ``ENABLE_SOFT_DELETE`` on.
   another of two, and one deleted file: the file organizer's list holds only
   the file, paging keeps its rows and totals, and every read costs a fixed
   amount per record in the trash: Neo4j PROFILE database hits, and ArangoDB
-  profile index scans with no full scan. On Neo4j no statement holds more than
+  profile index scans with no full scan, the roots read through their hinted
+  index. On Neo4j no statement holds more than
   a few KB, as batches are paged before any root is read; collecting every
   root first held 19 KB here and 160 KB with 400 selected files. Reading every batch member for every record cost about 277,000
   hits for 302 records; ``TRASH_LIST_BIG_FOLDER_FILES`` changes the size.
@@ -41,6 +42,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.arango.arango_http_provider import TRASH_LIST_INDEX
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.integration import test_soft_delete_restore_e2e as restore_suite
 
@@ -223,8 +225,21 @@ async def _seed_loose_files(w: _World, prefix: str, files: int) -> list[str]:
     return names
 
 
+def _arango_root_indexes(plan: dict) -> list[str]:
+    """The indexes the plan reads the trash's roots (``r``) through."""
+    return [
+        index["name"]
+        for node in plan["nodes"]
+        if node["type"] == "IndexNode" and node["outVariable"]["name"] == "r"
+        for index in node["indexes"]
+    ]
+
+
 async def _arango_scans(graph: object, monkeypatch: pytest.MonkeyPatch, call) -> tuple[object, int, int]:
-    """Run *call*, then profile every query it sent; return its result and the full and index scans."""
+    """Run *call*, then profile every query it sent; return its result and the full and index scans.
+
+    Each query must also read the roots through the trash index it hints.
+    """
     sent: list[tuple[str, dict]] = []
     original = graph.execute_query
 
@@ -241,9 +256,10 @@ async def _arango_scans(graph: object, monkeypatch: pytest.MonkeyPatch, call) ->
     for query, bind_vars in sent:
         async with session.post(
             f"{client.base_url}/_db/{client.database}/_api/cursor",
-            json={"query": query, "bindVars": bind_vars, "batchSize": 1000, "options": {"profile": 1}},
+            json={"query": query, "bindVars": bind_vars, "batchSize": 1000, "options": {"profile": 2}},
         ) as resp:
             body = await resp.json()
+        assert _arango_root_indexes(body["extra"]["plan"]) == [TRASH_LIST_INDEX], query
         stats = body["extra"]["stats"]
         full += stats["scannedFull"]
         index += stats["scannedIndex"]

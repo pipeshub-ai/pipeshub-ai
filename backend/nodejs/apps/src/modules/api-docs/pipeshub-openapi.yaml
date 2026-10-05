@@ -5317,9 +5317,11 @@ components:
           description: That folder is in the trash too; restore it first
         itemCount:
           type: integer
+          minimum: 0
           description: Records this delete removed, all of which a restore brings back
         rootCount:
           type: integer
+          minimum: 1
           description: Items selected in the delete; more than one for a multi-select delete, which is one item here
         otherRootNames:
           type: array
