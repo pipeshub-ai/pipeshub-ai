@@ -25472,7 +25472,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:upload]
+        - oauth2: [kb:upload, kb:read]
       parameters:
         - name: kbId
           in: path
