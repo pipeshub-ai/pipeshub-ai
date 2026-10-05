@@ -5379,6 +5379,10 @@ components:
           items:
             type: string
           description: Items of the batch that were no longer in the trash
+        parentId:
+          type: string
+          nullable: true
+          description: The folder still in the trash that must be restored first
 
     reIndexRecordResponseSchema:
       type: object

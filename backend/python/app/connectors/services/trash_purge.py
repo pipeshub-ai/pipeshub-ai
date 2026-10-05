@@ -394,7 +394,14 @@ class TrashPurger:
                     break
                 if settings.page_pause_ms:
                     await self.sleep(settings.page_pause_ms / 1000)
-            run.groups += await self._purge_kept_groups(org_id)
+            removed, stop = await self._purge_kept_groups(org_id, deadline, processed, settings)
+            run.groups += removed
+            if stop:
+                # The org is not done: the next tick walks it again, which finds its trash
+                # already gone, then carries on with its groups.
+                await self._save_state(state)
+                self.logger.info("Trash purge %s %s while removing kept record groups", run.run_id, stop)
+                return stop
             run.org_index += 1
             run.after = None
             run.pass_purged = run.pass_held = 0
@@ -553,18 +560,25 @@ class TrashPurger:
             await self._forget_outbox(key)
         return True
 
-    async def _purge_kept_groups(self, org_id: str) -> int:
+    async def _purge_kept_groups(
+        self, org_id: str, deadline: float, processed: int, settings: PurgeSettings
+    ) -> tuple[int, str | None]:
+        """Remove this org's kept groups that nothing belongs to; and why it stopped early, if it did."""
         removed = 0
+        stop = None
         try:
             # Until a pass removes nothing: a kept parent empties only once its kept child has gone.
-            while ids := await self.graph.purge_trash_kept_record_groups(org_id, limit=GROUP_PAGE_SIZE):
+            while not (stop := await self._stop_reason(deadline, processed, settings)):
+                ids = await self.graph.purge_trash_kept_record_groups(org_id, limit=GROUP_PAGE_SIZE)
+                if not ids:
+                    break
                 removed += len(ids)
         except Exception as exc:
             # The marks stay, so the next run tries these groups again.
             self.logger.warning("Trash purge: could not remove kept record groups in org %s: %s", org_id, exc)
         if removed:
             self.logger.info("Trash purge: removed %d record group(s) kept for the trash in org %s", removed, org_id)
-        return removed
+        return removed, stop
 
     async def _finish(self, state: PurgeState, settings: PurgeSettings) -> None:
         run = state.run

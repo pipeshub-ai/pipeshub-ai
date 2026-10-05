@@ -56,6 +56,9 @@ class _Graph:
         self.lose_answer = False
         self.orgs_unreadable = False
         self.walk_index_ready = True
+        # Kept groups nothing belongs to any more, in the order the store would remove them.
+        self.empty_kept_groups: list[str] = []
+        self.on_group_page = None
         self.refuse: set[str] = set()
         self.refuse_counting = False
         self.groups_removed: list[str] = []
@@ -152,7 +155,11 @@ class _Graph:
         return {"trashed": len(trashed), "stuck": len(stuck), "oldestDeletedAt": min(pending) if pending else None}
 
     async def purge_trash_kept_record_groups(self, org_id, *, limit=100, transaction=None) -> list[str]:
-        return []
+        removed, self.empty_kept_groups = self.empty_kept_groups[:limit], self.empty_kept_groups[limit:]
+        self.groups_removed.extend(removed)
+        if removed and self.on_group_page:
+            self.on_group_page()
+        return removed
 
     async def get_document(self, key, collection, transaction=None, raise_on_error=False) -> dict | None:
         return copy.deepcopy(self.records.get(key))
@@ -526,6 +533,24 @@ class TestOrgListing:
         graph.orgs_unreadable = False
         assert await _purger(graph, kv).tick() == Outcome.FINISHED
         assert graph.records == {}
+
+
+class TestKeptGroups:
+    async def test_the_kill_switch_stops_between_group_pages_and_the_run_resumes(self, clean_env) -> None:
+        graph, kv = _Graph(), _KV()
+        graph.empty_kept_groups = [f"g{i:03d}" for i in range(purge_module.GROUP_PAGE_SIZE + 50)]
+        settings = kv.values[PLATFORM_SETTINGS_KEY]["softDeletePurge"]
+        graph.on_group_page = lambda: settings.update(enabled=False)
+
+        assert await _purger(graph, kv).tick() == Outcome.STOPPED
+        assert len(graph.groups_removed) == purge_module.GROUP_PAGE_SIZE
+        assert kv.values[STATE_KEY]["status"] == "running", "the org is not done yet"
+
+        graph.on_group_page = None
+        settings["enabled"] = True
+        assert await _purger(graph, kv).tick() == Outcome.FINISHED
+        assert graph.empty_kept_groups == [] and len(graph.groups_removed) == purge_module.GROUP_PAGE_SIZE + 50
+        assert kv.values[STATE_KEY]["lastCounts"]["groups"] == purge_module.GROUP_PAGE_SIZE + 50
 
 
 class TestBookkeeping:
