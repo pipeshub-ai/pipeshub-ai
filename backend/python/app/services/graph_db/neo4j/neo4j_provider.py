@@ -15286,9 +15286,15 @@ class Neo4jProvider(IGraphDBProvider):
             # can actually see.
             accessible_team_ids: list[str] | None = None
 
-            # Build WHERE conditions
-            conditions = ["doc.id IS NOT NULL"]
-            params = {}
+            # The org edge is the tenant boundary: connector apps created before
+            # August 2026 carry no orgId property.
+            org_label = collection_to_label(CollectionNames.ORGS.value)
+            org_rel = self._get_relationship_type(edge_collection)
+            conditions = [
+                "doc.id IS NOT NULL",
+                f"EXISTS {{ MATCH (:{org_label} {{id: $org_id}})-[:{org_rel}]->(doc) }}",
+            ]
+            params = {"org_id": org_id}
 
             # Exclude KB if requested
             if exclude_kb and kb_connector_type:
@@ -15583,9 +15589,13 @@ class Neo4jProvider(IGraphDBProvider):
             # Map collection name to Neo4j label
             label = collection_to_label(collection)
 
+            org_label = collection_to_label(CollectionNames.ORGS.value)
+            org_rel = self._get_relationship_type(CollectionNames.ORG_APP_RELATION.value)
+
             query = f"""
             MATCH (n:{label})
             WHERE n.id IS NOT NULL
+              AND EXISTS {{ MATCH (:{org_label} {{id: $org_id}})-[:{org_rel}]->(n) }}
               AND (
                 n.scope = $team_scope OR
                 (n.scope = $personal_scope AND n.createdBy = $user_id)
@@ -15595,6 +15605,7 @@ class Neo4jProvider(IGraphDBProvider):
             results = await self.client.execute_query(
                 query,
                 parameters={
+                    "org_id": org_id,
                     "team_scope": team_scope,
                     "personal_scope": personal_scope,
                     "user_id": user_id

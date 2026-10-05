@@ -1525,6 +1525,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = """
             FOR doc IN @@collection
                 FILTER doc._id != null
+                FILTER LENGTH(
+                    FOR e IN @@org_edge_collection
+                        FILTER e._to == doc._id AND e._from == @org_handle
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
                 FILTER (
                     doc.scope == @team_scope OR
                     (doc.scope == @personal_scope AND doc.createdBy == @user_id)
@@ -1533,6 +1539,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             bind_vars = {
                 "@collection": collection,
+                "@org_edge_collection": CollectionNames.ORG_APP_RELATION.value,
+                "org_handle": f"{CollectionNames.ORGS.value}/{org_id}",
                 "team_scope": team_scope,
                 "personal_scope": personal_scope,
                 "user_id": user_id,
@@ -1644,13 +1652,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # reused for both the main query and the scope-count sub-query.
             accessible_team_keys: list[str] | None = None
 
-            # Build base query
+            # The org edge is the tenant boundary: connector apps created before
+            # August 2026 carry no orgId property.
             query = """
             FOR doc IN @@collection
                 FILTER doc._id != null
+                FILTER LENGTH(
+                    FOR e IN @@org_edge_collection
+                        FILTER e._to == doc._id AND e._from == @org_handle
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
             """
             bind_vars = {
                 "@collection": collection,
+                "@org_edge_collection": edge_collection,
+                "org_handle": f"{CollectionNames.ORGS.value}/{org_id}",
             }
 
             # Exclude KB if requested

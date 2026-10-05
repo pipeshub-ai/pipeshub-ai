@@ -269,15 +269,18 @@ class ConnectorRegistry:
             self.logger.debug(f"Could not get beta connector names: {e}")
             return []
 
-    def _belongs_to_org(self, connector_instance: dict[str, Any], org_id: str) -> bool:
+    async def belongs_to_org(self, connector_instance: dict[str, Any], org_id: str) -> bool:
         """Tenant check, applied before any role logic.
 
         Instances are fetched by id alone, so without this a TEAM connector's
         gate reduces to `is_admin` — and an administrator of one organization
-        who learns an id belonging to another would pass it.
+        who learns an id belonging to another would pass it. Instances created
+        before August 2026 carry no ``orgId``, so for those the org edge decides.
         """
-        instance_org_id = connector_instance.get("orgId")
-        if instance_org_id and instance_org_id != org_id:
+        instance_org_id = connector_instance.get("orgId") or await self._org_id_from_edge(
+            connector_instance
+        )
+        if instance_org_id != org_id:
             self.logger.warning(
                 "Connector %s belongs to org %s; caller is in org %s",
                 connector_instance.get("_key") or connector_instance.get("id"),
@@ -287,7 +290,25 @@ class ConnectorRegistry:
             return False
         return True
 
-    def _can_delete_connector(
+    async def _org_id_from_edge(self, connector_instance: dict[str, Any]) -> str | None:
+        connector_id = connector_instance.get("_key") or connector_instance.get("id")
+        if not connector_id:
+            return None
+        graph_provider = await self._get_graph_provider()
+        edges = await graph_provider.get_edges_to_node(
+            f"{CollectionNames.APPS.value}/{connector_id}",
+            CollectionNames.ORG_APP_RELATION.value,
+        )
+        for edge in edges or []:
+            if not isinstance(edge, dict):
+                continue
+            # Neo4j returns a bare id in from_id; Arango a handle in _from.
+            source = edge.get("from_id") or edge.get("_from")
+            if source:
+                return str(source).rsplit("/", 1)[-1]
+        return None
+
+    async def _can_delete_connector(
         self,
         connector_instance: dict[str, Any],
         user_id: str,
@@ -306,7 +327,7 @@ class ConnectorRegistry:
         Broadening `_can_access_connector` instead would hand admins read and
         update rights over personal connectors, which is not the intent.
         """
-        if not self._belongs_to_org(connector_instance, org_id):
+        if not await self.belongs_to_org(connector_instance, org_id):
             return False
         return is_admin or connector_instance.get("createdBy") == user_id
 
@@ -331,7 +352,7 @@ class ConnectorRegistry:
             True if user can access the connector
         """
         try:
-            if not self._belongs_to_org(connector_instance, org_id):
+            if not await self.belongs_to_org(connector_instance, org_id):
                 return False
 
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)

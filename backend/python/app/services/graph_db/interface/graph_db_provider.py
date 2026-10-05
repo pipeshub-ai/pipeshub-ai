@@ -4698,7 +4698,7 @@ class IGraphDBProvider(ABC):
         Args:
             collection: Collection name (e.g., "apps")
             user_id: User ID
-            org_id: Organization ID
+            org_id: Organization ID; only apps linked to it by an org-app edge are returned
             team_scope: Team scope value (e.g., "team")
             personal_scope: Personal scope value (e.g., "personal")
             transaction: Optional transaction ID
@@ -4734,7 +4734,7 @@ class IGraphDBProvider(ABC):
         Args:
             collection: Collection name (e.g., "apps")
             edge_collection: Edge collection for org-app relation
-            org_id: Organization ID
+            org_id: Organization ID; only apps linked to it through ``edge_collection`` are returned
             user_id: User ID
             scope: Optional scope filter ("personal" or "team")
             search: Optional search query (searches name, type, appGroup)
