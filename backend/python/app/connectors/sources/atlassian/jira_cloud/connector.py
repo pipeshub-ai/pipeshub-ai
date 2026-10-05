@@ -143,6 +143,11 @@ AUDIT_ISSUE_DELETE_TYPE: str = "ISSUE_DELETE"
 AUDIT_FREE_PLAN_MARKER: str = "free plan"
 # Persisted so the Free-plan notice reaches the admin once per connector, not once per sync.
 AUDIT_FREE_PLAN_NOTICE_SYNC_KEY: str = "issues_audit_free_plan_notice"
+# Without the audit log, deletions are found by listing each project's issue ids. /search/jql
+# returns the most issues per page (up to 5000, Jira may send fewer) when asked for the id alone.
+ISSUE_ID_LISTING_FIELDS: list[str] = ["id"]
+ISSUE_ID_LISTING_PAGE_SIZE: int = 5000
+RECORD_SCAN_PAGE_SIZE: int = 1000
 
 # --- Permission-scheme vocabulary (GET /rest/api/3/permissionscheme/{id}/permission) ---
 # The only grant that decides who can see a project's issues at all; every other grant type
@@ -387,6 +392,8 @@ class JiraConnector(BaseConnector):
         # True ONLY when /group/bulk returned 403 (account genuinely lacks Browse users and
         # groups). A 401 is an auth/token failure, not a permission problem, so it stays False.
         self._group_bulk_forbidden: bool = False
+        # Set when this sync's audit log read was refused for good (every product on a Free plan).
+        self._audit_log_unavailable: bool = False
         # Email + timezone from GET /rest/api/3/myself (cached in init). Jira reads
         # bare JQL datetimes in the account timezone (see _jql_datetime, C5).
         self._authenticated_jira_email: Optional[str] = None
@@ -601,7 +608,11 @@ class JiraConnector(BaseConnector):
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
-            await self._handle_issue_deletions(last_sync_time)
+            failed_issue_projects = set(sync_stats.get("failed_project_keys") or [])
+            await self._handle_issue_deletions(
+                last_sync_time,
+                [group for group, _ in projects if group.short_name not in failed_issue_projects],
+            )
 
             # 8. Backfill placeholder ancestors that out-of-scope sync filters left
             # unreconciled (metadata only; they remain non-indexed stubs).
@@ -1036,11 +1047,16 @@ class JiraConnector(BaseConnector):
     # Deletion Handling
     # ============================================================================
 
-    async def _handle_issue_deletions(self, global_last_sync_time: Optional[int]) -> None:
-        """
-        Detect and handle issue deletions via Audit API.
+    async def _handle_issue_deletions(
+        self, global_last_sync_time: Optional[int], projects: list[RecordGroup] | None = None,
+    ) -> None:
+        """Detect and handle issue deletions via the audit log.
+
+        When Jira refuses the audit log for good (every product on a Free plan),
+        ``projects`` (those whose issues synced this run) are compared with Jira instead.
         """
         audit_sync_key = "issues_audit_deletions"
+        self._audit_log_unavailable = False
 
         try:
             audit_sync_point_data = await self.issues_sync_point.read_sync_point(audit_sync_key)
@@ -1062,6 +1078,8 @@ class JiraConnector(BaseConnector):
                     audit_sync_key,
                     {"last_sync_time": checkpoint_ms}
                 )
+            if self._audit_log_unavailable and projects:
+                await self._remove_issues_gone_from_jira(projects)
 
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> tuple[int, bool]:
         """
@@ -1159,6 +1177,7 @@ class JiraConnector(BaseConnector):
                         response.status == HttpStatusCode.FORBIDDEN.value
                         and AUDIT_FREE_PLAN_MARKER in str(body or "").lower()
                     ):
+                        self._audit_log_unavailable = True
                         await self._notify_audit_log_needs_paid_plan()
                     elif response.status == HttpStatusCode.FORBIDDEN.value:
                         await self.notify(
@@ -1210,7 +1229,7 @@ class JiraConnector(BaseConnector):
         return deleted_issue_keys, ok
 
     async def _notify_audit_log_needs_paid_plan(self) -> None:
-        """Tell the admin, once per connector, that Jira's Free plan hides deletions from us."""
+        """Tell the admin, once per connector, that deletions are found by comparison on Jira's Free plan."""
         try:
             notice = await self.issues_sync_point.read_sync_point(AUDIT_FREE_PLAN_NOTICE_SYNC_KEY)
         except Exception as e:
@@ -1218,21 +1237,21 @@ class JiraConnector(BaseConnector):
             notice = {}
         if notice and notice.get("sent"):
             self.logger.info(
-                "ℹ️ Deleted issues can't be detected: every Jira product on this site is on a Free plan"
+                "ℹ️ Jira's audit log is not available on the Free plan; finding deleted issues by comparing ids"
             )
             return
 
         outcome = await self.notify_and_wait(
             type=NotificationType.CONNECTOR_WARNING,
             severity=NotificationSeverity.WARNING,
-            title=self._notification_title("can't detect deleted issues on Jira's Free plan"),
+            title=self._notification_title("finds deleted issues more slowly on Jira's Free plan"),
             message=(
-                "PipesHub finds deleted Jira issues through Jira's audit log, and Jira only "
-                "provides that log when at least one Jira product on the site is on a paid "
-                "plan. Every Jira product on this site is on a Free plan, so issues deleted in "
-                "Jira will stay in PipesHub. To have deletions picked up, move one Jira "
-                "product on the site to a paid plan. To clear issues that were already "
-                "deleted, remove this connector and add it again."
+                "PipesHub usually finds deleted Jira issues through Jira's audit log, and Jira "
+                "only provides that log when at least one Jira product on the site is on a paid "
+                "plan. Every Jira product on this site is on a Free plan, so on each sync "
+                "PipesHub now compares the issues in each synced project with the ones it holds "
+                "and removes those Jira no longer has. This comparison is slower than the audit "
+                "log, so syncs of large projects can take a little longer. No action is needed."
             ),
             payload={
                 "redirect_link": None,
@@ -1248,9 +1267,147 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.warning("Could not record that the Free-plan notice was sent: %s", e)
 
+    async def _remove_issues_gone_from_jira(self, projects: list[RecordGroup]) -> None:
+        """Remove stored issues Jira no longer has, by comparing each project's issue ids.
+
+        Used only when the audit log is refused for good. A project is compared once
+        per call and only after its listing was read to the end, and every issue
+        missing from it must still get a definitive 404/410 from Jira before it is
+        removed, through the same path as an audit-log deletion. The listing ignores
+        the date filters, so an issue they leave out but Jira still has is untouched.
+        """
+        compared: set[str] = set()
+        removed = 0
+        for project in projects:
+            project_id = project.external_group_id
+            if not project_id or project_id in compared:
+                continue
+            compared.add(project_id)
+            try:
+                stored = await self._stored_issues(project_id)
+            except Exception as e:
+                self.logger.warning(
+                    "Could not read the stored issues of project %s; nothing removed: %s", project.short_name, e
+                )
+                continue
+            if not stored:
+                continue
+            listed = await self._list_project_issue_ids(project.short_name)
+            if listed is None:
+                continue
+            for record in stored:
+                if record.external_record_id in listed:
+                    continue
+                try:
+                    if await self._issue_gone_from_jira(record.external_record_id):
+                        await self._delete_issue_record(record, record.external_record_id)
+                        removed += 1
+                except Exception as e:
+                    self.logger.warning(
+                        "Could not remove issue %s of project %s; retrying next sync: %s",
+                        record.external_record_id, project.short_name, e,
+                    )
+        if removed:
+            self.logger.info("🗑️ Removed %d issue(s) Jira no longer has, found by comparing ids", removed)
+
+    async def _stored_issues(self, project_id: str) -> list[Record]:
+        """This connector's live issue records in the project, without placeholder ancestors."""
+        stored: list[Record] = []
+        after_key: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, project_id, RECORD_SCAN_PAGE_SIZE, after_key,
+            )
+            stored.extend(r for r in page if r.record_type == RecordType.TICKET and not r.is_placeholder)
+            if len(page) < RECORD_SCAN_PAGE_SIZE:
+                return stored
+            after_key = page[-1].id
+
+    async def _list_project_issue_ids(self, project_key: str) -> set[str] | None:
+        """Ids of every issue in the project the account can see; None unless read to the end.
+
+        Only a page without a next token (or marked last) ends the listing. A failed
+        page, a malformed one, a repeated token, or a page that brings no new ids
+        (Jira has been seen to hand back the first page again and again) is a failed read.
+        """
+        jql = f'project = "{project_key}" ORDER BY id ASC'
+        ids: set[str] = set()
+        token: str | None = None
+        used_tokens: set[str] = set()
+        while True:
+            try:
+                response = await self._search_issues_with_retry(
+                    project_key=project_key,
+                    jql=jql,
+                    next_page_token=token,
+                    max_results=ISSUE_ID_LISTING_PAGE_SIZE,
+                    fields=ISSUE_ID_LISTING_FIELDS,
+                )
+            except Exception as e:
+                self.logger.warning("Could not list the issues of project %s; nothing removed: %s", project_key, e)
+                return None
+            data = (
+                self._safe_json_parse(response, f"issue id listing for {project_key}")
+                if response.status == HttpStatusCode.OK.value else None
+            )
+            issues = data.get("issues") if isinstance(data, dict) else None
+            if not isinstance(issues, list) or not all(isinstance(i, dict) and i.get("id") for i in issues):
+                self.logger.warning(
+                    "Could not list the issues of project %s (HTTP %s); nothing removed", project_key, response.status
+                )
+                return None
+            page_ids = {str(i["id"]) for i in issues}
+            next_token = data.get("nextPageToken")
+            if data.get("isLast") is True or not next_token:
+                if data.get("isLast") is False:
+                    self.logger.warning("The issue listing of project %s stopped early; nothing removed", project_key)
+                    return None
+                return ids | page_ids
+            if not (page_ids - ids) or next_token in used_tokens:
+                self.logger.warning("Can't follow the issue listing of project %s; nothing removed", project_key)
+                return None
+            ids |= page_ids
+            used_tokens.add(next_token)
+            token = next_token
+
+    async def _issue_gone_from_jira(self, issue_ref: str) -> bool:
+        """Whether Jira says the issue is gone (404/410); False if it still exists. Raises on any other answer."""
+        response = await self._get_issue_with_retry(issue_ref, fields=["id"])
+        if response.status == HttpStatusCode.OK.value:
+            self.logger.warning(f"⚠️ Issue {issue_ref} still exists in Jira (not deleted, maybe moved?)")
+            return False
+        if response.status not in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value):
+            raise Exception(
+                f"Deletion of {issue_ref} unconfirmed: get_issue returned "
+                f"{response.status} (expected a definitive 404/410) — retrying next sync"
+            )
+        return True
+
+    async def _delete_issue_record(self, issue_record: Record, issue_ref: str) -> int:
+        """Delete a stored issue with its attachments; returns how many attachments went with it.
+
+        Uses ``on_records_deleted_cascade(cascade_children=False)`` so only ATTACHMENT edges are
+        traversed — the issue's FILE records are deleted together with it, but
+        child tickets (stories under an epic, subtasks under a story) are not
+        touched. Their PARENT_CHILD edges are swept by the edge cleanup, so the
+        child tickets simply lose their parent link and remain otherwise intact.
+        """
+        result = await self.data_entities_processor.on_records_deleted_cascade(
+            [issue_record.id], self.connector_id, cascade_children=False,
+        )
+
+        # successfully_deleted counts only root IDs; deleted_records includes attachments.
+        total_deleted = len(result.get("deleted_records") or [])
+        attachment_count = max(total_deleted - 1, 0)
+        self.logger.debug(
+            f"🗑️ Deleted issue {issue_ref} and {attachment_count} attachment(s) "
+            f"(total: {total_deleted})"
+        )
+        return attachment_count
+
     async def _handle_deleted_issue(self, issue_key: str) -> tuple[int, int]:
         """
-        Hard-delete a source-deleted issue and its owned attachments.
+        Delete a source-deleted issue and its owned attachments.
 
         Returns ``(issues_deleted, attachments_deleted)`` — ``(0, 0)`` when the
         issue is skipped (still in Jira or not in our DB).
@@ -1260,25 +1417,12 @@ class JiraConnector(BaseConnector):
         deleted issue reaches this method on its own and no hierarchy cascade is
         needed. Levels that are not deleted (an epic's stories, a story's tasks)
         never appear in the audit and are correctly left untouched.
-
-        Uses ``on_records_deleted_cascade(cascade_children=False)`` so only ATTACHMENT edges are
-        traversed — the issue's FILE records are deleted together with it, but
-        child tickets (stories under an epic, subtasks under a story) are not
-        touched. Their PARENT_CHILD edges are swept by the edge cleanup, so the
-        child tickets simply lose their parent link and remain otherwise intact.
         """
         try:
             self.logger.debug(f"🗑️ Handling deletion of issue {issue_key}")
 
-            response = await self._get_issue_with_retry(issue_key, fields=["id"])
-            if response.status == HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
+            if not await self._issue_gone_from_jira(issue_key):
                 return 0, 0
-            if response.status not in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value):
-                raise Exception(
-                    f"Deletion of {issue_key} unconfirmed: get_issue returned "
-                    f"{response.status} (expected a definitive 404/410) — retrying next sync"
-                )
 
             issue_record = await self.data_entities_processor.get_record_by_issue_key(
                 connector_id=self.connector_id,
@@ -1294,18 +1438,7 @@ class JiraConnector(BaseConnector):
                 f"external ID {issue_record.external_record_id}"
             )
 
-            result = await self.data_entities_processor.on_records_deleted_cascade(
-                [issue_record.id], self.connector_id, cascade_children=False,
-            )
-
-            # successfully_deleted counts only root IDs; deleted_records includes attachments.
-            total_deleted = len(result.get("deleted_records") or [])
-            attachment_count = max(total_deleted - 1, 0)
-            self.logger.debug(
-                f"🗑️ Deleted issue {issue_key} and {attachment_count} attachment(s) "
-                f"(total: {total_deleted})"
-            )
-            return 1, attachment_count
+            return 1, await self._delete_issue_record(issue_record, issue_key)
 
         except Exception as e:
             self.logger.error(f"❌ Error handling deleted issue {issue_key}: {e}", exc_info=True)
@@ -4330,7 +4463,7 @@ class JiraConnector(BaseConnector):
         next_page_token: str | None,
         max_results: int,
         fields: list[str],
-        expand: str,
+        expand: str | None = None,
         max_attempts: int = 4,
     ) -> Any:
         """Search Jira issues with transport + 429 retry (see :meth:`_call_with_retry`)."""
