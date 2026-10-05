@@ -6,6 +6,7 @@ import type {
   AllRecordsFilter,
   AllRecordsSortConfig,
   AllRecordsPagination,
+  KnowledgeHubApiResponse,
   KnowledgeHubQueryParams,
   SizeRange,
   DateFilterType,
@@ -155,13 +156,39 @@ export function convertDateRangeToApiFormat(
  * @param pagination Optional pagination config (defaults to page 1, limit 50)
  * @returns Complete query parameters object for API
  */
+/**
+ * Response pagination → table state.
+ *
+ * `cursor` is what this page was *fetched* with, which the response cannot know
+ * and the caller must supply: it is what a refetch (after a rename, a delete or
+ * a limit change) has to replay to land on the same page.
+ */
+export function toTablePagination(
+  pagination: KnowledgeHubApiResponse['pagination'],
+  cursor: string | null
+): AllRecordsPagination {
+  return {
+    cursor,
+    limit: pagination.limit,
+    totalItems: pagination.totalItems,
+    startIndex: pagination.startIndex ?? 0,
+    endIndex: pagination.endIndex ?? 0,
+    hasNext: pagination.hasNext,
+    hasPrev: pagination.hasPrev,
+    nextCursor: pagination.nextCursor ?? null,
+    prevCursor: pagination.prevCursor ?? null,
+  };
+}
+
 export function buildFilterParams(
   filter: KnowledgeBaseFilter,
   sort: SortConfig,
-  pagination?: { page: number; limit: number }
+  pagination?: { cursor: string | null; limit: number }
 ): KnowledgeHubQueryParams {
   const params: KnowledgeHubQueryParams = {
-    page: pagination?.page ?? 1,
+    // No cursor means the first page; sending one the server did not issue is
+    // a 400, so it is only ever passed straight back.
+    ...(pagination?.cursor ? { cursor: pagination.cursor } : {}),
     limit: pagination?.limit ?? 50,
     include: 'counts,permissions,breadcrumbs,availableFilters',
   };
@@ -197,10 +224,8 @@ export function buildFilterParams(
     params.connectorIds = filter.connectorIds.join(',');
   }
 
-  // KB IDs (CSV string)
-  if (filter.kbIds?.length) {
-    params.kbIds = filter.kbIds.join(',');
-  }
+  // Collections need no filter of their own: a collection *is* an App, and
+  // connectorIds already matches an App or anything whose connectorId is it.
 
   // Size range
   if (filter.sizeRange) {
@@ -248,7 +273,7 @@ export function buildAllRecordsFilterParams(
   pagination: AllRecordsPagination
 ): KnowledgeHubQueryParams {
   const params: KnowledgeHubQueryParams = {
-    page: pagination.page,
+    ...(pagination.cursor ? { cursor: pagination.cursor } : {}),
     limit: pagination.limit,
     include: 'counts,permissions,breadcrumbs,availableFilters',
   };

@@ -3,7 +3,7 @@ import { KnowledgeHubApi } from '../api';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { effectiveHasChildrenAfterSidebarExpand, mergeChildrenIntoSections, treeHasNodeWithId } from './tree-builder';
 import {
-  sidebarNodeChildrenMetaAfterPage,
+  sidebarNodeChildrenMetaFromResponse,
   type SidebarNodeChildrenPaginationMeta,
 } from './sidebar-child-pagination-meta';
 import { restoreOpenFoldersInSidebar } from './root-app-list';
@@ -39,8 +39,9 @@ function nodeTypeOf(id: string, fallback: NodeType): NodeType {
   return (useKnowledgeBaseStore.getState().nodes.find((n) => n.id === id)?.nodeType ?? fallback) as NodeType;
 }
 
-function fetchChildrenPage(id: string, nodeType: NodeType, page: number) {
-  return KnowledgeHubApi.getNodeChildren(nodeType, id, { ...CHILDREN_QUERY, page });
+/** A page of children; no cursor reads the first page. */
+function fetchChildrenPage(id: string, nodeType: NodeType, cursor: string | null) {
+  return KnowledgeHubApi.getNodeChildren(nodeType, id, { ...CHILDREN_QUERY, ...(cursor ? { cursor } : {}) });
 }
 
 /** Writes a children list and its cursor in one step. */
@@ -77,14 +78,14 @@ export function showFolderChildren(parentId: string): void {
 
 async function loadFirstPage(id: string, nodeType: NodeType): Promise<void> {
   const stillSignedIn = kbSessionToken();
-  const response = await fetchChildrenPage(id, nodeType, 1);
+  const response = await fetchChildrenPage(id, nodeType, null);
   if (!stillSignedIn()) return;
   // A reload or another loader may have filled it while this was in flight.
   if (useKnowledgeBaseStore.getState().nodeChildrenCache.has(id)) return;
   storeChildrenList(
     id,
     response.items,
-    sidebarNodeChildrenMetaAfterPage(response.pagination, response.items.length, SIDEBAR_PAGINATION_PAGE_SIZE, 1, nodeType),
+    sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType),
   );
 }
 
@@ -107,7 +108,7 @@ async function readNextPage(parentId: string): Promise<boolean> {
   const cursor = state.nodeChildrenPagination.get(parentId);
   if (!cursor?.hasNext) return false;
   const stillSignedIn = kbSessionToken();
-  const response = await fetchChildrenPage(parentId, cursor.nodeType, cursor.nextPage);
+  const response = await fetchChildrenPage(parentId, cursor.nodeType, cursor.nextCursor);
   const latest = useKnowledgeBaseStore.getState();
   if (!stillSignedIn() || latest.nodeChildrenPagination.get(parentId) !== cursor) return false;
   // Purging a deleted child can drop the list while leaving its cursor; this
@@ -120,13 +121,7 @@ async function readNextPage(parentId: string): Promise<boolean> {
   storeChildrenList(
     parentId,
     [...byId.values()],
-    sidebarNodeChildrenMetaAfterPage(
-      response.pagination,
-      response.items.length,
-      SIDEBAR_PAGINATION_PAGE_SIZE,
-      cursor.nextPage,
-      cursor.nodeType,
-    ),
+    sidebarNodeChildrenMetaFromResponse(response.pagination, cursor.nodeType, cursor.pagesLoaded + 1),
   );
   return true;
 }
@@ -165,7 +160,7 @@ async function reloadChildren(id: string, fallbackNodeType: NodeType, keepVisibl
   const cursor = state.nodeChildrenPagination.get(id);
   // The cursor records the type the list was read with (a collection is 'app').
   const nodeType = cursor?.nodeType ?? fallbackNodeType;
-  const pagesLoaded = cursor ? Math.max(1, cursor.hasNext ? cursor.nextPage - 1 : cursor.nextPage) : 1;
+  const pagesLoaded = Math.max(1, cursor?.pagesLoaded ?? 1);
   // A renamed row can sort past the pages that were shown; keep reading until
   // it is back in view rather than have it vanish right after the rename.
   const mustShow = keepVisibleId && (state.nodeChildrenCache.get(id) ?? []).some((n) => n.id === keepVisibleId)
@@ -174,12 +169,14 @@ async function reloadChildren(id: string, fallbackNodeType: NodeType, keepVisibl
   const stillSignedIn = kbSessionToken();
   const byId = new Map<string, KnowledgeHubNode>();
   let next: SidebarNodeChildrenPaginationMeta | undefined;
+  let pageCursor: string | null = null;
   for (let page = 1; page <= pagesLoaded + (mustShow ? MAX_PAGES_PER_WALK : 0); page += 1) {
-    const response = await fetchChildrenPage(id, nodeType, page);
+    const response = await fetchChildrenPage(id, nodeType, pageCursor);
     for (const item of response.items) byId.set(item.id, item);
-    next = sidebarNodeChildrenMetaAfterPage(response.pagination, response.items.length, SIDEBAR_PAGINATION_PAGE_SIZE, page, nodeType);
+    next = sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType, page);
     if (!next.hasNext) break;
     if (page >= pagesLoaded && (!mustShow || byId.has(mustShow))) break;
+    pageCursor = next.nextCursor;
   }
   if (!stillSignedIn() || !next) return;
   // Another load replaced this list meanwhile; its rows and cursor stand.

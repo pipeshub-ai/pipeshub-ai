@@ -1,5 +1,6 @@
 'use client';
 
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import React, { useState } from 'react';
 import { Flex, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -32,12 +33,14 @@ interface KbDataTableProps {
   isRefreshing?: boolean;
   error?: string | null;
   pagination?: {
-    page: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
+    startIndex?: number;
+    endIndex?: number;
     hasNext: boolean;
     hasPrev: boolean;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   };
   permissions?: NodePermissions;
   currentNodeName?: string;
@@ -48,10 +51,11 @@ interface KbDataTableProps {
   hasSearchQuery?: boolean;
   hasCollections?: boolean;
   onRefresh?: () => void;
-  onPageChange?: (page: number) => void;
+  onCursorChange?: (cursor: string | null) => void;
   onLimitChange?: (limit: number) => void;
   onItemClick: (item: TableItem) => void;
   onPreview?: (item: TableItem) => void;
+  onGoToParent?: (item: KnowledgeHubNode) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
   onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
@@ -79,10 +83,11 @@ export function KbDataTable({
   hasSearchQuery = false,
   hasCollections = false,
   onRefresh,
-  onPageChange,
+  onCursorChange,
   onLimitChange,
   onItemClick,
   onPreview,
+  onGoToParent,
   onRename,
   onReindex,
   onReplace,
@@ -95,6 +100,9 @@ export function KbDataTable({
   refreshData,
 }: KbDataTableProps) {
   const { t } = useTranslation();
+  // Looked up here, not in the list or grid: those unmount behind the loader on
+  // every navigation, which would ask for the connectors again on every click.
+  useDemoDataActive();
   const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection, isLoadingFlatCollections, loadingAppIds, appNodes } =
     useKnowledgeBaseStore();
 
@@ -395,7 +403,7 @@ export function KbDataTable({
           selectedItems={activeSelectedItems}
           showCheckbox={showCheckbox}
           pagination={pagination}
-          onPageChange={onPageChange}
+          onCursorChange={onCursorChange}
           onLimitChange={onLimitChange}
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
@@ -416,13 +424,14 @@ export function KbDataTable({
           showCheckbox={showCheckbox}
           sort={isAllRecords ? allRecordsSort : sort}
           pagination={pagination}
-          onPageChange={onPageChange}
+          onCursorChange={onCursorChange}
           onLimitChange={onLimitChange}
           onSelectAll={handleSelectAll}
           onSort={isAllRecords ? setAllRecordsSort : setSort}
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
           onPreview={onPreview}
+          onGoToParent={hasSearchQuery || hasActiveFilters ? onGoToParent : undefined}
           onRename={onRename}
           onReindex={onReindex}
           onReplace={onReplace}

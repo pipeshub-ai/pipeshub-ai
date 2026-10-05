@@ -36,7 +36,7 @@ const PARAM = {
   UPDATED_DATE_TYPE: 'updatedDateType',
   SORT_FIELD: 'sortField',
   SORT_ORDER: 'sortOrder',
-  PAGE: 'page',
+  CURSOR: 'cursor',
   LIMIT: 'limit',
   SEARCH: 'search',
 } as const;
@@ -45,7 +45,6 @@ const PARAM = {
 const DEFAULTS = {
   SORT_FIELD: 'updatedAt' as const,
   SORT_ORDER: 'desc' as const,
-  PAGE: 1,
   LIMIT: 50,
 };
 
@@ -138,11 +137,13 @@ function serializeSortParams(
 }
 
 function serializePaginationParams(
-  page: number,
+  cursor: string | null,
   limit: number,
   params: Record<string, string>
 ): void {
-  if (page !== DEFAULTS.PAGE) params[PARAM.PAGE] = String(page);
+  // The cursor *is* the position, so there is no page number to write. Absent
+  // means first page, which is why it is dropped rather than defaulted.
+  if (cursor) params[PARAM.CURSOR] = cursor;
   if (limit !== DEFAULTS.LIMIT) params[PARAM.LIMIT] = String(limit);
 }
 
@@ -150,13 +151,13 @@ function serializePaginationParams(
 export function serializeCollectionsParams(
   filter: KnowledgeBaseFilter,
   sort: SortConfig,
-  pagination: { page: number; limit: number },
+  pagination: { cursor: string | null; limit: number },
   searchQuery: string
 ): Record<string, string> {
   const params: Record<string, string> = {};
   serializeCommonFilterParams(filter, params);
   serializeSortParams(sort.field, sort.order, params);
-  serializePaginationParams(pagination.page, pagination.limit, params);
+  serializePaginationParams(pagination.cursor, pagination.limit, params);
   if (searchQuery) params[PARAM.SEARCH] = searchQuery;
   return params;
 }
@@ -165,7 +166,7 @@ export function serializeCollectionsParams(
 export function serializeAllRecordsParams(
   filter: AllRecordsFilter,
   sort: AllRecordsSortConfig,
-  pagination: { page: number; limit: number },
+  pagination: { cursor: string | null; limit: number },
   searchQuery: string
 ): Record<string, string> {
   const params: Record<string, string> = {};
@@ -179,7 +180,7 @@ export function serializeAllRecordsParams(
   if (conn) params[PARAM.CONNECTOR_IDS] = conn;
 
   serializeSortParams(sort.field, sort.order, params);
-  serializePaginationParams(pagination.page, pagination.limit, params);
+  serializePaginationParams(pagination.cursor, pagination.limit, params);
   if (searchQuery) params[PARAM.SEARCH] = searchQuery;
   return params;
 }
@@ -231,7 +232,7 @@ function parseCommonFilter(searchParams: URLSearchParams): {
 export function parseCollectionsParams(searchParams: URLSearchParams): {
   filter: KnowledgeBaseFilter;
   sort: SortConfig;
-  page: number;
+  cursor: string | null;
   limit: number;
   searchQuery: string;
 } {
@@ -242,8 +243,10 @@ export function parseCollectionsParams(searchParams: URLSearchParams): {
   const soRaw = searchParams.get(PARAM.SORT_ORDER);
   const so = soRaw === 'asc' || soRaw === 'desc' ? soRaw : DEFAULTS.SORT_ORDER;
 
-  const pgRaw = searchParams.get(PARAM.PAGE);
-  const page = pgRaw ? Math.max(1, parseInt(pgRaw, 10) || 1) : DEFAULTS.PAGE;
+  // Opaque and server-signed: it is passed back untouched, and the server
+  // rejects anything it did not issue. Validating its shape here would only
+  // duplicate that check, badly.
+  const cursor = searchParams.get(PARAM.CURSOR) || null;
 
   const lmRaw = searchParams.get(PARAM.LIMIT);
   const limit = lmRaw ? Math.max(1, Math.min(200, parseInt(lmRaw, 10) || DEFAULTS.LIMIT)) : DEFAULTS.LIMIT;
@@ -253,7 +256,7 @@ export function parseCollectionsParams(searchParams: URLSearchParams): {
   return {
     filter,
     sort: { field: sf, order: so },
-    page,
+    cursor,
     limit,
     searchQuery,
   };
@@ -263,7 +266,7 @@ export function parseCollectionsParams(searchParams: URLSearchParams): {
 export function parseAllRecordsParams(searchParams: URLSearchParams): {
   filter: AllRecordsFilter;
   sort: AllRecordsSortConfig;
-  page: number;
+  cursor: string | null;
   limit: number;
   searchQuery: string;
 } {
@@ -281,8 +284,7 @@ export function parseAllRecordsParams(searchParams: URLSearchParams): {
   const soRaw = searchParams.get(PARAM.SORT_ORDER);
   const so = soRaw === 'asc' || soRaw === 'desc' ? soRaw : DEFAULTS.SORT_ORDER;
 
-  const pgRaw = searchParams.get(PARAM.PAGE);
-  const page = pgRaw ? Math.max(1, parseInt(pgRaw, 10) || 1) : DEFAULTS.PAGE;
+  const cursor = searchParams.get(PARAM.CURSOR) || null;
 
   const lmRaw = searchParams.get(PARAM.LIMIT);
   const limit = lmRaw ? Math.max(1, Math.min(200, parseInt(lmRaw, 10) || DEFAULTS.LIMIT)) : DEFAULTS.LIMIT;
@@ -292,7 +294,7 @@ export function parseAllRecordsParams(searchParams: URLSearchParams): {
   return {
     filter,
     sort: { field: sf, order: so },
-    page,
+    cursor,
     limit,
     searchQuery,
   };
@@ -345,17 +347,20 @@ export function buildNavUrl(
   });
 
   const store = useKnowledgeBaseStore.getState();
+  // The cursor is deliberately *not* carried across a navigation: it names a
+  // position inside one parent's result set, so replaying it under a different
+  // parent is meaningless — and the server rejects it rather than guessing.
   const filterParams = isAllRecordsMode
     ? serializeAllRecordsParams(
         store.allRecordsFilter,
         store.allRecordsSort,
-        { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
+        { cursor: null, limit: store.allRecordsPagination.limit },
         debouncedAllRecordsSearchQuery
       )
     : serializeCollectionsParams(
         store.filter,
         store.sort,
-        { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
+        { cursor: null, limit: store.collectionsPagination.limit },
         debouncedSearchQuery
       );
 
