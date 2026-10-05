@@ -217,6 +217,27 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 _PURGE_LOCK = "purgeLock"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
+# The roots of a connector's delete batches: records in the trash whose parent is
+# not in the same batch. Read through record_connector_deleted_at, which holds only
+# the trash, so a candidate costs one parent lookup and, for a file organizer, one
+# look for a second member of its batch; a deleted folder's files are never counted.
+_TRASH_BATCH_ROOTS = """
+MATCH (r:Record)
+WHERE r.connectorId = $connector_id AND r.deletedAtTimestamp IS NOT NULL
+  AND r.orgId = $org_id AND r.isDeleted = true AND r.deleteBatchId IS NOT NULL
+  AND NOT EXISTS {
+      MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
+      WHERE rel.relationshipType IN $containment
+        AND p.isDeleted = true AND p.deleteBatchId = r.deleteBatchId
+  }
+  AND (NOT $single_only OR (
+      EXISTS { MATCH (r)-[:IS_OF_TYPE]->(t) WHERE t.isFile = true }
+      AND NOT EXISTS {
+          MATCH (x:Record {deleteBatchId: r.deleteBatchId})
+          WHERE x.id <> r.id AND x.isDeleted = true
+      }
+  ))
+"""
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -647,6 +668,13 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_delete_batch IF NOT EXISTS "
             "FOR (n:Record) ON (n.deleteBatchId)"
+        )
+
+        # A collection's Recently deleted list, newest first; only the trash has
+        # deletedAtTimestamp, so this too holds only the trash.
+        indexes.append(
+            "CREATE INDEX record_connector_deleted_at IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.deletedAtTimestamp)"
         )
 
         indexes.append(
@@ -11993,88 +12021,62 @@ class Neo4jProvider(IGraphDBProvider):
         """See ``IGraphDBProvider.list_trashed_records``."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
-        skip = max(skip, 0)
-        roots = await self.client.execute_query(
-            """
-            MATCH (r:Record)
-            WHERE r.connectorId = $connector_id AND r.orgId = $org_id
-              AND r.isDeleted = true AND r.deletedAtTimestamp IS NOT NULL AND r.deleteBatchId IS NOT NULL
+        parameters = {
+            "connector_id": connector_id,
+            "org_id": org_id,
+            "single_only": single_file_batches_only,
+            "containment": list(_CONTAINMENT_RELATIONS),
+            "skip": max(skip, 0),
+            "limit": limit,
+        }
+        rows = await self.client.execute_query(
+            f"""
+            {_TRASH_BATCH_ROOTS}
+            WITH r ORDER BY r.deletedAtTimestamp DESC, r.id DESC SKIP $skip LIMIT $limit
             OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
             WHERE rel.relationshipType IN $containment
             WITH r, head(collect(p)) AS p
-            WHERE (p IS NULL OR coalesce(p.isDeleted, false) <> true
-                   OR p.deleteBatchId IS NULL OR p.deleteBatchId <> r.deleteBatchId)
-              AND (NOT $single_only OR (
-                  COUNT {
-                      MATCH (x:Record {deleteBatchId: r.deleteBatchId})
-                      WHERE x.isDeleted = true AND x.connectorId = $connector_id
-                  } = 1
-                  AND EXISTS { MATCH (r)-[:IS_OF_TYPE]->(t) WHERE t.isFile = true }
-              ))
-            WITH r, p ORDER BY r.deletedAtTimestamp DESC, r.id
-            WITH collect({
-                id: r.id,
-                parent: CASE WHEN p IS NULL THEN null
-                        ELSE {id: p.id, name: p.recordName, deleted: coalesce(p.isDeleted, false) = true} END
-            }) AS roots
-            RETURN size(roots) AS total, roots[$skip..$end] AS page
-            """,
-            parameters={
-                "connector_id": connector_id,
-                "org_id": org_id,
-                "single_only": single_file_batches_only,
-                "containment": list(_CONTAINMENT_RELATIONS),
-                "skip": skip,
-                "end": skip + limit,
-            },
-            txn_id=transaction,
-        )
-        head = roots[0] if roots else {"total": 0, "page": []}
-        page = head.get("page") or []
-        if not page:
-            return {"items": [], "total": head.get("total") or 0}
-        rows = await self.client.execute_query(
-            """
-            UNWIND $ids AS rid
-            MATCH (r:Record {id: rid})
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
-            WITH r, head(collect(t)) AS t
-            OPTIONAL MATCH (u:User {id: r.deletedByUserId})
-            WITH r, t, head(collect(u)) AS u
-            RETURN r.id AS id, properties(r) AS rec,
+            WITH r, p, head(collect(t)) AS t
+            OPTIONAL MATCH (u:User {{id: r.deletedByUserId}})
+            WITH r, p, t, head(collect(u)) AS u
+            RETURN properties(r) AS rec,
+                   p.id AS parent_id, p.recordName AS parent_name, p.isDeleted AS parent_deleted,
                    t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
-                   COUNT {
-                       MATCH (x:Record {deleteBatchId: r.deleteBatchId})
+                   COUNT {{
+                       MATCH (x:Record {{deleteBatchId: r.deleteBatchId}})
                        WHERE x.isDeleted = true AND x.connectorId = $connector_id
-                   } AS batch_size,
+                   }} AS batch_size,
                    CASE WHEN u IS NULL THEN null
                         WHEN coalesce(u.fullName, '') <> '' THEN u.fullName
                         ELSE trim(coalesce(u.firstName, '') + ' ' + coalesce(u.lastName, '')) END AS user_name,
                    u.email AS user_email
+            ORDER BY r.deletedAtTimestamp DESC, r.id DESC
             """,
-            parameters={"ids": [root["id"] for root in page], "connector_id": connector_id},
+            parameters=parameters,
             txn_id=transaction,
         )
-        details = {row["id"]: row for row in rows or []}
-        items = []
-        for root in page:
-            row = details.get(root["id"])
-            if row is None:
-                continue
-            parent = root.get("parent")
-            items.append({
+        counted = await self.client.execute_query(
+            f"{_TRASH_BATCH_ROOTS} RETURN count(r) AS total",
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        items = [
+            {
                 "record": self._neo4j_to_arango_node(dict(row["rec"]), CollectionNames.RECORDS.value),
-                "parentId": parent["id"] if parent else None,
-                "parentName": parent["name"] if parent else None,
-                "parentIsDeleted": parent["deleted"] if parent else None,
+                "parentId": row.get("parent_id"),
+                "parentName": row.get("parent_name"),
+                "parentIsDeleted": (row.get("parent_deleted") is True) if row.get("parent_id") else None,
                 "isFile": row.get("is_file"),
                 "fileMimeType": row.get("file_mime"),
                 "sizeInBytes": row.get("size"),
                 "batchSize": row.get("batch_size") or 0,
                 "deletedByName": row.get("user_name") or None,
                 "deletedByEmail": row.get("user_email"),
-            })
-        return {"items": items, "total": head.get("total") or 0}
+            }
+            for row in rows or []
+        ]
+        return {"items": items, "total": (counted[0].get("total") if counted else 0) or 0}
 
     async def restore_records(
         self,

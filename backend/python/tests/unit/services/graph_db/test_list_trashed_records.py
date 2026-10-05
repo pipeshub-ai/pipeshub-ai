@@ -41,54 +41,53 @@ async def test_nothing_to_scope_by_reads_nothing(backend, connector_id, org_id, 
     _query(provider).assert_not_called()
 
 
-async def test_arango_scopes_the_query_by_org_and_connector_and_pages() -> None:
-    provider = _arango()
-    provider.execute_query.return_value = [{"items": [{"record": {"_key": "r1"}, "deletedByName": ""}], "total": 7}]
+@pytest.mark.parametrize("backend", ["arango", "neo4j"])
+async def test_the_page_and_the_total_are_two_scoped_reads(backend) -> None:
+    provider = _arango() if backend == "arango" else _neo4j()
+    query = _query(provider)
+    if backend == "arango":
+        query.side_effect = [[{"record": {"_key": "r1"}, "deletedByName": ""}], [7]]
+    else:
+        query.side_effect = [[], [{"total": 7}]]
 
     found = await provider.list_trashed_records("kb1", "o1", skip=-5, limit=3, single_file_batches_only=True)
 
-    assert found == {"items": [{"record": {"_key": "r1"}, "deletedByName": None}], "total": 7}
-    bind = provider.execute_query.await_args.kwargs["bind_vars"]
-    assert (bind["connector_id"], bind["org_id"], bind["skip"], bind["limit"], bind["single_only"]) == (
-        "kb1", "o1", 0, 3, True,
-    )
+    assert found["total"] == 7
+    page, count = query.await_args_list
+    key = "bind_vars" if backend == "arango" else "parameters"
+    for sent in (page, count):
+        params = sent.kwargs[key]
+        assert (params["connector_id"], params["org_id"], params["single_only"]) == ("kb1", "o1", True)
+    # Paging happens inside the query, never by slicing every root in Python.
+    assert (page.kwargs[key]["skip"], page.kwargs[key]["limit"]) == (0, 3)
+    statement = page.args[0] if page.args else page.kwargs.get("query", "")
+    assert ("LIMIT @skip, @limit" in statement) if backend == "arango" else ("SKIP $skip LIMIT $limit" in statement)
+    if backend == "arango":
+        assert found["items"] == [{"record": {"_key": "r1"}, "deletedByName": None}]
 
 
-async def test_arango_an_empty_answer_is_an_empty_page() -> None:
-    provider = _arango()
-    provider.execute_query.return_value = []
+@pytest.mark.parametrize("backend", ["arango", "neo4j"])
+async def test_an_empty_answer_is_an_empty_page(backend) -> None:
+    provider = _arango() if backend == "arango" else _neo4j()
+    _query(provider).side_effect = [[], []]
     assert await provider.list_trashed_records("kb1", "o1") == {"items": [], "total": 0}
 
 
-async def test_neo4j_an_empty_page_skips_the_detail_read() -> None:
+async def test_neo4j_shapes_each_item() -> None:
     provider = _neo4j()
-    provider.client.execute_query = AsyncMock(return_value=[{"total": 4, "page": []}])
-
-    assert await provider.list_trashed_records("kb1", "o1", skip=30, limit=10) == {"items": [], "total": 4}
-
-    provider.client.execute_query.assert_awaited_once()
-    params = provider.client.execute_query.await_args.kwargs["parameters"]
-    assert (params["connector_id"], params["org_id"], params["skip"], params["end"]) == ("kb1", "o1", 30, 40)
-
-
-async def test_neo4j_keeps_the_page_order_and_shapes_each_item() -> None:
-    provider = _neo4j()
-    page = [
-        {"id": "new", "parent": {"id": "p1", "name": "Docs", "deleted": True}},
-        {"id": "gone", "parent": None},
-        {"id": "old", "parent": None},
+    rows = [
+        {"rec": {"id": "new", "recordName": "Sub"}, "parent_id": "p1", "parent_name": "Docs", "parent_deleted": True,
+         "is_file": False, "file_mime": None, "size": None, "batch_size": 3,
+         "user_name": "Ada Admin", "user_email": "ada@acme.test"},
+        {"rec": {"id": "old", "recordName": "old.pdf"}, "parent_id": None, "parent_name": None, "parent_deleted": None,
+         "is_file": True, "file_mime": "application/pdf", "size": 10, "batch_size": 1,
+         "user_name": "", "user_email": None},
     ]
-    details = [
-        {"id": "old", "rec": {"id": "old", "recordName": "old.pdf"}, "is_file": True, "file_mime": "application/pdf",
-         "size": 10, "batch_size": 1, "user_name": "", "user_email": None},
-        {"id": "new", "rec": {"id": "new", "recordName": "Sub"}, "is_file": False, "file_mime": None,
-         "size": None, "batch_size": 3, "user_name": "Ada Admin", "user_email": "ada@acme.test"},
-    ]
-    provider.client.execute_query = AsyncMock(side_effect=[[{"total": 3, "page": page}], details])
+    provider.client.execute_query = AsyncMock(side_effect=[rows, [{"total": 2}]])
 
     found = await provider.list_trashed_records("kb1", "o1")
 
-    assert found["total"] == 3
+    assert found["total"] == 2
     assert [item["record"]["_key"] for item in found["items"]] == ["new", "old"]
     new, old = found["items"]
     assert (new["parentId"], new["parentName"], new["parentIsDeleted"]) == ("p1", "Docs", True)
@@ -96,8 +95,6 @@ async def test_neo4j_keeps_the_page_order_and_shapes_each_item() -> None:
         False, 3, "Ada Admin", "ada@acme.test",
     )
     assert (old["parentId"], old["parentIsDeleted"], old["deletedByName"], old["sizeInBytes"]) == (None, None, None, 10)
-    second = provider.client.execute_query.await_args_list[1].kwargs["parameters"]
-    assert second == {"ids": ["new", "gone", "old"], "connector_id": "kb1"}
 
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])

@@ -15,6 +15,11 @@ the KB's own ``DataSourceEntitiesProcessor`` with ``ENABLE_SOFT_DELETE`` on.
   restore.
 - Live records, a record marked deleted without a timestamp, and other orgs
   are never listed; a restored item leaves the list.
+- A folder of a few hundred deleted files beside one deleted file: the file
+  organizer's list holds only the file, paging keeps its totals, and on Neo4j
+  the reads cost a fixed number of database hits per record in the trash
+  (PROFILE). Reading every batch member for every record cost about 277,000
+  hits for 302 records; ``TRASH_LIST_BIG_FOLDER_FILES`` changes the size.
 
 Needs Docker services. A backend whose env var is set but cannot be reached
 fails, naming it; one that is not configured skips:
@@ -25,12 +30,15 @@ Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 from __future__ import annotations
 
+import os
+import uuid
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from tests.integration import test_soft_delete_restore_e2e as restore_suite
 
 if TYPE_CHECKING:
@@ -44,6 +52,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 DAY_MS = 24 * 60 * 60 * 1000
 EARLIER = 1_790_000_000_000
 LATER = EARLIER + 60_000
+# A deleted folder big enough that reading its files once per file shows.
+BIG_FOLDER_FILES = int(os.environ.get("TRASH_LIST_BIG_FOLDER_FILES", "300"))
+# The Neo4j reads a file organizer's first page may cost, per record in the trash.
+MAX_DB_HITS_PER_TRASHED_RECORD = 40
 
 
 async def _trash_at(w: _World, name: str, when: int) -> None:
@@ -146,3 +158,79 @@ async def test_a_restored_item_leaves_the_list(seeded: _World) -> None:
     assert restored["success"] is True, restored
     found = await seeded.graph.list_trashed_records(seeded.kb_id, seeded.org_id)
     assert (_ids(found), found["total"]) == ([seeded.ids["solo"]], 1)
+
+
+async def _seed_big_folder(w: _World, files: int) -> list[str]:
+    """A folder "Big" at the collection root holding *files* files."""
+    names = ["big", *(f"big_{i}" for i in range(files))]
+    for name in names:
+        w.ids[name] = f"{name}-{uuid.uuid4().hex[:12]}"
+    await w.graph.batch_upsert_records([
+        restore_suite._file(w, "big", folder=True, record_name="Big"),
+        *(restore_suite._file(w, name) for name in names[1:]),
+    ])
+    await restore_suite._link_to_kb(w, tuple(names))
+    records = CollectionNames.RECORDS.value
+    await w.graph.batch_create_edges(
+        [restore_suite._edge(w.ids["big"], records, w.ids[name], records, relationshipType="PARENT_CHILD")
+         for name in names[1:]],
+        collection=CollectionNames.RECORD_RELATIONS.value,
+    )
+    return names
+
+
+def _db_hits(plan: dict) -> int:
+    return int(plan.get("dbHits", 0)) + sum(_db_hits(child) for child in plan.get("children", []))
+
+
+async def _neo4j_db_hits(graph: Neo4jProvider, monkeypatch: pytest.MonkeyPatch, call) -> tuple[object, int]:
+    """Run *call*, then PROFILE every statement it sent and add up their database hits."""
+    sent: list[tuple[str, dict]] = []
+    original = graph.client.execute_query
+
+    async def recording(query, parameters=None, txn_id=None, timeout=None) -> list[dict]:
+        sent.append((query, parameters or {}))
+        return await original(query, parameters=parameters, txn_id=txn_id, timeout=timeout)
+
+    monkeypatch.setattr(graph.client, "execute_query", recording)
+    result = await call()
+    monkeypatch.setattr(graph.client, "execute_query", original)
+    hits = 0
+    async with graph.client.driver.session(database=graph.client.database) as session:
+        for query, parameters in sent:
+            summary = await (await session.run(f"PROFILE {query}", parameters)).consume()
+            hits += _db_hits(summary.profile)
+    return result, hits
+
+
+async def test_a_large_deleted_folder_does_not_slow_a_page_or_hide_a_loose_file(
+    seeded: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = seeded.graph
+    if isinstance(graph, Neo4jProvider):
+        # The production indexes, as ensure_schema creates them on a real install.
+        for statement in graph._generate_performance_indexes():
+            await graph.client.execute_query(statement)
+        await graph.client.execute_query("CALL db.awaitIndexes(300)")
+    await _seed_big_folder(seeded, BIG_FOLDER_FILES)
+    await _trash_at(seeded, "solo", EARLIER)
+    await _trash_at(seeded, "big", LATER)
+
+    async def organizer_page() -> dict:
+        return await graph.list_trashed_records(seeded.kb_id, seeded.org_id, single_file_batches_only=True)
+
+    if isinstance(graph, Neo4jProvider):
+        organizer, hits = await _neo4j_db_hits(graph, monkeypatch, organizer_page)
+        trashed = BIG_FOLDER_FILES + 2
+        assert hits <= MAX_DB_HITS_PER_TRASHED_RECORD * trashed, (
+            f"{hits} database hits for {trashed} records in the trash"
+        )
+    else:
+        organizer = await organizer_page()
+    assert (_ids(organizer), organizer["total"]) == ([seeded.ids["solo"]], 1)
+
+    first = await graph.list_trashed_records(seeded.kb_id, seeded.org_id, skip=0, limit=1)
+    second = await graph.list_trashed_records(seeded.kb_id, seeded.org_id, skip=1, limit=1)
+    assert (_ids(first), first["total"]) == ([seeded.ids["big"]], 2)
+    assert first["items"][0]["batchSize"] == BIG_FOLDER_FILES + 1
+    assert (_ids(second), second["total"]) == ([seeded.ids["solo"]], 2)

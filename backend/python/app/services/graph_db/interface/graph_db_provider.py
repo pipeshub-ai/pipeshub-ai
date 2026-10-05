@@ -4417,8 +4417,11 @@ class IGraphDBProvider(ABC):
         not in the same batch. A folder deleted with its contents is one item,
         and restoring any root brings back its whole batch. With
         ``single_file_batches_only``, only batches of one file are listed (what
-        a file organizer may restore). Sorted by ``deletedAtTimestamp``
-        descending, then key.
+        a file organizer may restore). Sorted by ``deletedAtTimestamp``, then
+        key, both descending, and paged inside the query; ``total`` is a
+        separate count. Each read walks only this connector's trash, through
+        an index that holds only the trash, at a fixed cost per record, so a
+        deleted folder's files never cost a read of their whole batch.
 
         Returns ``items`` and ``total`` (roots in all pages). Each item is
         ``record`` (the stored document, ``_key`` set on both backends),
