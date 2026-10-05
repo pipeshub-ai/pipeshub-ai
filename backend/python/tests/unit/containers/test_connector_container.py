@@ -18,7 +18,10 @@ from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
 )
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -149,6 +152,58 @@ class TestCreateDataStore:
 
         result = await ConnectorAppContainer._create_data_store(logger, provider)
         mock_cls.assert_called_once_with(logger, provider)
+
+
+# ===========================================================================
+# initialize_container — node relation migration ordering
+# ===========================================================================
+
+
+class TestNodeRelationMigrationIsFatal:
+    """The one migration that must NOT follow the house log-and-continue pattern.
+
+    It renames the hierarchy edge collection and runs *before* ensure_schema().
+    If it fails and initialization carries on, ensure_schema() creates an empty
+    nodeRelations while the real edges still sit under the old name — the
+    service then serves a graph with no hierarchy at all, and the next boot's
+    both-exist branch has to clean up after it. The All-team and KB-apps
+    migrations below it deliberately swallow their errors, so nothing but this
+    test stops someone "fixing" the inconsistency.
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_node_relation_migration", new_callable=AsyncMock)
+    async def test_a_failed_migration_is_fatal_and_skips_schema_init(
+        self, mock_migration, mock_health
+    ) -> None:
+        container, _logger, _config_service = _make_mock_container()
+        mock_migration.return_value = {"success": False, "error": "rename refused"}
+        ensure_schema = container.data_store.return_value.graph_provider.ensure_schema
+
+        with pytest.raises(Exception, match="rename refused"):
+            await initialize_container(container)
+
+        ensure_schema.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_node_relation_migration", new_callable=AsyncMock)
+    async def test_a_successful_migration_lets_schema_init_run(
+        self, mock_migration, mock_all_team, mock_health
+    ) -> None:
+        """Guards the guard: without this, the assertion above would hold even
+        if ensure_schema were never awaited on any path."""
+        container, _logger, _config_service = _make_mock_container()
+        mock_migration.return_value = {"success": True, "skipped": True}
+        mock_all_team.return_value = {"success": True, "skipped": True}
+        ensure_schema = container.data_store.return_value.graph_provider.ensure_schema
+
+        assert await initialize_container(container) is True
+        ensure_schema.assert_awaited_once()
 
 
 # ===========================================================================
@@ -346,3 +401,118 @@ class TestAllTeamMigration:
 
         result = await initialize_container(container)
         assert result is True
+
+
+# ===========================================================================
+# Graph migrations that run after the service has started
+# ===========================================================================
+
+_BACKGROUND = {
+    "links": "run_record_link_migration",
+    "folders": "run_folder_mime_type_migration",
+    "hierarchy": "run_hierarchy_backfill_migration",
+    "listing": "run_kh_listing_state_migration",
+}
+_DONE = {"success": True, "skipped": True}
+
+
+class TestBackgroundGraphMigrations:
+    @pytest.fixture
+    def migrations(self) -> "Iterator[dict[str, object]]":
+        """The four background migrations, recording the order they were tried in."""
+        tried: list[str] = []
+        mocks = {}
+        patches = []
+        for key, name in _BACKGROUND.items():
+            mock = AsyncMock(return_value=_DONE)
+            mock.side_effect = lambda *_a, _key=key, _mock=mock, **_k: tried.append(_key) or _mock.return_value
+            mocks[key] = mock
+            patches.append(patch(f"app.containers.connector.{name}", mock))
+        sleep = patch("app.containers.connector.asyncio.sleep", new_callable=AsyncMock)
+        for p in patches:
+            p.start()
+        mocks["sleep"] = sleep.start()
+        mocks["tried"] = tried
+        yield mocks
+        patch.stopall()
+
+    @pytest.mark.asyncio
+    async def test_runs_each_once_in_dependency_order(self, migrations) -> None:
+        from app.containers.connector import _kh_graph_migrations
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert migrations["tried"] == ["links", "folders", "hierarchy", "listing"]
+        migrations["sleep"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_step_is_retried_and_holds_back_the_steps_that_read_it(self, migrations) -> None:
+        from app.containers.connector import (
+            KH_MIGRATION_RETRY_SECONDS,
+            _kh_graph_migrations,
+        )
+
+        outcomes = iter([{"success": False, "error": "deadlock"}, _DONE])
+        migrations["links"].side_effect = lambda **_k: migrations["tried"].append("links") or next(outcomes)
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert migrations["tried"] == ["links", "folders", "links", "hierarchy", "listing"]
+        migrations["sleep"].assert_awaited_once_with(KH_MIGRATION_RETRY_SECONDS)
+
+    @pytest.mark.asyncio
+    async def test_a_listing_stamp_that_raised_is_retried(self, migrations) -> None:
+        from app.containers.connector import _kh_graph_migrations
+
+        calls = {"n": 0}
+
+        def stamp(**_k) -> dict[str, bool]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("DeadlockDetected")
+            return _DONE
+
+        migrations["listing"].side_effect = stamp
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert calls["n"] == 2
+        assert migrations["hierarchy"].await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_hierarchy_steps_wait_for_the_kb_apps_migration(self, migrations) -> None:
+        from app.containers.connector import _kh_graph_migrations
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=False) is False
+
+        assert migrations["tried"] == ["links", "folders"]
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "neo4j"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_kb_apps_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
+    async def test_the_service_starts_without_waiting_for_them(self, mock_all_team, mock_kb_apps, mock_health) -> None:
+        import asyncio
+
+        from app.containers import connector as module
+
+        container, _logger, _config = _make_mock_container()
+        mock_all_team.return_value = _DONE
+        mock_kb_apps.return_value = _DONE
+        never = asyncio.Event()
+
+        async def slow(**_k) -> None:
+            await never.wait()
+
+        before = set(module._kh_scope_tasks)
+        with patch.object(module, "run_record_link_migration", slow):
+            assert await asyncio.wait_for(initialize_container(container), timeout=5) is True
+            await asyncio.sleep(0)
+        started = module._kh_scope_tasks - before
+        try:
+            assert [task for task in started if not task.done()], "the migrations are still running"
+        finally:
+            for task in started:
+                task.cancel()
+            module._kh_scope_tasks.difference_update(started)

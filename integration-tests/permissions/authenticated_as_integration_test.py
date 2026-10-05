@@ -9,8 +9,10 @@ authenticated with is joined to that account by an ``authenticatedAs`` edge. Eve
 permission query then counts both accounts as principals, scoped to that one connector.
 
 The suite runs against whichever graph database ``TEST_GRAPH_DB_TYPE`` selects, so the
-two hand-written query dialects are held to the same expectations. The fixture graph is
-built in ``conftest.py``:
+two hand-written query dialects are held to the same expectations. Listings are read
+through ``KnowledgeHubService.get_nodes``, what the Knowledge Hub API returns, and single
+nodes through ``check_access``, the one batch check every read goes through. The fixture
+graph is built in ``conftest.py``:
 
   app-linked  reached ONLY through the link (the creator has no app relation of their own)
               rg-src-stronger  creator READER, source OWNER
@@ -41,6 +43,7 @@ import logging
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +72,28 @@ async def _links_of(provider, user_key: str) -> dict[str, str]:
     }
 
 
-def _ids(result: dict) -> set[str]:
-    return {n["id"] for n in (result or {}).get("nodes", [])}
+async def _listing(provider, uid: str, org: str, **kwargs):
+    """One Knowledge Hub page. With no config service it pages by number, never by cursor."""
+    return await KnowledgeHubService(logger, provider).get_nodes(
+        user_id=uid, org_id=org, limit=100, sort_by="name", sort_order="asc", **kwargs)
 
 
-async def _children(provider, parent_id: str, parent_type: str, user_key: str, org: str) -> set[str]:
-    return _ids(await provider.get_knowledge_hub_children(
-        parent_id, parent_type, org, user_key, 0, 100, "name", "ASC"
-    ))
+def _ids(page) -> set[str]:
+    # get_nodes answers a failure as an empty page: an empty set here must mean "sees nothing"
+    assert page.success, f"listing failed: {page.errorCode} {page.error}"
+    return {item.id for item in page.items}
 
 
-async def _search(provider, org: str, user_key: str, **kwargs) -> dict:
-    return await provider.get_knowledge_hub_search(org, user_key, 0, 100, "name", "ASC", **kwargs)
+async def _children(provider, parent_id: str, parent_type: str, uid: str, org: str) -> set[str]:
+    return _ids(await _listing(provider, uid, org, parent_id=parent_id, parent_type=parent_type, flattened=False))
+
+
+async def _search(provider, org: str, uid: str, **kwargs):
+    return await _listing(provider, uid, org, flattened=True, **kwargs)
+
+
+async def _admitted(provider, user_key: str, org: str, *node_ids: str) -> frozenset[str]:
+    return (await provider.check_access(user_key, org, node_ids=node_ids)).node_ids
 
 
 class TestAuthenticatedAs:
@@ -114,7 +127,8 @@ class TestAuthenticatedAs:
         """TC-AA-APP-001: the creator has no app relation of their own to app-linked."""
         creator, org = seeded_graph["creator"], seeded_graph["org"]
 
-        app_ids = await graph_provider.get_user_app_ids(creator)
+        # The connector gate is the app list: the link opens it like a membership does
+        app_ids = [a.get("_key") or a.get("id") for a in await graph_provider.get_gated_apps(creator, org)]
         assert seeded_graph["app_linked"] in app_ids
         assert app_ids.count(seeded_graph["app_linked"]) == 1, "no duplicate from the link"
         assert {seeded_graph["app_own"], seeded_graph["app_other"]} <= set(app_ids)
@@ -122,8 +136,12 @@ class TestAuthenticatedAs:
         app_keys = {a.get("_key") or a.get("id") for a in await graph_provider.get_user_apps(creator)}
         assert seeded_graph["app_linked"] in app_keys
 
+        root = _ids(await _listing(graph_provider, seeded_graph["creator_uid"], org, flattened=False))
+        assert set(app_ids) <= root, "the Knowledge Hub root lists every connector the gate opens"
+
         node = await graph_provider.get_knowledge_hub_node_access(seeded_graph["app_linked"], creator, org, [])
-        assert node and node.get("userRole"), "the app node itself must open, not only its children"
+        assert node is not None, "the app node itself must open, not only its children"
+        assert node["userRole"] is None, "connector nodes carry no role, only Collections do"
 
     @pytest.mark.order(3)
     async def test_the_stronger_account_wins(self, graph_provider, seeded_graph) -> None:
@@ -142,32 +160,37 @@ class TestAuthenticatedAs:
     @pytest.mark.order(4)
     async def test_a_link_never_reaches_another_connector(self, graph_provider, seeded_graph) -> None:
         """TC-AA-SCOPE-001: the source account is OWNER in app-other, the creator must not be."""
-        creator, org = seeded_graph["creator"], seeded_graph["org"]
+        creator, uid, org = seeded_graph["creator"], seeded_graph["creator_uid"], seeded_graph["org"]
 
-        assert await _children(graph_provider, seeded_graph["app_other"], "app", creator, org) == set()
-        assert await _children(graph_provider, "it-aa-rg-other", "recordGroup", creator, org) == set()
+        # The creator is a member of app-other in their own right, so it opens, with nothing in it
+        assert await _children(graph_provider, seeded_graph["app_other"], "app", uid, org) == set()
+        # A node the user may not open answers like a missing one
+        denied = await _listing(
+            graph_provider, uid, org, parent_id="it-aa-rg-other", parent_type="recordGroup", flattened=False)
+        assert (denied.success, denied.errorCode, denied.items) == (False, 404, [])
         assert await graph_provider.get_knowledge_hub_node_access("it-aa-rec-other", creator, org, []) is None
+        assert await _admitted(graph_provider, creator, org, "it-aa-rg-other", "it-aa-rec-other") == frozenset()
 
-        allowed = await graph_provider._check_record_group_permissions("it-aa-rg-other", creator, org)
-        assert allowed.get("allowed") is False
+        refused = await graph_provider.reindex_record_group_records("it-aa-rg-other", 0, uid, org)
+        assert (refused.get("success"), refused.get("code")) == (False, 403)
 
     @pytest.mark.order(5)
     async def test_browsing_shows_source_only_records(self, graph_provider, seeded_graph) -> None:
         """TC-AA-KH-001: the tree under a linked connector."""
-        creator, org = seeded_graph["creator"], seeded_graph["org"]
+        uid, org = seeded_graph["creator_uid"], seeded_graph["org"]
 
-        groups = await _children(graph_provider, seeded_graph["app_linked"], "app", creator, org)
+        groups = await _children(graph_provider, seeded_graph["app_linked"], "app", uid, org)
         assert {"it-aa-rg-src-stronger", "it-aa-rg-own-stronger", "it-aa-rg-src-only"} <= groups
 
-        children = await _children(graph_provider, "it-aa-rg-src-only", "recordGroup", creator, org)
+        children = await _children(graph_provider, "it-aa-rg-src-only", "recordGroup", uid, org)
         assert children == {"it-aa-rec-src-only"}
 
     @pytest.mark.order(6)
     async def test_all_records_search_returns_both_accounts(self, graph_provider, seeded_graph) -> None:
         """TC-AA-SEARCH-001: the creator's own hits must not hide the linked ones."""
-        creator, org = seeded_graph["creator"], seeded_graph["org"]
+        uid, org = seeded_graph["creator_uid"], seeded_graph["org"]
 
-        found = _ids(await _search(graph_provider, org, creator))
+        found = _ids(await _search(graph_provider, org, uid))
         assert {"it-aa-rec-src-only", "it-aa-rec-src-stronger"} <= found, "records only the source account can see"
         assert {"it-aa-rec-own", "it-aa-rec-own-stronger"} <= found, "the creator's own records, still there"
         assert "it-aa-rec-other" not in found and "it-aa-rg-other" not in found
@@ -175,19 +198,20 @@ class TestAuthenticatedAs:
     @pytest.mark.order(7)
     async def test_scoped_search_and_filters(self, graph_provider, seeded_graph) -> None:
         """TC-AA-SEARCH-002: scoping and the connector filter survive the principals change."""
-        creator, org = seeded_graph["creator"], seeded_graph["org"]
+        uid, org = seeded_graph["creator_uid"], seeded_graph["org"]
 
-        inside = _ids(await _search(graph_provider, org, creator,
+        inside = _ids(await _search(graph_provider, org, uid,
                                     parent_id=seeded_graph["app_linked"], parent_type="app"))
         assert "it-aa-rec-src-only" in inside
         assert "it-aa-rec-own" not in inside, "a scoped search must not leak the other connector in"
 
-        filtered = _ids(await _search(graph_provider, org, creator, connector_ids=[seeded_graph["app_own"]]))
+        filtered = _ids(await _search(graph_provider, org, uid, connector_ids=[seeded_graph["app_own"]]))
         assert "it-aa-rec-own" in filtered
         assert "it-aa-rec-src-only" not in filtered
 
-        page = await _search(graph_provider, org, creator, connector_ids=[seeded_graph["app_linked"]])
-        assert page["total"] == len(page["nodes"]), "the total must match what the same query returns"
+        page = await _search(graph_provider, org, uid, connector_ids=[seeded_graph["app_linked"]])
+        assert "it-aa-rec-src-only" in _ids(page)
+        assert page.pagination.totalItems == len(page.items), "the total must match what the same query returns"
 
     @pytest.mark.order(8)
     async def test_chat_retrieval_covers_the_linked_connector(self, graph_provider, seeded_graph) -> None:
@@ -219,18 +243,22 @@ class TestAuthenticatedAs:
         roles = [p.get("relationship") for p in (best or {}).get("permissions", [])]
         assert "OWNER" in roles, f"the creator's own OWNER must be reported, got {roles}"
 
+        linked = await graph_provider.check_record_access_with_details(uid, org, "it-aa-rec-src-stronger")
+        roles = [p.get("relationship") for p in (linked or {}).get("permissions", [])]
+        assert "OWNER" in roles, f"the source account's OWNER must be reported, got {roles}"
+
         assert await graph_provider.check_record_access_with_details(uid, org, "it-aa-rec-other") is None
 
     @pytest.mark.order(10)
     async def test_both_reindex_gates(self, graph_provider, seeded_graph) -> None:
         """TC-AA-REINDEX-001: passing the permission check alone once queued 0 records."""
-        creator, org = seeded_graph["creator"], seeded_graph["org"]
+        creator, uid, org = seeded_graph["creator"], seeded_graph["creator_uid"], seeded_graph["org"]
         app = seeded_graph["app_linked"]
 
-        group_check = await graph_provider._check_record_group_permissions("it-aa-rg-src-only", creator, org)
-        assert group_check.get("allowed") is True
-        record_check = await graph_provider._check_record_permissions("it-aa-rec-src-only", creator)
-        assert record_check.get("permission")
+        group_check = await graph_provider.reindex_record_group_records("it-aa-rg-src-only", 0, uid, org)
+        assert group_check.get("success") is True, group_check
+        # Reindexing a connector record asks for access only, never for a role
+        assert await _admitted(graph_provider, creator, org, "it-aa-rec-src-only") == {"it-aa-rec-src-only"}
 
         listed = await graph_provider.get_records_by_record_group(
             "it-aa-rg-src-only", app, org, 100, creator, limit=100)
@@ -283,7 +311,7 @@ class TestAuthenticatedAs:
         org, stranger = seeded_graph["org"], seeded_graph["stranger"]
 
         assert await _links_of(graph_provider, stranger) == {}
-        assert _ids(await _search(graph_provider, org, stranger)) == set()
+        assert _ids(await _search(graph_provider, org, seeded_graph["stranger_uid"])) == set()
         assert await graph_provider.get_accessible_virtual_record_ids(seeded_graph["stranger_uid"], org) == {}
         assert await graph_provider.check_record_access_with_details(
             seeded_graph["stranger_uid"], org, "it-aa-rec-src-only") is None
@@ -301,10 +329,10 @@ class TestAuthenticatedAs:
 
         containers = await graph_provider.get_accessible_containers(seeded_graph["creator_uid"], org)
         assert containers.fallback_reason is None
-        groups = containers.record_group_ids
-        assert "it-aa-rg-src-only" in groups, "a group only the source account holds is still searchable"
-        assert {"it-aa-rg-own", "it-aa-rg-src-stronger", "it-aa-rg-own-stronger"} <= groups
-        assert "it-aa-rg-other" not in groups, "the link never reaches the unlinked connector"
+        # The containers are the Apps whose gate the user passes, and none of them is trusted
+        assert seeded_graph["app_linked"] in containers.app_ids, "a connector only the link opens is still searchable"
+        assert seeded_graph["app_own"] in containers.app_ids
+        assert not (containers.app_ids_trusted or containers.record_group_ids or containers.direct_records)
 
         # The filter only widens; this is the adjudicator that narrows it back
         vids = [f"v-{rec}" for rec in seeded_graph["record_of"].values()]
@@ -318,8 +346,7 @@ class TestAuthenticatedAs:
         scoped = await graph_provider.get_accessible_containers(
             seeded_graph["creator_uid"], org, {"apps": [seeded_graph["app_linked"]]}
         )
-        assert "it-aa-rg-src-only" in scoped.record_group_ids
-        assert "it-aa-rg-own" not in scoped.record_group_ids
+        assert scoped.app_ids == {seeded_graph["app_linked"]}
 
         stranger = await graph_provider.get_accessible_containers(seeded_graph["stranger_uid"], org)
         assert stranger.fallback_reason is None and stranger.is_empty

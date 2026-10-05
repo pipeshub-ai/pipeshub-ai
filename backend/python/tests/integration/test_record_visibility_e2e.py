@@ -565,7 +565,7 @@ async def test_location_trail_stops_at_a_trashed_folder(world: _World) -> None:
         [{"from_id": world.ids["trashed_failed"], "from_collection": CollectionNames.RECORDS.value,
           "to_id": world.ids["live_failed"], "to_collection": CollectionNames.RECORDS.value,
           "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     adjacency = await g.get_record_parent_adjacency([world.ids["live_failed"]], world.org_id)
     assert adjacency["nodes"][world.ids["trashed_failed"]]["name"] == "trashed_failed.pdf"
@@ -636,7 +636,7 @@ async def test_records_linking_to_an_address(world: _World) -> None:
         )
         links[holder] = link_id
         await g.batch_upsert_nodes([node], CollectionNames.RECORDS.value)
-    await g.batch_upsert_record_relations([
+    await g.batch_upsert_node_relations([
         {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[holder]}",
          "_to": f"{CollectionNames.RECORDS.value}/{link_id}",
          "relationshipType": "PARENT_CHILD", "constraintName": ""}
@@ -1134,7 +1134,7 @@ async def test_address_links(world: _World) -> None:
     """A record joined by address to a live record and to a trashed one sees
     only the live one."""
     g = world.graph
-    await g.batch_upsert_record_relations([
+    await g.batch_upsert_node_relations([
         {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[source]}",
          "_to": f"{CollectionNames.RECORDS.value}/{world.ids['live_shared']}",
          "relationshipType": "LINKED_TO", "matchedBy": "url", "constraintName": ""}

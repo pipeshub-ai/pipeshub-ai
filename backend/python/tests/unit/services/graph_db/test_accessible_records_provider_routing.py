@@ -58,7 +58,7 @@ def _provider(cache=None, apps=None) -> Neo4jProvider:
     provider = Neo4jProvider(MagicMock(), MagicMock(), accessible_records_cache=cache)
     provider.client = MagicMock()
     provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key-1"})
-    provider.get_user_apps = AsyncMock(return_value=apps if apps is not None else [])
+    provider.get_gated_apps = AsyncMock(return_value=apps if apps is not None else [])
 
     # Every underlying query is stubbed; tests assert on which ones ran.
     provider._get_virtual_ids_for_connector = AsyncMock(return_value={})

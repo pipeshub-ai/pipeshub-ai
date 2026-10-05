@@ -528,6 +528,7 @@ class MockTransactionStore:
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
+        browse_root: bool | None = None,
     ) -> int:
         """The number of inherit edges removed, as both providers answer."""
         removed = 0
@@ -538,10 +539,27 @@ class MockTransactionStore:
                 leaving_group_id, CollectionNames.RECORD_GROUPS.value,
             )
             removed += await self._set_inheritance(record_id, leaving_group_id, inherit=False)
+            self._s.delete_edge(
+                CollectionNames.NODE_RELATIONS.value,
+                leaving_group_id, CollectionNames.RECORD_GROUPS.value,
+                record_id, CollectionNames.RECORDS.value,
+            )
         if record_group_id:
             await self.create_record_group_relation(record_id, record_group_id)
             if inherit is not None:
                 removed += await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+            if browse_root:
+                await self.batch_create_edges([{
+                    "from_id": record_group_id, "from_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_id": record_id, "to_collection": CollectionNames.RECORDS.value,
+                    "relationshipType": RecordRelations.PARENT_CHILD.value,
+                }], CollectionNames.NODE_RELATIONS.value)
+            elif browse_root is False:
+                self._s.delete_edge(
+                    CollectionNames.NODE_RELATIONS.value,
+                    record_group_id, CollectionNames.RECORD_GROUPS.value,
+                    record_id, CollectionNames.RECORDS.value,
+                )
         return removed
 
     async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> int:
@@ -592,8 +610,21 @@ class MockTransactionStore:
                 raise MoveDestinationMissing(record.id, parent_record_id)
         await self.delete_parent_child_edge_to_record(record.id)
         await self.batch_upsert_records([record], release_trashed_external_ids=True)
+        app_edge = (
+            CollectionNames.NODE_RELATIONS.value,
+            record.connector_id, CollectionNames.APPS.value, record.id, CollectionNames.RECORDS.value,
+        )
         if parent_record_id:
             await self.create_record_relation(parent_record_id, record.id, RecordRelations.PARENT_CHILD.value)
+            # Out of the KB root, as the providers do.
+            self._s.delete_edge(*app_edge)
+        else:
+            # At the root a KB item hangs off its App, as the providers do.
+            await self.batch_create_edges([{
+                "from_id": record.connector_id, "from_collection": CollectionNames.APPS.value,
+                "to_id": record.id, "to_collection": CollectionNames.RECORDS.value,
+                "relationshipType": RecordRelations.PARENT_CHILD.value,
+            }], CollectionNames.NODE_RELATIONS.value)
 
     async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
         return self._s.get_edges_from_node(from_node_id, edge_collection)
@@ -2639,7 +2670,7 @@ class TestKbMoveWorkflow:
         return [
             edge["_from"].split("/")[-1]
             for edge in graph_store.get_edges_to_node(
-                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.RECORD_RELATIONS.value
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.NODE_RELATIONS.value
             )
         ]
 
@@ -2660,7 +2691,8 @@ class TestKbMoveWorkflow:
         to_root = report.model_copy(update={"parent_external_record_id": None})
         await processor.on_records_moved([(report.external_record_id, to_root, [])])
 
-        assert self._parents(graph_store, report.id) == []
+        # At the root the item hangs off its knowledge base's App, its only hierarchy parent.
+        assert self._parents(graph_store, report.id) == [report.connector_id]
         assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] is None
 
     @pytest.mark.asyncio
