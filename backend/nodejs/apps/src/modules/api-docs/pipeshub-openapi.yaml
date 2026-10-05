@@ -307,6 +307,8 @@ tags:
     description: Configure storage backend for file uploads and documents. Supports AWS S3, Azure Blob Storage, or local filesystem.
   - name: SMTP Configuration
     description: Configure SMTP email server for sending notifications and invitations.
+  - name: Mail
+    description: Internal service-to-service endpoints of the mail service — send a templated email through the configured SMTP server and reload the SMTP configuration. They accept scoped service tokens only, never a user session token.
   - name: Authentication Configuration
     description: Configure authentication providers including Azure AD, Microsoft, Google OAuth, SAML SSO, and custom OAuth 2.0.
   - name: Platform Settings
@@ -379,6 +381,17 @@ tags:
 
       **Scopes (OAuth tokens only):** `mcp:read`, `mcp:write`, `mcp:delete`; the agent-scoped routes
       use `agent:read` and `agent:write`.
+
+  - name: API Documentation
+    description: |
+      The built-in API reference: the HTML documentation UI served at `/api/v1/docs`, the JSON
+      document that UI renders, and a health check. These routes are public (no token is read).
+
+  - name: Health
+    description: |
+      Platform health checks: the state of the infrastructure the Node.js backend depends on
+      (cache, message broker, databases) and of the Python services behind it. These routes are
+      public (no token is read) and report a failing dependency in the body, not in the HTTP status.
 
   - name: Crawling Jobs
     description: |
@@ -2697,6 +2710,11 @@ components:
             - code
             - message
           properties:
+            requestId:
+              type: string
+              description: |
+                Identifier for this request, echoed so a bug report can quote it.
+                Absent when the request never reached the middleware that assigns one.
             code:
               type: string
               description: Machine-readable code (e.g. `HTTP_UNAUTHORIZED`, `HTTP_FORBIDDEN`).
@@ -3712,17 +3730,45 @@ components:
           format: date-time
 
     ServiceTokenWithSecret:
-      allOf:
-        - $ref: '#/components/schemas/ServiceToken'
-        - type: object
-          properties:
-            accessToken:
-              type: string
-              description: |
-                The raw token, returned by this call and never retrievable
-                again. Carries a `phsvc_` prefix ahead of the JWT, which is
-                display-only and stripped before the token is verified.
-              example: "phsvc_eyJhbGciOi..."
+      type: object
+      additionalProperties: false
+      description: |
+        A newly minted token: the fields of `ServiceToken` other than
+        `lastUsedAt` (it has never been used), plus the raw secret.
+      required:
+        - id
+        - name
+        - serviceAccountId
+        - scopes
+        - createdAt
+        - expiresAt
+        - accessToken
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: What this token is for, shown in the list
+          example: "Release digest job"
+        serviceAccountId:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        accessToken:
+          type: string
+          description: |
+            The raw token, returned by this call and never retrievable
+            again. Carries a `phsvc_` prefix ahead of the JWT, which is
+            display-only and stripped before the token is verified.
+          example: "phsvc_eyJhbGciOi..."
 
     ServiceTokenCreateRequest:
       type: object
@@ -17713,6 +17759,9 @@ components:
         updatedAt:
           type: string
           format: date-time
+        __v:
+          type: integer
+          description: Mongoose document version key
 
     # ==================== PAGINATION ====================
     PaginationInfo:
@@ -19131,6 +19180,975 @@ components:
               format: date-time
               description: When the response was generated.
 
+    NotificationMessageResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Plain message body written directly by the notification controllers
+        (`notification.controller.ts`) for the errors they detect themselves. It does not go
+        through `ErrorMiddleware`, so it is not wrapped in the standard `error` envelope.
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Human-readable reason
+          example: Notification not found
+
+    AgentUsageEntry:
+      type: object
+      description: |
+        One agent that references a given AI model or web search provider,
+        as returned by `GET /agents/model-usage/{model_key}` and
+        `GET /agents/web-search-usage/{provider}`.
+      required:
+        - name
+        - _key
+        - creatorName
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: Display name of the agent.
+        _key:
+          type: string
+          description: Agent key (the `agentKey` used by the other `/agents` routes).
+        creatorName:
+          type: string
+          nullable: true
+          description: |
+            Full name of the user who created the agent; `null` when the
+            creator can no longer be resolved.
+    AgentUsageResponse:
+      type: object
+      description: |
+        Envelope returned by `GET /agents/model-usage/{model_key}` and
+        `GET /agents/web-search-usage/{provider}`.
+      required:
+        - success
+        - agents
+      properties:
+        success:
+          type: boolean
+          description: Always `true`.
+        agents:
+          type: array
+          description: |
+            Non-deleted agents in the caller's organization that use the
+            model or provider. Empty when nothing uses it.
+          items:
+            $ref: '#/components/schemas/AgentUsageEntry'
+
+
+    # GET /crawlingManager/{connector}/{connectorId}/schedule when the connector has no job
+    CrawlingJobNotFoundResponse:
+      type: object
+      description: |
+        Body returned with 404 when the connector exists and the caller may read it, but no
+        crawling job is scheduled or paused for it. This is written by the controller directly,
+        so it is not the standard error envelope.
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+          example: false
+        message:
+          type: string
+          example: "No scheduled job found for this connector"
+        data:
+          type: object
+          nullable: true
+          enum: [null]
+          description: Always null
+          example: null
+      required:
+        - success
+        - message
+        - data
+
+    # GET /crawlingManager/stats
+    CrawlingQueueStats:
+      type: object
+      description: Counts of the caller organization's crawling jobs, by queue state
+      properties:
+        waiting:
+          type: integer
+          description: Runs queued and waiting for a worker
+          example: 0
+        active:
+          type: integer
+          description: Runs being processed right now
+          example: 0
+        completed:
+          type: integer
+          description: Finished runs still kept in the queue history
+          example: 0
+        failed:
+          type: integer
+          description: Runs that failed after exhausting their retries
+          example: 0
+        delayed:
+          type: integer
+          description: Runs scheduled for a future time
+          example: 1
+        paused:
+          type: integer
+          description: Jobs paused through the pause endpoint
+          example: 0
+        repeatable:
+          type: integer
+          description: Repeating schedules owned by the organization (not included in total)
+          example: 0
+        total:
+          type: integer
+          description: Sum of waiting, active, completed, failed, delayed and paused
+          example: 1
+      required:
+        - waiting
+        - active
+        - completed
+        - failed
+        - delayed
+        - paused
+        - repeatable
+        - total
+
+
+    ApiDocsHealthResponse:
+      type: object
+      description: Health payload of the API documentation router.
+      additionalProperties: false
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        service:
+          type: string
+          enum:
+            - api-docs
+
+    ApiDocsLoadErrorResponse:
+      type: object
+      description: |
+        Error payload of `GET /docs/json` when the unified documentation cannot be built.
+        This route answers on its own and does not use the standard error envelope.
+      additionalProperties: false
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - Failed to load API documentation
+        message:
+          type: string
+          description: Message of the underlying error, or `Unknown error`.
+
+    ApiDocsModuleInfo:
+      type: object
+      description: One documentation module (a group of tags shown together in the docs sidebar).
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - description
+        - version
+        - basePath
+        - tags
+        - source
+        - order
+      properties:
+        id:
+          type: string
+          description: Stable module id, referenced by `ApiDocsEndpointInfo.moduleId`.
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        basePath:
+          type: string
+          description: Path prefix of the module on the Node API, or the base URL of an internal Python service.
+        tags:
+          type: array
+          description: OpenAPI tags whose operations belong to this module.
+          items:
+            type: string
+        source:
+          type: string
+          enum:
+            - nodejs
+            - python
+        order:
+          type: integer
+          description: Sort position; modules are returned in ascending order.
+
+    ApiDocsCategoryInfo:
+      type: object
+      description: Sidebar category grouping several modules.
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - description
+        - modules
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        modules:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiDocsModuleInfo'
+
+    ApiDocsSchemaObject:
+      type: object
+      description: |
+        An OpenAPI 3.0 Schema Object, passed through unchanged from this specification.
+        References are not resolved: a referencing schema carries only a `$ref` string
+        (for example `#/components/schemas/ErrorResponse`). Specification extensions
+        (`x-*`) are passed through as written, which is why other keys are allowed.
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+          enum:
+            - string
+            - number
+            - integer
+            - boolean
+            - array
+            - object
+        format:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        nullable:
+          type: boolean
+        deprecated:
+          type: boolean
+        readOnly:
+          type: boolean
+        writeOnly:
+          type: boolean
+        required:
+          type: array
+          items:
+            type: string
+        properties:
+          type: object
+          description: Property name to schema.
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsSchemaObject'
+        additionalProperties:
+          description: Either a boolean or the schema of the extra properties.
+          oneOf:
+            - type: boolean
+            - $ref: '#/components/schemas/ApiDocsSchemaObject'
+        items:
+          $ref: '#/components/schemas/ApiDocsSchemaObject'
+        allOf:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiDocsSchemaObject'
+        anyOf:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiDocsSchemaObject'
+        oneOf:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiDocsSchemaObject'
+        not:
+          $ref: '#/components/schemas/ApiDocsSchemaObject'
+        discriminator:
+          type: object
+          additionalProperties: false
+          required:
+            - propertyName
+          properties:
+            propertyName:
+              type: string
+            mapping:
+              type: object
+              description: Discriminator value to schema name or reference.
+              additionalProperties:
+                type: string
+        enum:
+          type: array
+          description: Allowed values, of whatever type the schema describes.
+          items: {}
+        default:
+          description: Default value, of whatever type the schema describes.
+        example:
+          description: Example value, of whatever type the schema describes.
+        pattern:
+          type: string
+        minLength:
+          type: integer
+        maxLength:
+          type: integer
+        minimum:
+          type: number
+        maximum:
+          type: number
+        exclusiveMinimum:
+          type: boolean
+        exclusiveMaximum:
+          type: boolean
+        multipleOf:
+          type: number
+        minItems:
+          type: integer
+        maxItems:
+          type: integer
+        uniqueItems:
+          type: boolean
+        minProperties:
+          type: integer
+        maxProperties:
+          type: integer
+
+    ApiDocsExampleObject:
+      type: object
+      description: An OpenAPI 3.0 Example Object.
+      additionalProperties: false
+      properties:
+        summary:
+          type: string
+        description:
+          type: string
+        value:
+          description: The example payload; any JSON value.
+        externalValue:
+          type: string
+
+    ApiDocsHeaderObject:
+      type: object
+      description: |
+        An OpenAPI 3.0 Header Object, or an unresolved reference to one (only a `$ref`
+        string such as `#/components/headers/X-Conversation-Id`), which is why other keys are allowed.
+      additionalProperties: true
+      properties:
+        description:
+          type: string
+        required:
+          type: boolean
+        deprecated:
+          type: boolean
+        schema:
+          $ref: '#/components/schemas/ApiDocsSchemaObject'
+        example:
+          description: Example header value.
+        examples:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsExampleObject'
+
+    ApiDocsMediaTypeObject:
+      type: object
+      description: An OpenAPI 3.0 Media Type Object. Specification extensions (`x-*`) are passed through, which is why other keys are allowed.
+      additionalProperties: true
+      properties:
+        schema:
+          $ref: '#/components/schemas/ApiDocsSchemaObject'
+        example:
+          description: Example payload; any JSON value.
+        examples:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsExampleObject'
+
+    ApiDocsParameterObject:
+      type: object
+      description: |
+        An OpenAPI 3.0 Parameter Object, or an unresolved reference to one (only a `$ref`
+        string such as `#/components/parameters/InternalDocumentId`), which is why other keys are allowed.
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        in:
+          type: string
+          enum:
+            - path
+            - query
+            - header
+            - cookie
+        description:
+          type: string
+        required:
+          type: boolean
+        deprecated:
+          type: boolean
+        style:
+          type: string
+        explode:
+          type: boolean
+        schema:
+          $ref: '#/components/schemas/ApiDocsSchemaObject'
+        example:
+          description: Example parameter value.
+        examples:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsExampleObject'
+
+    ApiDocsRequestBodyObject:
+      type: object
+      description: An OpenAPI 3.0 Request Body Object.
+      additionalProperties: false
+      required:
+        - content
+      properties:
+        description:
+          type: string
+        required:
+          type: boolean
+        content:
+          type: object
+          description: Media type to its description.
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsMediaTypeObject'
+
+    ApiDocsResponseObject:
+      type: object
+      description: An OpenAPI 3.0 Response Object.
+      additionalProperties: false
+      required:
+        - description
+      properties:
+        description:
+          type: string
+        headers:
+          type: object
+          description: Header name to its description.
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsHeaderObject'
+        content:
+          type: object
+          description: Media type to its description.
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsMediaTypeObject'
+
+    ApiDocsEndpointInfo:
+      type: object
+      description: One operation of this specification, flattened for the documentation UI.
+      additionalProperties: false
+      required:
+        - path
+        - method
+        - summary
+        - description
+        - operationId
+        - tags
+        - parameters
+        - responses
+        - moduleId
+      properties:
+        path:
+          type: string
+          description: Path key as written in this specification (without the `/api/v1` prefix).
+        method:
+          type: string
+          enum:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+        summary:
+          type: string
+          description: Empty string when the operation has no summary.
+        description:
+          type: string
+          description: Empty string when the operation has no description.
+        operationId:
+          type: string
+          description: Empty string when the operation has no operationId.
+        tags:
+          type: array
+          items:
+            type: string
+        parameters:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiDocsParameterObject'
+        requestBody:
+          $ref: '#/components/schemas/ApiDocsRequestBodyObject'
+        responses:
+          type: object
+          description: Status code (or `default`) to the response description.
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsResponseObject'
+        security:
+          type: array
+          description: |
+            The operation's own security requirements. Absent when the operation inherits the
+            global default; an empty array means the operation is public.
+          items:
+            type: object
+            description: Security scheme name to the scopes it requires.
+            additionalProperties:
+              type: array
+              items:
+                type: string
+        moduleId:
+          type: string
+          description: |
+            Id of the `ApiDocsModuleInfo` the operation belongs to (from `x-service-id`, else the
+            first tag a module lists), or `unknown` when no module claims any of its tags.
+
+    ApiDocsUnifiedResponse:
+      type: object
+      description: The whole API reference as one document; this is what the documentation UI renders.
+      additionalProperties: false
+      required:
+        - info
+        - categories
+        - modules
+        - endpoints
+        - schemas
+      properties:
+        info:
+          type: object
+          additionalProperties: false
+          required:
+            - title
+            - version
+            - description
+            - contact
+          properties:
+            title:
+              type: string
+            version:
+              type: string
+            description:
+              type: string
+            contact:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                url:
+                  type: string
+                email:
+                  type: string
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiDocsCategoryInfo'
+        modules:
+          type: array
+          description: Every module, sorted by `order`.
+          items:
+            $ref: '#/components/schemas/ApiDocsModuleInfo'
+        endpoints:
+          type: array
+          description: Every GET, POST, PUT, PATCH and DELETE operation of this specification.
+          items:
+            $ref: '#/components/schemas/ApiDocsEndpointInfo'
+        schemas:
+          type: object
+          description: '`components.schemas` of this specification, by schema name.'
+          additionalProperties:
+            $ref: '#/components/schemas/ApiDocsSchemaObject'
+
+    MailSendEmailRequest:
+      type: object
+      description: |
+        Email to send through the mail service: `emailTemplateType` selects the template and
+        `templateData` fills it.
+      required:
+        - emailTemplateType
+      properties:
+        emailTemplateType:
+          type: string
+          description: Template to render
+          enum:
+            - loginWithOTP
+            - resetPassword
+            - resetEmail
+            - emailChangeNotice
+            - accountCreation
+            - orgEmailVerification
+            - appuserInvite
+            - suspiciousLoginAttempt
+            - domainLimitReached
+            - joinRequestNotify
+            - joinRequestDecision
+        sendEmailTo:
+          type: array
+          description: Recipient addresses
+          items:
+            type: string
+        sendCcTo:
+          type: array
+          description: Carbon-copy addresses
+          items:
+            type: string
+        subject:
+          type: string
+          description: Subject line
+        templateData:
+          type: object
+          description: Values the chosen template interpolates; the keys depend on the template
+          additionalProperties: true
+        attachments:
+          type: array
+          description: Attachments passed to the mail library. Entries that point at a local file or a URL are refused.
+          items:
+            type: object
+            additionalProperties: true
+        orgId:
+          type: string
+          description: Organization the email is sent for; stored with the audit record of the send
+        productName:
+          type: string
+          description: Accepted for backward compatibility; not used
+        isAutoEmail:
+          type: boolean
+          description: Accepted for backward compatibility; not used
+        fromEmailDomain:
+          type: string
+          description: Accepted for backward compatibility; the sender is always the configured `fromEmail`
+
+    MailSendEmailResponse:
+      type: object
+      additionalProperties: false
+      description: Result of a synchronous send through the mail service
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required:
+            - status
+            - data
+          properties:
+            status:
+              type: boolean
+              description: Always `true` — a failed send answers `500` instead
+            data:
+              type: string
+              description: Outcome text
+              example: Email sent
+
+    InfrastructureHealthResponse:
+      type: object
+      description: |
+        Health of the infrastructure the Node.js backend depends on, as returned by `GET /health`.
+      additionalProperties: false
+      required:
+        - status
+        - timestamp
+        - services
+        - serviceNames
+        - deployment
+      properties:
+        status:
+          type: string
+          enum:
+            - healthy
+            - unhealthy
+          description: |
+            `unhealthy` when at least one entry of `services` is `unhealthy`; `pending` and
+            `unknown` entries do not make the overall status unhealthy.
+        timestamp:
+          type: string
+          format: date-time
+          description: Time the check was made (ISO 8601, UTC)
+        services:
+          type: object
+          description: State of each infrastructure service
+          additionalProperties: false
+          required:
+            - redis
+            - messageBroker
+            - mongodb
+            - graphDb
+            - vectorDb
+          properties:
+            redis:
+              type: string
+              enum:
+                - healthy
+                - unhealthy
+            messageBroker:
+              type: string
+              enum:
+                - healthy
+                - unhealthy
+            mongodb:
+              type: string
+              enum:
+                - healthy
+                - unhealthy
+            graphDb:
+              type: string
+              enum:
+                - healthy
+                - unhealthy
+                - pending
+                - unknown
+              description: |
+                `pending` until the Python backend has written the graph database type to the
+                deployment configuration; `unknown` when that type is neither `neo4j` nor
+                `arangodb`, in which case no probe is made.
+            vectorDb:
+              type: string
+              enum:
+                - healthy
+                - unhealthy
+                - pending
+              description: |
+                `pending` until the Python backend has written the vector database type to the
+                deployment configuration.
+            KVStoreservice:
+              type: string
+              enum:
+                - healthy
+                - unhealthy
+              description: State of etcd. Present only when the key-value store type is `etcd`.
+        serviceNames:
+          type: object
+          description: Display name of each entry of `services` (same keys)
+          additionalProperties: false
+          required:
+            - redis
+            - messageBroker
+            - mongodb
+            - graphDb
+            - vectorDb
+          properties:
+            redis:
+              type: string
+              enum:
+                - Redis
+                - Redis (Cluster)
+                - Redis (MemoryDB)
+            messageBroker:
+              type: string
+              enum:
+                - Redis Streams
+                - Kafka
+            mongodb:
+              type: string
+              enum:
+                - MongoDB
+            graphDb:
+              type: string
+              enum:
+                - Neo4j
+                - ArangoDB
+            vectorDb:
+              type: string
+              enum:
+                - Qdrant
+                - OpenSearch
+                - Redis
+                - VectorDB
+              description: '`VectorDB` when the vector database type is not known yet or not recognised'
+            KVStoreservice:
+              type: string
+              enum:
+                - etcd
+              description: Present only when the key-value store type is `etcd`.
+        deployment:
+          type: object
+          description: Which backend this instance uses for each pluggable store
+          additionalProperties: false
+          required:
+            - kvStoreType
+            - messageBrokerType
+            - graphDbType
+            - vectorDbType
+            - redisMode
+          properties:
+            kvStoreType:
+              type: string
+              description: Key-value store type
+              example: redis
+            messageBrokerType:
+              type: string
+              description: Message broker type
+              example: kafka
+            graphDbType:
+              type: string
+              description: Graph database type, or `pending` while the Python backend has not reported it yet
+              example: neo4j
+            vectorDbType:
+              type: string
+              description: Vector database type, or `pending` while the Python backend has not reported it yet
+              example: qdrant
+            redisMode:
+              type: string
+              description: Value of the `REDIS_MODE` environment variable of the Node.js process (`standalone` when unset)
+              example: standalone
+
+    ServicesHealthResponse:
+      type: object
+      description: |
+        Health of the Python services behind the Node.js backend, as returned by
+        `GET /health/services`.
+      additionalProperties: false
+      required:
+        - status
+        - timestamp
+        - services
+      properties:
+        status:
+          type: string
+          enum:
+            - healthy
+            - unhealthy
+          description: '`healthy` only when both the `query` and the `connector` service are healthy'
+        timestamp:
+          type: string
+          format: date-time
+          description: Time the check was made (ISO 8601, UTC)
+        services:
+          type: object
+          description: |
+            State of each service. A service is `healthy` when its own `/health` endpoint answers
+            `200` with `status: healthy` within 3 seconds. `unknown` is reported for every service
+            when the check itself fails.
+          additionalProperties: false
+          required:
+            - query
+            - connector
+            - indexing
+            - docling
+            - embedding
+          properties:
+            query:
+              $ref: '#/components/schemas/ServiceProbeStatus'
+            connector:
+              $ref: '#/components/schemas/ServiceProbeStatus'
+            indexing:
+              $ref: '#/components/schemas/ServiceProbeStatus'
+            docling:
+              $ref: '#/components/schemas/ServiceProbeStatus'
+            embedding:
+              $ref: '#/components/schemas/ServiceProbeStatus'
+            parsing:
+              allOf:
+                - $ref: '#/components/schemas/ServiceProbeStatus'
+              description: Present only when the Node.js process runs with `USE_PARSING_SERVICE=true`.
+            extraction:
+              allOf:
+                - $ref: '#/components/schemas/ServiceProbeStatus'
+              description: Present only when the Node.js process runs with `USE_PARSING_SERVICE=true`.
+
+    ServiceProbeStatus:
+      type: string
+      description: Result of probing one Python service
+      enum:
+        - healthy
+        - unhealthy
+        - unknown
+
+    SpeechProxyError:
+      type: object
+      additionalProperties: false
+      description: |
+        Error body of the chat speech routes (`/chat/transcribe`, `/chat/speak`,
+        `/chat/speech/capabilities`) when the Python speech service answers with a status of
+        400 or above. The Node.js gateway forwards the status and reduces the body to one
+        sentence under `detail`, so it is not the standard `ErrorResponse` envelope. For a 4xx
+        the sentence is the service's own (`detail`, or `message` when `detail` is a validation
+        list); for a 5xx it is generic advice and the service's words go to the server log.
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          description: Reader-friendly reason for the failure.
+          example: No Text-to-Speech provider configured
+
+    SpeechMissingAudioError:
+      type: object
+      additionalProperties: false
+      description: |
+        400 body written by the Node.js gateway itself when a `/chat/transcribe` upload has no
+        `file` part. The request never reaches the speech service.
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+          example: Audio file is required (field 'file')
+
+    McpTransportError:
+      type: object
+      description: |
+        JSON-RPC 2.0 error written by the MCP Streamable HTTP transport when it refuses a
+        request before any JSON-RPC message is processed. `id` is always null because the
+        error is not tied to a request message.
+      required:
+        - jsonrpc
+        - error
+        - id
+      properties:
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: integer
+              description: JSON-RPC error code (-32000 for transport errors, -32700 parse error, -32600 invalid request)
+              example: -32000
+            message:
+              type: string
+              example: "Not Acceptable: Client must accept text/event-stream"
+            data:
+              type: string
+              description: Extra detail, present only on some parse errors
+        id:
+          type: string
+          nullable: true
+          description: Always null
+          example: null
+
+    SetOAuthAppTokenIdentityResponse:
+      type: object
+      description: |
+        Response body for `PUT /oauth-clients/{appId}/token-identity`
+        (`oauth.app.controller.ts` `setTokenIdentity`). The app (never includes
+        `clientSecret`, and does not echo the chosen identity) is nested under `app`.
+      required:
+        - message
+        - app
+      properties:
+        message:
+          type: string
+          enum:
+            - Application tokens now act as the service account
+            - Application tokens now act as its creator
+          description: Which of the two identities the application's tokens carry from now on
+          example: Application tokens now act as the service account
+        app:
+          $ref: '#/components/schemas/OAuthAppResponse'
+
 security:
   - bearerAuth: []
   - oauth2: []
@@ -19144,7 +20162,7 @@ paths:
       summary: List in-app notifications for the current user
       description: |
         Returns a cursor-paginated list of notifications assigned to the authenticated user
-        from the last 30 days. Default page size is 20 (max 50).
+        from the last 30 days, newest first. Default page size is 20; at most 50 are returned per page.
       operationId: listInAppNotifications
       security:
         - bearerAuth: []
@@ -19153,19 +20171,21 @@ paths:
           in: query
           required: false
           description: |
-            Filter by notification status. When omitted (or any value other than
-            `read`, `unread`, or `archived`), all non-deleted notifications are returned.
+            Filter by notification status. When omitted, `read` and `unread` notifications
+            are returned and `archived` ones are left out. Any other value fails validation (400).
           schema:
             type: string
             enum: [read, unread, archived]
         - name: limit
           in: query
           required: false
-          description: Page size (default 20, max 50)
+          description: |
+            Page size (default 20). Values from 1 to 100 pass validation, but the page is
+            capped at 50 items; anything outside 1–100 or non-integer fails validation (400).
           schema:
             type: integer
             minimum: 1
-            maximum: 50
+            maximum: 100
             default: 20
         - name: cursor
           in: query
@@ -19195,13 +20215,28 @@ paths:
                   hasMore:
                     type: boolean
         '400':
-          description: Invalid cursor
-        '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Either the query failed validation (`status` not one of the allowed values, `limit`
+            outside 1–100) — standard error envelope with code `VALIDATION_ERROR` — or the
+            `cursor` could not be decoded, which the controller reports as
+            `{ "message": "Invalid cursor" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
+        '401':
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -19249,11 +20284,16 @@ paths:
                     type: integer
                     description: Notifications with status `archived` within the retention window
         '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -19296,11 +20336,16 @@ paths:
                     type: integer
                     description: Number of notifications updated
         '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -19345,19 +20390,28 @@ paths:
                   notification:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
-          description: Invalid user or notification id
+          description: Validation failed — `id` is not a 24-character hex ObjectId
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '404':
-          description: Notification not found
+          description: No notification with this id is visible to the caller — unknown id, another user's, deleted, older than 30 days, or archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -19402,19 +20456,28 @@ paths:
                   notification:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
-          description: Invalid user or notification id
+          description: Validation failed — `id` is not a 24-character hex ObjectId
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '404':
-          description: Notification not found
+          description: No notification with this id is visible to the caller — unknown id, another user's, deleted, older than 30 days, or archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -19461,19 +20524,28 @@ paths:
                   notification:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
-          description: Invalid user or notification id
+          description: Validation failed — `id` is not a 24-character hex ObjectId
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '404':
-          description: Notification not found (or already archived)
+          description: No notification with this id is visible to the caller — unknown id, another user's, deleted, older than 30 days, or already archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -19520,19 +20592,28 @@ paths:
                   notification:
                     $ref: '#/components/schemas/InAppNotification'
         '400':
-          description: Invalid user or notification id
+          description: Validation failed — `id` is not a 24-character hex ObjectId
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '404':
-          description: Notification not found or not currently archived
+          description: No archived notification with this id is visible to the caller — unknown id, another user's, deleted, older than 30 days, or not archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -19577,19 +20658,28 @@ paths:
                     type: boolean
                     example: true
         '400':
-          description: Invalid user or notification id
+          description: Validation failed — `id` is not a 24-character hex ObjectId
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized — missing or invalid access token
+          description: |
+            Unauthorized. A missing or invalid access token is rejected by the auth middleware
+            with the standard error envelope. A valid token that carries no usable `userId` /
+            `orgId` is rejected by the controller with `{ "message": "Unauthorized" }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/NotificationMessageResponse'
         '404':
-          description: Notification not found
+          description: No notification with this id is visible to the caller — unknown id, another user's, already deleted, or older than 30 days
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationMessageResponse'
         '429':
           description: Rate limit exceeded — global per-user/IP limiter
           content:
@@ -22480,11 +23570,10 @@ paths:
       parameters:
         - name: email
           in: query
-          required: true
-          description: User's email address
+          required: false
+          description: User's email address. Not validated and not used to pick the identity provider.
           schema:
             type: string
-            format: email
         - name: sessionToken
           in: query
           required: false
@@ -22521,13 +23610,20 @@ paths:
           description: Redirect to SAML Identity Provider login page
           headers:
             Location:
-              description: IDP SSO URL
+              description: IDP SSO URL, carrying `SAMLRequest` and a base64 JSON `RelayState`
               schema:
                 type: string
-        '400':
-          description: Invalid request (missing or malformed parameters)
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: Express redirect notice, `Found. Redirecting to <Location>`
         '404':
-          description: User not found or SAML not configured for organization
+          description: Organisation sign-in configuration not found, or SAML SSO is not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
           content:
@@ -22613,39 +23709,16 @@ paths:
                   value: "https://app.example.com/login?saml_error=auth_failed"
             Set-Cookie:
               description: |
-                Set on successful authentication only.
+                Set on a successful web sign-in only (a desktop sign-in gets a handoff `code` instead).
                 - `accessToken`: JWT access token, expires in 1 hour (`Secure; SameSite=None`)
                 - `refreshToken`: JWT refresh token, expires in 7 days (`Secure; SameSite=None`)
               schema:
                 type: string
-
-        '400':
-          description: Invalid or malformed SAML response
           content:
-            application/json:
+            text/plain:
               schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '401':
-          description: SAML assertion validation failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '404':
-          description: Session expired or user not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '500':
-          description: Internal server error during SAML processing
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
+                type: string
+                description: Express redirect notice, `Found. Redirecting to <Location>`
 
   /saml/desktop/exchange:
     post:
@@ -22734,20 +23807,21 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required:
+                  - message
                 properties:
-                  error:
+                  message:
                     type: string
-        '400':
-          description: Invalid SAML response
+                    example: Auth configuration updated successfully
+        '401':
+          description: Unauthorized — missing, invalid or expired scoped token, or one without the `fetch:config` scope
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-        '401':
-          description: Unauthorized — missing or invalid access token
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — the configuration could not be reloaded
           content:
             application/json:
               schema:
@@ -24771,6 +25845,101 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /users/email/exists:
+    get:
+      tags:
+        - Users
+      summary: Look up users by email address (Internal)
+      description: |
+        Internal service-to-service endpoint used by the authentication service to find the
+        account behind an email address before a session exists.<br><br>
+        Returns every non-deleted user document whose `email` equals the given address, as a
+        bare JSON array. The array is empty when no account matches; the lookup is not limited
+        to the organization named in the token.<br><br>
+        <b>Note:</b> the address is read from the JSON <b>request body</b> of this `GET`
+        request. An `email` query parameter is ignored and fails validation as a missing body
+        field.<br><br>
+        Requires a scoped service token carrying the `user:lookup` scope. A regular session
+        token, a token with another scope, or a wrongly signed token is rejected with `401`.
+      operationId: checkUserExistsByEmail
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The email address to look up, sent as a JSON body on the GET request
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  description: Email address to look up
+            example:
+              email: jane.doe@example.com
+      responses:
+        '200':
+          description: Users matching the email address (empty array when none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '400':
+          description: Validation error - `email` is missing from the body or is not a valid email address
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - scoped token missing, invalid, expired, or lacking the `user:lookup` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/updateAppConfig:
+    post:
+      tags:
+        - Users
+      summary: Reload user management application configuration (Internal)
+      description: |
+        Internal endpoint called by the Configuration Manager after settings change. It
+        reloads the application configuration from the configuration store and rebinds the
+        mail and auth services and the user and organization controllers to it, so the user
+        management module picks up the new values without a restart.<br><br>
+        Takes no request body and is idempotent.<br><br>
+        Requires a scoped service token carrying the `fetch:config` scope. A regular session
+        token (even an organization admin's), a token with another scope, or a wrongly signed
+        token is rejected with `401`.
+      operationId: updateUsersAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Configuration reloaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+                    example: User configuration updated successfully
+        '401':
+          description: Unauthorized - scoped token missing, invalid, expired, or lacking the `fetch:config` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /users/me/role:
     get:
       tags:
@@ -24866,9 +26035,13 @@ paths:
                   description: The service account, or null to revert to the creator
       responses:
         '200':
-          description: Identity changed
+          description: Identity changed; the tokens the application had already issued are revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetOAuthAppTokenIdentityResponse'
         '400':
-          description: The service account is disabled
+          description: The service account is disabled, or `appId` / `serviceAccountId` is not a 24-character hex id
           content:
             application/json:
               schema:
@@ -24891,6 +26064,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
 
   /service-accounts:
     get:
@@ -25236,6 +26415,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Token lacks the required scope, or the caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such service account in this organisation
           content:
@@ -27937,6 +29120,50 @@ paths:
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /document/updateAppConfig:
+    post:
+      tags:
+        - Internal Storage
+      summary: Reload storage configuration (Internal)
+      description: |
+        Internal endpoint called by the Configuration Manager after the storage
+        settings change. It reloads the application configuration from the
+        configuration store and rebinds the storage configuration and controller,
+        so the storage routes pick up the new values without a restart. Nothing is
+        written: the call only reloads what is already stored.<br><br>
+        Takes no request body (one that is sent is ignored) and is idempotent.<br><br>
+        Requires a scoped service token carrying the `fetch:config` scope. A regular
+        session token (even an organization admin's), a token with another scope, or
+        a wrongly signed token is rejected with `401`.
+      operationId: updateStorageAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Storage configuration reloaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+                    example: Storage configuration updated successfully
+        '401':
+          description: Unauthorized - scoped token missing, invalid, expired, or lacking the `fetch:config` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The configuration could not be loaded from the configuration store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /artifacts:
     get:
       tags:
@@ -31736,8 +32963,8 @@ paths:
         a JSON body** on success (empty body); the **status code** is the upstream status, or **204**
         if none is returned.
 
-        On validation failure in the gateway (missing/blank `recordId`), the response is **400**
-        with a small JSON error object.
+        On validation failure in the gateway (blank, over-long or unsafe `recordId`), the response
+        is **400** with the standard error envelope.
       operationId: deleteConversationChatAttachment
       security:
         - bearerAuth: []
@@ -31746,25 +32973,24 @@ paths:
         - name: recordId
           in: path
           required: true
-          description: Attachment record id (from the upload response). Must be non-blank after trim.
+          description: |
+            Attachment record id (from the upload response). Must be non-blank after trim and
+            at most 256 characters.
           schema:
             type: string
+            minLength: 1
+            maxLength: 256
       responses:
         '204':
           description: Success with no content (typical when upstream returns 204).
         '400':
-          description: Missing or blank `recordId` after trim (gateway validation).
+          description: |
+            `recordId` is blank after trim or longer than 256 characters (`VALIDATION_ERROR`), or
+            is not a safe path segment (`HTTP_BAD_REQUEST`).
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required:
-                  - error
-                properties:
-                  error:
-                    type: string
-                    example: recordId is required
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
           content:
@@ -35480,9 +36706,24 @@ paths:
                     provider: "gemini"
                     model: "gemini-2.5-flash"
         '400':
-          description: Empty audio payload (`file` read returned 0 bytes).
+          description: |
+            The upload has no `file` part (answered by the gateway, `SpeechMissingAudioError`),
+            or the audio payload is empty - `file` read returned 0 bytes (answered by the
+            speech service, `SpeechProxyError`).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SpeechMissingAudioError'
+                  - $ref: '#/components/schemas/SpeechProxyError'
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth token lacks the `conversation:chat` scope.
           content:
             application/json:
               schema:
@@ -35491,24 +36732,47 @@ paths:
           description: |
             No Speech-to-Text provider is configured. The client should fall
             back to the browser Web Speech API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
         '413':
           description: |
             Audio payload exceeds the 25 MB limit. This matches OpenAI's
             `audio.transcriptions.create` ceiling and the soft cap enforced
             by the node proxy (`multer` `fileSize`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
         '500':
           description: |
             Runtime error — for example the optional `faster-whisper`
             package is not installed for the `whisper` provider, or
             `ffmpeg` is missing on the host for the `wispr` provider
-            (required to transcode audio to 16 kHz WAV).
+            (required to transcode audio to 16 kHz WAV). Relayed from the
+            speech service as `SpeechProxyError` with generic advice; an
+            unexpected failure inside the gateway itself uses the standard
+            `ErrorResponse` envelope.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SpeechProxyError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Upstream provider failure (message is intentionally
+            generic; see server logs for details).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
+        '503':
+          description: The gateway could not reach the speech service (connection refused or timeout).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '502':
-          description: Upstream provider failure (message is intentionally
-            generic; see server logs for details).
 
   /chat/speak:
     post:
@@ -35590,9 +36854,19 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: Request body missing or `text` is empty / whitespace.
+          description: The `text` field is empty or only whitespace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth token lacks the `conversation:chat` scope.
           content:
             application/json:
               schema:
@@ -35601,10 +36875,36 @@ paths:
           description: |
             No Text-to-Speech provider is configured. The client should fall
             back to the browser Web Speech API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
         '413':
           description: Text exceeds the 4096-character limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
+        '422':
+          description: |
+            The JSON body fails the speech service's validation - `text` is missing, or a
+            field has the wrong type. `detail` carries the one-line summary of what to fix.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
         '502':
           description: Upstream provider failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechProxyError'
+        '503':
+          description: The gateway could not reach the speech service (connection refused or timeout).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /chat/speech/capabilities:
     get:
@@ -35629,6 +36929,18 @@ paths:
                 $ref: '#/components/schemas/SpeechCapabilitiesResponse'
         '401':
           description: Unauthorized — valid bearer token required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth token lacks the `conversation:chat` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The gateway could not reach the speech service (connection refused or timeout).
           content:
             application/json:
               schema:
@@ -36560,6 +37872,50 @@ paths:
           description: |
             Unexpected server error while unarchiving the search.
 
+  /search/updateAppConfig:
+    post:
+      tags:
+        - Semantic Search
+      summary: Reload semantic search configuration (Internal)
+      description: |
+        Internal endpoint called by the Configuration Manager after settings change. It
+        reloads the application configuration from the configuration store and rebinds it
+        for the semantic search routes, so they pick up the new values without a restart.
+        Nothing is written: the call only reloads what is already stored.<br><br>
+        Takes no request body (one that is sent is ignored) and is idempotent.<br><br>
+        Requires a scoped service token carrying the `fetch:config` scope. A regular session
+        token (even an organization admin's), a token with another scope, or a wrongly signed
+        token is rejected with `401`.
+      operationId: updateSemanticSearchAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Configuration reloaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+                    example: User configuration updated successfully
+        '401':
+          description: Unauthorized - scoped token missing, invalid, expired, or lacking the `fetch:config` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The configuration could not be loaded from the configuration store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # -------------------- Agents --------------------
   /agents:
     get:
@@ -36960,6 +38316,143 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Unexpected AI-backend or gateway failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/web-search-usage/{provider}:
+    get:
+      tags:
+        - Agents
+      summary: List agents using a web search provider
+      description: |
+        Returns the non-deleted agents in the caller's organization whose
+        web search is set to `provider`. Used before removing a web search
+        provider configuration to show what still depends on it.
+
+        The provider is trimmed and lower-cased before matching. A provider
+        that is not one of the supported ones (`duckduckgo`, `serper`,
+        `tavily`, `exa`) is not an error: the list is simply empty. The list
+        is also empty when the AI backend answers with a non-200 status.
+
+        Query parameters are not accepted.
+      operationId: getAgentWebSearchProviderUsage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: Web search provider name (case-insensitive).
+          schema:
+            type: string
+            minLength: 1
+          example: serper
+      responses:
+        '200':
+          description: Agents using the provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentUsageResponse'
+              example:
+                success: true
+                agents:
+                  - name: Support Assistant
+                    _key: 5d2f5f0e-6a4f-4b0c-9a55-0c9f6c1f7a11
+                    creatorName: Jane Doe
+        '400':
+          description: |
+            Unknown query parameter, or a `provider` path segment that is
+            not safe to forward.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token lacks the `agent:read` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The AI backend could not be reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/model-usage/{model_key}:
+    get:
+      tags:
+        - Agents
+      summary: List agents using an AI model
+      description: |
+        Returns the non-deleted agents in the caller's organization that
+        reference the AI model `model_key`. Used before removing an AI model
+        configuration to show what still depends on it.
+
+        An agent matches when one of its model entries equals `model_key` or
+        starts with `model_key` followed by `_`. An unknown key is not an
+        error: the list is simply empty. The list is also empty when the AI
+        backend answers with a non-200 status.
+
+        Query parameters are not accepted.
+      operationId: getAgentModelUsage
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: model_key
+          in: path
+          required: true
+          description: Key of the configured AI model.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Agents using the model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentUsageResponse'
+              example:
+                success: true
+                agents:
+                  - name: Support Assistant
+                    _key: 5d2f5f0e-6a4f-4b0c-9a55-0c9f6c1f7a11
+                    creatorName: Jane Doe
+        '400':
+          description: |
+            Unknown query parameter, or a `model_key` path segment that is
+            not safe to forward.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token lacks the `agent:read` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The AI backend could not be reached
           content:
             application/json:
               schema:
@@ -37423,8 +38916,16 @@ paths:
         Same synchronous JSON ack contract as the assistant
         `POST /conversations/{conversationId}/cancel` — both forward to the
         same backend cancellation endpoint, since the run registry is keyed
-        by `runId` alone. `{ cancelled: false }` covers a `runId` that
-        already finished or was never registered.
+        by `runId` alone.
+
+        `cancelled` reports whether a stop request was issued, not whether a
+        run was actually stopped. With the default shared (key-value backed)
+        run registry, a `runId` that the answering worker does not hold is
+        published for whichever worker owns it, and the answer is
+        `{ cancelled: true }` even when the run already finished or was
+        never registered. `{ cancelled: false }` is returned for such a
+        `runId` only when the registry is in-process, or when the stop
+        request could not be published.
 
         `runId` must belong to a run started on THIS `conversationId` — a
         `runId` that exists but was registered under a different
@@ -37470,9 +38971,15 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - cancelled
                 properties:
                   cancelled:
                     type: boolean
+                    description: >-
+                      `true` when a stop request was issued for `runId`;
+                      `false` when the run is unknown to an in-process
+                      registry or the request could not be published.
         '400':
           description: Missing or malformed `runId`.
           content:
@@ -37489,6 +38996,10 @@ paths:
           description: >-
             `runId` exists but was registered under a different user, org,
             or conversation than this request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Conversation not found or unauthorized
           content:
@@ -49796,8 +51307,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Insufficient permissions for this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No scheduled job found for this connector
+          description: |
+            Either the connector has no scheduled or paused job (the controller's own
+            <code>success: false</code> body with <code>data: null</code>), or the connector
+            instance does not exist or is not visible to the caller (standard error envelope).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CrawlingJobNotFoundResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
 
   /crawlingManager/{connector}/{connectorId}/remove:
     delete:
@@ -49872,6 +51396,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden - Insufficient permissions for this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Job not found for this connector
           content:
@@ -49887,7 +51415,7 @@ paths:
       description: |
         Retrieve the status of all scheduled crawling jobs across the organization,
         including org-wide connectors and other members' personal connectors.
-        Only an organization admin may call this; a member is refused with 400.
+        Only an organization admin may call this; a member is refused with 403.
       operationId: getAllCrawlingJobStatus
       security:
         - bearerAuth: []
@@ -49902,16 +51430,15 @@ paths:
                 properties:
                   success:
                     type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "All job statuses retrieved successfully"
                   data:
                     type: array
+                    description: At most the 10 most recent pending, active or failed jobs per connector type
                     items:
                       $ref: '#/components/schemas/JobStatus'
-        '400':
-          description: Admin access required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
           content:
@@ -49919,7 +51446,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -49996,10 +51523,29 @@ paths:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
+                    example: true
                   message:
                     type: string
+                    example: "Crawling job paused successfully"
+                  data:
+                    type: object
+                    properties:
+                      connector:
+                        type: string
+                        description: Connector type, echoed from the path
+                        example: "Web"
+                      orgId:
+                        type: string
+                        description: Organization that owns the job
+                        example: "507f1f77bcf86cd799439012"
+                      pausedAt:
+                        type: string
+                        format: date-time
+                        description: When the job was paused
         '400':
-          description: Bad request — the request failed validation
+          description: Bad request — the path is invalid, the connector has no active job to pause, or the job is already paused
           content:
             application/json:
               schema:
@@ -50010,8 +51556,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Token lacks the required scope, or the caller may not manage this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Job not found
+          description: Connector instance not found or not visible to the caller
           content:
             application/json:
               schema:
@@ -50047,10 +51599,29 @@ paths:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
+                    example: true
                   message:
                     type: string
+                    example: "Crawling job resumed successfully"
+                  data:
+                    type: object
+                    properties:
+                      connector:
+                        type: string
+                        description: Connector type, echoed from the path
+                        example: "Web"
+                      orgId:
+                        type: string
+                        description: Organization that owns the job
+                        example: "507f1f77bcf86cd799439012"
+                      resumedAt:
+                        type: string
+                        format: date-time
+                        description: When the job was resumed
         '400':
-          description: Bad request — the request failed validation
+          description: Bad request — the path is invalid, or the connector has no paused job to resume
           content:
             application/json:
               schema:
@@ -50061,8 +51632,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Token lacks the required scope, or the caller may not manage this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Job not found
+          description: Connector instance not found or not visible to the caller
           content:
             application/json:
               schema:
@@ -50087,8 +51664,23 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Queue statistics retrieved successfully"
+                  data:
+                    $ref: '#/components/schemas/CrawlingQueueStats'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Token lacks the required scope
           content:
             application/json:
               schema:
@@ -50540,8 +52132,22 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '400':
+          description: |
+            The Streamable HTTP transport rejected the request, for example because the
+            `Mcp-Protocol-Version` header names a protocol version the server does not support.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTransportError'
         '405':
           description: Method Not Allowed (stateless mode does not support SSE streaming)
+        '406':
+          description: Not Acceptable - the `Accept` header does not include `text/event-stream`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTransportError'
         '401':
           description: Unauthorized
           content:
@@ -52495,3 +54101,274 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== API DOCUMENTATION ====================
+  /docs:
+    get:
+      tags:
+        - API Documentation
+      summary: API documentation UI
+      description: |
+        Returns the HTML page of the built-in API reference. The page loads its data from
+        `GET /docs/json` in the browser.
+
+        The route is a catch-all: every `GET` under `/docs` other than `/docs/health` and
+        `/docs/json` (for example `/docs/` or `/docs/any/sub/path`) returns this same page with
+        `200`, so there is no `404` under this prefix. Query parameters are ignored.
+
+        No authentication is required and a supplied token is not read.
+      operationId: getApiDocsUi
+      security: []
+      responses:
+        '200':
+          description: The documentation page
+          content:
+            text/html:
+              schema:
+                type: string
+                description: A complete HTML document.
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+
+  /docs/health:
+    get:
+      tags:
+        - API Documentation
+      summary: API documentation health check
+      description: |
+        Returns a fixed payload showing that the documentation router is mounted. It does not
+        check whether the specification was loaded. No authentication is required; query
+        parameters are ignored.
+      operationId: getApiDocsHealth
+      security: []
+      responses:
+        '200':
+          description: The documentation router is up
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiDocsHealthResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+
+  /docs/json:
+    get:
+      tags:
+        - API Documentation
+      summary: Get the unified API documentation
+      description: |
+        Returns the API reference as one JSON document: general info, the sidebar categories and
+        modules, every operation of this specification flattened into a list, and the component
+        schemas. Parameters, request bodies, responses and schemas are passed through as written
+        in the specification, with `$ref` references left unresolved.
+
+        The document is built from the specification file read at server start. If that file
+        could not be read, the answer is still `200` with empty `endpoints` and `schemas`.
+
+        No authentication is required; query parameters are ignored.
+      operationId: getApiDocsJson
+      security: []
+      responses:
+        '200':
+          description: The unified documentation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiDocsUnifiedResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: The documentation could not be built. The body is this route's own shape, not the standard error envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiDocsLoadErrorResponse'
+
+  # ==================== MAIL ====================
+  /mail/emails/sendEmail:
+    post:
+      tags:
+        - Mail
+      summary: Send a templated email (Internal)
+      description: |
+        Internal endpoint that renders one of the built-in email templates and sends it through
+        the SMTP server stored in the configuration manager. Other services call it with a scoped
+        service token carrying the `mail:send` scope; a user session token is rejected.
+
+        Checks run in this order:
+        1. The stored SMTP configuration must have `host`, `port` and `fromEmail`, otherwise `400` —
+           this check runs before the token check, so it answers `400` to every caller.
+        2. The bearer token must be a scoped token with the `mail:send` scope, otherwise `401`.
+        3. The template is rendered and the message is handed to the SMTP server, with a
+           25 second deadline.
+
+        When the SMTP server refuses the message, cannot be reached or misses the deadline, the
+        answer is `500` with a generic message; the cause is only written to the server log.
+      operationId: sendMailEmail
+      security:
+        - scopedToken: []
+      requestBody:
+        description: The template to render, its data and the recipients
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailSendEmailRequest'
+      responses:
+        '200':
+          description: The SMTP server accepted the message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailSendEmailResponse'
+        '400':
+          description: SMTP is not configured — the stored configuration lacks `host`, `port` or `fromEmail`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing token, a token not signed with the scoped-token secret (including user session tokens), an expired token, or a scoped token without the `mail:send` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The mail service has no SMTP configuration loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: The email could not be sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mail/updateSmtpConfig:
+    post:
+      tags:
+        - Mail
+      summary: Reload SMTP configuration (Internal)
+      description: |
+        Internal endpoint that re-reads the application configuration from the configuration
+        manager and rebinds it in the mail service, so a changed SMTP configuration takes effect
+        without a restart. The configuration manager calls it after the SMTP configuration is saved.
+
+        Requires a scoped service token carrying the `fetch:config` scope; a user session token is
+        rejected. The request body is ignored — nothing is written, the stored configuration is
+        only loaded again.
+      operationId: updateMailSmtpConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Configuration reloaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - message
+                properties:
+                  message:
+                    type: string
+                    example: SMTP configuration updated successfully
+        '401':
+          description: Missing token, a token not signed with the scoped-token secret (including user session tokens), an expired token, or a scoped token without the `fetch:config` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: The configuration could not be loaded from the configuration store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== HEALTH ====================
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Infrastructure health check
+      description: |
+        Reports the state of the infrastructure the Node.js backend depends on: Redis, the message
+        broker, MongoDB, the graph database, the vector database, and etcd when it is the
+        key-value store. The graph and vector databases are probed through the connectors service.
+
+        A failing dependency does not change the HTTP status: the answer is `200` and the failure
+        is reported in `status` and `services`.
+
+        No authentication is required and a supplied token is not read. Query parameters are ignored.
+      operationId: getInfrastructureHealth
+      security: []
+      responses:
+        '200':
+          description: Health report (also returned when a dependency is unhealthy)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfrastructureHealthResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+
+  /health/services:
+    get:
+      tags:
+        - Health
+      summary: Python services health check
+      description: |
+        Probes the `/health` endpoint of each Python service (query, connector, indexing, docling
+        and embedding; parsing and extraction too when `USE_PARSING_SERVICE=true`) and reports
+        the result per service. Only the query and connector services decide the overall `status`.
+
+        The answer is always `200`, including when services are down or the check itself fails.
+
+        No authentication is required and a supplied token is not read. Query parameters are ignored.
+      operationId: getServicesHealth
+      security: []
+      responses:
+        '200':
+          description: Health report (also returned when a service is unhealthy)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServicesHealthResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
