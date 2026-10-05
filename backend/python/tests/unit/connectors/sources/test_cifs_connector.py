@@ -668,17 +668,6 @@ class TestCifsConnectorStreamAndFilters:
             await cifs_connector.stream_record(_file_record(ext_id=f"{SHARE}/a.doc", revision="r"))
         assert exc.value.status_code == 404
 
-    async def test_list_shares_drops_ipc_and_admin(self, cifs_connector):
-        cifs_connector.data_source = FakeNetworkShareDataSource(
-            shares=[
-                ShareInfo(name="public", share_type="disk"),
-                ShareInfo(name="IPC$", share_type="ipc"),
-                ShareInfo(name="ADMIN$", share_type="disk"),
-            ]
-        )
-        result = await cifs_connector.get_filter_options("shares")
-        assert [opt.id for opt in result.options] == ["public"]
-
     def test_reparse_attribute_is_not_a_symlink(self):
         client = CifsClient(server="h", username="u", password="p", remote_name="HOST")
 
@@ -713,22 +702,11 @@ class TestCifsConnectorStreamAndFilters:
         assert junction.is_reparse is True
         assert junction.is_directory is True
 
-    async def test_filter_options_page_and_enum_fallback(self, cifs_connector):
-        cifs_connector.data_source = FakeNetworkShareDataSource(
-            shares=[
-                ShareInfo(name="a", share_type="disk"),
-                ShareInfo(name="b", share_type="disk"),
-                ShareInfo(name="c", share_type="disk"),
-            ]
-        )
-        page = await cifs_connector.get_filter_options("shares", page=2, limit=1)
-        assert [opt.id for opt in page.options] == ["b"]
-        cifs_connector.data_source = FakeNetworkShareDataSource(shares=ShareListingError("down"))
-        cifs_connector.configured_share = SHARE
-        fallback = await cifs_connector.get_filter_options("shares")
-        assert [opt.id for opt in fallback.options] == [SHARE]
-        with pytest.raises(ValueError):
-            await cifs_connector.get_filter_options("other")
+    async def test_there_are_no_dynamic_filter_options(self, cifs_connector):
+        cifs_connector.data_source = FakeNetworkShareDataSource()
+        for key in ("shares", "folder_paths"):
+            with pytest.raises(ValueError):
+                await cifs_connector.get_filter_options(key)
 
     async def test_reindex_records(self, cifs_connector, mock_processor):
         item = _entry("a.txt", file_id=3, size=10)
