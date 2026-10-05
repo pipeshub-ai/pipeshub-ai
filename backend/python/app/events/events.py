@@ -42,6 +42,7 @@ from app.events.dedup import (
 )
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
@@ -905,7 +906,9 @@ class EventProcessor:
         current_collection: str | None,
     ) -> bool:
         return (
-            twin.get("md5Checksum") == md5_checksum
+            # A twin moved to the trash meanwhile is losing its vectors.
+            is_live_record(twin)
+            and twin.get("md5Checksum") == md5_checksum
             and (twin.get("orgId") or "") == (doc.get("orgId") or "")
             and self._resolves_to_same_collection(twin, current_collection)
         )

@@ -249,6 +249,17 @@ class TestTheTwinChangesBeforeTheReRead:
         assert store.records["dup"].get("virtualRecordId") != "vr-edited"
         assert store.copied_relationships == []
 
+    async def test_a_twin_moved_to_the_trash_is_not_copied(self, store, processor) -> None:
+        add_twin(store, processor, NOT_STARTED, indexingStatus=IN_PROGRESS)
+        store.before_write[("dup", QUEUED)] = lambda: store.records["twin"].update(
+            indexingStatus=COMPLETED, extractionStatus=COMPLETED, virtualRecordId="vr-twin", isDeleted=True,
+        )
+
+        decision = await dedup(store, processor)
+
+        assert decision.skip_indexing is False, "its vectors are being removed with it"
+        assert store.copied_relationships == []
+
     async def test_a_twin_that_failed_first_leaves_the_duplicate_to_index_itself(self, store, processor) -> None:
         add_twin(store, processor, NOT_STARTED, indexingStatus=IN_PROGRESS)
 
