@@ -379,6 +379,7 @@ class TestAbstractMethodInventory:
         "delete_single_record",
         "soft_delete_records",
         "get_records_in_delete_batch",
+        "list_trashed_records",
         "restore_records",
         "get_purgeable_trashed_records",
         "purge_trashed_records",

@@ -1757,6 +1757,46 @@ export const restoreRecords =
   };
 
 /**
+ * One page of a collection's recently deleted items: what the caller may restore.
+ * The connector service scopes it to the caller's org and role on the collection.
+ */
+export const listTrash =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+      const { kbId } = req.params as { kbId: string };
+      const { page, limit } = req.query as { page?: string; limit?: string };
+      const query = new URLSearchParams({ page: page ?? '1', limit: limit ?? '25' });
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/trash?${query.toString()}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Listing deleted items',
+        'Deleted items not found',
+      );
+    } catch (error: any) {
+      logger.error('Error listing deleted items', {
+        kbId: req.params.kbId,
+        error: error.message,
+        status: error.response?.status,
+      });
+      next(handleBackendError(error, 'load the recently deleted items'));
+    }
+  };
+
+/**
  * Create permissions for multiple users on a knowledge base
  */
 export const createKBPermission =

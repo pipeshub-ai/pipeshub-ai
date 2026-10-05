@@ -13947,6 +13947,105 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction,
         ) or []
 
+    async def list_trashed_records(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        skip: int = 0,
+        limit: int = 25,
+        single_file_batches_only: bool = False,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.list_trashed_records``."""
+        if not connector_id or not org_id or limit <= 0:
+            return {"items": [], "total": 0}
+        rows = await self.execute_query(
+            """
+            LET roots = (
+                FOR r IN @@records
+                    FILTER r.connectorId == @connector_id AND r.orgId == @org_id
+                    FILTER r.isDeleted == true AND r.deletedAtTimestamp != null AND r.deleteBatchId != null
+                    LET parent = FIRST(
+                        FOR e IN @@record_relations
+                            FILTER e._to == r._id AND e.relationshipType IN @containment
+                            LET p = DOCUMENT(e._from)
+                            FILTER p != null AND IS_SAME_COLLECTION(@@records, p)
+                            RETURN p
+                    )
+                    FILTER parent == null OR parent.isDeleted != true OR parent.deleteBatchId != r.deleteBatchId
+                    FILTER NOT @single_only OR (
+                        LENGTH(
+                            FOR x IN @@records
+                                FILTER x.deleteBatchId == r.deleteBatchId AND x.isDeleted == true
+                                FILTER x.connectorId == @connector_id
+                                LIMIT 2
+                                RETURN 1
+                        ) == 1
+                        AND FIRST(
+                            FOR e IN @@is_of_type
+                                FILTER e._from == r._id
+                                LET t = DOCUMENT(e._to)
+                                FILTER t != null
+                                RETURN t.isFile
+                        ) == true
+                    )
+                    SORT r.deletedAtTimestamp DESC, r._key
+                    RETURN { id: r._id, parent: parent == null ? null : {
+                        key: parent._key, name: parent.recordName, deleted: parent.isDeleted == true
+                    } }
+            )
+            LET page = (
+                FOR root IN SLICE(roots, @skip, @limit)
+                    LET r = DOCUMENT(root.id)
+                    LET t = FIRST(
+                        FOR e IN @@is_of_type
+                            FILTER e._from == r._id
+                            LET d = DOCUMENT(e._to)
+                            FILTER d != null
+                            RETURN d
+                    )
+                    LET u = r.deletedByUserId == null ? null : DOCUMENT(@@users, r.deletedByUserId)
+                    RETURN {
+                        record: r,
+                        parentId: root.parent.key,
+                        parentName: root.parent.name,
+                        parentIsDeleted: root.parent == null ? null : root.parent.deleted,
+                        isFile: t.isFile,
+                        fileMimeType: t.mimeType,
+                        sizeInBytes: t.sizeInBytes,
+                        batchSize: LENGTH(
+                            FOR x IN @@records
+                                FILTER x.deleteBatchId == r.deleteBatchId AND x.isDeleted == true
+                                FILTER x.connectorId == @connector_id
+                                RETURN 1
+                        ),
+                        deletedByName: u == null ? null
+                            : (u.fullName ? u.fullName : TRIM(CONCAT_SEPARATOR(" ", u.firstName, u.lastName))),
+                        deletedByEmail: u.email
+                    }
+            )
+            RETURN { items: page, total: LENGTH(roots) }
+            """,
+            bind_vars={
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "single_only": single_file_batches_only,
+                "skip": max(skip, 0),
+                "limit": limit,
+                "containment": list(_CONTAINMENT_RELATIONS),
+                "@records": CollectionNames.RECORDS.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "@users": CollectionNames.USERS.value,
+            },
+            transaction=transaction,
+        )
+        found = rows[0] if rows else {"items": [], "total": 0}
+        for item in found["items"]:
+            item["deletedByName"] = item.get("deletedByName") or None
+        return found
+
     async def restore_records(
         self,
         restores: list[dict[str, Any]],

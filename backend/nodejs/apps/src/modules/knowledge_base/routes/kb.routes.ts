@@ -5,6 +5,7 @@ import {
   deleteRecord,
   restoreRecord,
   restoreRecords,
+  listTrash,
   getRecordById,
   updateRecord,
   getRecordBuffer,
@@ -36,6 +37,7 @@ import {
   deleteRecordSchema,
   restoreRecordSchema,
   restoreRecordsSchema,
+  listTrashSchema,
   reindexRecordGroupSchema,
   createKBSchema,
   getKBSchema,
@@ -459,6 +461,15 @@ export function createKnowledgeBaseRouter(
     requireScopes(OAuthScopeNames.KB_DELETE),
     ValidationMiddleware.validate(deletePermissionsSchema),
     removeKBPermission(appConfig),
+  );
+
+  // A collection's recently deleted items; the same scope as restore, since it lists what may be restored
+  router.get(
+    '/:kbId/trash',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
+    ValidationMiddleware.validate(listTrashSchema),
+    listTrash(appConfig),
   );
 
   // Move record (file or folder) to another location

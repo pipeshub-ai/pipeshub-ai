@@ -4399,6 +4399,38 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_trashed_records(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        skip: int = 0,
+        limit: int = 25,
+        single_file_batches_only: bool = False,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """One page of what delete actions put in the trash in one connector (a KB), newest first.
+
+        Lists the root of each delete batch: a record in the trash, in
+        ``org_id`` and ``connector_id``, with a ``deletedAtTimestamp`` and a
+        ``deleteBatchId``, whose ``PARENT_CHILD`` or ``ATTACHMENT`` parent is
+        not in the same batch. A folder deleted with its contents is one item,
+        and restoring any root brings back its whole batch. With
+        ``single_file_batches_only``, only batches of one file are listed (what
+        a file organizer may restore). Sorted by ``deletedAtTimestamp``
+        descending, then key.
+
+        Returns ``items`` and ``total`` (roots in all pages). Each item is
+        ``record`` (the stored document, ``_key`` set on both backends),
+        ``parentId``, ``parentName`` and ``parentIsDeleted`` for the record it
+        hangs under (None at the KB root), ``isFile``, ``fileMimeType`` and
+        ``sizeInBytes`` from its type doc, ``batchSize`` (records in its batch
+        in this connector) and ``deletedByName`` and ``deletedByEmail`` for the
+        user in ``deletedByUserId`` (None when unknown). A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def restore_records(
         self,
         restores: list[dict[str, Any]],

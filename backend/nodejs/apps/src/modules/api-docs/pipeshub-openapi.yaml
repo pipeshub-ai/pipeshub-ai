@@ -5275,6 +5275,114 @@ components:
         renamePendingReason:
           type: string
 
+    TrashItemSchema:
+      type: object
+      additionalProperties: false
+      description: What one delete removed; restoring it brings back all of it.
+      required:
+        - id
+        - isFolder
+        - parentInTrash
+        - itemCount
+        - deletedAtTimestamp
+      properties:
+        id:
+          type: string
+          description: Record ID to restore
+        name:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        isFolder:
+          type: boolean
+          description: A folder, deleted with everything in it
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          format: int64
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+          description: The folder it was in; null at the collection's top level
+        parentName:
+          type: string
+          nullable: true
+        parentInTrash:
+          type: boolean
+          description: That folder is in the trash too; restore it first
+        itemCount:
+          type: integer
+          description: Records this delete removed, this one included
+        deletedAtTimestamp:
+          type: integer
+          format: int64
+        deletedBy:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+        removableAfterTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: From when the scheduled cleanup may remove it for good; null when unknown
+
+    ListTrashResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/{kbId}/trash.
+      required:
+        - success
+        - items
+        - pagination
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrashItemSchema'
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+            - page
+            - limit
+            - totalCount
+            - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+        retention:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - minAgeMs
+          properties:
+            minAgeMs:
+              type: integer
+              format: int64
+              description: Items stay at least this long before the cleanup may remove them
+
     RestoreRecordsRequestBody:
       type: object
       additionalProperties: false
@@ -25026,6 +25134,105 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while restoring records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/{kbId}/trash:
+    get:
+      tags:
+        - Knowledge Base
+      summary: List a collection's recently deleted items
+      description: |
+        One page of what was deleted from a collection and can still be restored,
+        newest first. Each item is what one delete removed: a folder deleted with its
+        contents is one item, and `itemCount` says how many records it holds.
+        Restore an item with `POST /knowledgeBase/record/{recordId}/restore`, using its `id`.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Who sees what:** the list holds what the caller may restore. OWNER and
+        WRITER see every item; FILEORGANIZER sees single files only; other roles are
+        refused. The workspace and user always come from the sign-in.
+
+        **Removed for good:** the scheduled cleanup may remove an item from
+        `removableAfterTimestamp` on (at least 14 days after it was deleted by
+        default; it runs every 14 days, so an item stays 14 to 28 days). It is
+        absent when the retention settings can't be read.
+
+        An item whose folder is also in the trash (`parentInTrash`) can only be
+        restored after that folder.
+      operationId: listTrash
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:delete]
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Collection (knowledge base) ID
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: One page of recently deleted items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTrashResponseSchema'
+        '400':
+          description: page or limit is not a whole number in range. Ask for a page from 1 up, with 1 to 100 items per page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: the trash is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), or the OAuth
+            token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such collection in this workspace, or the caller has no role on it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while listing deleted items
           content:
             application/json:
               schema:

@@ -120,6 +120,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_purgeable_trashed_records": (
         Rule.ALL, "the purge reads only the trash: records past the retention, never a live one",
     ),
+    "list_trashed_records": (
+        Rule.ALL, "the Recently deleted page lists only the trash: what a user may restore, never a live record",
+    ),
     "get_descendant_virtual_record_ids": (
         Rule.ALL,
         "a storage move takes every stored file under the folder, or a restored record would lose its content",

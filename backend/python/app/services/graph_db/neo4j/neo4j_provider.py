@@ -11980,6 +11980,102 @@ class Neo4jProvider(IGraphDBProvider):
             })
         return items
 
+    async def list_trashed_records(
+        self,
+        connector_id: str,
+        org_id: str,
+        *,
+        skip: int = 0,
+        limit: int = 25,
+        single_file_batches_only: bool = False,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See ``IGraphDBProvider.list_trashed_records``."""
+        if not connector_id or not org_id or limit <= 0:
+            return {"items": [], "total": 0}
+        skip = max(skip, 0)
+        roots = await self.client.execute_query(
+            """
+            MATCH (r:Record)
+            WHERE r.connectorId = $connector_id AND r.orgId = $org_id
+              AND r.isDeleted = true AND r.deletedAtTimestamp IS NOT NULL AND r.deleteBatchId IS NOT NULL
+            OPTIONAL MATCH (p:Record)-[rel:RECORD_RELATION]->(r)
+            WHERE rel.relationshipType IN $containment
+            WITH r, head(collect(p)) AS p
+            WHERE (p IS NULL OR coalesce(p.isDeleted, false) <> true
+                   OR p.deleteBatchId IS NULL OR p.deleteBatchId <> r.deleteBatchId)
+              AND (NOT $single_only OR (
+                  COUNT {
+                      MATCH (x:Record {deleteBatchId: r.deleteBatchId})
+                      WHERE x.isDeleted = true AND x.connectorId = $connector_id
+                  } = 1
+                  AND EXISTS { MATCH (r)-[:IS_OF_TYPE]->(t) WHERE t.isFile = true }
+              ))
+            WITH r, p ORDER BY r.deletedAtTimestamp DESC, r.id
+            WITH collect({
+                id: r.id,
+                parent: CASE WHEN p IS NULL THEN null
+                        ELSE {id: p.id, name: p.recordName, deleted: coalesce(p.isDeleted, false) = true} END
+            }) AS roots
+            RETURN size(roots) AS total, roots[$skip..$end] AS page
+            """,
+            parameters={
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "single_only": single_file_batches_only,
+                "containment": list(_CONTAINMENT_RELATIONS),
+                "skip": skip,
+                "end": skip + limit,
+            },
+            txn_id=transaction,
+        )
+        head = roots[0] if roots else {"total": 0, "page": []}
+        page = head.get("page") or []
+        if not page:
+            return {"items": [], "total": head.get("total") or 0}
+        rows = await self.client.execute_query(
+            """
+            UNWIND $ids AS rid
+            MATCH (r:Record {id: rid})
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH r, head(collect(t)) AS t
+            OPTIONAL MATCH (u:User {id: r.deletedByUserId})
+            WITH r, t, head(collect(u)) AS u
+            RETURN r.id AS id, properties(r) AS rec,
+                   t.isFile AS is_file, t.mimeType AS file_mime, t.sizeInBytes AS size,
+                   COUNT {
+                       MATCH (x:Record {deleteBatchId: r.deleteBatchId})
+                       WHERE x.isDeleted = true AND x.connectorId = $connector_id
+                   } AS batch_size,
+                   CASE WHEN u IS NULL THEN null
+                        WHEN coalesce(u.fullName, '') <> '' THEN u.fullName
+                        ELSE trim(coalesce(u.firstName, '') + ' ' + coalesce(u.lastName, '')) END AS user_name,
+                   u.email AS user_email
+            """,
+            parameters={"ids": [root["id"] for root in page], "connector_id": connector_id},
+            txn_id=transaction,
+        )
+        details = {row["id"]: row for row in rows or []}
+        items = []
+        for root in page:
+            row = details.get(root["id"])
+            if row is None:
+                continue
+            parent = root.get("parent")
+            items.append({
+                "record": self._neo4j_to_arango_node(dict(row["rec"]), CollectionNames.RECORDS.value),
+                "parentId": parent["id"] if parent else None,
+                "parentName": parent["name"] if parent else None,
+                "parentIsDeleted": parent["deleted"] if parent else None,
+                "isFile": row.get("is_file"),
+                "fileMimeType": row.get("file_mime"),
+                "sizeInBytes": row.get("size"),
+                "batchSize": row.get("batch_size") or 0,
+                "deletedByName": row.get("user_name") or None,
+                "deletedByEmail": row.get("user_email"),
+            })
+        return {"items": items, "total": head.get("total") or 0}
+
     async def restore_records(
         self,
         restores: list[dict[str, Any]],
