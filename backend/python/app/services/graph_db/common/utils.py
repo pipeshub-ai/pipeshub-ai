@@ -388,3 +388,13 @@ def uploaded_document_id(record: Dict[str, Any], type_doc: Optional[Dict[str, An
     if isinstance(document_id, str) and _STORAGE_DOCUMENT_ID.match(document_id):
         return document_id
     return None
+
+
+def jira_issue_browse_url_regex(issue_key: str) -> str:
+    """A regex matching a Jira webUrl for exactly ``issue_key``.
+
+    The key must end the URL or be followed by ``/``, ``?`` or ``#``, so ENG-1
+    does not match ENG-12. The leading ``.*`` and trailing ``$`` make it mean
+    the same under Neo4j's whole-string ``=~`` and Arango's substring REGEX_TEST.
+    """
+    return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"

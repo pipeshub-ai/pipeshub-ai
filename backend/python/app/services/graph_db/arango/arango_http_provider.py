@@ -168,6 +168,7 @@ from app.services.graph_db.common.utils import (
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
+    jira_issue_browse_url_regex,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -5010,24 +5011,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "🚀 Retrieving record for Jira issue key %s %s", connector_id, issue_key
             )
 
-            # Search for record where weburl contains "/browse/{issue_key}" and record_type is TICKET
-            # Also join with tickets collection to get the type field (for Epic detection)
+            # Joins the tickets collection for the type field (Epic detection).
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
                 FILTER record.connectorId == @connector_id
                     AND record.recordType == @record_type
                     AND record.webUrl != null
-                    AND CONTAINS(record.webUrl, @browse_pattern)
+                    AND REGEX_TEST(record.webUrl, @browse_pattern_regex)
                 LET ticket = DOCUMENT({CollectionNames.TICKETS.value}, record._key)
                 LIMIT 1
                 RETURN {{ record: record, ticket: ticket }}
             """
 
-            browse_pattern = f"/browse/{issue_key}"
             bind_vars = {
                 "connector_id": connector_id,
                 "record_type": "TICKET",
-                "browse_pattern": browse_pattern
+                "browse_pattern_regex": jira_issue_browse_url_regex(issue_key),
             }
 
             results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)

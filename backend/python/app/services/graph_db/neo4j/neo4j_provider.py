@@ -12,7 +12,6 @@ import random
 import hashlib
 import json
 import os
-import re
 import time
 import traceback
 import unicodedata
@@ -111,6 +110,7 @@ from app.services.graph_db.common.utils import (
     build_connector_stats_response,
     dedupe_agents_by_id,
     empty_soft_delete_result,
+    jira_issue_browse_url_regex,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -3472,13 +3472,6 @@ class Neo4jProvider(IGraphDBProvider):
                 f"🚀 Retrieving record for Jira issue key {connector_id} {issue_key}"
             )
 
-            # Search for record where weburl contains "/browse/{issue_key}" and record_type is TICKET
-            # Neo4j uses regex pattern matching with =~ operator for string contains
-            browse_pattern = f"/browse/{issue_key}"
-            # Escape special regex characters in the pattern
-            escaped_pattern = re.escape(browse_pattern)
-            browse_pattern_regex = f".*{escaped_pattern}.*"
-
             query = """
             MATCH (record:Record)
             WHERE record.connectorId = $connector_id
@@ -3492,7 +3485,7 @@ class Neo4jProvider(IGraphDBProvider):
             parameters = {
                 "connector_id": connector_id,
                 "record_type": "TICKET",
-                "browse_pattern_regex": browse_pattern_regex
+                "browse_pattern_regex": jira_issue_browse_url_regex(issue_key),
             }
 
             results = await self.client.execute_query(
