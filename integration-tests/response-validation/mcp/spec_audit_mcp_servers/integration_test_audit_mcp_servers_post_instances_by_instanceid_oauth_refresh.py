@@ -37,13 +37,16 @@ def test_oauth_instance_without_credential_is_bad_request(
     assert_strict_openapi_response(resp, ROUTE)
 
 
-def test_unknown_instance_is_bad_request_not_404(
+@pytest.mark.xfail(
+    strict=True,
+    reason="API bug: refresh never loads the instance, so an unknown id is a 400 naming "
+    "the internal credential store path instead of the 404 every sibling route returns",
+)
+def test_unknown_instance_is_not_found(
     mcp_servers_client: McpServersClient,
 ) -> None:
-    # The handler never loads the instance: it only looks up the caller's credential
-    # record, so an unknown id fails the same way as an unauthenticated one.
     resp = mcp_servers_client.post(_refresh_path(MISSING_INSTANCE_ID))
-    assert resp.status_code == 400, resp.text[:500]
+    assert resp.status_code == 404, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
 
 
