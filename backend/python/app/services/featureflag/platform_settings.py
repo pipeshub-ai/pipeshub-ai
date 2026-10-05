@@ -113,6 +113,14 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)
 
 
+async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Whether a record delete moves the record to the trash instead of removing it.
+
+    Read live on every delete. Defaults to DISABLED: off means today's hard delete.
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_SOFT_DELETE, default=False)
+
+
 async def is_user_context_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Org-level gate for injecting user/org profile into the default
     assistant and Universal Agent Mode system prompts. Source of truth is

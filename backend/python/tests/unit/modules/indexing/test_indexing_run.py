@@ -217,6 +217,40 @@ class TestIndexingPipelineBulkDelete:
         pipeline.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("keep_mapping", [False, True])
+    async def test_a_soft_delete_keeps_the_mapping_row(self, keep_mapping) -> None:
+        """The row leads to the record's stored content, which stays until the purge."""
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-1"], keep_mapping=keep_mapping)
+
+        assert result["success"] is True
+        pipeline.vector_db_service.delete_points.assert_awaited_once()
+        assert pipeline.graph_provider.delete_nodes.await_count == (0 if keep_mapping else 1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("keep_mapping", [False, True])
+    async def test_a_soft_delete_keeps_the_stored_content(self, keep_mapping) -> None:
+        """With storage cleanup wired, keep_mapping must skip it too, not just the row delete."""
+        pipeline = _make_indexing_pipeline()
+        pipeline.stored_content = AsyncMock()
+        pipeline.stored_content.release_virtual_records = AsyncMock(return_value=[])
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-1"], "org-1", keep_mapping=keep_mapping)
+
+        assert result["success"] is True
+        assert result["stored_content_pending"] == 0
+        pipeline.vector_db_service.delete_points.assert_awaited_once()
+        assert pipeline.stored_content.release_virtual_records.await_count == (0 if keep_mapping else 1)
+
+    @pytest.mark.asyncio
     async def test_an_unreadable_graph_skips_instead_of_deleting(self):
         """The connector purge keeps its own copy of the candidate read, so
         the raise inside rewrite_or_delete does not reach it. An unreadable
