@@ -514,6 +514,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.oauth_config_registry = oauth_registry
     logger.info("✅ OAuth config registry initialized")
 
+    # Needs the connectors' OAuth registrations, so it runs after the registry is built.
+    try:
+        from app.migrations.connector_oauth_toolset_fields_migration import (
+            run_connector_oauth_toolset_fields_repair,
+        )
+
+        repair_result = await run_connector_oauth_toolset_fields_repair(
+            app_container.config_service(), oauth_registry, logger
+        )
+        if not repair_result.get("skipped"):
+            logger.info(
+                "Connector OAuth app repair: %s app(s) repaired, %s failure(s)",
+                repair_result.get("apps_repaired", 0),
+                repair_result.get("failures", 0),
+            )
+    except Exception as e:
+        logger.error(f"❌ Connector OAuth app repair failed: {e}", exc_info=True)
+
     logger.debug("🚀 Starting application")
 
     # Start messaging producer first

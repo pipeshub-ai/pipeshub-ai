@@ -765,6 +765,44 @@ class TestLifespan:
                 assert mock_app.container is mock_container
                 assert mock_app.state.connector_registry is mock_registry
 
+    async def test_connector_oauth_repair_runs_after_the_registry_and_its_failure_does_not_stop_startup(self) -> None:
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        mock_container.data_store = AsyncMock(return_value=_make_data_store())
+        mock_app = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry._connectors = {}
+        calls: list[str] = []
+
+        async def _registry(*_args: object) -> MagicMock:
+            calls.append("registry")
+            return mock_registry
+
+        async def _repair(*_args: object) -> dict:
+            calls.append("repair")
+            raise RuntimeError("store did not answer")
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", side_effect=_registry),
+            patch(
+                "app.migrations.connector_oauth_toolset_fields_migration.run_connector_oauth_toolset_fields_repair",
+                side_effect=_repair,
+            ) as mock_repair,
+            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
+        ):
+            async with lifespan(mock_app):
+                assert mock_app.state.connector_registry is mock_registry
+
+        assert calls == ["registry", "repair"]
+        assert mock_repair.call_args.args[0] is mock_container.config_service.return_value
+
     async def test_startup_service_init_failure_continues(self):
         """Startup service init failure does not prevent startup."""
         from app.connectors_main import lifespan
