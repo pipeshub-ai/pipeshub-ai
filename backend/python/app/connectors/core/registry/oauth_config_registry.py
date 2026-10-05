@@ -122,7 +122,7 @@ class OAuthConfigRegistry:
 
     def remove_config(self, connector_name: str, *, source: str | None = None) -> bool:
         """Remove the OAuth configuration ``source`` registered for a name, or both when no source is given"""
-        stores = [self._store(source)] if source else [self._configs, self._toolset_configs]
+        stores = [self._store(source)] if source is not None else [self._configs, self._toolset_configs]
         removed = False
         for store in stores:
             if connector_name in store:

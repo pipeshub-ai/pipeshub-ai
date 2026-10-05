@@ -119,6 +119,12 @@ class TestRegistryKeepsEachSide:
         with pytest.raises(ValueError):
             OAuthConfigRegistry().register(_connector_drive(), source="mcp")
 
+    def test_an_empty_source_is_refused_rather_than_removing_both_sides(self) -> None:
+        registry = _startup_order_registry()
+        with pytest.raises(ValueError):
+            registry.remove_config("Drive", source="")
+        assert registry.get_config("Drive", source=TOOLSET_SOURCE).redirect_uri == "toolsets/oauth/callback/drive"
+
 
 class TestConnectorOAuthAppDefaults:
     @pytest.mark.asyncio
