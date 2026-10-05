@@ -371,10 +371,11 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
         if isinstance(graph, Neo4jProvider):
-            # The purge walks this index; ensure_schema creates it on a real install.
-            await graph.client.execute_query(
-                "CREATE INDEX record_deleted_at IF NOT EXISTS FOR (n:Record) ON (n.deletedAtTimestamp)"
-            )
+            # The indexes ensure_schema creates on a real install, the purge's walk index
+            # among them: without it online the purge waits instead of running.
+            for statement in graph._generate_performance_indexes():
+                await graph.client.execute_query(statement)
+            await graph.client.execute_query("CALL db.awaitIndexes(300)")
         flag = AsyncMock(return_value=True)
         monkeypatch.setattr(processor_module, "is_soft_delete_enabled", flag)
         monkeypatch.setattr(purge_module, "is_soft_delete_enabled", flag)
