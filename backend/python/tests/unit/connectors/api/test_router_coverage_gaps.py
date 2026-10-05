@@ -902,7 +902,7 @@ class TestGetConnectorStatsGaps:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         result = await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
@@ -914,7 +914,7 @@ class TestGetConnectorStatsGaps:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -928,7 +928,7 @@ class TestGetConnectorStatsGaps:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(side_effect=RuntimeError("boom"))
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:

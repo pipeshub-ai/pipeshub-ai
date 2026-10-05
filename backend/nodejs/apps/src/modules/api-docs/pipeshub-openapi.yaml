@@ -35223,9 +35223,13 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Insufficient OAuth scope or no access to connector stats
+          description: |
+            Insufficient OAuth scope, or a collection the caller has a role on
+            below READER
         '404':
-          description: Connector not found
+          description: |
+            Connector not found, or one the caller cannot open (another user's
+            personal connector, admins included)
 
   /connectors/record/{recordId}/content:
     get:

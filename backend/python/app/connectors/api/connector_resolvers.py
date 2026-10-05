@@ -15,6 +15,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.api.middlewares.auth import is_request_admin
+from app.utils.user_messages import not_found
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,11 @@ async def authorize_connector_stats(
     connector_id: str,
     org_id: str,
 ) -> None:
-    """OSS: the caller's org, then KB role or can_user_view_connector."""
+    """OSS: the caller's org, then KB role or the connector read gate.
+
+    A connector the caller may not open answers 404 like every other read, so
+    stats never confirm that someone else's personal connector exists.
+    """
     user_id = request.state.user.get("userId")
     is_admin = is_request_admin(request)
 
@@ -60,8 +65,8 @@ async def authorize_connector_stats(
     # Another org's connector answers like a missing one, so its id is not confirmed.
     if not app_doc or not await connector_registry.belongs_to_org(app_doc, org_id):
         raise HTTPException(
-            status_code=404,
-            detail=f"Connector instance {connector_id} not found",
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=not_found("This connector"),
         )
 
     if app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
@@ -72,6 +77,12 @@ async def authorize_connector_stats(
                 detail=f"User not found for user_id: {user_id}",
             )
         user_role = await graph_provider.get_user_kb_permission(connector_id, user.get("_key"))
+        # No role at all means the caller cannot see the collection; the KB reads answer 404 there too.
+        if not user_role:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=not_found("This connector"),
+            )
         if user_role not in ("OWNER", "WRITER", "READER"):
             raise HTTPException(
                 status_code=403,
@@ -82,13 +93,13 @@ async def authorize_connector_stats(
             )
         return
 
-    can_view = await connector_registry.can_user_view_connector(
-        connector_id, app_doc, user_id, is_admin=is_admin
+    connector = await connector_registry.get_connector_instance(
+        connector_id, user_id, org_id, is_admin=is_admin
     )
-    if not can_view:
+    if not connector:
         raise HTTPException(
-            status_code=403,
-            detail=f"Insufficient permissions to access stats for connector {connector_id}",
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=not_found("This connector"),
         )
 
 

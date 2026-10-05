@@ -1541,7 +1541,7 @@ class TestGetConnectorStatsEndpoint:
         })
 
         connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
+        connector_registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
@@ -1569,7 +1569,7 @@ class TestGetConnectorStatsEndpoint:
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
 
         connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
+        connector_registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
