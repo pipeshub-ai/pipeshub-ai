@@ -1,0 +1,209 @@
+name: SDK Tests
+
+# Tests the TypeScript, Python and Go SDKs against the app built from this commit.
+#   Current run:  SDKs generated from this commit's spec. A failure is BLOCK.
+#   Previous run: the last released SDKs (.github/sdk-test-matrix.yaml). A failure is FLAG.
+# One job, one app: the three suites run side by side and each test checks only what it created.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'deployment/docker-compose/**'
+      - 'integration-tests/sdk_tests/**'
+      - '.github/sdk-test-matrix.yaml'
+      - '.github/workflows/sdk-tests.yml'
+      - 'Dockerfile'
+  # Daily at 01:00 IST (Asia/Kolkata); Actions cron is UTC -> 19:30 UTC.
+  schedule:
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+  # generate-sdks.yml in pipeshub-ai/open-api installs this version; workflow.yaml there pins the
+  # generator the CLI then switches to. Keep both in step so the SDK under test equals the published one.
+  SPEAKEASY_VERSION: v1.739.0
+  OPEN_API_REF: a3f82813eda8c5f60648e16b3d46c1967cff987f
+  COMPOSE_FILE: docker-compose.integration.neo4j.yml
+  SDK_WORK_DIR: ${{ github.workspace }}/sdk-work
+  SDK_RELEASED_DIR: ${{ github.workspace }}/sdk-released
+  SDK_REPORTS_DIR: ${{ github.workspace }}/sdk-reports
+
+jobs:
+  sdk-tests:
+    name: SDK tests (TypeScript, Python, Go)
+    # A fork's pull request gets no secrets; the nightly run covers what forks merge.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: write
+    environment:
+      name: ${{ github.event_name == 'pull_request' && 'integration-test-dev' || 'integration-test-daily' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout the SDK generation settings
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/open-api
+          ref: ${{ env.OPEN_API_REF }}
+          path: open-api
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # Speakeasy lints the Go SDK with staticcheck v0.6.1, which cannot read packages built by a newer Go.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Install Speakeasy CLI
+        run: |
+          curl -fsSL -o /tmp/speakeasy.zip "https://github.com/speakeasy-api/speakeasy/releases/download/${SPEAKEASY_VERSION}/speakeasy_linux_amd64.zip"
+          sudo unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
+          pip install --quiet pyyaml
+
+      # A language that fails to generate has no suite to run, which the report reads as BLOCK.
+      - name: Generate the SDKs and their tests
+        id: generate
+        continue-on-error: true
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+        run: integration-tests/sdk_tests/generate_sdks.sh open-api "$SDK_WORK_DIR"
+
+      - name: Pull pre-built base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+
+      - name: Build the app
+        working-directory: deployment/docker-compose
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: docker compose -f "$COMPOSE_FILE" build pipeshub-ai
+
+      - name: Start the app
+        working-directory: deployment/docker-compose
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: docker compose -f "$COMPOSE_FILE" up -d
+
+      - name: Wait for the app
+        run: |
+          for path in /api/v1/health /api/v1/health/services; do
+            timeout 600 bash -c "
+              until curl -sf '${PIPESHUB_BASE_URL}${path}' | grep -q '\"status\":\"healthy\"'; do sleep 5; done
+            "
+          done
+
+      - name: Provision the app
+        working-directory: integration-tests
+        env:
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          TEST_AI_MODEL_PROVIDER: azureOpenAI
+          TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+          TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+          TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+        run: uv run --no-project --with requests --with pydantic python sdk_tests/provision_sdk_test_env.py
+
+      # The suites get only the OAuth app the provisioning step wrote to $GITHUB_ENV.
+      - name: 'Current run: generated SDKs'
+        id: current
+        continue-on-error: true
+        run: integration-tests/sdk_tests/run_sdk_tests.sh current "$SDK_WORK_DIR" "$SDK_REPORTS_DIR"
+
+      - name: 'Previous run: last released SDKs'
+        id: previous
+        continue-on-error: true
+        run: |
+          mapfile -t passed < <(python3 integration-tests/sdk_tests/report.py "$SDK_REPORTS_DIR" --current-passed)
+          if [ ${#passed[@]} -eq 0 ]; then
+            echo "No SDK passed the current run; the previous run does not start."
+            exit 0
+          fi
+          integration-tests/sdk_tests/checkout_released_sdks.sh .github/sdk-test-matrix.yaml "$SDK_RELEASED_DIR" "${passed[@]}"
+          integration-tests/sdk_tests/run_sdk_tests.sh previous "$SDK_RELEASED_DIR" "$SDK_REPORTS_DIR" "${passed[@]}"
+
+      - name: Report
+        id: report
+        if: ${{ !cancelled() }}
+        env:
+          SDK_TEST_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          status=0
+          python3 integration-tests/sdk_tests/report.py "$SDK_REPORTS_DIR" --out "$SDK_REPORTS_DIR/report" || status=$?
+          echo "verdict=$(cat "$SDK_REPORTS_DIR/report/verdict.txt")" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Comment on the pull request
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERDICT: ${{ steps.report.outputs.verdict }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --edit-last --create-if-none \
+            --body-file "$SDK_REPORTS_DIR/report/summary.md"
+          if [ "$VERDICT" = FLAG ]; then
+            gh label create breaks-previous-sdk --repo "$GITHUB_REPOSITORY" --color D93F0B \
+              --description "Breaks the last released SDK" 2>/dev/null || true
+            gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label breaks-previous-sdk
+          fi
+
+      - name: Collect Docker logs
+        if: ${{ always() }}
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p "$SDK_REPORTS_DIR/docker-logs"
+          docker compose -f "$COMPOSE_FILE" ps -a > "$SDK_REPORTS_DIR/docker-logs/_containers.txt" 2>&1 || true
+          for svc in $(docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null); do
+            docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps "$svc" \
+              > "$SDK_REPORTS_DIR/docker-logs/${svc}.log" 2>&1 || true
+          done
+
+      # TODO(siddhant-ota, PA-2590): send report/slack.json to Slack once the channel is decided; it is only saved for now.
+      - name: Upload the reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdk-test-reports
+          path: ${{ env.SDK_REPORTS_DIR }}
+          retention-days: 14
+
+      - name: Stop the app
+        if: ${{ always() }}
+        working-directory: deployment/docker-compose
+        run: docker compose -f "$COMPOSE_FILE" down -v

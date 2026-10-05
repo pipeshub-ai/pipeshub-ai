@@ -1,7 +1,8 @@
 # SDK tests
 
-Tests the TypeScript, Python and Go SDKs against a running app. Every step of the
-SDK tests workflow calls a script in this folder, so the same run works on a laptop.
+Tests the TypeScript, Python and Go SDKs against a running app. The workflow is
+`.github/workflows/sdk-tests.yml`; every step in it calls a script in this folder,
+so the same run works on a laptop.
 
 | Run | SDK | Verdict when it fails |
 | --- | --- | --- |
