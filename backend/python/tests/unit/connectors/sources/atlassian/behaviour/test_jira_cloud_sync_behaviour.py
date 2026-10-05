@@ -746,6 +746,12 @@ def gone(api: AtlassianApiStub, *refs: int | str) -> None:
         ))
 
 
+ENG_2_DELETED = {
+    "records": [{"objectItem": {"typeName": "ISSUE_DELETE", "name": "ENG-2"}, "created": "2024-05-03T10:00:00.000+0000"}],
+    "total": 1,
+}
+
+
 class TestDeletedIssuesFoundByComparingIds:
     async def test_an_issue_deleted_in_jira_is_removed_by_the_next_sync(
         self, api, site_db, checkpoints, listing, fresh_notification_memory
@@ -841,10 +847,7 @@ class TestDeletedIssuesFoundByComparingIds:
     async def test_a_paid_plan_site_finds_deletions_in_the_audit_log_without_listing_ids(
         self, api, keyed_db, checkpoints, listing, fresh_notification_memory
     ) -> None:
-        api.on("GET", AUDIT, {
-            "records": [{"objectItem": {"typeName": "ISSUE_DELETE", "name": "ENG-2"}, "created": "2024-05-03T10:00:00.000+0000"}],
-            "total": 1,
-        })
+        api.on("GET", AUDIT, [{"records": [], "total": 0}, ENG_2_DELETED])
         connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
         gone(api, "ENG-2", 3)
         listing.id_pages[None] = {"issues": ids(1), "isLast": True}
@@ -854,3 +857,18 @@ class TestDeletedIssuesFoundByComparingIds:
         assert set(tickets(keyed_db)) == {"1", "3"}, "ENG-3 is not in the audit log, so it stays"
         assert listing.id_bodies == []
         assert connector._notification_service.sent == []
+
+    async def test_a_paid_plan_site_acts_on_the_audit_log_in_the_first_sync_after_a_full_resync(
+        self, api, keyed_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, [{"records": [], "total": 0}, ENG_2_DELETED])
+        connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
+        checkpoints.sync_points.clear()  # a full resync deletes every sync point, not the records
+        listing.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(3, "2024-05-01T12:00:00.000+0000")]})
+        gone(api, "ENG-2")
+
+        await connector.run_sync()
+
+        assert set(tickets(keyed_db)) == {"1", "3"}
+        assert checkpoints.values_for("issues_audit_deletions"), "the next sync's audit window starts here"
+        assert listing.id_bodies == []

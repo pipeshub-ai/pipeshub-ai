@@ -149,7 +149,7 @@ ISSUE_ID_LISTING_FIELDS: list[str] = ["id"]
 ISSUE_ID_LISTING_PAGE_SIZE: int = 5000
 RECORD_SCAN_PAGE_SIZE: int = 1000
 # With no deletion checkpoint (first sync, or after a full resync) the audit log is read over
-# this short window only to learn whether Jira refuses it.
+# this short window, so a Free-plan refusal is still seen and a checkpoint is set.
 AUDIT_PROBE_WINDOW_MS: int = 60_000
 
 # --- Permission-scheme vocabulary (GET /rest/api/3/permissionscheme/{id}/permission) ---
@@ -1069,6 +1069,10 @@ class JiraConnector(BaseConnector):
             audit_last_sync_time = None
 
         deletion_check_time = audit_last_sync_time or global_last_sync_time
+        if not deletion_check_time and projects:
+            # A full resync clears every checkpoint but keeps the issue records, so the audit
+            # log is still read, over a short window, and its answer handled as on any sync.
+            deletion_check_time = get_epoch_timestamp_in_ms() - AUDIT_PROBE_WINDOW_MS
 
         if deletion_check_time:
             checkpoint_ms, success = await self._detect_and_handle_deletions(deletion_check_time)
@@ -1081,13 +1085,6 @@ class JiraConnector(BaseConnector):
                     audit_sync_key,
                     {"last_sync_time": checkpoint_ms}
                 )
-        elif projects:
-            # A full resync clears every checkpoint but keeps the issue records, so one small
-            # audit read still tells whether deletions can only be found by comparing ids.
-            probe_ms = get_epoch_timestamp_in_ms()
-            await self._fetch_deleted_issues_from_audit(
-                self._audit_time(probe_ms - AUDIT_PROBE_WINDOW_MS), self._audit_time(probe_ms)
-            )
         if self._audit_log_unavailable and projects:
             await self._remove_issues_gone_from_jira(projects)
 
