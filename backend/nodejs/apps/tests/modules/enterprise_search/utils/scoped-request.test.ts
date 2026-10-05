@@ -7,6 +7,7 @@ import {
   STAND_IN_TOKEN_TTL_SECONDS,
   hydrateScopedRequestAsUser,
 } from '../../../../src/modules/enterprise_search/utils/scoped-request'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 
 describe('hydrateScopedRequestAsUser', () => {
@@ -15,9 +16,15 @@ describe('hydrateScopedRequestAsUser', () => {
   })
 
   it('gives the token it mints the role claim Node requires of a session, as member', async () => {
+    const orgId = new mongoose.Types.ObjectId()
+    sinon.stub(Org, 'find').returns({
+      limit: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves([{ _id: orgId }]),
+    } as any)
     sinon.stub(Users, 'findOne').resolves({
       _id: new mongoose.Types.ObjectId(),
-      orgId: new mongoose.Types.ObjectId(),
+      orgId,
       email: 'person@example.com',
       fullName: 'Person',
       role: 'admin',
