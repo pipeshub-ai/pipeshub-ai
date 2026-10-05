@@ -27227,7 +27227,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [conversation:write]
+        - oauth2: [conversation:chat]
       requestBody:
         required: true
         description: The first question, with optional scope, model and mode.
