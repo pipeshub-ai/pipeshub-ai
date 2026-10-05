@@ -1039,6 +1039,8 @@ class ConnectorRegistry:
         is_authenticated: bool | None = None,
         is_active: bool | None = None,
         connector_type: str | None = None,
+        is_configured: bool | None = None,
+        is_agent_active: bool | None = None,
     ) -> dict[str, Any]:
         """
         Get all configured connector instances with scope-based filtering.
@@ -1056,6 +1058,8 @@ class ConnectorRegistry:
             is_active: Optional filter — True returns only active instances,
                 False returns only inactive ones.
             connector_type: Optional exact connector type filter (e.g. "Confluence").
+            is_configured: Optional filter on whether the instance's settings are saved.
+            is_agent_active: Optional filter on whether agents may use the instance.
         Returns:
             Dictionary with connector instances and pagination info
         """
@@ -1078,6 +1082,8 @@ class ConnectorRegistry:
                 is_authenticated=is_authenticated,
                 is_active=is_active,
                 connector_type_filter=connector_type,
+                is_configured=is_configured,
+                is_agent_active=is_agent_active,
             )
 
             connector_instances = []
@@ -1181,36 +1187,13 @@ class ConnectorRegistry:
         Returns:
             Dictionary with active agent connector instances and pagination info
         """
+        # Filtered in the query, so the page and the total count cover only these instances.
         result = await self.get_all_connector_instances(
-            user_id, org_id, is_admin=is_admin, scope=scope, page=page, limit=limit * 2, search=search
+            user_id, org_id, is_admin=is_admin, scope=scope, page=page, limit=limit, search=search,
+            is_configured=True, is_agent_active=True,
         )
-
-        active_agent_connector_instances = [
-            instance for instance in result["connectors"]
-            if instance.get('isAgentActive', False) and instance.get('isConfigured', False)
-        ]
-
-        # Re-paginate the filtered results
-        total_count = len(active_agent_connector_instances)
-        total_pages = (total_count + limit - 1) // limit
-        start_idx = (page - 1) * limit
-        end_idx = start_idx + limit
-        has_prev = page > 1
-        has_next = end_idx < total_count
-        return {
-            "connectors": active_agent_connector_instances[start_idx:end_idx],
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "search": search,
-                "totalCount": total_count,
-                "totalPages": total_pages,
-                "hasPrev": has_prev,
-                "hasNext": has_next,
-                "prevPage": page - 1 if has_prev else None,
-                "nextPage": page + 1 if has_next else None,
-            }
-        }
+        result["pagination"]["search"] = search
+        return result
 
 
     async def get_inactive_connector_instances(
@@ -1259,36 +1242,13 @@ class ConnectorRegistry:
         Returns:
             Dictionary with configured connector instances and pagination info
         """
+        # Filtered in the query, so the page and the total count cover only configured instances.
         result = await self.get_all_connector_instances(
-            user_id, org_id, is_admin=is_admin, scope=scope, page=page, limit=limit * 2, search=search
+            user_id, org_id, is_admin=is_admin, scope=scope, page=page, limit=limit, search=search,
+            is_configured=True,
         )
-
-        configured_instances = [
-            instance for instance in result["connectors"]
-            if instance.get('isConfigured', False)
-        ]
-
-        # Re-paginate the filtered results
-        total_count = len(configured_instances)
-        total_pages = (total_count + limit - 1) // limit
-        start_idx = (page - 1) * limit
-        end_idx = start_idx + limit
-        has_prev = page > 1
-        has_next = end_idx < total_count
-        return {
-            "connectors": configured_instances[start_idx:end_idx],
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "search": search,
-                "totalCount": total_count,
-                "totalPages": total_pages,
-                "hasPrev": has_prev,
-                "hasNext": has_next,
-                "prevPage": page - 1 if has_prev else None,
-                "nextPage": page + 1 if has_next else None,
-            },
-        }
+        result["pagination"]["search"] = search
+        return result
 
     async def get_connector_metadata(self, connector_type: str, instance_data: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """

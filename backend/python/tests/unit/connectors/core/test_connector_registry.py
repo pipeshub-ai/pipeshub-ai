@@ -1850,39 +1850,66 @@ class TestCreateConnectorInstanceDeep:
 # ===========================================================================
 
 
+class _FilteringGraphProvider:
+    """Filters and pages connector documents the way the graph query does."""
+
+    def __init__(self, documents: list[dict]) -> None:
+        self.documents = documents
+
+    async def get_filtered_connector_instances(
+        self,
+        *,
+        skip: int = 0,
+        limit: int = 20,
+        is_configured: bool | None = None,
+        is_agent_active: bool | None = None,
+        **_: object,
+    ) -> tuple[list[dict], int]:
+        matching = [
+            d for d in self.documents
+            if (is_configured is None or bool(d.get("isConfigured")) == is_configured)
+            and (is_agent_active is None or bool(d.get("isAgentActive")) == is_agent_active)
+        ]
+        return matching[skip:skip + limit], len(matching)
+
+
+def _registry_over(documents: list[dict]) -> ConnectorRegistry:
+    registry, container = _make_registry()
+    registry.register_connector(_make_connector_class(name="Gmail", app_group="Google"))
+    data_store = MagicMock()
+    data_store.graph_provider = _FilteringGraphProvider(documents)
+    container.data_store = AsyncMock(return_value=data_store)
+    return registry
+
+
+# Every other connector is configured, and every fourth one also has agents on.
+_MIXED_CONNECTORS = [
+    {
+        "_key": f"c{i:02d}", "type": "Gmail", "name": f"Connector {i:02d}", "scope": "team",
+        "isConfigured": i % 2 == 0, "isAgentActive": i % 4 == 0,
+    }
+    for i in range(50)
+]
+
+
 class TestGetActiveAgentConnectorInstances:
     """Tests for get_active_agent_connector_instances."""
 
     @pytest.mark.asyncio
-    async def test_filters_active_agent_only(self):
-        """Only instances with isAgentActive=True and isConfigured=True are returned."""
-        registry, container = _make_registry()
-        cls = _make_connector_class(name="Gmail", app_group="Google")
-        registry.register_connector(cls)
-
-        gp = _make_graph_provider()
-        gp.get_filtered_connector_instances.return_value = (
-            [
-                {"_key": "c1", "type": "Gmail", "name": "Agent Active",
-                 "isAgentActive": True, "isConfigured": True, "scope": "personal"},
-                {"_key": "c2", "type": "Gmail", "name": "Not Agent Active",
-                 "isAgentActive": False, "isConfigured": True, "scope": "personal"},
-                {"_key": "c3", "type": "Gmail", "name": "Agent Not Configured",
-                 "isAgentActive": True, "isConfigured": False, "scope": "personal"},
-            ],
-            3,
-        )
-
-        mock_data_store = MagicMock()
-        mock_data_store.graph_provider = gp
-        container.data_store = AsyncMock(return_value=mock_data_store)
+    async def test_page_two_holds_the_next_agent_connectors_and_the_total_counts_them_all(self) -> None:
+        registry = _registry_over(_MIXED_CONNECTORS)
 
         result = await registry.get_active_agent_connector_instances(
-            "user-1", "org-1", is_admin=False
+            "user-1", "org-1", is_admin=True, page=2, limit=5
         )
 
-        assert len(result["connectors"]) == 1
-        assert result["connectors"][0]["name"] == "Agent Active"
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in (20, 24, 28, 32, 36)
+        ]
+        assert result["pagination"]["totalCount"] == 13
+        assert result["pagination"]["totalPages"] == 3
+        assert result["pagination"]["hasNext"] is True
+        assert result["pagination"]["hasPrev"] is True
 
 
 # ===========================================================================
@@ -1894,33 +1921,34 @@ class TestGetConfiguredConnectorInstances:
     """Tests for get_configured_connector_instances."""
 
     @pytest.mark.asyncio
-    async def test_filters_configured_only(self):
-        """Only configured instances are returned."""
-        registry, container = _make_registry()
-        cls = _make_connector_class(name="Gmail", app_group="Google")
-        registry.register_connector(cls)
-
-        gp = _make_graph_provider()
-        gp.get_filtered_connector_instances.return_value = (
-            [
-                {"_key": "c1", "type": "Gmail", "name": "Configured",
-                 "isConfigured": True, "scope": "personal"},
-                {"_key": "c2", "type": "Gmail", "name": "Not Configured",
-                 "isConfigured": False, "scope": "personal"},
-            ],
-            2,
-        )
-
-        mock_data_store = MagicMock()
-        mock_data_store.graph_provider = gp
-        container.data_store = AsyncMock(return_value=mock_data_store)
+    async def test_page_two_holds_the_next_configured_connectors_and_the_total_counts_them_all(self) -> None:
+        registry = _registry_over(_MIXED_CONNECTORS)
 
         result = await registry.get_configured_connector_instances(
-            "user-1", "org-1", is_admin=False
+            "user-1", "org-1", is_admin=True, page=2, limit=10, search=None
         )
 
-        assert len(result["connectors"]) == 1
-        assert result["connectors"][0]["isConfigured"] is True
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in range(20, 40, 2)
+        ]
+        assert result["pagination"]["totalCount"] == 25
+        assert result["pagination"]["totalPages"] == 3
+        assert result["pagination"]["hasNext"] is True
+        assert result["pagination"]["nextPage"] == 3
+
+    @pytest.mark.asyncio
+    async def test_last_page_ends_the_list(self) -> None:
+        registry = _registry_over(_MIXED_CONNECTORS)
+
+        result = await registry.get_configured_connector_instances(
+            "user-1", "org-1", is_admin=True, page=3, limit=10, search=None
+        )
+
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in range(40, 50, 2)
+        ]
+        assert result["pagination"]["hasNext"] is False
+        assert result["pagination"]["nextPage"] is None
 
 
 # ===========================================================================

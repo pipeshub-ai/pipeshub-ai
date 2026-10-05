@@ -695,6 +695,24 @@ class TestGetFilteredConnectorInstances:
         assert total == 0
         assert docs == []
 
+    @pytest.mark.asyncio
+    async def test_configured_and_agent_filters_go_into_both_the_count_and_the_page(self, connected_provider) -> None:
+        """The total and the page must both leave out unconfigured or agent-off connectors."""
+        connected_provider.execute_query = AsyncMock(side_effect=[[0], []])
+
+        await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_configured=True, is_agent_active=True,
+        )
+
+        assert connected_provider.execute_query.await_count == 2
+        for call in connected_provider.execute_query.await_args_list:
+            query, bind_vars = call.args[0], call.kwargs["bind_vars"]
+            assert "FILTER (doc.isConfigured == true) == @is_configured" in query
+            assert "FILTER (doc.isAgentActive == true) == @is_agent_active" in query
+            assert bind_vars["is_configured"] is True
+            assert bind_vars["is_agent_active"] is True
+
 
 # ---------------------------------------------------------------------------
 # _get_user_accessible_team_app_keys

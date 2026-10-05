@@ -4014,6 +4014,24 @@ class TestNeo4jGetFilteredConnectorInstances:
         )
         assert total == 4
 
+    @pytest.mark.asyncio
+    async def test_configured_and_agent_filters_go_into_both_the_count_and_the_page(self, neo4j_provider: Neo4jProvider) -> None:
+        """The total and the page must both leave out unconfigured or agent-off connectors."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 0}], []])
+
+        await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_configured=True, is_agent_active=True,
+        )
+
+        assert neo4j_provider.client.execute_query.await_count == 2
+        for call in neo4j_provider.client.execute_query.await_args_list:
+            query, params = call.args[0], call.kwargs["parameters"]
+            assert "coalesce(doc.isConfigured, false) = $is_configured" in query
+            assert "coalesce(doc.isAgentActive, false) = $is_agent_active" in query
+            assert params["is_configured"] is True
+            assert params["is_agent_active"] is True
+
 
 # ---------------------------------------------------------------------------
 # _get_user_accessible_team_app_ids (Neo4j)

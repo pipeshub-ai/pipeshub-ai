@@ -1635,6 +1635,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         is_authenticated: bool | None = None,
         is_active: bool | None = None,
         connector_type_filter: str | None = None,
+        is_configured: bool | None = None,
+        is_agent_active: bool | None = None,
         transaction: str | None = None,
     ) -> tuple[list[dict], int]:
         """Get filtered connector instances with pagination."""
@@ -1704,6 +1706,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if connector_type_filter:
                 query += " FILTER doc.type == @connector_type_filter\n"
                 bind_vars["connector_type_filter"] = connector_type_filter
+
+            if is_configured is not None:
+                query += " FILTER (doc.isConfigured == true) == @is_configured\n"
+                bind_vars["is_configured"] = is_configured
+
+            if is_agent_active is not None:
+                query += " FILTER (doc.isAgentActive == true) == @is_agent_active\n"
+                bind_vars["is_agent_active"] = is_agent_active
 
             # Count query
             count_query = query + " COLLECT WITH COUNT INTO total RETURN total"

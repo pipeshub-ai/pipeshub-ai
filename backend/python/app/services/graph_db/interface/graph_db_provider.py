@@ -4726,6 +4726,8 @@ class IGraphDBProvider(ABC):
         is_authenticated: bool | None = None,
         is_active: bool | None = None,
         connector_type_filter: str | None = None,
+        is_configured: bool | None = None,
+        is_agent_active: bool | None = None,
         transaction: str | None = None,
     ) -> tuple[list[dict], int]:
         """
@@ -4749,6 +4751,8 @@ class IGraphDBProvider(ABC):
             is_authenticated: Optional filter on isAuthenticated field
             is_active: Optional filter on isActive field
             connector_type_filter: Optional exact match on connector type field
+            is_configured: Optional filter on isConfigured field
+            is_agent_active: Optional filter on isAgentActive field
             transaction: Optional transaction ID
 
         Returns:
