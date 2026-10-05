@@ -521,14 +521,17 @@ class FakeEntitiesProcessor:
         self.deleted.append(record_id)
 
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str, cascade_children: bool = True
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        *, include_trashed_roots: bool = False, **_: object,
     ) -> dict[str, Any]:
+        """Like the real processor, a root in the trash is left alone unless ``include_trashed_roots``."""
         deleted: list[str] = []
         for record_id in record_ids:
             record = self.by_id(record_id)
             if record is not None:
                 self._check_write(record.external_record_id)
-        pending = list(record_ids)
+        roots = [self.by_id(record_id) for record_id in record_ids]
+        pending = [r.id for r in roots if r is not None and (include_trashed_roots or is_live_record(r))]
         while pending:
             record = self.by_id(pending.pop())
             if record is None:
@@ -598,7 +601,7 @@ class FakeSyncPointStore:
         return matches[0] if matches else None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeSyncPointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeSyncPointStore"]:
         yield self
 
 

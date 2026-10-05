@@ -436,7 +436,7 @@ class TestRecordWriteRetriesConflicts:
         store.batch_create_edges = AsyncMock(side_effect=[RuntimeError("[1200] write-write conflict"), None, None, None])
         monkeypatch.setattr(
             "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
-            lambda provider, txn: store,
+            lambda provider, txn, **_: store,
         )
         metadata = SemanticMetadata(categories=["Finance"], topics=["Budget"], languages=[], departments=[])
 
@@ -471,7 +471,7 @@ class TestDepartmentLookupIsOrgAware:
         )
         monkeypatch.setattr(
             "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
-            lambda provider, txn: store,
+            lambda provider, txn, **_: store,
         )
         metadata = SemanticMetadata(categories=[], topics=[], languages=[], departments=["Engineering"])
 

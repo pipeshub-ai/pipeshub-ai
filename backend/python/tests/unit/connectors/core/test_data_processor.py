@@ -91,7 +91,7 @@ def _make_tx_store():
     tx_store.batch_upsert_record_groups = AsyncMock()
     tx_store.create_record_group_relation = AsyncMock()
     tx_store.create_record_relation = AsyncMock()
-    tx_store.batch_upsert_record_relations = AsyncMock()
+    tx_store.batch_upsert_node_relations = AsyncMock()
     tx_store.get_record_by_key = AsyncMock(return_value=None)
     tx_store.batch_upsert_nodes = AsyncMock()
     tx_store.get_user_by_email = AsyncMock(return_value=None)
@@ -727,8 +727,8 @@ class TestOnRecordDeleted:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_record_by_key.assert_awaited_once_with("rec-1")
-        proc.messaging_producer.send_message.assert_not_awaited()
+        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
+        proc.messaging_producer.send_message.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_deletes_record_publishes_when_vrid_present(self):
@@ -738,6 +738,12 @@ class TestOnRecordDeleted:
         existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
                     "virtualRecordId": "vr-9", "connectorId": "conn-9"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
+        tx_store.delete_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"eventType": "deleteRecord", "topic": "record-events", "payloads": [
+                {"recordId": "rec-1", "virtualRecordId": "vr-9", "orgId": "org-1", "connectorId": "conn-9"},
+            ]},
+        })
 
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -1518,7 +1524,7 @@ class TestHandleRelatedExternalRecords:
 
         await proc._handle_related_external_records(record, [rel_ext], tx_store)
 
-        tx_store.batch_upsert_record_relations.assert_awaited()
+        tx_store.batch_upsert_node_relations.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_creates_placeholder_for_missing_related_record(self):
@@ -1583,7 +1589,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=True, leaving_group_id=None
+            "rec-1", "group-1", inherit=True, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1601,7 +1607,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store, existing)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=False, leaving_group_id=None
+            "rec-1", "group-1", inherit=False, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1636,7 +1642,7 @@ class TestLinkRecordToGroup:
             await proc._handle_parent_record(child, tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "ph-1", "group-1", inherit=False, leaving_group_id=None
+            "ph-1", "group-1", inherit=False, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1655,7 +1661,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store, None)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=None, leaving_group_id=None
+            "rec-1", "group-1", inherit=None, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1697,7 +1703,7 @@ class TestLinkRecordToGroup:
 
         assert moved is True
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "new-group", inherit=True, leaving_group_id="old-group"
+            "rec-1", "new-group", inherit=True, leaving_group_id="old-group", browse_root=True
         )
         tx_store.delete_edge.assert_not_awaited()
 
@@ -1720,7 +1726,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=True, leaving_group_id=None
+            "rec-1", "group-1", inherit=True, leaving_group_id=None, browse_root=True
         )
         tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "shared-group-internal-id")
 

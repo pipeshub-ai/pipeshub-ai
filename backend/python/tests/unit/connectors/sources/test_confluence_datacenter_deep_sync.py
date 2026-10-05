@@ -1006,7 +1006,8 @@ class TestFetchPagePermissions:
         assert len(perms) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_none(self):
+    async def test_api_failure_returns_none_not_empty(self):
+        """Decision 76: "could not determine" is not "no restrictions"."""
         connector = _make_connector()
         ds = MagicMock()
         ds.get_page_relevant_view_restrictions_v1 = AsyncMock(

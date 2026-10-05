@@ -599,17 +599,11 @@ class OneDriveConnector(BaseConnector):
                                 entity_type=EntityType.USER
                             ))
 
-                # Handle link permissions (anyone with link)
+                # An org-scoped link is an org grant; an anonymous one names no
+                # grantee and is not stored.
                 if hasattr(perm, 'link') and perm.link:
                     link = perm.link
-                    if link.scope == "anonymous":
-                        permissions.append(Permission(
-                            external_id="anyone_with_link",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ANYONE_WITH_LINK
-                        ))
-                    elif link.scope == "organization":
+                    if link.scope == "organization":
                         permissions.append(Permission(
                             external_id="anyone_in_org",
                             email=None,
