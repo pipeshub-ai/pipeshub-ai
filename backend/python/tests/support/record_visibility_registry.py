@@ -117,6 +117,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "restore reads the batch it brings back, and every record in it is in the trash",
     ),
+    "get_purgeable_trashed_records": (
+        Rule.ALL, "the purge reads only the trash: records past the retention, never a live one",
+    ),
     "get_descendant_virtual_record_ids": (
         Rule.ALL,
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
@@ -137,4 +140,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "delete_single_record": (Rule.WRITE, ""),
     "soft_delete_records": (Rule.WRITE, "marks live records only"),
     "restore_records": (Rule.WRITE, "all or nothing: only records still in the trash under the batch named"),
+    "purge_trashed_records": (Rule.WRITE, "removes only records still in the trash and due, checked in the delete"),
+    "record_purge_failure": (Rule.WRITE, "counts only on records still in the trash"),
 }

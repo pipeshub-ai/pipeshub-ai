@@ -451,6 +451,13 @@ class IGraphDBProvider(ABC):
         cannot guarantee nothing landed answer False."""
         return False
 
+    def is_write_conflict(self, error: BaseException) -> bool:
+        """Whether *error* came from colliding with a concurrent writer (a
+        deadlock, a lock timeout, a write-write conflict). Unlike
+        :meth:`is_transient_error` it says nothing about what landed, so only
+        an idempotent block may be re-run on it."""
+        return False
+
     # ==================== Document Operations ====================
 
     @abstractmethod
@@ -1051,7 +1058,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node with target node names.
@@ -1062,6 +1071,7 @@ class IGraphDBProvider(ABC):
             node_id (str): Source node ID (e.g., "groups/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of edge documents enriched with target name
@@ -1153,7 +1163,9 @@ class IGraphDBProvider(ABC):
         collection: str,
         filters: dict[str, Any],
         return_fields: list[str] | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get nodes from a collection matching multiple field filters.
@@ -1165,6 +1177,7 @@ class IGraphDBProvider(ABC):
             filters (Dict[str, Any]): Dictionary of field_name: value pairs to filter on
             return_fields (Optional[List[str]]): Optional list of fields to return (None = all fields)
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of returning []
 
         Returns:
             List[Dict]: List of matching node documents
@@ -2996,6 +3009,7 @@ class IGraphDBProvider(ABC):
         active: bool = True,
         is_external: bool = False,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all organizations.
@@ -3004,6 +3018,8 @@ class IGraphDBProvider(ABC):
             active (bool): Filter by active status
             is_external (bool): Filter by external flag (default False)
             transaction (Optional[str]): Optional transaction ID
+            raise_on_error (bool): Raise a failed read instead of answering
+                [], which is also the answer for an install with no orgs
 
         Returns:
             List[Dict]: List of organizations
@@ -4450,6 +4466,135 @@ class IGraphDBProvider(ABC):
         delete fields (``isDeleted``, ``deletedAtTimestamp``, ``deleteSource``,
         ``deleteBatchId``, ``deletedByUserId``, the purge counters and
         ``trashedExternalRecordId``) are cleared. A failure raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_purgeable_trashed_records(
+        self,
+        org_id: str,
+        deleted_before: int,
+        *,
+        after: tuple[int, str] | None = None,
+        limit: int = 500,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """One page of this org's trash that the purge may remove, oldest first.
+
+        A record qualifies while ``isDeleted`` is true and its
+        ``deletedAtTimestamp`` is set and at most ``deleted_before``, and it has
+        failed fewer than ``max_attempts`` purges. The walk is keyset by
+        (``deletedAtTimestamp``, key), starting after ``after``. Records of a
+        connector being deleted (``status`` DELETING), and records that still
+        have a PARENT_CHILD or ATTACHMENT child of any state, are left out of
+        the page but still move the cursor; ``held`` counts the second kind,
+        which wait until their children are purged. Returns ``records``
+        (``trash_purge_row`` shapes), ``held`` and ``next``, the ``after`` for
+        the next page, or None after the last one. A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def is_trash_walk_index_ready(self) -> bool:
+        """Whether the index ``get_purgeable_trashed_records`` walks is built and usable.
+
+        Without it the walk still answers correctly, but reads the whole trash for
+        every page, so the purge waits for it instead. A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_trashed_records(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        deleted_before: int,
+        *,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove records from the trash for good: every edge, the type doc and the vertex.
+
+        Each record is checked again inside the delete, after its write lock is
+        taken: it must still be in the trash in ``org_id``, since
+        ``deleted_before`` or earlier, under ``max_attempts`` failures, with its
+        connector not being deleted and no record under it at all (PARENT_CHILD
+        or ATTACHMENT, live or trashed), including one linked while the purge
+        runs. A record restored meanwhile is left alone. All or nothing; a
+        failure raises and removes nothing, and ``GraphLockUnavailableError``
+        means the locks could not be taken, which says nothing about the
+        records. Returns ``purged`` (the ``trash_purge_row`` of each record
+        removed, read in the same write) and ``kept`` (records still stored in
+        ``org_id`` and left in place). An id in neither is not stored, which
+        includes one an earlier attempt removed although its answer was lost.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def record_purge_failure(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        error: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Count one failed purge on each record still in the trash; return how many were counted.
+
+        Adds one to ``purgeAttempts`` and stores ``error`` in ``purgeLastError``.
+        A record restored meanwhile is not touched. A failure raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_trash_purge_stats(
+        self,
+        org_id: str,
+        max_attempts: int = 5,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """This org's trash, for the purge's gauges.
+
+        ``trashed`` counts records in the trash with a ``deletedAtTimestamp``,
+        ``stuck`` those that failed ``max_attempts`` purges, and
+        ``oldestDeletedAt`` is the earliest ``deletedAtTimestamp`` among the rest
+        (None when there are none). A failed read raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def take_back_kept_record_group(self, group_id: str, transaction: str | None = None) -> bool:
+        """Clear a record group's kept-for-the-trash mark, before a sync files a record under it.
+
+        A write on the group itself, so it waits for a purge that is deleting the
+        group (Neo4j locks the node; ArangoDB's purge locks the collections), and
+        the purge, which checks the mark again under that lock, keeps a group taken
+        back first. Returns False when the group is gone, deleted meanwhile, and
+        the caller makes a new one; the answer comes from a read made after the
+        write, since a Neo4j write that waited on a node deleted meanwhile still
+        reports its row. A failure of any other kind raises.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def purge_trash_kept_record_groups(
+        self,
+        org_id: str,
+        *,
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Delete record groups kept only for the trash, once nothing belongs to them.
+
+        A group the source removed while records in the trash still belonged to
+        it is kept with ``isDeletedAtSource`` set (``on_record_group_deleted``).
+        It goes with its edges once no record, live or trashed, and no child
+        group belongs to it (BELONGS_TO, INHERIT_PERMISSIONS or
+        ``recordGroupId``) and its connector is not being deleted, checked again
+        inside the delete, so a record attached while it runs keeps the group. A group the source lists again has the mark cleared
+        by its upsert and is never removed here. A group with no ``orgId`` (one
+        a sync created from a record) belongs to its connector's org. Returns
+        the ids removed, at most ``limit``. A failure raises.
         """
         raise NotImplementedError
 
@@ -6270,6 +6415,27 @@ class IGraphDBProvider(ABC):
 
         Raises:
             ValueError: when ``collection`` is not a taxonomy collection.
+            Exception: on write failure.
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_taxonomy_hierarchy_edge(
+        self,
+        child_collection: str,
+        child_key: str,
+        parent_key: str,
+    ) -> None:
+        """Link a subcategory node to its parent (``interCategoryRelations``)
+        unless the edge exists, outside any transaction.
+
+        ``child_collection`` is a subcategory level; the parent collection
+        follows from it (``CATEGORY_HIERARCHY_PARENTS``). Records sharing a
+        new chain call this at once: the write is idempotent, safe under
+        concurrent callers, and never leaves two edges for one pair.
+
+        Raises:
+            ValueError: when ``child_collection`` is not a subcategory level.
             Exception: on write failure.
         """
         pass

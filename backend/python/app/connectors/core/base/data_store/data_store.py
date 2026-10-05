@@ -179,6 +179,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def take_back_kept_record_group(self, group_id: str) -> bool:
+        """Clear a group's kept-for-the-trash mark; False when the group is gone."""
+        pass
+
+    @abstractmethod
     async def find_slack_burst_record_by_ts(
         self,
         connector_id: str,
@@ -396,7 +401,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node_with_target_name(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         pass
     
     @abstractmethod

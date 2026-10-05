@@ -4,6 +4,7 @@ import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
 import {
   InternalServerError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
@@ -38,6 +39,9 @@ import {
 const logger = Logger.getInstance({
   service: 'Knowledge Base Service',
 });
+
+export const RESYNC_NOT_QUEUED_MESSAGE =
+  "We couldn't start this sync because PipesHub couldn't queue it. Nothing was synced. Try again in a minute; if it keeps happening, ask your admin to check the services page.";
 
 @injectable()
 export class RecordRelationService {
@@ -286,7 +290,13 @@ export class RecordRelationService {
     try {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
-      const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';
+      // Global replace, matching Python's str.replace, which is already global.
+      // The single-space version happened to route correctly because this value
+      // is normalized twice (normalizeAppName, then here) and the consumer
+      // normalizes again -- but it left an embedded space in the published
+      // payload.connector for three-word types. Same result, one pass.
+      const eventType =
+        resyncPayload.connector.replace(/ /g, '').toLowerCase() + '.resync';
       const event: SyncEvent = {
         eventType: eventType,
         timestamp: Date.now(),
@@ -306,8 +316,7 @@ export class RecordRelationService {
       if (eventError?.statusCode === 409) {
         throw eventError;
       }
-      // Don't throw the error to avoid affecting the main operation
-      return { success: false, error: eventError.message };
+      throw markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE));
     }
   }
 

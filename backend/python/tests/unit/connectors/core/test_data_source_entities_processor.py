@@ -1739,6 +1739,95 @@ class TestOnRecordGroupDeleted:
         assert result is False
         proc.logger.error.assert_called()
 
+    @staticmethod
+    def _kept_for_the_trash(marked: bool | None) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = MagicMock()
+        group.id = "rg-internal-1"
+        group.name = "Team"
+        tx_store.get_record_group_by_external_id.return_value = group
+        tx_store.get_records_by_status = AsyncMock(return_value=[MagicMock()])
+        tx_store.batch_update_nodes = AsyncMock(return_value=marked)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_group_kept_for_the_trash_is_marked_for_the_purge(self) -> None:
+        proc, tx_store = self._kept_for_the_trash(marked=True)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=True),
+        ):
+            result = await proc.on_record_group_deleted("ext-grp-1", "conn-1")
+
+        assert result is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
+        [nodes, collection] = tx_store.batch_update_nodes.await_args.args
+        assert collection == CollectionNames.RECORD_GROUPS.value
+        assert nodes[0]["id"] == "rg-internal-1" and nodes[0]["isDeletedAtSource"] is True
+        assert isinstance(nodes[0]["deletedAtSourceTimestamp"], int)
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_the_store_would_not_mark_is_retried(self) -> None:
+        """Unmarked, the purge would never remove it, so the removal is reported as not done."""
+        proc, tx_store = self._kept_for_the_trash(marked=False)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=True),
+        ):
+            result = await proc.on_record_group_deleted("ext-grp-1", "conn-1")
+
+        assert result is False
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
+
+
+class TestHandleRecordGroupKeptForTheTrash:
+    """A sync filing a record under a group kept only for the trash takes the group back first."""
+
+    @staticmethod
+    def _found(kept: bool) -> MagicMock:
+        group = MagicMock()
+        group.id = "rg-kept"
+        group.is_deleted_at_source = kept
+        return group
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_still_there_is_taken_back_and_used(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=True)
+        record = _make_record(external_record_group_id="ext-g")
+
+        assert await proc._handle_record_group(record, tx_store) == "rg-kept"
+
+        tx_store.take_back_kept_record_group.assert_awaited_once_with("rg-kept")
+        tx_store.batch_upsert_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_the_purge_removed_meanwhile_is_made_again(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=False)
+        record = _make_record(external_record_group_id="ext-g")
+
+        group_id = await proc._handle_record_group(record, tx_store)
+
+        assert group_id and group_id != "rg-kept"
+        [created] = tx_store.batch_upsert_record_groups.await_args.args[0]
+        assert created.id == group_id and created.external_group_id == "ext-g"
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_is_not_kept_costs_no_extra_write(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=False)
+        tx_store.take_back_kept_record_group = AsyncMock()
+
+        assert await proc._handle_record_group(_make_record(external_record_group_id="ext-g"), tx_store) == "rg-kept"
+        tx_store.take_back_kept_record_group.assert_not_awaited()
+
 
 # ===========================================================================
 # _delete_group_organization_edges (lines 1905-1921)
@@ -6203,6 +6292,15 @@ class TestPublishDeleteEvents:
         proc.messaging_producer.send_message.assert_awaited_once()
 
 
+    @pytest.mark.asyncio
+    async def test_an_event_the_broker_refuses_is_unpublished(self) -> None:
+        """send_message answers False without raising when the broker refuses an event."""
+        proc = _make_processor()
+        proc.messaging_producer.send_message = AsyncMock(return_value=False)
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            unpublished = await proc._publish_delete_events({"payloads": [{"recordId": "r1"}]})
+        assert unpublished == ["r1"]
+
 class TestProcessRecordOrgId:
     @pytest.mark.asyncio
     async def test_sets_org_id_when_missing(self):
@@ -6902,3 +7000,73 @@ class TestOnRecordsMovedFlushBeforePublish:
 
         assert call_order[0] == "flush"
         assert "publish" in call_order
+
+
+class TestMovesAgainstTheTransactionCache:
+    """on_records_moved retires whatever already holds a destination path. With
+    the transaction store caching lookups, a path vacated earlier in the same
+    batch must not still answer with the record that left it, or the guard
+    deletes a record that was only just moved.
+    """
+
+    @staticmethod
+    def _graph(rows: dict[str, str]):
+        from types import SimpleNamespace
+
+        graph = AsyncMock()
+        graph.rows = {
+            rid: SimpleNamespace(
+                id=rid, connector_id="conn-1", external_record_id=ext,
+                external_revision_id="rev", indexing_status=ProgressStatus.COMPLETED.value,
+                is_placeholder=False, version=1, virtual_record_id=f"vr-{rid}",
+                source_created_at=1, source_updated_at=1, org_id="org-1",
+                # A move carries the stored lifecycle onto the rewritten vertex.
+                created_at=1, parsing_status=None, extraction_status=None,
+                processing_started_at=None, reason=None, is_vlm_ocr_processed=False,
+                md5_hash=None, size_in_bytes=None, storage_document_id=None,
+            )
+            for rid, ext in rows.items()
+        }
+
+        async def get_record_by_external_id(connector_id, external_id, transaction=None, visibility=None):
+            for row in graph.rows.values():
+                if row.connector_id == connector_id and row.external_record_id == external_id:
+                    return row
+            return None
+
+        async def batch_upsert_records(records, transaction=None, release_trashed_external_ids=False):
+            for r in records:
+                row = graph.rows.get(r.id) or SimpleNamespace(id=r.id, connector_id=r.connector_id)
+                row.external_record_id = r.external_record_id
+                graph.rows[r.id] = row
+
+        async def delete_nodes(keys, collection, transaction=None):
+            for key in keys:
+                graph.rows.pop(key, None)
+
+        graph.get_record_by_external_id = get_record_by_external_id
+        graph.batch_upsert_records = batch_upsert_records
+        graph.delete_nodes = delete_nodes
+        graph.get_edges_from_node = AsyncMock(return_value=[])
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_a_rotation_batch_keeps_every_moved_record(self) -> None:
+        """log.1 -> log.2 then log -> log.1, the shape a rotated log produces."""
+        from app.connectors.core.base.data_store.graph_data_store import (
+            GraphTransactionStore,
+        )
+
+        graph = self._graph({"X": "log.1", "Y": "log"})
+        tx_store = GraphTransactionStore(graph, "txn-1")
+        proc = _setup_proc_for_moved(tx_store, old_record=None)
+        # _setup_proc_for_moved stubs the lookup; this test needs the real one.
+        del tx_store.get_record_by_external_id
+
+        await proc.on_records_moved([
+            ("log.1", _make_code_record(record_id="fresh-1", external_record_id="log.2"), []),
+            ("log", _make_code_record(record_id="fresh-2", external_record_id="log.1"), []),
+        ])
+
+        survivors = {rid: row.external_record_id for rid, row in graph.rows.items()}
+        assert survivors == {"X": "log.2", "Y": "log.1"}

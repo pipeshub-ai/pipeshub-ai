@@ -50,6 +50,30 @@ async def test_flag_on_moves_the_record_to_the_trash_and_cleans_vectors_only() -
     assert event["payload"]["virtualRecordIds"] == ["v1"]
 
 
+async def test_a_cleanup_the_broker_refuses_is_reported_as_pending() -> None:
+    """publish_event answers False without raising when the broker refuses the event."""
+    from app.connectors.api.router import delete_record
+
+    graph = _graph({
+        "success": True, "softDeleted": True, "orgId": "org-1", "connectorId": "kb1", "isKb": True,
+        "batchId": "b1", "virtualRecordIds": ["v1"], "softDeletedRecords": [{"record_id": "rec-1"}],
+    })
+    kafka = AsyncMock()
+    kafka.publish_event = AsyncMock(return_value=False)
+
+    async def once(fn, **_kwargs) -> object:
+        return await fn()
+
+    with patch(f"{ROUTER}.is_soft_delete_enabled", AsyncMock(return_value=True)), \
+            patch(f"{ROUTER}.notify_kb_records_changed", AsyncMock()), \
+            patch(f"{ROUTER}.retry_async", once):
+        result = await delete_record("rec-1", _request(), graph, kafka)
+
+    assert result["softDeleted"] is True
+    assert result["vectorCleanupPending"] is True
+    assert result["vectorCleanupFailedVirtualRecordIds"] == ["v1"]
+
+
 async def test_flag_off_is_the_hard_delete() -> None:
     from app.connectors.api.router import delete_record
 

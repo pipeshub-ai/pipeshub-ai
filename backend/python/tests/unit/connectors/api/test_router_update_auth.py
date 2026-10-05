@@ -231,9 +231,12 @@ class TestAdminOAuthCreatesNewConfig:
 
         assert result["success"] is True
         assert result["config"]["auth"]["oauthConfigId"] == "oauth-new-1"
-        # Credentials should be cleared
-        assert result["config"]["credentials"] is None
-        assert result["config"]["oauth"] is None
+        # Credentials are cleared in the store and never sent back
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in result["config"]
+        assert "oauth" not in result["config"]
         # Only secret OAuth fields are filtered for OAUTH type — clientSecret
         # lives only in the shared OAuth-app config. clientId is not secret
         # (it leaks in the authorize URL anyway) and stays on the instance
@@ -1099,6 +1102,9 @@ class TestMergePreservesExistingAuthFields:
         assert auth["existingField"] == "should-survive"
         assert auth["apiToken"] == "new-tok"
         assert auth["connectorScope"] == "personal"
-        # credentials and oauth should be cleared
-        assert result["config"]["credentials"] is None
-        assert result["config"]["oauth"] is None
+        # credentials and oauth are cleared in the store and never sent back
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in result["config"]
+        assert "oauth" not in result["config"]

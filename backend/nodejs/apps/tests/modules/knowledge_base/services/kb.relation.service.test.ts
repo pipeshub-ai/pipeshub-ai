@@ -1,8 +1,11 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { RecordRelationService } from '../../../../src/modules/knowledge_base/services/kb.relation.service'
-import { InternalServerError } from '../../../../src/libs/errors/http.errors'
+import {
+  RecordRelationService,
+  RESYNC_NOT_QUEUED_MESSAGE,
+} from '../../../../src/modules/knowledge_base/services/kb.relation.service'
+import { InternalServerError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
 
 describe('RecordRelationService', () => {
   let mockEventProducer: any
@@ -398,7 +401,7 @@ describe('RecordRelationService', () => {
       expect(mockSyncEventProducer.publishEvent.calledOnce).to.be.true
     })
 
-    it('should return failure when publishEvent throws', async () => {
+    it('throws a 503 with a plain message when the event cannot be published', async () => {
       mockSyncEventProducer.publishEvent.rejects(new Error('publish failed'))
 
       const service = new RecordRelationService(
@@ -408,15 +411,21 @@ describe('RecordRelationService', () => {
       )
       await new Promise(resolve => setTimeout(resolve, 10))
 
-      const result = await service.resyncConnectorRecords({
-        connectorName: 'Slack',
-        connectorId: 'conn-2',
-        orgId: 'org-1',
-        origin: 'slack',
-      })
+      let thrown: unknown
+      await service
+        .resyncConnectorRecords({
+          connectorName: 'Slack',
+          connectorId: 'conn-2',
+          orgId: 'org-1',
+          origin: 'slack',
+        })
+        .catch((e: unknown) => {
+          thrown = e
+        })
 
-      expect(result.success).to.be.false
-      expect(result.error).to.equal('publish failed')
+      expect(thrown).to.be.instanceOf(ServiceUnavailableError)
+      expect((thrown as ServiceUnavailableError).statusCode).to.equal(503)
+      expect((thrown as Error).message).to.equal(RESYNC_NOT_QUEUED_MESSAGE)
     })
   })
 
@@ -789,6 +798,50 @@ describe('RecordRelationService - additional coverage', () => {
 
       const event = mockSyncEventProducer.publishEvent.firstCall.args[0]
       expect(event.eventType).to.include('.resync')
+    })
+  })
+
+  describe('resync event type derivation', () => {
+    /**
+     * Node and Python must agree on this string or the event is published to a
+     * type nobody consumes. Python uses str.replace, which strips EVERY space;
+     * JavaScript's replace with a string pattern strips only the first, so a
+     * three-word type produced "confluencedata center.resync" and resync was
+     * silently dead for Confluence Data Center and Jira Data Center.
+     */
+    const publishedTypeFor = async (connectorName: string): Promise<string> => {
+      mockSyncEventProducer.publishEvent.resetHistory()
+      const service = new RecordRelationService(
+        mockEventProducer,
+        mockSyncEventProducer,
+        mockDefaultConfig,
+      )
+      await service.resyncConnectorRecords({
+        connectorName,
+        connectorId: 'conn-1',
+        orgId: 'org-1',
+        origin: 'CONNECTOR',
+        fullSync: false,
+      })
+      return mockSyncEventProducer.publishEvent.firstCall.args[0].eventType
+    }
+
+    it('strips every space, not just the first', async () => {
+      expect(await publishedTypeFor('Confluence Data Center')).to.equal('confluencedatacenter.resync')
+      expect(await publishedTypeFor('Jira Data Center')).to.equal('jiradatacenter.resync')
+    })
+
+    it('leaves one- and two-word types unchanged', async () => {
+      expect(await publishedTypeFor('Google Drive')).to.equal('googledrive.resync')
+      expect(await publishedTypeFor('MinIO')).to.equal('minio.resync')
+    })
+
+    it('never yields an event type containing a space', async () => {
+      const types = ['Confluence Data Center', 'Jira Data Center', 'Google Drive',
+                     'Local FS', 'MinIO', 'Azure Blob Storage']
+      for (const t of types) {
+        expect(await publishedTypeFor(t)).to.not.contain(' ')
+      }
     })
   })
 })

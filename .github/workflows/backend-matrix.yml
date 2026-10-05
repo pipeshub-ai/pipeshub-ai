@@ -93,16 +93,17 @@ jobs:
             tests: tests/integration/vector_db tests/integration/test_multimodal_indexing.py
             select: redis
           # Redis too: the stranded-record sweep publishes onto a real stream.
+          # Qdrant too: the trash's vector cleanup runs against a real collection.
           - suite: graph
             backend: neo4j
-            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml
-            services: neo4j-graph-it redis-messaging-it
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: neo4j-graph-it redis-messaging-it qdrant-vector-it
             discover: NEO4J_IT_URI|ARANGO_IT_URL
             select: neo4j
           - suite: graph
             backend: arangodb
-            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml
-            services: arango-graph-it redis-messaging-it
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: arango-graph-it redis-messaging-it qdrant-vector-it
             discover: NEO4J_IT_URI|ARANGO_IT_URL
             select: arango
           - suite: kv
@@ -127,6 +128,8 @@ jobs:
       ARANGO_IT_PASSWORD: ensure-it-pass
       REDIS_IT_HOST: localhost
       REDIS_IT_PORT: '6389'
+      QDRANT_IT_HOST: localhost
+      QDRANT_IT_PORT: '6343'
 
     steps:
       - name: Checkout code

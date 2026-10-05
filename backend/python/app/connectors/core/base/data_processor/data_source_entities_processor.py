@@ -509,7 +509,12 @@ class DataSourceEntitiesProcessor:
                 # and its subtree stay reachable from the record group.
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
                 if record_group_id:
-                    await self._link_record_to_group(parent_record, record_group_id, tx_store)
+                    # parent_record was read from the store, so pass it as the
+                    # existing record: without it the stale inherit-permissions
+                    # edge this branch exists to repair is never deleted.
+                    await self._link_record_to_group(
+                        parent_record, record_group_id, tx_store, parent_record
+                    )
 
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
@@ -626,6 +631,16 @@ class DataSourceEntitiesProcessor:
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
+        # A group kept only for the trash that the source has again. Taking it back
+        # writes the group, which waits for a purge deleting it; recordGroupId and
+        # the link come in later statements that the purge's lock does not cover.
+        if (
+            record_group is not None
+            and record_group.is_deleted_at_source
+            and not await tx_store.take_back_kept_record_group(record_group.id)
+        ):
+            record_group = None
+
         if record_group is None:
             # Create a new record group
             record_group = RecordGroup(
@@ -712,7 +727,10 @@ class DataSourceEntitiesProcessor:
 
             if record.inherit_permissions:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
-            else:
+            elif existing_record is not None:
+                # A record created moments ago cannot carry an inherit-permissions
+                # edge yet, so deleting one is a guaranteed no-op round trip —
+                # one per record, on the hot path of every full sync.
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.shared_with_me_record_group_ids:
@@ -2443,17 +2461,18 @@ class DataSourceEntitiesProcessor:
                 self.logger.error(f"Skipping malformed deleteRecord payload: {payload!r}")
                 unpublished_record_ids.append(str(payload))
                 continue
+            async def publish(payload: dict = payload, record_id: str = record_id) -> None:
+                event = {
+                    "eventType": "deleteRecord",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                    "payload": payload,
+                }
+                if await self.messaging_producer.send_message("record-events", event, key=record_id) is False:
+                    raise RuntimeError("the message broker did not accept the event")
+
             try:
                 await retry_async(
-                    lambda payload=payload, record_id=record_id: self.messaging_producer.send_message(
-                        "record-events",
-                        {
-                            "eventType": "deleteRecord",
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                            "payload": payload,
-                        },
-                        key=record_id,
-                    ),
+                    publish,
                     logger=self.logger,
                     description=f"publish deleteRecord event for record {record_id}",
                 )
@@ -2717,11 +2736,13 @@ class DataSourceEntitiesProcessor:
             delete_source=delete_source,
         ):
             ids = event["payload"]["virtualRecordIds"]
+            async def publish(event: dict = event) -> None:
+                if await self.messaging_producer.send_message("record-events", event, key=batch_id) is False:
+                    raise RuntimeError("the message broker did not accept the event")
+
             try:
                 await retry_async(
-                    lambda event=event: self.messaging_producer.send_message(
-                        "record-events", event, key=batch_id
-                    ),
+                    publish,
                     logger=self.logger,
                     description=f"publish softDeleteRecords for batch {batch_id}",
                 )
@@ -4340,6 +4361,18 @@ class DataSourceEntitiesProcessor:
                         f"Keeping record group '{record_group_name}' (external_id: {external_group_id}): "
                         "records in the trash still belong to it"
                     )
+                    # The mark tells the purge this group is gone at the source, so it
+                    # goes once its last record does. The next upsert clears it.
+                    marked = await tx_store.batch_update_nodes(
+                        [{
+                            "id": record_group_internal_id,
+                            "isDeletedAtSource": True,
+                            "deletedAtSourceTimestamp": get_epoch_timestamp_in_ms(),
+                        }],
+                        CollectionNames.RECORD_GROUPS.value,
+                    )
+                    if marked is False:
+                        raise RuntimeError(f"Could not mark record group {record_group_internal_id} for the purge")
                     return True
 
                 self.logger.debug(

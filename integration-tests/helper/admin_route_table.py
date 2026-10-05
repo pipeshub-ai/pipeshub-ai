@@ -295,6 +295,7 @@ PYTHON_CONDITIONAL_ADMIN = {
     "connectors/api/router.py::get_oauth_authorization_url": "team connectors need admin",
     "connectors/api/router.py::handle_oauth_callback": "team connectors need admin",
     "connectors/api/router.py::reindex_connector": "team connectors need admin",
+    "connectors/api/router.py::stop_connector_sync": "team connectors need admin",
     # Admin changes what is returned (all instances, unmasked secrets), never refuses.
     "connectors/api/router.py::get_connector_instances": "admin widens the listing",
     "connectors/api/router.py::get_configured_connector_instances": "admin widens the listing",
