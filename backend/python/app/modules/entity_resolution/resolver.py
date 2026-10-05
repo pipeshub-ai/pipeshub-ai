@@ -505,7 +505,8 @@ class EntityResolver:
                 decisions[decision.i] = decision
         if not decisions:
             # Parsed, but answered nothing it was asked: every name falls back
-            # to new, exactly as when the call fails.
+            # to new, and the model is rebuilt, exactly as when the call fails.
+            self._llm = None
             stats.model_failures += 1
             metrics.record_model_call("empty")
             metrics.record_fallback("model_empty", len(unresolved))

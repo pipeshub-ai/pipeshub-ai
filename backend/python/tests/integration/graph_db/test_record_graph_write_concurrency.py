@@ -109,6 +109,7 @@ async def _cleanup(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) ->
         await provider.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d.orgId == @org REMOVE d IN {collection}", {"org": org_id},
         )
+    await provider.disconnect()
 
 
 @pytest.fixture(params=["arango", "neo4j-autocommit", "neo4j-explicit"])
