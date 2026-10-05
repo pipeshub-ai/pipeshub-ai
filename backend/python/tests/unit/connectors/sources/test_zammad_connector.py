@@ -9,19 +9,6 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
-from app.connectors.sources.zammad.connector import (
-    ZAMMAD_LINK_OBJECT_MAP,
-    ZAMMAD_LINK_TYPE_MAP,
-    ZammadConnector,
-)
-from app.models.entities import (
-    AppUser,
-    AppUserGroup,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    TicketRecord,
-)
 import base64
 from app.connectors.sources.zammad.connector import (
     ATTACHMENT_ID_PARTS_COUNT,
@@ -86,19 +73,6 @@ def mock_data_store_provider():
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
     return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "authType": "API_TOKEN",
-            "baseUrl": "https://zammad.example.com",
-            "token": "test-zammad-token",
-        },
-    })
-    return svc
 
 
 @pytest.fixture()
@@ -351,7 +325,7 @@ class TestZammadLoadLookupTables:
         assert zammad_connector._priority_map == {}
 
 
-class TestZammadFetchUsers:
+class TestZammadFetchUsersPaging:
     async def test_fetch_users_single_page(self, zammad_connector):
         """Fetches users, builds email map, skips inactive and system users."""
         mock_ds = MagicMock()
@@ -409,7 +383,7 @@ class TestZammadFetchUsers:
         assert email_map == {}
 
 
-class TestZammadFetchGroups:
+class TestZammadFetchGroupsRecords:
     async def test_fetch_groups_creates_record_and_user_groups(self, zammad_connector):
         """Fetches groups, creates RecordGroups with permissions, and UserGroups with members."""
         zammad_connector.base_url = "https://zammad.example.com"
@@ -463,7 +437,7 @@ class TestZammadFetchGroups:
         assert len(user_groups) == 0
 
 
-class TestZammadSyncRoles:
+class TestZammadSyncRolesUserMapping:
     async def test_sync_roles_with_user_mapping(self, zammad_connector):
         """Syncs roles and maps users to roles via role_ids."""
         alice = AppUser(app_name=Connectors.ZAMMAD, connector_id="zm-conn-1", source_user_id="1", email="alice@example.com", full_name="Alice")
@@ -741,7 +715,7 @@ class TestZammadFetchTicketLinks:
         assert result[0].record_type == RecordType.WEBPAGE
 
 
-class TestZammadSyncTicketsForGroups:
+class TestZammadSyncTicketsForGroupsSkips:
     async def test_empty_groups(self, zammad_connector):
         """No-op when no groups provided."""
         await zammad_connector._sync_tickets_for_groups([])
@@ -764,7 +738,7 @@ class TestZammadSyncTicketsForGroups:
         zammad_connector.data_entities_processor.on_new_records.assert_not_awaited()
 
 
-class TestZammadRunSync:
+class TestZammadRunSyncFullFlow:
     @patch("app.connectors.sources.zammad.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_full_flow(self, mock_load_filters, zammad_connector):
         """run_sync orchestrates all sync steps."""

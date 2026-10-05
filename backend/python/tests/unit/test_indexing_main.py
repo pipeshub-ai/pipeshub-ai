@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
+    OriginTypes,
     ProgressStatus,
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -870,6 +871,121 @@ class TestRecoverInProgressRecords:
 # ---------------------------------------------------------------------------
 # start_kafka_consumers (indexing)
 # ---------------------------------------------------------------------------
+class TestRecoverCutShortEnrichment:
+    """An indexed record whose enrichment never ended holds its duplicates QUEUED.
+
+    Its start time is kept through enrichment, so it ages like any stale record;
+    it stays searchable and is republished so the handler finishes it.
+    """
+
+    @staticmethod
+    def _graph(records, connector=None, connector_read_fails=False) -> tuple[MagicMock, dict]:
+        gp = MagicMock()
+        by_key = {r["_key"]: r for r in records}
+
+        async def paginated(*_a, filters=None, **_k) -> list[dict]:
+            (field, value), = (filters or {}).items()
+            return [dict(r) for r in by_key.values() if r.get(field) == value]
+
+        async def get_document(doc_id, collection, *, raise_on_error=False, **_k) -> dict | None:
+            if collection == CollectionNames.APPS.value:
+                if connector_read_fails:
+                    # Both providers log a failed read and answer None unless asked to raise.
+                    if raise_on_error:
+                        raise ConnectionError("graph unavailable")
+                    return None
+                return connector
+            row = by_key.get(doc_id)
+            return dict(row) if row else None
+
+        async def update_node(doc_id, _collection, fields) -> bool:
+            by_key[doc_id].update(fields)
+            return True
+
+        gp.get_documents_paginated = AsyncMock(side_effect=paginated)
+        gp.get_document = AsyncMock(side_effect=get_document)
+        gp.update_node = AsyncMock(side_effect=update_node)
+        gp.get_nodes_by_filters = AsyncMock(return_value=[])
+        return gp, by_key
+
+    @staticmethod
+    def _twin(started_at) -> dict:
+        return {
+            "_key": "twin", "recordName": "q3.pdf", "orgId": "org-1", "origin": "UPLOAD",
+            "virtualRecordId": "vr-1", "version": 0,
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "parsingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+            "processingStartedAt": started_at,
+        }
+
+    async def test_a_stale_one_is_republished_and_stays_searchable(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp, rows = self._graph([self._twin(0)])
+
+        await recover_in_progress_records(container, gp)
+
+        producer = container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
+        assert producer.send_event.await_args.kwargs["payload"]["recordId"] == "twin"
+        assert rows["twin"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert rows["twin"]["processingStartedAt"] > 0, "kept off the next scans while the event waits"
+
+    async def test_a_failed_connector_read_never_turns_it_auto_index_off(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        twin = {**self._twin(0), "origin": OriginTypes.CONNECTOR.value, "connectorId": "conn-1"}
+        gp, rows = self._graph([twin], connector_read_fails=True)
+
+        await recover_in_progress_records(container, gp)
+
+        assert rows["twin"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+        assert rows["twin"]["extractionStatus"] == ProgressStatus.IN_PROGRESS.value
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_a_removed_connector_is_left_to_the_handler_to_release_the_copies(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        twin = {**self._twin(0), "origin": OriginTypes.CONNECTOR.value, "connectorId": "conn-1"}
+        gp, rows = self._graph([twin], connector=None)
+
+        await recover_in_progress_records(container, gp)
+
+        assert rows["twin"]["indexingStatus"] == ProgressStatus.COMPLETED.value, "still searchable"
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_a_failed_connector_read_leaves_a_stale_record_for_the_next_pass(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        stale = {
+            "_key": "r1", "recordName": "a.pdf", "orgId": "org-1", "version": 0,
+            "origin": OriginTypes.CONNECTOR.value, "connectorId": "conn-1",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value, "processingStartedAt": 0,
+        }
+        gp, rows = self._graph([stale], connector_read_fails=True)
+
+        await recover_in_progress_records(container, gp)
+
+        assert rows["r1"]["indexingStatus"] == ProgressStatus.IN_PROGRESS.value, "not AUTO_INDEX_OFF on a blip"
+        container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_a_live_enrichment_is_left_alone(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container = _make_container()
+        gp, rows = self._graph([self._twin(get_epoch_timestamp_in_ms())])
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_not_awaited()
+        assert rows["twin"]["extractionStatus"] == ProgressStatus.IN_PROGRESS.value
+
+
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 

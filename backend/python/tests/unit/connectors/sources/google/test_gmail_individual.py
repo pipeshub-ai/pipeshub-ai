@@ -13,7 +13,6 @@ from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, Pr
 from app.models.entities import MailRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
-from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     Filter,
@@ -26,21 +25,14 @@ from app.connectors.sources.google.common.gmail_received_date_query import (
 )
 from app.models.entities import (
     AppUser,
-    MailRecord,
     Record,
     RecordGroup,
-    RecordGroupType,
-    RecordType,
 )
 import os
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import PropertyMock
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 from app.config.constants.arangodb import (
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-    ProgressStatus,
     RecordRelations,
     RecordTypes,
 )
@@ -48,9 +40,6 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.google.common.connector_google_exceptions import GoogleMailError
 from app.models.entities import (
     FileRecord,
-    MailRecord,
-    RecordGroupType,
-    RecordType,
 )
 
 

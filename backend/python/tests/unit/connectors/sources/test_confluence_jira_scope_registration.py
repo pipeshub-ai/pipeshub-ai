@@ -1,9 +1,9 @@
 """The Confluence OAuth app keeps its "Grant Jira user access" setting.
 
 The connector and the agent toolset both register an OAuth config named
-"Confluence", and the registry keeps the one registered last. Startup loads
-connectors first and toolsets second, and saving an OAuth app stores only the
-fields the registry lists, so both registrations must declare includeJiraScope.
+"Confluence", and the registry keeps each side's. Saving a connector OAuth app
+stores only the fields the connector's registration lists, and each side's form
+shows its own registration's fields, so both must declare includeJiraScope.
 """
 
 import json
@@ -31,7 +31,12 @@ from app.connectors.core.registry.auth_utils import auth_field_to_dict
 from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
 from app.connectors.sources.atlassian.confluence_cloud.connector import ConfluenceConnector
 
-registered = {f.name: auth_field_to_dict(f) for f in get_oauth_config_registry().get_config("Confluence").auth_fields}
+registry = get_oauth_config_registry()
+registered = {f.name: auth_field_to_dict(f) for f in registry.get_config("Confluence").auth_fields}
+toolset_registered = {
+    f.name: auth_field_to_dict(f) for f in registry.get_config("Confluence", source="toolset").auth_fields
+}
+registry_endpoint = {f["name"]: f for f in registry.get_connector_registry_info("Confluence")["authFields"]}
 connector_fields = {
     f["name"]: f
     for f in ConfluenceConnector._connector_metadata["config"]["auth"]["schemas"]["OAUTH"]["fields"]
@@ -53,6 +58,8 @@ existing = [{"_id": "app-1", "orgId": "org-1", "createdBy": "u1", "config": {"cl
 toolset_schema = get_toolset_registry().get_toolset_metadata("confluence")["config"]["auth"]["schemas"]["OAUTH"]
 print(json.dumps({
     "registered": registered.get("includeJiraScope"),
+    "toolset_registered": toolset_registered.get("includeJiraScope"),
+    "registry_endpoint": registry_endpoint.get("includeJiraScope"),
     "connector": connector_fields.get("includeJiraScope"),
     "saved_on_create": asyncio.run(save(None, [])),
     "saved_on_update": asyncio.run(save("app-1", existing)),
@@ -83,8 +90,7 @@ class TestTheToolsetDoesNotDropTheSetting:
         assert after_startup["registered"] is not None
 
     def test_the_toolset_registers_the_connectors_definition(self, after_startup: dict) -> None:
-        # The OAuth apps page shows the registered field, so it must read as the connector's does.
-        assert {**after_startup["registered"], "defaultValue": None} == {
+        assert {**after_startup["toolset_registered"], "defaultValue": None} == {
             **after_startup["connector"],
             "defaultValue": None,
         }
@@ -98,9 +104,14 @@ class TestTheToolsetDoesNotDropTheSetting:
     def test_the_toolset_form_offers_it_pre_filled_with_no(self, after_startup: dict) -> None:
         assert after_startup["toolset_form"].get("includeJiraScope", "missing") == "no"
 
-    def test_the_oauth_apps_page_pre_fills_no(self, after_startup: dict) -> None:
-        # The registered field is the toolset's; No reads the same as an app saved without the setting.
-        assert after_startup["registered"]["defaultValue"] == "no"
+    def test_a_connector_oauth_app_pre_fills_yes_like_the_connector_form(self, after_startup: dict) -> None:
+        # GET /api/v1/oauth/registry/Confluence and connector app saves read the connector's entry.
+        assert after_startup["registered"]["defaultValue"] == "yes"
+        assert after_startup["registry_endpoint"]["defaultValue"] == "yes"
+
+    def test_a_toolset_oauth_app_pre_fills_no(self, after_startup: dict) -> None:
+        # No reads the same as a toolset app saved before the setting existed.
+        assert after_startup["toolset_registered"]["defaultValue"] == "no"
 
     def test_the_connector_still_pre_fills_yes(self, after_startup: dict) -> None:
         assert after_startup["connector"]["defaultValue"] == "yes"

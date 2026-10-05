@@ -25,13 +25,13 @@ from app.connectors.sources.google_cloud_storage.connector import (
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
 from contextlib import asynccontextmanager
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.models.entities import FileRecord, RecordGroupType, User
 
 
 # ---------------------------------------------------------------------------
