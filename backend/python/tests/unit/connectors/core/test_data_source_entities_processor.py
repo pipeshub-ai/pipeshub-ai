@@ -1013,7 +1013,10 @@ class TestOnNewUserGroups:
         await proc.on_new_user_groups([(ug, [])])
 
         assert ug.id == "existing-ug-id"
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "existing-ug-id", CollectionNames.GROUPS.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -1132,7 +1135,10 @@ class TestOnNewAppRoles:
         await proc.on_new_app_roles([(role, [])])
 
         assert role.id == "existing-role-id"
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "existing-role-id", CollectionNames.ROLES.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -4880,7 +4886,10 @@ class TestOnNewRecordGroupsExistingUpdate:
 
         await proc.on_new_record_groups([(rg, [])])
 
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "rg-existing", CollectionNames.RECORD_GROUPS.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
 
 # ===========================================================================

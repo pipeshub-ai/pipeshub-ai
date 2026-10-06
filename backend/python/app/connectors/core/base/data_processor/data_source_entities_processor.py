@@ -1243,6 +1243,18 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
+    @staticmethod
+    async def _write_permission_edges(
+        tx_store: TransactionStore, to_id: str, to_collection: str, edges: list[dict], *, replace: bool
+    ) -> None:
+        # Old edges go in the same call as the new ones, after every principal is
+        # resolved: on Neo4j a delete issued first committed on its own, so a group
+        # whose rewrite failed lost all its members until the next sync.
+        if replace:
+            await tx_store.replace_edges_to(to_id, to_collection, edges, CollectionNames.PERMISSION.value)
+        elif edges:
+            await tx_store.batch_create_edges(edges, collection=CollectionNames.PERMISSION.value)
+
     async def _resolve_principal(
         self, email: str, tx_store: TransactionStore, create_if_missing: bool = True
     ) -> tuple[str, str] | None:
@@ -2920,13 +2932,6 @@ class DataSourceEntitiesProcessor:
                         # Ensure update timestamp is fresh for the edge
                         record_group.updated_at = get_epoch_timestamp_in_ms()
 
-                        # To Delete the previously existing edges to record group and create new permissions
-                        await tx_store.delete_edges_to(
-                            to_id=record_group.id,
-                            to_collection=CollectionNames.RECORD_GROUPS.value,
-                            collection=CollectionNames.PERMISSION.value
-                        )
-
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
 
@@ -3037,6 +3042,10 @@ class DataSourceEntitiesProcessor:
 
                     # 4. Handle User and Group Permissions (from the passed 'permissions' list)
                     if not permissions:
+                        await self._write_permission_edges(
+                            tx_store, record_group.id, CollectionNames.RECORD_GROUPS.value, [],
+                            replace=existing_record_group is not None,
+                        )
                         continue
 
                     record_group_permissions = []
@@ -3098,9 +3107,10 @@ class DataSourceEntitiesProcessor:
                     # Batch create (upsert) all permission edges for this record group
                     if record_group_permissions:
                         self.logger.debug(f"Creating/updating {len(record_group_permissions)} PERMISSION edges for RecordGroup {record_group.id}")
-                        await tx_store.batch_create_edges(
-                            record_group_permissions, collection=CollectionNames.PERMISSION.value
-                        )
+                    await self._write_permission_edges(
+                        tx_store, to_id, to_collection, record_group_permissions,
+                        replace=existing_record_group is not None,
+                    )
 
                     if record_group.parent_record_group_id:
                         await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
@@ -3364,13 +3374,6 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Updating existing user group with id: {user_group.id}")
                         user_group.updated_at = get_epoch_timestamp_in_ms()
 
-                        # To Delete the previously existing edges to user group and create new permissions
-                        await tx_store.delete_edges_to(
-                            to_id=user_group.id,
-                            to_collection=CollectionNames.GROUPS.value,
-                            collection=CollectionNames.PERMISSION.value
-                        )
-
                     # 1. Upsert the user group document
                     # (This uses batch_upsert_user_groups and the to_arango... method)
                     await tx_store.batch_upsert_user_groups([user_group])
@@ -3405,9 +3408,10 @@ class DataSourceEntitiesProcessor:
                     # Batch create (upsert) all permission edges for this user group
                     if user_group_permissions:
                         self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
-                        await tx_store.batch_create_edges(
-                            user_group_permissions, collection=CollectionNames.PERMISSION.value
-                        )
+                    await self._write_permission_edges(
+                        tx_store, to_id, to_collection, user_group_permissions,
+                        replace=existing_user_group is not None,
+                    )
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
@@ -3449,13 +3453,6 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Updating existing app role with id: {role.id}")
                         role.updated_at = get_epoch_timestamp_in_ms()
 
-                        # To Delete the previously existing edges to app role and create new permissions
-                        await tx_store.delete_edges_to(
-                            to_id=role.id,
-                            to_collection=CollectionNames.ROLES.value,
-                            collection=CollectionNames.PERMISSION.value
-                        )
-
                     # 1. Upsert the app role document
                     await tx_store.batch_upsert_app_roles([role])
 
@@ -3491,9 +3488,10 @@ class DataSourceEntitiesProcessor:
                     # Batch create (upsert) all permission edges for this role
                     if role_permissions:
                         self.logger.debug(f"Creating/updating {len(role_permissions)} PERMISSION edges for AppRole {role.id}")
-                        await tx_store.batch_create_edges(
-                            role_permissions, collection=CollectionNames.PERMISSION.value
-                        )
+                    await self._write_permission_edges(
+                        tx_store, to_id, to_collection, role_permissions,
+                        replace=existing_app_role is not None,
+                    )
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_app_roles failed: {str(e)}")

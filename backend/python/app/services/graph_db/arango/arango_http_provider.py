@@ -9479,7 +9479,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         transaction: str,
         targets: list[dict],
-        edge_collections: list[str]
+        edge_collections: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> tuple[int, list[str]]:
         """
         Delete isOfType target nodes using pre-collected targets.
@@ -9489,6 +9491,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction: The transaction ID
             targets: List of target dicts with keys: collection, key, full_id (from _collect_isoftype_targets)
             edge_collections: List of edge collection names for cleanup (unused, kept for signature compatibility)
+            raise_on_error: Re-raise a failed batch's own error instead of the summary below,
+                so a write conflict stays retryable.
 
         Returns:
             Tuple of (total_deleted_count, list_of_failed_collections)
@@ -9512,7 +9516,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         for collection, keys in targets_by_collection.items():
             expected_count = len(keys)
-            deleted, failed_batches = await self._delete_nodes_by_keys(transaction, keys, collection)
+            deleted, failed_batches = await self._delete_nodes_by_keys(
+                transaction, keys, collection, raise_on_error=raise_on_error
+            )
             total_deleted += deleted
 
             # Check for failures: either failed batches OR incomplete deletion
@@ -13815,13 +13821,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # Dynamic edge sweep: remove every edge touching the deleted records
                     # (recordRelations, isOfType, belongsTo, inheritPermissions, permission,
                     # entityRelations, link relations, ...).
+                    # The original error, not a new one, so the transaction rolls back and a
+                    # write conflict still reads as one to on_records_deleted_cascade's retry.
                     await self._delete_edges_by_node_ids(
                         txn_id, node_ids, edge_collections, raise_on_error=True
                     )
                 if type_targets:
                     # Remove the isOfType type docs (files/mails/webpages/...); raises on
                     # partial failure so the transaction rolls back.
-                    await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
+                    await self._delete_isoftype_targets_from_collected(
+                        txn_id, type_targets, edge_collections, raise_on_error=True
+                    )
                 if record_keys:
                     await self._delete_nodes_by_keys(
                         txn_id, record_keys, CollectionNames.RECORDS.value, raise_on_error=True
