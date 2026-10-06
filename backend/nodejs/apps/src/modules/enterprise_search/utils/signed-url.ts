@@ -14,11 +14,12 @@ const SIGNED_URL_PARAM_RE = new RegExp(
 );
 
 // Optional `::marker` prefix or `!` image bang, `[label](url)`, optional
-// `{...}` artifact suffix. Labels and URLs cannot span lines; the bounds keep
-// matching linear on pathological input (a bare signed URL longer than the
-// bound is still caught by BARE_URL_RE).
+// `{...}` artifact suffix. Labels and URLs cannot span lines or contain `[`, so
+// an attempt stops at the next `[` instead of scanning a whole bound from every
+// start, which kept runs of `[` quadratic-ish. A signed URL the pattern misses
+// (nested brackets, longer than the bound) is still caught by BARE_URL_RE.
 const MARKDOWN_LINK_RE =
-  /(?:::[a-z_]+|!)?\[[^\]\n]{0,1000}\]\(([^)\s\n]{0,4096})(?:\s+"[^"\n]{0,1000}")?\)(?:\{[^}\n]{0,1000}\})?/g;
+  /(?:::[a-z_]+|!)?\[[^[\]\n]{0,1000}\]\(([^[)\s\n]{0,4096})(?:\s+"[^"\n]{0,1000}")?\)(?:\{[^}\n]{0,1000}\})?/g;
 
 const BARE_URL_RE = /https?:\/\/[^\s<>"'`)\]]+/gi;
 

@@ -56,6 +56,12 @@ describe('signed-url helpers', () => {
       expect(out).to.contain('end')
     })
 
+    it('still removes a signed URL inside a link whose label nests brackets', () => {
+      const out = stripSignedUrlLinks('see [the [q3] report](https://b.s3.amazonaws.com/r.pdf?X-Amz-Signature=abc) now')
+      expect(out).to.not.contain('X-Amz-Signature')
+      expect(out).to.contain('now')
+    })
+
     it('stays fast on pathological input', () => {
       const inputs = [
         '['.repeat(200000),
