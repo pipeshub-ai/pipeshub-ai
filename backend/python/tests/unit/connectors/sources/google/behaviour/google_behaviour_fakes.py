@@ -308,6 +308,8 @@ class FakeEntitiesProcessor:
         self.fail_owner_lookup = False
         self.fail_permission_lookup = False
         self.fail_group_permission_lookup = False
+        self.linked_authenticators: list[tuple[str, str, str, str]] = []
+        self.deleted_groups: list[str] = []
 
     def _check_write(self, external_id: Optional[str]) -> None:
         if external_id in self.fail_writes_for:
@@ -350,19 +352,21 @@ class FakeEntitiesProcessor:
         visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Any]:
         """Keyset pages ordered by id, typed as stored, live only unless asked, as both graph stores return them."""
-        assert record_group_id is None and not offset and not exclude_statuses, "not modelled"
+        assert not exclude_statuses, "not modelled"
         if self.fail_record_listing:
             raise RuntimeError("graph unavailable while listing records")
         found = sorted(
             (
                 r for r in self.records.values()
-                if (not status_filters or r.indexing_status in status_filters)
+                if getattr(r, "connector_id", None) == connector_id
+                and (not status_filters or r.indexing_status in status_filters)
                 and (is_placeholder is None or bool(getattr(r, "is_placeholder", False)) == is_placeholder)
+                and (record_group_id is None or getattr(r, "record_group_id", None) == record_group_id)
                 and (after_key is None or r.id > after_key)
                 and matches_visibility(r, visibility)
             ),
             key=lambda r: r.id,
-        )
+        )[offset:]
         return found[:limit] if limit else found
 
     async def get_record_owner_source_user_email(self, record_id: str, *, raise_on_error: bool = False) -> str | None:
@@ -381,6 +385,25 @@ class FakeEntitiesProcessor:
             ),
             None,
         )
+
+    async def get_record_group_by_external_id(self, connector_id: str, external_group_id: str) -> Optional[Any]:
+        group = self.record_groups.get(external_group_id)
+        if group is not None and getattr(group, "connector_id", None) not in (None, connector_id):
+            return None
+        return group
+
+    async def on_record_group_deleted(
+        self, external_group_id: str, connector_id: str, *, trash_live_records: bool = False
+    ) -> bool:
+        self.record_groups.pop(external_group_id, None)
+        self.record_group_permissions.pop(external_group_id, None)
+        self.deleted_groups.append(external_group_id)
+        return True
+
+    async def link_authenticator_to_source_user(
+        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object
+    ) -> None:
+        self.linked_authenticators.append((connector_id, created_by, email, source_user_id))
 
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
@@ -428,6 +451,9 @@ class FakeEntitiesProcessor:
             self._check_write(record.external_record_id)
         self.new_record_batches.append([r.external_record_id for r, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
+            group = self.record_groups.get(record.external_record_group_id)
+            if group is not None and not record.record_group_id:
+                record.record_group_id = group.id
             self.records[record.external_record_id] = record
             self._upsert_permissions(record.external_record_id, permissions)
             self._ensure_parent(record)
@@ -490,7 +516,9 @@ class FakeEntitiesProcessor:
             self.permissions.pop(record.external_record_id, None)
         self.deleted.append(record_id)
 
-    async def on_records_deleted_cascade(self, record_ids: list[str], connector_id: str) -> dict[str, Any]:
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True
+    ) -> dict[str, Any]:
         deleted: list[str] = []
         pending = list(record_ids)
         while pending:
@@ -498,17 +526,21 @@ class FakeEntitiesProcessor:
             if record is None:
                 continue
             deleted.append(record.id)
-            pending.extend(
-                r.id for r in self.records.values()
-                if r.parent_external_record_id == record.external_record_id
-            )
+            if cascade_children:
+                pending.extend(
+                    r.id for r in self.records.values()
+                    if r.parent_external_record_id == record.external_record_id
+                )
             del self.records[record.external_record_id]
             self.permissions.pop(record.external_record_id, None)
         self.deleted.extend(deleted)
-        return {"deleted_records": deleted}
+        return {"deleted_records": deleted, "successfully_deleted": len(deleted)}
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
+            existing = self.record_groups.get(group.external_group_id)
+            if existing is not None:
+                group.id = existing.id
             self.record_groups[group.external_group_id] = group
             self.record_group_permissions[group.external_group_id] = list(permissions)
 
