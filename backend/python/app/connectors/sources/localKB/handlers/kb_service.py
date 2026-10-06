@@ -25,7 +25,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import is_live_record
@@ -3123,6 +3123,13 @@ class KnowledgeBaseService:
                 )
         return file_records, skipped_files, failed_files
 
+    @staticmethod
+    def _uploader(user: dict | None) -> SourcePerson | None:
+        """The validated uploader as the records' creator. By email: platform users
+        have no source id on the KB app, and the people step resolves members by email."""
+        email = (user or {}).get("email")
+        return SourcePerson(email=email, display_name=user.get("fullName") or None) if email else None
+
     async def _upload_records(
         self, kb_id: str, user_id: str, org_id: str, files: List[Dict], parent_folder_id: Optional[str]
     ) -> Dict:
@@ -3158,6 +3165,9 @@ class KnowledgeBaseService:
             )
 
             entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]
+            uploader = self._uploader(validation.get("user"))
+            for fr, _ in entities:
+                fr.created_by = uploader
             if entities:
                 processor = await self.processor_for_kb(kb_id)
                 await processor.on_new_records(entities)

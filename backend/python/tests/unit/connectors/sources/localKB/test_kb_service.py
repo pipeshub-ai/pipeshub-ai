@@ -36,7 +36,7 @@ from app.connectors.sources.localKB.handlers.kb_service import (
     folder_levels_in_path,
 )
 from app.exceptions.graph_db_exceptions import GraphQueryError
-from app.models.entities import FileRecord
+from app.models.entities import FileRecord, SourcePerson
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
 
 
@@ -2937,3 +2937,52 @@ class TestFolderDepthLimit:
 
         assert result["code"] == 400
         assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
+
+
+# ===========================================================================
+# Uploader recorded as the creator of uploaded records
+# ===========================================================================
+
+
+def _stub_upload_pipeline(service: KnowledgeBaseService, mock_config_service: AsyncMock, validation: dict) -> None:
+    mock_config_service.get_config = AsyncMock(return_value={"storage": {"endpoint": "http://storage:3001"}})
+    gp = service.graph_provider
+    gp._validate_upload_context = AsyncMock(return_value=validation)
+    gp._analyze_upload_structure = MagicMock(return_value=_upload_analysis())
+    gp.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+    gp._populate_file_destinations = MagicMock()
+    gp._fetch_existing_file_names_in_parent = AsyncMock(return_value=set())
+    gp._normalize_name = lambda n: n or ""
+    gp._normalized_name_variants_lower = lambda n: [n.lower()] if n else []
+    gp._generate_upload_message = MagicMock(return_value="uploaded")
+
+
+_UPLOAD_FILES = [{
+    "filePath": "docs/a.pdf",
+    "record": _minimal_upload_record_dict(recordName="a.pdf", externalRecordId="ext-a"),
+    "fileRecord": {"name": "a.pdf", "mimeType": "application/pdf", "isFile": True},
+}]
+
+
+class TestUploadRecordsCreator:
+    @pytest.mark.asyncio
+    async def test_uploader_is_created_by_on_files_and_new_folders(self, service, mock_config_service) -> None:
+        uploader = {"_key": "user-key-1", "userId": "user1", "orgId": "org1",
+                    "email": "ann@acme.com", "fullName": "Ann Uploader"}
+        _stub_upload_pipeline(service, mock_config_service, {"valid": True, "user": uploader, "user_key": "user-key-1"})
+
+        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None)
+
+        entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
+        expected = SourcePerson(email="ann@acme.com", display_name="Ann Uploader")
+        assert [record.created_by for record, _ in entities] == [expected, expected]
+        assert all(record.authored_by is None for record, _ in entities)
+
+    @pytest.mark.asyncio
+    async def test_uploader_without_email_names_no_one(self, service, mock_config_service) -> None:
+        _stub_upload_pipeline(service, mock_config_service, {"valid": True, "user": {"_key": "user-key-1"}})
+
+        await service._upload_records("kb1", "user1", "org1", [dict(f) for f in _UPLOAD_FILES], parent_folder_id=None)
+
+        entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
+        assert all(record.created_by is None for record, _ in entities)
