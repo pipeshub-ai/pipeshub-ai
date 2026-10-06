@@ -285,6 +285,7 @@ NODE_COLLECTIONS = [
 _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
 _PERMITTED_WALK_CHUNK = 100
+_RECORDS_ORG_KEY_INDEX = "records_org_key"
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
@@ -970,6 +971,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId", "recordType"],
         )
 
+        # COMPOSITE: orgId + _key — the record-people backfill pages an org's
+        # records in key order; hinted by name in page_record_ids_by_type.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value, ["orgId", "_key"], name=_RECORDS_ORG_KEY_INDEX,
+        )
+
         # COMPOSITE: orgId + visibility — user-facing artifact display policy.
         await self.http_client.ensure_persistent_index(
             CollectionNames.ARTIFACTS.value,
@@ -1255,17 +1262,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
         if not org_id or not record_types:
             return []
+        # The (orgId, _key) index gives the org's keys in order from the cursor
+        # (the first page after ""), so a page stops at the limit; the planner
+        # otherwise sorts the org's records of these types, or walks every
+        # tenant's keys in the primary index. A soft hint: without the index
+        # the query still answers, only slower.
         rows = await self.http_client.execute_aql(
             f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.orgId == @org_id AND record.recordType IN @types
-                FILTER record.isDeleted != true
-                FILTER @after_key == null OR record._key > @after_key
+            FOR record IN {CollectionNames.RECORDS.value} OPTIONS {{indexHint: "{_RECORDS_ORG_KEY_INDEX}"}}
+                FILTER record.orgId == @org_id AND record._key > @after_key
+                FILTER record.recordType IN @types AND record.isDeleted != true
                 SORT record._key
                 LIMIT @limit
                 RETURN record._key
             """,
-            bind_vars={"org_id": org_id, "types": list(record_types), "after_key": after_key, "limit": max(1, limit)},
+            bind_vars={
+                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": max(1, limit),
+            },
         )
         return [str(key) for key in rows or []]
 

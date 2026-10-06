@@ -142,3 +142,40 @@ async def test_neo4j_backfill_pages_walk_the_id_order_without_sorting(backend) -
     for query, parameters in pages:
         plan = await _profile(provider, query, parameters)
         assert not [op for op in plan["operators"] if "Sort" in op or "Top" in op], plan["operators"]
+
+
+async def test_arango_backfill_pages_seek_the_orgs_keys_without_sorting(backend) -> None:
+    """Review: no index served "this org's records in key order", so a page
+    either sorted the org's records or walked every tenant's keys. An
+    (orgId, _key) index, hinted, gives the order within the org."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    provider, org = backend
+    if not isinstance(provider, ArangoHTTPProvider):
+        pytest.skip("ArangoDB only")
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    sent: list[dict[str, Any]] = []
+    execute = provider.http_client.execute_aql
+
+    async def capture(query, bind_vars=None, txn_id=None, **kwargs):  # noqa: ANN202
+        if "LIMIT @limit" in query and "@types" in query:
+            sent.append({"query": query, "bindVars": bind_vars or {}})
+        return await execute(query, bind_vars=bind_vars, txn_id=txn_id, **kwargs)
+
+    provider.http_client.execute_aql = capture
+    try:
+        first = await provider.page_record_ids_by_type(org, ["MAIL", "TICKET"], limit=1)
+        await provider.page_record_ids_by_type(org, ["MAIL", "TICKET"], after_key=first[0], limit=1)
+    finally:
+        provider.http_client.execute_aql = execute
+    assert len(sent) == 2
+    client = provider.http_client
+    session = await client._get_session()
+    for request in sent:
+        async with session.post(f"{client.base_url}/_db/{client.database}/_api/explain", json=request) as resp:
+            nodes = (await resp.json())["plan"]["nodes"]
+        types = [n["type"] for n in nodes]
+        assert "SortNode" not in types, types
+        (index_node,) = [n for n in nodes if n["type"] == "IndexNode"]
+        assert [i["fields"] for i in index_node["indexes"]] == [["orgId", "_key"]]
