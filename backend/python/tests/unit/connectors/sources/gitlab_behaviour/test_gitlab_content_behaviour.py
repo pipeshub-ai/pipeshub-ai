@@ -56,7 +56,8 @@ async def test_an_issue_and_a_merge_request_with_a_dash_or_cjk_title_still_strea
     assert issue.headers["content-disposition"] == 'attachment; filename="Login   fails"'
     assert json.loads(await body_of(issue))["block_groups"][0]["data"].startswith("# Login — 登录 fails")
     assert merge_request.headers["content-disposition"].startswith('attachment; filename="Fix login')
-    assert json.loads(await body_of(merge_request))["block_groups"]
+    mr_groups = json.loads(await body_of(merge_request))["block_groups"]
+    assert "Fix login — 修复" in mr_groups[0]["data"], mr_groups[0]["data"][:80]
 
 
 async def test_a_title_with_a_quote_or_a_backslash_is_escaped_in_the_download_name(harness, gitlab, db) -> None:
