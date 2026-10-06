@@ -12,7 +12,11 @@ const prefixedId = (prefix: string): z.ZodEffects<z.ZodString> =>
     );
 
 /** The id part of a validated `<type>:<id>` reference. */
-export const refId = (ref: string): string => ref.slice(ref.indexOf(':') + 1);
+export const refId = (ref: string): string => {
+  // Query parameters can arrive as arrays; only a single string reference is valid here.
+  if (typeof ref !== 'string') throw new TypeError('Expected a single <type>:<id> reference');
+  return ref.slice(ref.indexOf(':') + 1);
+};
 
 const chatResource = prefixedId('chat');
 

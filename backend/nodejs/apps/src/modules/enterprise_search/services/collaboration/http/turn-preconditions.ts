@@ -72,7 +72,7 @@ export async function assertNotDuplicate(
     sessionId: scope.sessionId,
     orgId: scope.orgId,
     authorUserId: new Types.ObjectId(scope.callerId),
-    clientMessageId,
+    clientMessageId: { $eq: clientMessageId },
   })
     .select('_id')
     .lean<{ _id: Types.ObjectId }>();
@@ -112,7 +112,7 @@ export async function assertNotDuplicateFirstSend(
   const existing = await ChatSession.findOne({
     orgId,
     initiator: caller,
-    creationKey,
+    creationKey: { $eq: creationKey },
   })
     .select('+creationKey')
     .lean<{ _id: Types.ObjectId }>();
@@ -123,7 +123,7 @@ export async function assertNotDuplicateFirstSend(
     sessionId: existing._id,
     orgId,
     authorUserId: caller,
-    clientMessageId: creationKey,
+    clientMessageId: { $eq: creationKey },
   })
     .select('_id')
     .lean<{ _id: Types.ObjectId }>();

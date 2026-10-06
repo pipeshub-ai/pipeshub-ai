@@ -181,8 +181,8 @@ async function discardOrphan(
     await ChatSession.deleteOne({
       orgId,
       initiator,
-      creationKey,
-      'activeRun.runId': runId,
+      creationKey: { $eq: creationKey },
+      'activeRun.runId': { $eq: runId },
     });
   } catch (error) {
     logger.error('Failed to remove a half-created conversation', {

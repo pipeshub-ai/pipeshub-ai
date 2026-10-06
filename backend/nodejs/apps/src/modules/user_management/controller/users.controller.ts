@@ -660,7 +660,7 @@ export class UserController {
       const { email } = req.body;
 
       const users = await Users.find({
-        email: email,
+        email: { $eq: email },
         isDeleted: false,
       });
 

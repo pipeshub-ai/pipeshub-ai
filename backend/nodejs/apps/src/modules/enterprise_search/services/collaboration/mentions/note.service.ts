@@ -189,7 +189,7 @@ export class NoteService implements INoteService {
       sessionId: scope.sessionId,
       orgId: scope.orgId,
       authorUserId: new Types.ObjectId(scope.callerId),
-      clientMessageId,
+      clientMessageId: { $eq: clientMessageId },
     }).lean<NoteRow>();
     if (!row) return undefined;
     if (row.messageType === 'note') return row;
