@@ -281,9 +281,11 @@ record_schema = {
             # When a restore brought the record back; see RESTORED_AT_FIELD.
             "restoredAtTimestamp": {"type": ["number", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
-            # Clocks the stranded-record sweep in indexing_main ages rows on.
+            # Clocks the stranded-record sweep in indexing_main ages rows on,
+            # and how many times it has re-sent the record since it was queued.
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
+            "republishCount": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [
