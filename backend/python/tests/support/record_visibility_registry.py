@@ -71,6 +71,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_record_by_weburl": (Rule.LIVE, "resolves links and agent references"),
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "page_record_ids_by_type": (Rule.LIVE, "the record-people backfill links live records only"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "filter_nodes_with_permission_role": (
         Rule.LIVE, "the Location trail's ancestor check: a trashed folder ends the trail, unnamed",

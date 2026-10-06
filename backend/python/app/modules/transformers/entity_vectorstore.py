@@ -1472,7 +1472,7 @@ class EntityVectorStore:
                 [self._search_hit(hit) for hit in hits if hit.score >= score_threshold]
                 for hits in batch[position * len(groups):(position + 1) * len(groups)]
             ]
-            results[index] = _interleave(per_group)
+            results[index] = _interleave(per_group)[:top_k]
         return results
 
     @staticmethod

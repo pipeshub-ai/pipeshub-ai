@@ -592,7 +592,22 @@ class TestTitlesSearchedApart:
         assert len(requests) == 2
         assert requests[0].filter["must_not"] == {"metadata.entityType": "record"}
         assert requests[1].filter["must"]["metadata.entityType"] == "record"
-        assert [h["entityId"] for h in hits] == ["t1", "r1", "t2", "r2", "r3"]
+        assert [h["entityId"] for h in hits] == ["t1", "r1", "t2"]
+
+    async def test_an_odd_top_k_is_not_exceeded(self) -> None:
+        """Each group asks for half of top_k rounded up, so both answering
+        would return one more than asked; the merged pass is cut to top_k."""
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+        from app.services.vector_db.models import SearchResult
+
+        def _r(entity_id: str, entity_type: str) -> SearchResult:
+            return SearchResult(id=entity_id, score=0.5, payload={"metadata": {"entityId": entity_id, "entityType": entity_type}})
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[_r("t1", "topic")], [_r("r1", "record")]])
+        store = _make_store(service)
+        (hits,) = await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], top_k=1)
+        assert [h["entityId"] for h in hits] == ["t1"]
 
     async def test_asking_for_records_only_is_one_request(self) -> None:
         from app.modules.transformers.entity_vectorstore import EntitySearchPass
