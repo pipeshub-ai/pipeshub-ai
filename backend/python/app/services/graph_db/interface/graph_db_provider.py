@@ -3971,6 +3971,14 @@ class IGraphDBProvider(ABC):
 
 
     @abstractmethod
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Optional['Person']:
+        """The Person keyed (org_id, source_key) — see ``Person.source_key`` — or
+        None. A read that fails answers None unless ``raise_on_error`` is set."""
+        pass
+
+    @abstractmethod
     async def upsert_person_by_source_key(
         self,
         person: Person,

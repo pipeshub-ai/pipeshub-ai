@@ -448,6 +448,9 @@ class MockTransactionStore:
     ) -> User | None:
         return None  # this store keeps no userAppRelation edges
 
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
     async def get_user_by_email(
         self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> User | None:
@@ -467,6 +470,12 @@ class MockTransactionStore:
     ) -> Person | None:
         for doc in self._s.collections.get(CollectionNames.PEOPLE.value, {}).values():
             if doc.get("email") == email.lower() and doc.get("orgId") == org_id:
+                return Person.from_arango_person(doc)
+        return None
+
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        for doc in self._s.collections.get(CollectionNames.PEOPLE.value, {}).values():
+            if doc.get("sourceKey") == source_key and doc.get("orgId") == org_id:
                 return Person.from_arango_person(doc)
         return None
 

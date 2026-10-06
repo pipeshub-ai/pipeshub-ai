@@ -113,6 +113,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def upsert_person_by_source_key(self, person) -> None:
         return None
 
+    async def get_person_by_source_key(self, source_key, org_id) -> None:
+        return None
+
     async def ensure_app_membership(
         self, principal_id, principal_collection, connector_id, *,
         is_external, source_user_id=None,

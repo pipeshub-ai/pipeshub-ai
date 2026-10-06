@@ -70,6 +70,15 @@ class _DryRunStore:
     ) -> User | None:
         return await self._graph.get_user_by_source_id(source_user_id, connector_id, raise_on_error=raise_on_error)
 
+    async def get_person_by_email(self, email: str, org_id: str) -> Person | None:
+        return await self._graph.get_person_by_email(email, org_id, raise_on_error=True)
+
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        return await self._graph.get_person_by_source_key(source_key, org_id, raise_on_error=True)
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self._graph.is_transient_error(error)
+
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         return self._would_create(person)
 

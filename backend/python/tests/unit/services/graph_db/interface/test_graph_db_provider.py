@@ -370,6 +370,7 @@ class TestAbstractMethodInventory:
         "get_person_by_email",
         "upsert_person_by_email",
         "upsert_person_by_source_key",
+        "get_person_by_source_key",
         "ensure_app_membership",
         "create_edges_if_absent",
         "migrate_person_to_user",
