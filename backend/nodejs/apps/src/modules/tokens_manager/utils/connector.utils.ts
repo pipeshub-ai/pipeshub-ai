@@ -98,7 +98,11 @@ export interface ConnectorInstanceSummary {
   ownerDeviceName?: string | null;
 }
 
-/** Throws when Python answers non-200 or without a `connector` body. */
+/**
+ * Throws what Python answered when it refuses the read (a 404 for a connector
+ * the caller cannot open stays a 404), and a 500 only for a 200 with no
+ * `connector` body.
+ */
 export const fetchConnectorInstanceSummary = async (
   connectorId: string,
   appConfig: AppConfig,
@@ -110,10 +114,15 @@ export const fetchConnectorInstanceSummary = async (
     headers,
   );
 
-  const data = response.data as
+  const statusCode = response?.statusCode;
+  if (response && !(statusCode >= 200 && statusCode < 300)) {
+    throw handleBackendError(response, 'getting connector');
+  }
+
+  const data = response?.data as
     | { connector?: ConnectorInstanceSummary }
     | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
+  if (!data?.connector) {
     throw new InternalServerError(
       `Failed to fetch connector ${connectorId} state`,
     );
