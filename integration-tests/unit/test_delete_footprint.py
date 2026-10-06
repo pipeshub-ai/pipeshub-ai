@@ -372,7 +372,9 @@ async def _rebuild_stores(counts_by_path: dict[str, int], *, rebuilt_at: str = R
     blob.count_under.side_effect = lambda path, vendor: counts_by_path.get(path, 0)
     mongo.count_documents_under_path.side_effect = lambda path: 1 if counts_by_path.get(path) else 0
     mongo.envelope_path.return_value = rebuilt_at
-    graph.get_record_by_name.return_value = {"id": "r2", "recordName": "copy.md", "indexingStatus": "COMPLETED"}
+    graph.get_record_by_name.return_value = {
+        "id": "r2", "recordName": "copy.md", "indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED",
+    }
     return before, stores
 
 
@@ -393,6 +395,20 @@ async def test_shared_content_rebuilt_whole_under_the_survivor_passes() -> None:
 
     mongo.envelope_path.assert_awaited_with(ORG, VRID, within=SURVIVOR_FOLDER, timeout=480)
     graph.get_record_by_name.assert_awaited_with("kb-2", "copy.md")
+
+
+@pytest.mark.asyncio
+async def test_shared_content_is_counted_only_once_the_rebuild_has_enriched_it() -> None:
+    """The re-index writes the summary vector last; counted before that, one point is missing."""
+    before, stores = await _rebuild_stores({REBUILT: 2})
+    graph = stores[0]
+    indexed = {"id": "r2", "recordName": "copy.md", "indexingStatus": "COMPLETED"}
+    readings = [{**indexed, "extractionStatus": "IN_PROGRESS"}, {**indexed, "extractionStatus": "COMPLETED"}]
+    graph.get_record_by_name.side_effect = lambda *_: readings.pop(0) if len(readings) > 1 else readings[0]
+
+    await _assert_rebuilt(before, stores)
+
+    assert graph.get_record_by_name.await_count == 2
 
 
 @pytest.mark.asyncio

@@ -460,7 +460,9 @@ async def wait_for_rebuild(
         f"The shared content {holder.virtual_record_id} was rebuilt at {path!r}, not under "
         f"{folder!r} where its surviving holder {holder.name} lives."
     )
-    await wait_for_connector_records(graph, connector_id, [holder.name], timeout=timeout)
+    # The re-index owns the content, so it runs enrichment too, and the summary vector
+    # it writes last is counted against the one the deleted copy had.
+    await wait_for_connector_records(graph, connector_id, [holder.name], timeout=timeout, enriched=True)
     return path
 
 
