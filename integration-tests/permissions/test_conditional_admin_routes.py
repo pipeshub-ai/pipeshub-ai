@@ -21,7 +21,6 @@ so a new conditional route cannot skip this suite.
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Iterator
 
 import pytest
@@ -38,8 +37,6 @@ from helper.admin_route_conditional_world import Reply, World, oauth_state, send
 from helper.http.session_client import SessionClient
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser, create_second_user, delete_second_user
-
-logger = logging.getLogger("conditional-admin")
 
 pytestmark = [pytest.mark.integration, pytest.mark.permissions]
 

@@ -280,9 +280,9 @@ def _mcp(name: str, method: str, suffix: str, status: int, words: str) -> Condit
 
 
 CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
-    # The admin's team connector and the member's personal one are created for
-    # real by the test world, so "an admin may create a team connector" and "a
-    # member may create a personal one" are already proven before these run.
+    # The test world creates the admin's team connector and the member's
+    # personal one for real, which is the full proof that they may. Here the
+    # allowed callers only show that they get past the scope check.
     ConditionalRoute(
         f"{_ROUTER}::create_connector_instance", "POST", f"{_CONNECTORS}/",
         cases=(
@@ -315,8 +315,9 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     _on_a_connector("save_connector_instance_filters", "POST", "/{target}/filters", 200,
                     "Filter selections saved",
                     body={"filters": {"it_probe": {"operator": "in", "value": ["x"]}}}),
-    # Switching agents on, which the plain connector does not support. Switching
-    # sync on would start a crawl for the allowed callers.
+    # Asked to switch agents on, which the plain connector does not support.
+    # Asked to switch sync on, the gateway answers a refused caller 500 before
+    # the connector service is asked, and an allowed caller would start a crawl.
     _on_a_connector("toggle_connector_instance", "POST", "/{target}/toggle", 400,
                     "does not support agent functionality", body={"type": "agent"}),
     _on_a_connector("update_connector_instance_auth_config", "PUT", "/{target}/config/auth", 200,

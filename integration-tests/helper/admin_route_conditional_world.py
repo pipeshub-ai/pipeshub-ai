@@ -164,7 +164,7 @@ class World:
                 raise self._failed[group]
             try:
                 built = getattr(self, f"_build_{group}")()
-            except BaseException as exc:
+            except BaseException as exc:  # pytest's skip and fail are not Exceptions
                 self._failed[group] = exc
                 raise
             if set(built) != set(WORLD_GROUPS[group]):
@@ -172,6 +172,7 @@ class World:
                     f"The {group!r} group made {sorted(built)}, not {sorted(WORLD_GROUPS[group])}."
                 )
             self._values.update(built)
+            logger.info("Made the %r group for the conditional-admin cases", group)
         return self._values[key]
 
     def token(self, caller: str) -> str:
@@ -555,6 +556,7 @@ class World:
         steps = [("connectors made for single cases", self.discard_fresh), *reversed(self._undo)]
         self._undo = []
         for what, undo in [*steps, ("waiting for connector deletions", self._await_deletions)]:
+            logger.info("Removing: %s", what)
             try:
                 undo()
             except Exception as exc:  # noqa: BLE001 - every step runs; all failures are reported together
