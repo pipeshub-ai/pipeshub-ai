@@ -90,12 +90,6 @@ class RemovePermissionRequest(BaseModel):
     userIds : Optional[List[str]] = Field(None, description ="User id", min_items=0)
     teamIds : Optional[List[str]] = Field(None, description ="Team id", min_items=0)
 
-class CreateRecordsRequest(BaseModel):
-    """Request model for creating records in a folder"""
-    userId : str = Field(..., description ="User id", min_length=1)
-    records: List[Dict[str, Any]] = Field(..., description="List of record metadata dicts")
-    fileRecords: List[Dict[str, Any]] = Field(..., description="List of file metadata dicts (same length as records)")
-
 
 class UpdateRecordRequest(BaseModel):
     """Request model for updating a record in a folder"""
@@ -267,16 +261,6 @@ class CreateFolderResponse(BaseModel):
     webUrl: str = Field(..., description="Web URL")
     # path: str = Field(..., description="Folder path")
     # parentFolderId: int = Field(..., description="Creation timestamp")
-
-
-class CreateRecordsResponse(BaseModel):
-    """Response model for creating records"""
-    success: bool = Field(..., description="Success status")
-    recordCount: int = Field(..., description="Number of records created")
-    insertedRecordIds: List[str] = Field(..., description="List of inserted record IDs")
-    insertedFileIds: List[str] = Field(..., description="List of inserted file IDs")
-    folderId: Optional[str] = Field(None, description="Folder ID")
-    kbId: str = Field(..., description="Knowledge base ID")
 
 
 class UpdateRecordResponse(BaseModel):

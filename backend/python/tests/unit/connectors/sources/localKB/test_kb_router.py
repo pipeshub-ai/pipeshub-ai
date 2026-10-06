@@ -1,10 +1,13 @@
+import inspect
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from app.connectors.sources.localKB.api import kb_router as kb_router_module
 from app.connectors.sources.localKB.api.kb_router import (
     HTTP_INTERNAL_SERVER_ERROR,
     HTTP_MAX_STATUS,
@@ -12,6 +15,7 @@ from app.connectors.sources.localKB.api.kb_router import (
     _parse_comma_separated_str,
     kb_router,
 )
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 
 
 def _make_app(kb_service_mock=None, kafka_service_mock=None, logger_mock=None):
@@ -639,65 +643,6 @@ class TestUploadRecordsToFolder:
         kb_svc.upload_records_to_folder = AsyncMock(side_effect=RuntimeError("err"))
         client = TestClient(app)
         resp = client.post("/api/v1/kb/kb1/folder/f1/upload", json=self._files_body())
-        assert resp.status_code == 500
-
-
-class TestCreateRecordsInKb:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(return_value={
-            "success": True, "recordCount": 1, "insertedRecordIds": ["r1"],
-            "insertedFileIds": ["f1"], "kbId": "kb1"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 200
-
-    def test_invalid_body(self):
-        app, kb_svc, _ = _make_app()
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", content="bad", headers={"content-type": "application/json"})
-        assert resp.status_code == 400
-
-    def test_failure(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(return_value={
-            "success": False, "code": 403, "reason": "Forbidden"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 403
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}]})
-        assert resp.status_code == 500
-
-
-class TestCreateRecordsInFolder:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_folder = AsyncMock(return_value={
-            "success": True, "recordCount": 1, "insertedRecordIds": ["r1"],
-            "insertedFileIds": ["f1"], "kbId": "kb1", "folderId": "f1"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 200
-
-    def test_invalid_body(self):
-        app, kb_svc, _ = _make_app()
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", content="bad", headers={"content-type": "application/json"})
-        assert resp.status_code == 400
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_folder = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", json={"records": [{}]})
         assert resp.status_code == 500
 
 
@@ -1708,65 +1653,6 @@ class TestUploadRecordsToFolderFullCoverage:
         assert resp.status_code == 500
 
 
-class TestCreateRecordsInKbFullCoverage:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(return_value={
-            "success": True, "recordCount": 1, "insertedRecordIds": ["r1"],
-            "insertedFileIds": ["f1"], "kbId": "kb1"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 200
-
-    def test_invalid_body(self):
-        app, kb_svc, _ = _make_app()
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", content="bad", headers={"content-type": "application/json"})
-        assert resp.status_code == 400
-
-    def test_failure(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(return_value={
-            "success": False, "code": 403, "reason": "Forbidden"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 403
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}]})
-        assert resp.status_code == 500
-
-
-class TestCreateRecordsInFolderFullCoverage:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_folder = AsyncMock(return_value={
-            "success": True, "recordCount": 1, "insertedRecordIds": ["r1"],
-            "insertedFileIds": ["f1"], "kbId": "kb1", "folderId": "f1"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 200
-
-    def test_invalid_body(self):
-        app, kb_svc, _ = _make_app()
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", content="bad", headers={"content-type": "application/json"})
-        assert resp.status_code == 400
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_folder = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", json={"records": [{}]})
-        assert resp.status_code == 500
-
-
 class TestListKbRecordsFullCoverage:
     def test_success(self):
         app, kb_svc, _ = _make_app()
@@ -2167,3 +2053,12 @@ class TestMoveRecordFullCoverage:
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": "f1"})
         assert resp.status_code == 500
+
+
+def test_router_only_calls_methods_the_kb_service_has() -> None:
+    # The route tests hand the router a bare AsyncMock, which answers any method name, so a
+    # route calling a method the real service lacks passes them and answers 500 when run.
+    called = set(re.findall(r"\bkb_service\.(\w+)\(", inspect.getsource(kb_router_module)))
+    assert len(called) >= 20, f"Only {len(called)} service calls were found; the pattern has stopped matching."
+    missing = sorted(name for name in called if not hasattr(KnowledgeBaseService, name))
+    assert not missing, f"kb_router.py calls methods KnowledgeBaseService does not have: {missing}"

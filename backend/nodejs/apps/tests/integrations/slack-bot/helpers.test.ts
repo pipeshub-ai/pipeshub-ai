@@ -40,6 +40,7 @@ import {
   truncateForSlackStreamMarkdown,
   truncateFromEnd,
   resolveThreadId,
+  resolveSlackBotForEvent,
   splitByLengthPreferringNewlines,
   describeSlackFile,
   isMarkdownTableRow,
@@ -1622,6 +1623,24 @@ describe('slack-bot/helpers', () => {
           isIgnoredSlackMessage({ user: 'U1', ts: '1' } as SlackMessagePayload, { botUserId: 'U_BOT' }),
         ).to.equal(false);
       });
+    });
+  });
+
+  describe('resolveSlackBotForEvent', () => {
+    const matchedBot = {
+      botToken: 'xoxb-test',
+      signingSecret: 'signing-secret',
+      botId: 'B1',
+    };
+
+    it('returns the bot from the registry the caller passed in', async () => {
+      const result = await resolveSlackBotForEvent(() => matchedBot);
+      expect(result).to.equal(matchedBot);
+    });
+
+    it('returns nothing when the passed registry has no match', async () => {
+      const result = await resolveSlackBotForEvent(() => null);
+      expect(result).to.equal(null);
     });
   });
 });
