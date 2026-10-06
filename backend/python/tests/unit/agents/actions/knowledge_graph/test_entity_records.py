@@ -61,7 +61,7 @@ class TestFindRecordsByEntity:
 
     @pytest.mark.asyncio
     async def test_unsupported_type_rejected(self, patched) -> None:
-        ok, _ = await execute_find_records_by_entity(_state(), "t1", entity_type="organization")
+        ok, _ = await execute_find_records_by_entity(_state(), "t1", entity_type="product")
         assert ok is False
 
     @pytest.mark.asyncio

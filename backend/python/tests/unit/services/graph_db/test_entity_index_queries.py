@@ -58,7 +58,7 @@ def test_sources_are_a_fixed_set() -> None:
         RECORDS, GROUPS, DEPARTMENTS, TOPICS,
         CollectionNames.CATEGORIES.value, CollectionNames.LANGUAGES.value,
         CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value,
-        CollectionNames.SUBCATEGORIES3.value, CollectionNames.USERS.value,
+        CollectionNames.SUBCATEGORIES3.value, CollectionNames.USERS.value, CollectionNames.ORGS.value,
     }
 
 

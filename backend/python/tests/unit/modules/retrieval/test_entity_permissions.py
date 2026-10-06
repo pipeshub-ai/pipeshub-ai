@@ -394,6 +394,18 @@ class TestSearchEntitiesForUser:
         assert [(h.entity_id, h.entity_type) for h in hits] == [("u-ann", "person")]
 
     @pytest.mark.asyncio
+    async def test_an_organization_is_kept_only_through_a_record_the_user_can_read(self) -> None:
+        store = _store([_hit("acme", "organization", 0.9), _hit("globex", "organization", 0.8)])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"acme": [_row("r1", "conf-1")], "globex": [_row("r2", "conf-1")]},
+            permitted={"r1"},
+        )
+
+        hits = await search_entities_for_user(store, graph, _context(), "acme", top_k=5)
+
+        assert [(h.entity_id, h.entity_type) for h in hits] == [("acme", "organization")]
+
+    @pytest.mark.asyncio
     async def test_stale_app_level_membership_does_not_keep_an_entity(self) -> None:
         stale = _hit("t1", "topic", 0.9, connectorIds=["kb-1"])
         store = _store([stale], [], [])

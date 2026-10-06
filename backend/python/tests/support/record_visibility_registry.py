@@ -109,6 +109,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_record_relations_batch": (Rule.ALL, _STRUCTURE),
     # The people a record names (KG-13); returns no record.
     "get_record_people": (Rule.ALL, _STRUCTURE),
+    # The CRM accounts a record belongs to (KG-13); returns no record.
+    "get_record_organizations": (Rule.ALL, _STRUCTURE),
     "get_record_parent_adjacency": (
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor with filter_nodes_with_permission_role",
     ),
