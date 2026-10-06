@@ -25,6 +25,7 @@ from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser.engine import parse_code
 from app.modules.parsers.code_parser.lang_config import (
     SUPPORTED_CODE_EXTENSIONS,
+    config_for_extension,
     config_for_language,
     detect_language,
 )
@@ -156,6 +157,11 @@ class CodeFileParser:
         cfg = config or {}
         file_path = cfg.get("file_path") or record_name
         language = cfg.get("language") or detect_language(record_name) or detect_language(file_path)
+        if not language:
+            # The parsing service picked this parser by extension, and a name
+            # like "build-script" carries none to detect a language from.
+            extension_config = config_for_extension(cfg.get("extension") or "")
+            language = extension_config.name if extension_config else None
         container = await self.parse_to_blocks_off_loop(content, record_name, file_path, language)
         return ParseResult(
             block_container=container or BlocksContainer(),
