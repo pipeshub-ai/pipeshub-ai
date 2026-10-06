@@ -335,6 +335,17 @@ class InMemoryGraph:
             self.add_edge(collection, edge)
         return True
 
+    async def batch_delete_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+        self._enter("batch_delete_edges", edges, collection)
+        for edge in edges:
+            from_str = f"{edge['from_collection']}/{edge['from_id']}"
+            to_str = f"{edge['to_collection']}/{edge['to_id']}"
+            self.edges[collection] = [
+                e for e in self.edges.get(collection, [])
+                if not (e.get("_from") == from_str and e.get("_to") == to_str)
+            ]
+        return True
+
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str,
                           collection: str, transaction: str | None = None) -> bool:
         self._enter("delete_edge", from_id, from_collection, to_id, to_collection, collection)
