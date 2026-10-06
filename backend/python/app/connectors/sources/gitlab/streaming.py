@@ -17,10 +17,17 @@ from app.config.constants.arangodb import MimeTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import connector_not_ready
 from app.models.entities import CodeFileRecord, Record, RecordType
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import create_stream_record_response
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
+
+
+def _blocks_download_headers(record: Record) -> dict[str, str]:
+    # Titles are free text; a header value outside latin-1 fails the response.
+    filename = sanitize_filename_for_content_disposition(record.record_name or "", fallback="record")
+    return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
 class StreamingHelper:
@@ -56,7 +63,7 @@ class StreamingHelper:
             return StreamingResponse(
                 content=iter([blocks]),
                 media_type=MimeTypes.BLOCKS.value,
-                headers={"Content-Disposition": f"attachment; filename={record.record_name}"},
+                headers=_blocks_download_headers(record),
             )
 
         if record.record_type == RecordType.PULL_REQUEST.value:
@@ -64,7 +71,7 @@ class StreamingHelper:
             return StreamingResponse(
                 content=iter([blocks]),
                 media_type=MimeTypes.BLOCKS.value,
-                headers={"Content-Disposition": f"attachment; filename={record.record_name}"},
+                headers=_blocks_download_headers(record),
             )
 
         if record.record_type == RecordType.FILE.value:

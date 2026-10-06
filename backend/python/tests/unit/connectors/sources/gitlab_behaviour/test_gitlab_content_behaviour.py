@@ -44,6 +44,21 @@ async def test_an_issue_streams_with_its_description_images_comments_and_attachm
     assert base64.b64encode(PNG + b"2").decode() in comment["data"]
 
 
+async def test_an_issue_and_a_merge_request_with_a_dash_or_cjk_title_still_stream(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    gitlab.add_issue(WEB, 1, "Login — 登录 fails", "2026-09-01T10:00:00Z", author=ALICE, description="Steps")
+    gitlab.add_merge_request(WEB, 1, "Fix login — 修复", "2026-09-01T11:00:00Z", description="Fixes it")
+    connector = await harness.sync()
+
+    issue = await connector.stream_record(db.records["11001"])
+    merge_request = await connector.stream_record(db.records[next(iter(web_mr_ids(1)))])
+
+    assert issue.headers["content-disposition"] == 'attachment; filename="Login   fails"'
+    assert json.loads(await body_of(issue))["block_groups"][0]["data"].startswith("# Login — 登录 fails")
+    assert merge_request.headers["content-disposition"].startswith('attachment; filename="Fix login')
+    assert json.loads(await body_of(merge_request))["block_groups"]
+
+
 async def test_an_attachment_streams_its_bytes(harness, gitlab, db) -> None:
     build_acme(gitlab)
     gitlab.uploads[SPEC] = b"%PDF-1.7 spec"
