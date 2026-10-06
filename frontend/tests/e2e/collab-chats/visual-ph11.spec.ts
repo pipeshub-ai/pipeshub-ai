@@ -215,6 +215,7 @@ for (const combo of COMBOS) {
       const chat = await draftedChat('content');
       const alice = await cast.open('owner');
       await stage('11', 'draft-card-content', async () => {
+        await answerCardLookups(alice.page);
         await openDrafted(alice.page, chat);
         const card = alice.page.getByTestId('agent-draft-card');
         await expect(card.getByTestId('agent-draft-content-banner')).toBeVisible();
@@ -234,7 +235,7 @@ const JIRA_TOOLSET = {
 /** Names for the draft's knowledge ids and one signed-in Jira instance, as the builder APIs would answer them. */
 async function answerCardLookups(page: Page): Promise<void> {
   await page.route(/\/api\/v1\/knowledgeBase\/knowledge-hub\/nodes/, (route) =>
-    route.fulfill({ json: { nodes: [{ id: 'connector-sales-drive', name: 'Sales Drive' }], hasNext: false } }));
+    route.fulfill({ json: { success: true, items: [{ id: 'connector-sales-drive', name: 'Sales Drive' }], pagination: { hasNext: false } } }));
   await page.route(/\/api\/v1\/knowledgeBase\/?\?/, (route) =>
     route.fulfill({ json: { knowledgeBases: [{ id: 'kb-price-lists', connectorId: 'kb-price-lists', name: 'Price lists' }] } }));
   await page.route(/\/api\/v1\/toolsets\/my-toolsets/, (route) =>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useMemo, useState } from 'react';
-import { Button, Flex, Popover, Switch, Text } from '@radix-ui/themes';
+import { Button, Flex, Popover, Select, Switch, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -43,6 +43,9 @@ interface SubjectOption {
  * "Access" button with a popover that says why the caller (or, for the owner and org admins, a
  * chosen person) can open this chat. Renders nothing with the collaboration flag off.
  */
+/** Radix Select items cannot carry an empty value. */
+const SELF_VALUE = '__self__';
+
 export function AccessPanel({ conversationRef, isOwner, project, onVisibilityChanged }: AccessPanelProps) {
   const { t } = useTranslation();
   const enabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
@@ -108,6 +111,14 @@ export function AccessPanel({ conversationRef, isOwner, project, onVisibilityCha
 
   if (!enabled) return null;
 
+  // The owner's own access is the ownership; a team that also happens to include them is noise.
+  const visiblePaths =
+    state.status !== 'ready'
+      ? []
+      : isOwner && !subject
+        ? state.explain.via.filter((p) => p.type !== 'team')
+        : state.explain.via;
+
   const requestVisibility = (next: boolean) => {
     setOpen(false);
     setPendingChange({ type: 'visibility', visibility: next ? 'project' : 'private' });
@@ -158,26 +169,20 @@ export function AccessPanel({ conversationRef, isOwner, project, onVisibilityCha
                 <Text as="label" size="1" htmlFor={selectId} style={{ color: 'var(--slate-11)' }}>
                   {t('chat.collab.access.subjectLabel')}
                 </Text>
-                <select
-                  id={selectId}
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  style={{
-                    border: '1px solid var(--slate-6)',
-                    borderRadius: 'var(--radius-2)',
-                    padding: '6px 8px',
-                    fontSize: 14,
-                    background: 'var(--tokens-colors-surface)',
-                    color: 'var(--slate-12)',
-                  }}
+                <Select.Root
+                  value={subject || SELF_VALUE}
+                  onValueChange={(v) => setSubject(v === SELF_VALUE ? '' : v)}
                 >
-                  <option value="">{t('chat.collab.access.subjectMe')}</option>
-                  {options.map((o) => (
-                    <option key={o.userId} value={o.userId}>
-                      {o.name}
-                    </option>
-                  ))}
-                </select>
+                  <Select.Trigger id={selectId} aria-label={t('chat.collab.access.subjectLabel')} style={{ width: '100%' }} />
+                  <Select.Content position="popper">
+                    <Select.Item value={SELF_VALUE}>{t('chat.collab.access.subjectMe')}</Select.Item>
+                    {options.map((o) => (
+                      <Select.Item key={o.userId} value={o.userId}>
+                        {o.name}
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select.Root>
               </Flex>
             )}
 
@@ -208,13 +213,13 @@ export function AccessPanel({ conversationRef, isOwner, project, onVisibilityCha
                       role: t(`chat.collab.access.role.${state.explain.role}`),
                     })}
                   </Text>
-                  {state.explain.via.length === 0 ? (
+                  {visiblePaths.length === 0 ? (
                     <Text as="p" size="2">
                       {t(subjectName ? 'chat.collab.access.noneOther' : 'chat.collab.access.noneSelf', { name: subjectName })}
                     </Text>
                   ) : (
                     <ul style={{ margin: 0, paddingLeft: 'var(--space-4)' }}>
-                      {state.explain.via.map((path, i) => {
+                      {visiblePaths.map((path, i) => {
                         const sentence = describeExplainPath(path, t, { subjectName, teamNames: state.teamNames });
                         return (
                           <li key={`${path.type}:${path.ref ?? 'redacted'}:${i}`}>

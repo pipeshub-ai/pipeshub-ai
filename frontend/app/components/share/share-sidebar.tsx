@@ -977,7 +977,8 @@ export function ShareSidebar({
 
               {mode !== 'summary' && adapter.supportsTeams && (
                 <Button
-                  variant="outline"
+                  variant="soft"
+                  color="gray"
                   size="2"
                   onClick={() => setCurrentView('create-team')}
                 >

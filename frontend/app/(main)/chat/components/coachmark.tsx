@@ -1,61 +1,50 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Flex, Popover, Text } from '@radix-ui/themes';
-import { Popover as PopoverPrimitive } from 'radix-ui';
+import { Button, Flex, Text } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { TipId } from '@/app/(main)/notifications/api';
 import { useTip } from '@/lib/store/tips-store';
-import { useToastElementInset } from '@/lib/toast-safe-area';
 
 export interface CoachmarkProps {
   tipId: TipId;
   /** The moment the tip applies (for example, a send just happened). The tip also needs to be unseen. */
   active: boolean;
   message: React.ReactNode;
-  side?: 'top' | 'bottom';
-  children: React.ReactNode;
 }
 
 /**
- * A once-per-user popover. The server-stored `tipsSeen` list decides, and any dismissal marks the tip seen
- * right away. The popover is anchored to the composer, not triggered by it: a Trigger would stamp
- * button/aria-haspopup attributes onto a wrapper div around the editor. It never takes focus, so it does not interrupt typing.
+ * A once-per-user tip row. The server-stored `tipsSeen` list decides, and dismissal marks the tip seen right away.
+ * It sits in the composer block's flow, so it pushes the thread up instead of covering the newest message.
  */
-export function Coachmark({ tipId, active, message, side = 'top', children }: CoachmarkProps) {
+export function Coachmark({ tipId, active, message }: CoachmarkProps) {
   const { t } = useTranslation();
   const { visible, markSeen } = useTip(tipId);
-  const open = active && visible;
-  // Portaled above the composer, so the composer's own toast inset does not cover it.
-  const [content, setContent] = useState<HTMLDivElement | null>(null);
-  useToastElementInset(open ? content : null);
+  if (!active || !visible) return null;
   return (
-    <Popover.Root open={open} onOpenChange={(next) => next || markSeen()}>
-      <PopoverPrimitive.Anchor asChild>
-        <div style={{ width: '100%' }}>{children}</div>
-      </PopoverPrimitive.Anchor>
-      <Popover.Content
-        ref={setContent}
-        side={side}
-        align="start"
-        sideOffset={8}
-        size="1"
-        role="status"
-        data-testid={`coachmark-${tipId}`}
-        aria-label={t('chat.mentions.tips.coachmarkLabel', { defaultValue: 'Tip' })}
-        style={{ maxWidth: 320 }}
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        onCloseAutoFocus={(e) => e.preventDefault()}
-      >
-        <Flex direction="column" gap="2" align="start">
-          <Text size="2">{message}</Text>
-          <Popover.Close>
-            <Button size="1" variant="soft" highContrast>
-              {t('chat.mentions.tips.gotIt', { defaultValue: 'Got it' })}
-            </Button>
-          </Popover.Close>
-        </Flex>
-      </Popover.Content>
-    </Popover.Root>
+    <Flex
+      align="center"
+      gap="2"
+      role="status"
+      data-testid={`coachmark-${tipId}`}
+      aria-label={t('chat.mentions.tips.coachmarkLabel', { defaultValue: 'Tip' })}
+      style={{
+        width: '100%',
+        marginBottom: 'var(--space-2)',
+        padding: 'var(--space-1) var(--space-2)',
+        borderRadius: 'var(--radius-2)',
+        background: 'var(--accent-a3)',
+        border: '1px solid var(--accent-a6)',
+      }}
+    >
+      <MaterialIcon name="lightbulb" size={16} color="var(--accent-11)" />
+      <Text size="2" style={{ flex: 1, minWidth: 0 }}>
+        {message}
+      </Text>
+      <Button size="1" variant="soft" highContrast onClick={markSeen} style={{ flexShrink: 0 }}>
+        {t('chat.mentions.tips.gotIt', { defaultValue: 'Got it' })}
+      </Button>
+    </Flex>
   );
 }

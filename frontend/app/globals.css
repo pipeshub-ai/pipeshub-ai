@@ -1438,3 +1438,20 @@ article[data-side="right"] .md-p:last-child {
     transition: none;
   }
 }
+
+/* An ask-user-question card inside a reply block, at every width: the block is the frame, so the card drops its
+   own border and surface (Card paints the surface on ::before) and lines up with the answer text. */
+[data-side="right"] [data-ask-user-card] {
+  --card-padding: 0;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+[data-side="right"] [data-ask-user-card]::before,
+[data-side="right"] [data-ask-user-card]::after {
+  display: none;
+}
+[data-side="right"] [data-ask-user-card-body] {
+  padding: var(--space-1) 0 0 !important;
+}

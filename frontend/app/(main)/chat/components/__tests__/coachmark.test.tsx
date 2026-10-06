@@ -11,14 +11,12 @@ vi.mock('@/app/(main)/notifications/api', () => ({ NotificationsApi: api, TIP_ID
 import { Coachmark } from '../coachmark';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { resetTipsStoreForTests } from '@/lib/store/tips-store';
-import { TOAST_SAFE_BOTTOM_VAR } from '@/lib/toast-safe-area';
 
 const renderMark = (tipId: 'mentions.firstNote' | 'mentions.firstAgentMention' = 'mentions.firstNote', active = true) =>
   render(
     <Theme>
-      <Coachmark tipId={tipId} active={active} message="A tip">
-        <textarea aria-label="composer" />
-      </Coachmark>
+      <textarea aria-label="composer" />
+      <Coachmark tipId={tipId} active={active} message="A tip" />
     </Theme>,
   );
 
@@ -38,23 +36,10 @@ describe('Coachmark', () => {
     expect(screen.getByRole('button', { name: 'Got it' }).className).toContain('rt-high-contrast');
   });
 
-  it('keeps toasts clear of itself while open (it is portaled outside the composer\'s measured box)', async () => {
-    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
-    const orig = Element.prototype.getBoundingClientRect;
-    Element.prototype.getBoundingClientRect = function (this: Element) {
-      return { top: this.getAttribute('data-testid') === 'coachmark-mentions.firstNote' ? 600 : 0 } as DOMRect;
-    };
-    try {
-      renderMark();
-      await screen.findByTestId('coachmark-mentions.firstNote');
-      await waitFor(() =>
-        expect(document.documentElement.style.getPropertyValue(TOAST_SAFE_BOTTOM_VAR)).toBe('308px'),
-      );
-      fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
-      await waitFor(() => expect(document.documentElement.style.getPropertyValue(TOAST_SAFE_BOTTOM_VAR)).toBe(''));
-    } finally {
-      Element.prototype.getBoundingClientRect = orig;
-    }
+  it('renders in the document flow, not in a portal (it must push the thread up, not cover it)', async () => {
+    const { container } = renderMark();
+    const tip = await screen.findByTestId('coachmark-mentions.firstNote');
+    expect(container.contains(tip)).toBe(true);
   });
 
   it('is not rendered when tipsSeen contains the tip', async () => {
@@ -95,7 +80,7 @@ describe('Coachmark', () => {
     expect(screen.queryByTestId('coachmark-mentions.firstNote')).toBeNull();
   });
 
-  it('flag off: renders only the child and never reads or writes', async () => {
+  it('flag off: renders nothing and never reads or writes', async () => {
     useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true, ENABLE_CHAT_MENTIONS: false } });
     renderMark();
     await new Promise((r) => setTimeout(r, 10));

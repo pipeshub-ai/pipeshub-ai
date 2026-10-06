@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -371,8 +371,15 @@ export function AskUserQuestionCard({
     firstUnansweredStep(questions, initialAnswers),
   );
   const [showAnswers, setShowAnswers] = useState(true);
+  const actionsRef = useRef<HTMLDivElement>(null);
   const questionKey = questions.map((q) => q.uuid).join('|');
   const initialAnswersKey = JSON.stringify(initialAnswers);
+
+  // The card is the newest thing in the thread, so the composer below can hide Submit/Skip until it scrolls into view.
+  useEffect(() => {
+    if (status !== 'pending' || readOnlyFor) return;
+    actionsRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [status, step, readOnlyFor]);
 
   useEffect(() => {
     if (status === 'pending') return;
@@ -653,21 +660,22 @@ export function AskUserQuestionCard({
       <Flex direction="column" gap="4" p="4" data-ask-user-card-body="">
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
-            {normalized.userIntent ? (
-              <Text size="2" color="gray" style={{ marginTop: 'var(--space-1)' }}>
-                {normalized.userIntent}
-              </Text>
-            ) : null}
             <Heading size="4" style={{ margin: 0 }}>
               {total === 1
                 ? t('askUserQuestion.quickQuestionSingular')
                 : t('askUserQuestion.quickQuestionPlural')}
             </Heading>
-            <Badge size="1" variant="outline" color="gray">
-              {t('askUserQuestion.stepOf', { step: step + 1, total })}
-            </Badge>
+            {total > 1 ? (
+              <Badge size="1" variant="soft" color="gray">
+                {t('askUserQuestion.stepOf', { step: step + 1, total })}
+              </Badge>
+            ) : null}
           </Flex>
-
+          {normalized.userIntent ? (
+            <Text size="2" color="gray" as="p" style={{ margin: 0 }}>
+              {normalized.userIntent}
+            </Text>
+          ) : null}
         </Flex>
 
         {readOnlyFor ? (
@@ -803,7 +811,14 @@ export function AskUserQuestionCard({
           </RadioGroup.Root>
         )}
 
-        <Flex align="center" justify="between" gap="3" wrap="wrap">
+        <Flex
+          ref={actionsRef}
+          align="center"
+          justify="between"
+          gap="3"
+          wrap="wrap"
+          style={{ scrollMarginBottom: 'var(--space-4)' }}
+        >
           <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0}>
             {t('askUserQuestion.back')}
           </Button>

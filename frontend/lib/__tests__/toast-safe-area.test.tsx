@@ -5,9 +5,8 @@ import {
   DRAWER_TOAST_INSET_PX,
   composerBottomInset,
   TOAST_SAFE_BOTTOM_VAR,
-  MOBILE_DRAWER_HEADER_INSET_PX,
+  getCompactOverlayOpen,
   TOAST_SAFE_RIGHT_VAR,
-  TOAST_SAFE_TOP_VAR,
   publishToastInset,
   resolveToastPlacement,
   useToastComposerInset,
@@ -36,9 +35,10 @@ afterEach(() => {
 });
 
 describe('resolveToastPlacement', () => {
-  it('forces top on mobile regardless of the request', () => {
+  it('forces top on mobile regardless of the request, and bottom while a full-screen overlay is open', () => {
     expect(resolveToastPlacement('bottom', true)).toBe('top');
     expect(resolveToastPlacement(undefined, true)).toBe('top');
+    expect(resolveToastPlacement('top', true, true)).toBe('bottom');
   });
   it('honours the request on desktop, defaulting to bottom', () => {
     expect(resolveToastPlacement('top', false)).toBe('top');
@@ -134,12 +134,12 @@ describe('composer and drawer insets', () => {
     expect(read(TOAST_SAFE_RIGHT_VAR)).toBe('');
   });
 
-  it('on phones keeps top toasts below the drawer header and cleans up', () => {
+  it('on phones holds the compact-overlay flag (toasts go to the bottom) and cleans up', () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true });
     const { unmount } = render(<Drawer open />);
-    expect(read(TOAST_SAFE_TOP_VAR)).toBe(`${MOBILE_DRAWER_HEADER_INSET_PX}px`);
+    expect(getCompactOverlayOpen()).toBe(true);
     expect(read(TOAST_SAFE_RIGHT_VAR)).toBe('');
     unmount();
-    expect(read(TOAST_SAFE_TOP_VAR)).toBe('');
+    expect(getCompactOverlayOpen()).toBe(false);
   });
 });

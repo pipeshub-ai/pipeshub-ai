@@ -297,7 +297,7 @@ describe('TiptapComposerInput: @ popover', () => {
     await typeAt('@');
     await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy());
     await waitFor(() => expect(options().length).toBe(5));
-    expect(options().map(textOf)).toEqual(['Assistant', 'Olive Owner', 'Bob Builder', 'Sales · team', 'Add people to this chat…']);
+    expect(options().map(textOf)).toEqual(['Assistant', 'Olive Owner', 'Bob Builder', 'Sales, team', 'Add people to this chat…']);
   });
 
   it('filters by what is typed after the @ (debounced)', async () => {

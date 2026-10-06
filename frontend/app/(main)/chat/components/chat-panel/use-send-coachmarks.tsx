@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TipId } from '@/app/(main)/notifications/api';
 import { Coachmark } from '../coachmark';
@@ -25,7 +25,7 @@ export function tipForSend({ mentions, shared, respondMode, sessionKind }: TipIn
 }
 
 /**
- * First-send coachmarks around the composer. `wrap` is the identity with the mentions flag off, so the
+ * First-send tips shown as a row above the composer. `tipRow` is null with the mentions flag off, so the
  * composer's DOM is untouched.
  */
 export function useSendCoachmarks({
@@ -63,14 +63,9 @@ export function useSendCoachmarks({
           ? t('chat.mentions.tips.firstSharedSend', { count: participantCount })
           : t('chat.mentions.tips.firstSharedSendUnknown');
 
-  const wrap = (children: React.ReactNode): React.ReactNode =>
-    enabled ? (
-      <Coachmark tipId={tip ?? 'mentions.firstSharedSend'} active={tip !== null && !paused} message={message}>
-        {children}
-      </Coachmark>
-    ) : (
-      children
-    );
+  const tipRow = enabled ? (
+    <Coachmark tipId={tip ?? 'mentions.firstSharedSend'} active={tip !== null && !paused} message={message} />
+  ) : null;
 
-  return { onSent, wrap };
+  return { onSent, tipRow };
 }

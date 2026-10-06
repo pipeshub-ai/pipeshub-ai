@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import ReactDOM from 'react-dom';
 import { Box, Text, Theme } from '@radix-ui/themes';
 import {
@@ -15,7 +15,10 @@ import {
   TOAST_SAFE_BOTTOM_VAR,
   TOAST_SAFE_RIGHT_VAR,
   TOAST_SAFE_TOP_VAR,
+  MOBILE_DRAWER_FOOTER_INSET_PX,
+  getCompactOverlayOpen,
   resolveToastPlacement,
+  subscribeCompactOverlay,
 } from '@/lib/toast-safe-area';
 import { Toast } from './toast';
 
@@ -28,6 +31,8 @@ const GAP_COLLAPSED = 6;
 
 interface ToastStackProps {
   placement: ToastPlacement;
+  /** A full-screen drawer is open: clear its footer, not the composer hidden behind it. */
+  aboveDrawerFooter?: boolean;
   toasts: ReturnType<typeof selectToasts>;
   isHovered: boolean;
   onHoverChange: (hovered: boolean) => void;
@@ -36,6 +41,7 @@ interface ToastStackProps {
 
 function ToastStack({
   placement,
+  aboveDrawerFooter = false,
   toasts,
   isHovered,
   onHoverChange,
@@ -62,7 +68,9 @@ function ToastStack({
               top: `calc(max(16px, env(safe-area-inset-top, 0px)) + var(${TOAST_SAFE_TOP_VAR}, 0px))`,
             }
           : {
-              bottom: `calc(max(16px, env(safe-area-inset-bottom, 0px)) + var(${TOAST_SAFE_BOTTOM_VAR}, 0px))`,
+              bottom: aboveDrawerFooter
+                ? `calc(max(16px, env(safe-area-inset-bottom, 0px)) + ${MOBILE_DRAWER_FOOTER_INSET_PX}px)`
+                : `calc(max(16px, env(safe-area-inset-bottom, 0px)) + var(${TOAST_SAFE_BOTTOM_VAR}, 0px))`,
             }),
         right: `calc(max(16px, env(safe-area-inset-right, 0px)) + var(${TOAST_SAFE_RIGHT_VAR}, 0px))`,
         left: 'auto',
@@ -134,6 +142,7 @@ export function ToastContainer() {
   const { setHovered, removeToast } = useToastStore();
   const { appearance } = useThemeAppearance();
 
+  const overlayOpen = useSyncExternalStore(subscribeCompactOverlay, getCompactOverlayOpen, () => false);
   const [mounted, setMounted] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -150,7 +159,7 @@ export function ToastContainer() {
   }
 
   const isTopToast = (t: (typeof toasts)[number]) =>
-    resolveToastPlacement(t.placement, isMobile) === 'top';
+    resolveToastPlacement(t.placement, isMobile, overlayOpen) === 'top';
   const topToasts = toasts.filter(isTopToast);
   const bottomToasts = toasts.filter((t) => !isTopToast(t));
 
@@ -187,6 +196,7 @@ export function ToastContainer() {
       />
       <ToastStack
         placement="bottom"
+        aboveDrawerFooter={isMobile && overlayOpen}
         toasts={bottomToasts}
         isHovered={isHovered}
         onHoverChange={setHovered}

@@ -366,10 +366,19 @@ export function AgentDraftCard({ draft, conversationId, messageId, builderEnable
         </Flex>
 
         {fromContent ? (
-          <Box role="note" data-testid="agent-draft-content-banner" style={{ background: 'var(--amber-3)', border: '1px solid var(--amber-6)', borderRadius: 'var(--radius-2)', padding: 'var(--space-2)' }}>
-            <Text size="2" weight="medium" style={{ color: 'var(--amber-11)' }}>{t('chat.agentDraft.contentBanner')}</Text>
-            <Text as="p" size="1" style={{ color: 'var(--amber-11)' }}>{t('chat.agentDraft.contentBannerBody')}</Text>
-          </Box>
+          <Flex
+            role="note"
+            data-testid="agent-draft-content-banner"
+            align="start"
+            gap="2"
+            style={{ background: 'var(--amber-a3)', border: '1px solid var(--amber-a6)', borderRadius: 'var(--radius-2)', padding: 'var(--space-2)' }}
+          >
+            <MaterialIcon name="warning" size={16} color="var(--amber-11)" />
+            <Box style={{ minWidth: 0 }}>
+              <Text size="2" weight="medium" style={{ color: 'var(--amber-11)' }}>{t('chat.agentDraft.contentBanner')}</Text>
+              <Text as="p" size="1" style={{ color: 'var(--amber-11)' }}>{t('chat.agentDraft.contentBannerBody')}</Text>
+            </Box>
+          </Flex>
         ) : null}
 
         <Flex direction="column" gap="1">
@@ -511,7 +520,7 @@ export function AgentDraftCard({ draft, conversationId, messageId, builderEnable
         ) : null}
 
         <Flex direction="column" gap="2">
-          {readOnly ? null : (
+          {readOnly || (legacyOptions.length > 0 && selectedKnowledge.length + selectedTools.length === 0 && !webSearch) ? null : (
             <Text size="2" weight="medium" data-testid="agent-draft-summary" aria-live="polite">{summary}</Text>
           )}
           <Flex align="center" justify="between" gap="3" wrap="wrap">

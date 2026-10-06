@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Avatar, Box, Popover, Text } from '@radix-ui/themes';
 import { Popover as PopoverPrimitive } from 'radix-ui';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { getInitials } from '@/app/components/ui/user-avatar';
 import { ComposerTips } from './composer-tips';
 import type { Mentionable, MentionGroup } from './use-mentionables';
 
@@ -72,18 +73,23 @@ export function MentionPopover({
   const optionLabel = (item: Mentionable): string | undefined =>
     item.action ? addPeopleLabel : item.group === 'people' || item.group === 'others'
       ? [item.label, item.email, item.inChat === false ? notInChat : null].filter(Boolean).join(', ')
-      : undefined;
+      : item.group === 'teams'
+        ? `${item.label}, ${t('chat.mentions.kindTeam', { defaultValue: 'team' })}`
+        : undefined;
 
   const anchorRef = useMemo(
     () => ({
       current: {
-        getBoundingClientRect: () =>
-          DOMRect.fromRect({
+        // Open above the audience notice, not over it: the list reads as a menu on the composer block.
+        getBoundingClientRect: () => {
+          const noticeTop = document.querySelector('[data-testid="audience-notice"]')?.getBoundingClientRect().top;
+          return DOMRect.fromRect({
             x: anchorRect?.left ?? 0,
-            y: anchorRect?.top ?? 0,
+            y: Math.min(anchorRect?.top ?? 0, noticeTop ?? Infinity),
             width: Math.max(anchorRect?.width ?? 0, 1),
             height: Math.max(anchorRect?.height ?? 0, 1),
-          }),
+          });
+        },
       },
     }),
     [anchorRect],
@@ -126,7 +132,7 @@ export function MentionPopover({
         onMouseMove={() => selected || onActiveChange(index)}
         onClick={() => (item.disabled ? undefined : onSelect(item))}
         style={{
-          display: item.group === 'agent' || item.group === 'people' || item.group === 'others' || item.action ? 'flex' : undefined,
+          display: item.group === 'agent' || item.group === 'people' || item.group === 'others' || item.group === 'teams' || item.action ? 'flex' : undefined,
           ...(item.action ? { borderTop: '1px solid var(--slate-5)', borderRadius: 0, marginTop: 4, paddingTop: 8 } : {}),
           alignItems: 'center',
           gap: 8,
@@ -149,6 +155,29 @@ export function MentionPopover({
         {item.group === 'agent' ? (
           <span data-testid="mention-agent-avatar" style={{ display: 'inline-flex', flexShrink: 0 }}>
             <Avatar size="1" radius="full" variant="soft" color="jade" fallback={Array.from(item.label.trim())[0]?.toUpperCase() ?? '?'} />
+          </span>
+        ) : null}
+        {item.group === 'people' || item.group === 'others' ? (
+          <span data-testid="mention-person-avatar" aria-hidden="true" style={{ display: 'inline-flex', flexShrink: 0 }}>
+            <Avatar size="1" radius="full" variant="soft" highContrast fallback={getInitials({ fullName: item.label, email: item.email })} />
+          </span>
+        ) : null}
+        {item.group === 'teams' ? (
+          <span
+            data-testid="mention-team-icon"
+            aria-hidden="true"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              width: 24,
+              height: 24,
+              borderRadius: '50%',
+              background: 'var(--slate-a4)',
+            }}
+          >
+            <MaterialIcon name="groups" size={16} color="var(--slate-11)" />
           </span>
         ) : null}
         {item.action ? null : item.group === 'people' || item.group === 'others' ? (
@@ -220,7 +249,7 @@ export function MentionPopover({
           padding: 4,
           minWidth: 220,
           maxWidth: 'min(320px, calc(100vw - 32px))',
-          maxHeight: 'min(360px, var(--radix-popover-content-available-height, 360px))',
+          maxHeight: 'min(360px, 50vh, var(--radix-popover-content-available-height, 360px))',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',

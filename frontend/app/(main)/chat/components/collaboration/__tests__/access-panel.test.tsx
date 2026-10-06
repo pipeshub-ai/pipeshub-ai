@@ -84,7 +84,7 @@ describe('AccessPanel explain sentences (PI-21)', () => {
     const dialog = await openPanel();
     expect(await within(dialog).findByText('You own this chat.')).toBeTruthy();
     expect(within(dialog).getByText('You can continue this chat because it was shared with you directly.')).toBeTruthy();
-    expect(await within(dialog).findByText('You can continue this chat through team Sales.')).toBeTruthy();
+    expect(within(dialog).queryByText(/through team/)).toBeNull();
     expect(within(dialog).getByText('You can view this chat because it belongs to a project you have access to.')).toBeTruthy();
     expect(within(dialog).getByText('Your access: Owner')).toBeTruthy();
     expect(collab.explain).toHaveBeenCalledWith(REF, undefined, expect.anything());
@@ -130,6 +130,22 @@ describe('AccessPanel explain sentences (PI-21)', () => {
   });
 });
 
+// jsdom lacks the pointer-capture and scroll APIs Radix Select calls when it opens.
+async function pickSubject(dialog: HTMLElement, name: string) {
+  Object.assign(Element.prototype, {
+    hasPointerCapture: () => false,
+    setPointerCapture: () => {},
+    releasePointerCapture: () => {},
+    scrollIntoView: () => {},
+  });
+  const picker = await within(dialog).findByRole('combobox', { name: 'Check access for' });
+  await waitFor(() => expect(collab.getCollaborators).toHaveBeenCalled());
+  fireEvent.keyDown(picker, { key: 'ArrowDown' });
+  const option = await screen.findByRole('option', { name });
+  expect(screen.queryByRole('option', { name: 'Sales' })).toBeNull();
+  fireEvent.click(option);
+}
+
 describe('AccessPanel subject picker (C-3)', () => {
   it('is shown to the owner with the collaborators, and explaining one passes subject and uses their name', async () => {
     collab.explain.mockImplementation(async (_ref: unknown, subject?: string) =>
@@ -137,11 +153,7 @@ describe('AccessPanel subject picker (C-3)', () => {
     );
     renderPanel({ isOwner: true });
     const dialog = await openPanel();
-    const picker = (await within(dialog).findByLabelText('Check access for')) as HTMLSelectElement;
-    await waitFor(() => expect(within(picker).getByRole('option', { name: 'Bob' })).toBeTruthy());
-    expect(within(picker).queryByRole('option', { name: 'Sales' })).toBeNull();
-
-    fireEvent.change(picker, { target: { value: 'u2' } });
+    await pickSubject(dialog, 'Bob');
     expect(await within(dialog).findByText('Bob can continue this chat because it was shared with them directly.')).toBeTruthy();
     expect(collab.explain).toHaveBeenLastCalledWith(REF, 'u2', expect.anything());
   });
@@ -150,14 +162,14 @@ describe('AccessPanel subject picker (C-3)', () => {
     setUser(true);
     renderPanel({ isOwner: false });
     const dialog = await openPanel();
-    expect(await within(dialog).findByLabelText('Check access for')).toBeTruthy();
+    expect(await within(dialog).findByRole('combobox', { name: 'Check access for' })).toBeTruthy();
   });
 
   it('is hidden from everyone else, and they never list collaborators', async () => {
     renderPanel({ isOwner: false });
     const dialog = await openPanel();
     await within(dialog).findByText('You own this chat.');
-    expect(within(dialog).queryByLabelText('Check access for')).toBeNull();
+    expect(within(dialog).queryByRole('combobox', { name: 'Check access for' })).toBeNull();
     expect(collab.getCollaborators).not.toHaveBeenCalledWith(REF);
   });
 
@@ -169,7 +181,7 @@ describe('AccessPanel subject picker (C-3)', () => {
     });
     renderPanel();
     const dialog = await openPanel();
-    fireEvent.change(await within(dialog).findByLabelText('Check access for'), { target: { value: 'u2' } });
+    await pickSubject(dialog, 'Bob');
     await waitFor(() => expect(within(dialog).getByText("You can't view another person's access.")).toBeTruthy());
     expect(within(dialog).queryByRole('button', { name: 'Try again' })).toBeNull();
   });

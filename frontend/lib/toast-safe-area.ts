@@ -14,17 +14,37 @@ export const TOAST_MOBILE_QUERY = `(max-width: ${TOAST_MOBILE_MAX_WIDTH}px)`;
 /** 37.5rem drawer + its 10px right margin. */
 export const DRAWER_TOAST_INSET_PX = 610;
 
-/** Full-screen drawers on phones: keep top toasts below the drawer header (title and close button). */
-export const MOBILE_DRAWER_HEADER_INSET_PX = 40;
-
+/** The drawer footer's action row on phones; a bottom toast sits above it instead of covering Share. The composer behind the drawer no longer counts. */
+export const MOBILE_DRAWER_FOOTER_INSET_PX = 72;
 const TOAST_MIN_WIDTH_AFTER_SHIFT = 440;
 const COMPOSER_GAP = 8;
+
+/**
+ * Full-screen drawers on phones cover the top edge (header, form), so toasts drop to the bottom while one is
+ * open. A counter, not a flag: drawers can overlap while one closes.
+ */
+let compactOverlays = 0;
+const overlayListeners = new Set<() => void>();
+export const subscribeCompactOverlay = (listener: () => void) => {
+  overlayListeners.add(listener);
+  return () => void overlayListeners.delete(listener);
+};
+export const getCompactOverlayOpen = () => compactOverlays > 0;
+function holdCompactOverlay(): () => void {
+  compactOverlays += 1;
+  overlayListeners.forEach((l) => l());
+  return () => {
+    compactOverlays -= 1;
+    overlayListeners.forEach((l) => l());
+  };
+}
 
 export function resolveToastPlacement(
   requested: ToastPlacement | undefined,
   isMobile: boolean,
+  overlayOpen = false,
 ): ToastPlacement {
-  if (isMobile) return 'top';
+  if (isMobile) return overlayOpen ? 'bottom' : 'top';
   return requested === 'top' ? 'top' : 'bottom';
 }
 
@@ -116,7 +136,7 @@ export function useToastElementInset(el: HTMLElement | null): void {
 /**
  * Keeps toasts off an open right-side drawer `widthPx` wide: left of it on
  * desktop (skipped when no room is left for a toast), below its header on
- * phones where the drawer is full screen and toasts sit at the top.
+ * phones where the drawer is full screen and toasts move to the bottom.
  */
 export function useToastDrawerInset(open: boolean, widthPx: number): void {
   useEffect(() => {
@@ -125,7 +145,7 @@ export function useToastDrawerInset(open: boolean, widthPx: number): void {
     const sync = () => {
       withdraw?.();
       if (window.innerWidth <= TOAST_MOBILE_MAX_WIDTH) {
-        withdraw = publishToastInset(TOAST_SAFE_TOP_VAR, MOBILE_DRAWER_HEADER_INSET_PX);
+        withdraw = holdCompactOverlay();
       } else if (window.innerWidth - widthPx >= TOAST_MIN_WIDTH_AFTER_SHIFT) {
         withdraw = publishToastInset(TOAST_SAFE_RIGHT_VAR, widthPx);
       } else {

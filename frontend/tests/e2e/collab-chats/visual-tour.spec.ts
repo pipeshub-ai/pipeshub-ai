@@ -361,7 +361,8 @@ for (const combo of COMBOS) {
       await expect(alice.page.getByTestId('access-explain')).toContainText('You own this chat.', { timeout: 15_000 });
       await expect(alice.page.getByRole('switch', { name: 'Visible to project members' })).toBeVisible();
       await shot(alice.page, '26', 'access-panel-owner', 'Access panel as Alice (owner): "You own this chat.", the "Check access for" picker and the Visible to project members switch (the chat is in a project).', panelOf(alice.page));
-      await alice.page.getByLabel('Check access for').selectOption({ label: 'User Writer' });
+      await alice.page.getByRole('combobox', { name: 'Check access for' }).click();
+      await alice.page.getByRole('option', { name: 'User Writer' }).click();
       await expect(alice.page.getByTestId('access-explain')).toContainText("User Writer's access", { timeout: 15_000 });
       await shot(alice.page, '27', 'access-panel-owner-subject', 'Access panel as Alice with Bob picked as the subject: his direct path and the team path through a team Alice is not in (redacted).', panelOf(alice.page));
 

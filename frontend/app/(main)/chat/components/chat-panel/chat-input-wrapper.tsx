@@ -366,7 +366,7 @@ export function ChatInputWrapper() {
     setShareToolResults(false);
   };
 
-  const input = sendTips.wrap(
+  const input = (
     <ChatInput
       onSend={handleSend}
       placeholder={
@@ -378,7 +378,7 @@ export function ChatInputWrapper() {
       onDeleteFile={handleDeleteFile}
       isAgentChat={isAgentChat}
       agentId={effectiveAgentId}
-    />,
+    />
   );
   const draftLine =
     collabFlag && !participants.convId && !isAgentChat ? (
@@ -399,6 +399,7 @@ export function ChatInputWrapper() {
   return (
     <>
       {prompt}
+      {sendTips.tipRow}
       {collabActive ? (
         <AudienceNotice
           participantCount={participantCount}
