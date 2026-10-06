@@ -6,12 +6,14 @@ endpoint and SharePoint's REST API) is answered by an in-memory stub, and our
 databases are in-memory fakes.
 """
 
+import json
 import sys
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from azure.identity.aio import ClientSecretCredential
+from kiota_serialization_json.json_parse_node_factory import JsonParseNodeFactory
 from ms_graph_fakes import (
     GRAPH,
     FakeCheckpointStore,
@@ -24,6 +26,7 @@ from ms_graph_fakes import (
     page,
 )
 from msgraph import GraphServiceClient
+from msgraph.generated.models.list_item import ListItem
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from sharepoint_behaviour_fakes import (
     DRIVE_ID,
@@ -55,7 +58,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
     SharePointRecordType,
 )
-from app.models.entities import FileRecord, RecordGroupType
+from app.models.entities import FileRecord, RecordGroupType, SourcePerson
 from app.models.permission import EntityType, PermissionType
 
 GROUPS_DELTA = "/v1.0/groups/delta"
@@ -664,3 +667,48 @@ class TestFullRun:
         await connector.run_incremental_sync()
 
         assert "i1" in db.records
+
+
+class TestAuthorship:
+    async def test_a_library_files_creator_and_last_editor_come_from_the_delta_payload(self, connector, api, db) -> None:
+        item = file_item("i1", "plan.pdf")
+        item["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
+        item["lastModifiedBy"] = {"application": {"id": "app-sync", "displayName": "Migration Tool"}}
+        delta_pages(api, {None: page([item], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+
+        await sync_site(connector)
+
+        plan = db.by_name("plan.pdf")
+        assert plan.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
+        assert plan.last_modified_by == SourcePerson(
+            source_id="app-sync", display_name="Migration Tool", is_service_account=True
+        )
+
+    async def test_a_pages_creator_and_last_editor_come_from_the_page_listing(self, connector, api, db) -> None:
+        listed = site_page("pg1", "Home")
+        listed["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
+        listed["lastModifiedBy"] = {"user": {"id": "u-ben", "displayName": "Ben"}}
+        api.on("GET", PAGES, page([listed]))
+        delta_pages(api, {None: page([], delta_link=delta_url("d1"))})
+
+        await sync_site(connector)
+
+        home = db.by_name("Home - Eng")
+        assert home.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
+        assert home.last_modified_by == SourcePerson(source_id="u-ben", display_name="Ben")
+
+    async def test_a_list_items_creator_and_last_editor_are_kept(self, connector) -> None:
+        payload = {
+            "id": "7", "eTag": "le1", "webUrl": f"{SITE_URL}/Lists/Tasks/7_.000",
+            "createdDateTime": "2024-01-01T00:00:00Z", "lastModifiedDateTime": "2024-05-01T10:00:00Z",
+            "createdBy": {"user": {"id": "u-ana", "displayName": "Ana"}},
+            "lastModifiedBy": {"user": {"displayName": "System Account"}},
+            "fields": {"Title": "Ship it"},
+        }
+        node = JsonParseNodeFactory().get_root_parse_node("application/json", json.dumps(payload).encode())
+
+        record = await connector._create_list_item_record(node.get_object_value(ListItem), SITE_ID, "list-1")
+
+        assert record.authored_by == SourcePerson(source_id="u-ana", display_name="Ana")
+        assert record.last_modified_by is not None and record.last_modified_by.is_service_account
