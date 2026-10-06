@@ -390,7 +390,7 @@ class TestRepositoryFileReasons:
         from_repository = ue.text_file_too_large(five_mb + 1, five_mb, repository_file=True)
         uploaded = ue.text_file_too_large(five_mb + 1, five_mb, repository_file=False)
 
-        assert from_repository.endswith("and then reindex the repository.")
+        assert from_repository.endswith("and then choose Index all on the repository.")
         assert uploaded.endswith("and then upload it again.")
         assert "Reindex it" not in from_repository + uploaded
 

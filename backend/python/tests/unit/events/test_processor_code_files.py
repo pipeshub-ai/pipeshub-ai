@@ -283,7 +283,7 @@ async def test_an_oversized_text_file_is_marked_too_large_and_never_reaches_mark
     assert "1.5 MB" in write["reason"]
     assert "up to 1 MB" in write["reason"]
     assert "CODE_FILE_MAX_SIZE_MB" in write["reason"]
-    assert write["reason"].endswith("and then reindex the repository.")
+    assert write["reason"].endswith("and then choose Index all on the repository.")
     # The log names the file and its size, so an operator can find it.
     assert "dump.sql" in harness.log_lines()
     assert str(size) in harness.log_lines()

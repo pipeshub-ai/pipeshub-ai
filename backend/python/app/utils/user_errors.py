@@ -160,10 +160,13 @@ def _megabytes(size_bytes: int, *, round_up: bool = False) -> str:
 
 def text_file_too_large(size_bytes: int, limit_bytes: int, *, repository_file: bool) -> str:
     # A record marked "File Type Not Supported" has no Reindex action of its
-    # own, and a sync skips a repository that has not changed, so what brings
-    # the file back is indexing the repository again. No button is named: the
-    # repository row's action reads "Index all" or "Re-index all" by its state.
-    after_raising = "reindex the repository" if repository_file else "upload it again"
+    # own, and a sync skips a repository that has not changed. What brings the
+    # file back is the repository row's own action, which reads "Index all":
+    # record groups carry no indexing status, so the UI never offers them
+    # "Re-index all" (frontend reindex-label.ts).
+    after_raising = (
+        "choose Index all on the repository" if repository_file else "upload it again"
+    )
     # Rounded up, so a file one byte over a 5 MB limit never reads as "5 MB".
     return (
         f"This file is {_megabytes(size_bytes, round_up=True)} MB, and PipesHub reads code "
