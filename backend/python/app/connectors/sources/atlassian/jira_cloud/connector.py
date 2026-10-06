@@ -1319,15 +1319,18 @@ class JiraConnector(BaseConnector):
                 )
         return removed
 
-    async def _stored_issues(self, project_id: str) -> list[Record]:
-        """This connector's live issue records in the project, without placeholder ancestors."""
+    async def _stored_issues(self, project_id: str, *, with_placeholders: bool = False) -> list[Record]:
+        """This connector's live issue records in the project, without placeholder ancestors unless asked."""
         stored: list[Record] = []
         after_key: str | None = None
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
                 self.connector_id, project_id, RECORD_SCAN_PAGE_SIZE, after_key,
             )
-            stored.extend(r for r in page if r.record_type == RecordType.TICKET and not r.is_placeholder)
+            stored.extend(
+                r for r in page
+                if r.record_type == RecordType.TICKET and (with_placeholders or not r.is_placeholder)
+            )
             if len(page) < RECORD_SCAN_PAGE_SIZE:
                 return stored
             after_key = page[-1].id

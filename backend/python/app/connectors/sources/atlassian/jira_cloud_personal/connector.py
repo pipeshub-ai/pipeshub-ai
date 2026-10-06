@@ -464,8 +464,8 @@ class JiraCloudPersonalConnector(JiraConnector):
         Such a project was deleted, archived, or the account lost access to it. Its
         issues can't be compared by id (Jira refuses to search a project the account
         can't see, which would read as a failed listing on every sync), so each one
-        is checked on its own once Jira confirms the project is gone. A project the
-        project filter leaves out is never touched.
+        is checked on its own once Jira confirms the project is gone, placeholder
+        ancestors included. A project the project filter leaves out is never touched.
         """
         for project_id, project_key in await self._stored_projects():
             if project_id in listed_project_ids:
@@ -513,14 +513,16 @@ class JiraCloudPersonalConnector(JiraConnector):
 
         # Cleared before its issues go, so a project that comes back into view is read in full.
         await self.issues_sync_point.delete_sync_point(f"project_{project_key}")
-        stored = await self._stored_issues(project_id)
+        # Placeholders too: no later sync of this project would ever clear them, and one left
+        # behind would keep the project for good.
+        stored = await self._stored_issues(project_id, with_placeholders=True)
         removed = await self._remove_unlisted_issues(project_key, stored, set())
         self.logger.info(
             "Project %s is no longer visible to this account in Jira: removed %d of its %d stored issue(s)",
             project_key, removed, len(stored),
         )
 
-        # Anything still stored (an issue Jira still answers for, a placeholder) keeps the project.
+        # Anything still stored (an issue Jira still answers for, a delete that failed) keeps the project.
         if await self.data_entities_processor.get_records_in_record_group(self.connector_id, project_id, 1):
             return
         if not await self.data_entities_processor.on_record_group_deleted(project_id, self.connector_id):

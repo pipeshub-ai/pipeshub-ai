@@ -451,6 +451,35 @@ class TestProjectsOutOfView:
         assert tickets(db) == {"3", "5"}
         assert "10000" in db.record_groups, "a project that still holds a record is kept"
 
+    @pytest.mark.parametrize(("jira_still_has_the_parent", "left"), [
+        pytest.param(False, set(), id="a-parent-jira-no-longer-shows-goes-with-the-project"),
+        pytest.param(True, {"9"}, id="a-parent-jira-still-answers-for-keeps-the-project"),
+    ])
+    async def test_a_placeholder_parent_in_a_hidden_project_is_checked_like_its_issues(
+        self, site, db, checkpoints, jira_still_has_the_parent, left
+    ) -> None:
+        connector, _ = await synced(db, checkpoints)
+        db.records["9"] = db.records["1"].model_copy(update={"id": "stub-9", "external_record_id": "9", "is_placeholder": True})
+        site.add_issue(9, "ENG")
+        site.hidden_projects.add("ENG")
+        if jira_still_has_the_parent:
+            site.api.on("GET", f"{JIRA}/issue/9", {"id": "9", "key": "OPS-9"})
+
+        await connector.run_sync()
+
+        assert site.issue_reads(9) == 1
+        assert tickets(db) == {"5"} | left
+        assert ("10000" in db.record_groups) is jira_still_has_the_parent
+
+    async def test_a_placeholder_parent_in_a_project_still_in_view_is_left_alone(self, site, db, checkpoints) -> None:
+        connector, _ = await synced(db, checkpoints)
+        db.records["9"] = db.records["1"].model_copy(update={"id": "stub-9", "external_record_id": "9", "is_placeholder": True})
+
+        await connector.run_sync()
+
+        assert tickets(db) == {"1", "2", "3", "5", "9"}
+        assert site.issue_reads(9) == 0
+
     async def test_an_issue_whose_check_fails_is_kept_and_removed_by_a_later_sync(self, site, db, checkpoints) -> None:
         connector, _ = await synced(db, checkpoints)
         site.hidden_projects.add("ENG")
