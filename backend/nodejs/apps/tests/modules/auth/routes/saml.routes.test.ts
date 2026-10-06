@@ -203,11 +203,15 @@ describe('createSamlRouter', () => {
       return app.listen(0);
     };
 
-    const send = async (method: 'GET' | 'POST', path: string) => {
+    const send = async (
+      method: 'GET' | 'POST',
+      path: string,
+      relay: Record<string, string> = { orgId: profile.orgId },
+    ) => {
       const server = listen();
       try {
         const { port } = server.address() as AddressInfo;
-        const relayState = Buffer.from(JSON.stringify({ orgId: profile.orgId })).toString('base64');
+        const relayState = Buffer.from(JSON.stringify(relay)).toString('base64');
         return await fetch(`http://127.0.0.1:${port}${path}`, {
           method,
           redirect: 'manual',
@@ -219,8 +223,12 @@ describe('createSamlRouter', () => {
       }
     };
 
-    const signIn = async () => {
-      const response = await send('POST', '/signIn/callback');
+    const signIn = async (relay?: Record<string, string>) => {
+      if (relay) {
+        // This block stubs RelayState parsing; hand the stub the state this sign-in carries.
+        (container.get<SamlController>('SamlController').parseRelayState as unknown as sinon.SinonStub).returns(relay);
+      }
+      const response = await send('POST', '/signIn/callback', relay);
       const location = response.headers.get('location') ?? '';
       const binderCookie = response.headers.getSetCookie().find((c) => c.startsWith('saml_handoff='));
       return {
@@ -231,7 +239,7 @@ describe('createSamlRouter', () => {
       };
     };
 
-    const exchange = async (code: string, binder?: string) => {
+    const exchange = async (code: string, binder?: string, codeVerifier?: string) => {
       const server = listen();
       try {
         const { port } = server.address() as AddressInfo;
@@ -241,12 +249,45 @@ describe('createSamlRouter', () => {
             'content-type': 'application/json',
             ...(binder !== undefined ? { cookie: `other=1; saml_handoff=${binder}` } : {}),
           },
-          body: JSON.stringify({ code }),
+          body: JSON.stringify(codeVerifier ? { code, codeVerifier } : { code }),
         });
       } finally {
         server.close();
       }
     };
+
+    // RFC 7636 appendix B.
+    const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+    const webRelay = {
+      orgId: profile.orgId,
+      client: 'web',
+      codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+    };
+
+    it('redeems a login-page sign-in with its PKCE verifier and sets no cookie, so another site can exchange it', async () => {
+      const { response, code } = await signIn(webRelay);
+
+      expect(response.headers.getSetCookie().some((c) => c.startsWith('saml_handoff='))).to.equal(false);
+      expect(code).to.match(/^[0-9a-f]{64}$/);
+
+      const redeemed = await exchange(code, undefined, VERIFIER);
+      expect(redeemed.status).to.equal(200);
+      expect(((await redeemed.json()) as { accessToken: string }).accessToken).to.match(/^eyJ/);
+      expect((await exchange(code, undefined, VERIFIER)).status).to.equal(401);
+    });
+
+    it('refuses a login-page sign-in with the wrong verifier and burns the code', async () => {
+      const { code } = await signIn(webRelay);
+
+      expect((await exchange(code, undefined, 'x'.repeat(43))).status).to.equal(401);
+      expect((await exchange(code, undefined, VERIFIER)).status).to.equal(401);
+    });
+
+    it('still redeems an IdP-initiated sign-in by its cookie when a stale verifier rides along', async () => {
+      const { code, binder } = await signIn();
+
+      expect((await exchange(code, binder, VERIFIER)).status).to.equal(200);
+    });
 
     it('completes sign-in from the callback and sets no express-session cookie', async () => {
       const { response, location } = await signIn();

@@ -9,6 +9,7 @@ import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { buildDesktopDeepLink, isDesktopOAuthState } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import { getSafeReturnTo } from '@/lib/utils/safe-return-to';
+import { takeSamlWebVerifier } from '@/lib/auth/saml-web-pkce';
 
 /** Survives React Strict Mode remounts (useRef resets). */
 let samlBridgeRan = false;
@@ -44,6 +45,7 @@ export default function SamlSsoSuccessPage() {
     const run = async () => {
       const code = new URLSearchParams(window.location.hash.slice(1)).get('code');
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      const codeVerifier = takeSamlWebVerifier();
 
       if (!code) {
         logout();
@@ -51,7 +53,10 @@ export default function SamlSsoSuccessPage() {
         return;
       }
 
-      const { accessToken, refreshToken } = await AuthApi.exchangeSamlWebCode(code);
+      const { accessToken, refreshToken } = await AuthApi.exchangeSamlWebCode(
+        code,
+        codeVerifier ?? undefined,
+      );
       if (!accessToken || !refreshToken) {
         logout();
         router.replace('/login?error=saml_sso');

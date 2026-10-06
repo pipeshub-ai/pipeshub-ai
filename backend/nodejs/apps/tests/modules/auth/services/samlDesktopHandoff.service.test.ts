@@ -90,4 +90,19 @@ describe('SamlDesktopHandoffService', () => {
 
     expect([...store.keys()]).to.deep.equal([]);
   });
+
+  it('redeems when any of several verifiers matches, and only once', async () => {
+    const tokens = { accessToken: 'at', refreshToken: 'rt' };
+    const code = await service.issue(tokens, CHALLENGE);
+
+    expect(await service.redeem(code, ['y'.repeat(43), VERIFIER])).to.deep.equal(tokens);
+    await expectRejected(service.redeem(code, [VERIFIER]));
+  });
+
+  it('rejects a list with no well-formed verifier before touching the store', async () => {
+    const code = await service.issue({ accessToken: 'at', refreshToken: 'rt' }, CHALLENGE);
+
+    await expectRejected(service.redeem(code, ['', 'short']));
+    expect(await service.redeem(code, VERIFIER)).to.deep.equal({ accessToken: 'at', refreshToken: 'rt' });
+  });
 });

@@ -19052,9 +19052,14 @@ paths:
             and `code_challenge`; without both it is ignored. The callback then sends
             no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
             and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+
+            `web` for a sign-in started from the login page with a `code_challenge`; without
+            one it is ignored. The callback then sets no `saml_handoff` cookie, and
+            `/saml/exchange` takes the matching `codeVerifier` instead, so the exchange also
+            works when the frontend is on another site than the API.
           schema:
             type: string
-            enum: [desktop]
+            enum: [desktop, web]
         - name: state
           in: query
           required: false
@@ -19064,7 +19069,7 @@ paths:
         - name: code_challenge
           in: query
           required: false
-          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          description: PKCE S256 challenge (43 base64url characters) for the desktop or web handoff code.
           schema:
             type: string
       responses:
@@ -19201,19 +19206,21 @@ paths:
       summary: Redeem a web SAML handoff code
       description: |
         Exchanges the single-use code from the `/saml/signIn/callback` success redirect for
-        PipesHub tokens. The request must carry the `saml_handoff` cookie set by that same
-        redirect. The code expires after 2 minutes and is consumed by the first attempt,
-        whether or not the cookie matches. The response clears `saml_handoff` and the
-        `accessToken` / `refreshToken` cookies set by earlier releases.
+        PipesHub tokens. A sign-in started with `client=web` and a `code_challenge` is redeemed
+        with the matching `codeVerifier`. Any other, such as one started at the IdP, needs the
+        `saml_handoff` cookie that redirect set, which the browser sends only when the frontend
+        and the API are on the same site. The code expires after 2 minutes and is consumed by the
+        first attempt that reaches it, whether or not the verifier matches. A successful exchange
+        clears `saml_handoff` and the `accessToken` / `refreshToken` cookies set by earlier releases.
       operationId: exchangeSamlWebCode
       security: []
       parameters:
         - in: cookie
           name: saml_handoff
-          required: true
+          required: false
           schema:
             type: string
-          description: Set by the `/saml/signIn/callback` redirect
+          description: Set by the `/saml/signIn/callback` redirect when the sign-in carried no `code_challenge`
       requestBody:
         required: true
         content:
@@ -19226,6 +19233,10 @@ paths:
                   type: string
                   pattern: '^[0-9a-f]{64}$'
                   description: The `code` from the success page URL fragment
+                codeVerifier:
+                  type: string
+                  pattern: '^[A-Za-z0-9._~-]{43,128}$'
+                  description: PKCE verifier for a sign-in started with `client=web` and a `code_challenge`
               required:
                 - code
       responses:

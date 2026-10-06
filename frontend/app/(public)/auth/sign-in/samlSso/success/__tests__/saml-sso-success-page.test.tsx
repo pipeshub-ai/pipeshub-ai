@@ -17,7 +17,7 @@ vi.mock('@/config', () => ({
 }));
 
 vi.mock('@/app/(public)/api', () => ({
-  AuthApi: { exchangeSamlWebCode: (code: string) => exchangeSamlWebCode(code) },
+  AuthApi: { exchangeSamlWebCode: (...args: unknown[]) => exchangeSamlWebCode(...args) },
 }));
 
 vi.mock('@/lib/auth/hydrate-user', () => ({
@@ -45,6 +45,7 @@ describe('SamlSsoSuccessPage', () => {
   afterEach(() => {
     cleanup();
     window.history.replaceState(null, '', '/');
+    sessionStorage.clear();
   });
 
   it('exchanges the code from the fragment, stores the tokens and strips the fragment', async () => {
@@ -54,9 +55,21 @@ describe('SamlSsoSuccessPage', () => {
     await renderPage();
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/'));
-    expect(exchangeSamlWebCode).toHaveBeenCalledWith(CODE);
+    expect(exchangeSamlWebCode).toHaveBeenCalledWith(CODE, undefined);
     expect(setTokens).toHaveBeenCalledWith('at', 'rt');
     expect(window.location.hash).toBe('');
+  });
+
+  it('sends the verifier the login page stored, once, for a sign-in it started', async () => {
+    sessionStorage.setItem('saml_web_pkce_verifier', 'v'.repeat(43));
+    window.history.replaceState(null, '', `/auth/sign-in/samlSso/success#code=${CODE}`);
+    exchangeSamlWebCode.mockResolvedValue({ accessToken: 'at', refreshToken: 'rt' });
+
+    await renderPage();
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'));
+    expect(exchangeSamlWebCode).toHaveBeenCalledWith(CODE, 'v'.repeat(43));
+    expect(sessionStorage.getItem('saml_web_pkce_verifier')).toBeNull();
   });
 
   it('sends the user back to login when there is no code or the exchange fails', async () => {

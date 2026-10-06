@@ -10,8 +10,9 @@ import { UnauthorizedError } from '../../../libs/errors/http.errors';
  * way back is a `pipeshub://` deep link that any local app could register for.
  * So the link carries a short-lived code, never the tokens, and redeeming the
  * code needs the PKCE verifier that only the app that started the flow holds.
- * A web sign-in, which may be IdP-initiated and so has no challenge from the
- * app, uses a server-made verifier the browser holds as an HttpOnly cookie.
+ * A web sign-in started from the login page does the same with a verifier kept
+ * in sessionStorage. One started at the IdP has no challenge from the app, so
+ * it uses a server-made verifier the browser holds as an HttpOnly cookie.
  */
 
 export const HANDOFF_TTL_SECONDS = 120;
@@ -69,8 +70,19 @@ export class SamlDesktopHandoffService {
     return { code: await this.issue(tokens, s256(binder)), binder };
   }
 
-  async redeem(code: string, codeVerifier: string): Promise<SamlDesktopTokens> {
-    if (!/^[0-9a-f]{64}$/.test(code) || !CODE_VERIFIER_PATTERN.test(codeVerifier)) {
+  /**
+   * Redeems the code if any of the verifiers matches its challenge. A web
+   * exchange may hold both a sessionStorage verifier and a binder cookie and
+   * cannot tell which the callback used; either way the code is claimed once.
+   */
+  async redeem(
+    code: string,
+    codeVerifiers: string | readonly string[],
+  ): Promise<SamlDesktopTokens> {
+    const candidates = (
+      typeof codeVerifiers === 'string' ? [codeVerifiers] : codeVerifiers
+    ).filter((verifier) => CODE_VERIFIER_PATTERN.test(verifier));
+    if (!/^[0-9a-f]{64}$/.test(code) || candidates.length === 0) {
       throw new UnauthorizedError('Invalid or expired sign-in code');
     }
     const key = `${KEY_PREFIX}${code}`;
@@ -88,7 +100,11 @@ export class SamlDesktopHandoffService {
     }
     // Deleted before the verifier check, so a wrong guess burns the code.
     await this.redisService.delete(key);
-    if (!matchesChallenge(codeVerifier, record.codeChallenge)) {
+    if (
+      !candidates.some((verifier) =>
+        matchesChallenge(verifier, record.codeChallenge),
+      )
+    ) {
       throw new UnauthorizedError('Invalid or expired sign-in code');
     }
     return { accessToken: record.accessToken, refreshToken: record.refreshToken };
