@@ -1,7 +1,8 @@
 """`OutputCappedTransport` (`app/agents/agent_loop/output_cap_transport.py`):
 a streamed turn that never ends is stopped at the per-turn output cap. A
 runaway tool call is handled as a reply the provider cut off, so the model
-tries again; runaway text ends the answer with the standard error. A normal
+tries again. Runaway text too long to send back is replaced by a short
+plain-language answer and is never continued or joined to anything. A normal
 long answer passes through untouched."""
 
 from __future__ import annotations
@@ -16,10 +17,11 @@ from langchain_core.messages import AIMessageChunk
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
-from app.agent_loop_lib.core.exceptions import TransportError
+from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,
+    TextPart,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -37,17 +39,18 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop import factory
-from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.output_cap_transport import (
     DEFAULT_MAX_TURN_OUTPUT_CHARS,
     MAX_TURN_OUTPUT_CHARS_ENV_VAR,
+    OUTPUT_CAP_NOTICE,
     OutputCappedTransport,
     max_turn_output_chars,
     with_output_cap,
 )
 from tests.unit.agent_loop_lib.agent.test_agent_step_outcomes import _NoteTool
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
+from tests.unit.agents.adapter.test_cut_off_answer_saved_whole import _chat, _context
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Iterator
@@ -56,6 +59,10 @@ if TYPE_CHECKING:
 
 _FRAGMENT = "word "
 _MESSAGES: list[Message] = [UserMessage(content="hi")]
+# More text than a prompt for the default model can hold, the size at which a
+# cut-off reply can no longer be handed back to be continued.
+_TOO_LONG_TO_SEND_BACK = ContextBudget.for_model(None).effective_max_tokens * 4
+_BLOCK = "lorem ipsum " * 100
 
 
 def _endless_arguments(index: int = 0) -> "Iterator[StreamEvent]":
@@ -168,9 +175,7 @@ class TestRunawayToolCallIsStopped:
         assert len(events) == inner.pulled + 1
         assert inner.closed == 1
 
-    async def test_nothing_of_the_overrun_is_sent_back_to_the_model(self) -> None:
-        """Neither the unfinished arguments nor the text before the call: at
-        the default cap either one is larger than a prompt can hold."""
+    async def test_text_already_shown_is_kept_and_arguments_are_dropped(self) -> None:
         inner = _Streams(itertools.chain(
             [
                 TextDeltaEvent(delta="Here is "),
@@ -182,6 +187,20 @@ class TestRunawayToolCallIsStopped:
 
         final = (await _events(with_output_cap(inner, 500)))[-1]
 
+        assert final.response.message.content == [TextPart(text="Here is the answer.")]
+        assert final.response.message.tool_calls == [ToolCall(id="call_1", name="final_answer")]
+
+    async def test_text_too_long_to_send_back_is_dropped_with_the_arguments(self) -> None:
+        blocks = _TOO_LONG_TO_SEND_BACK // len(_BLOCK) + 1
+        inner = _Streams(itertools.chain(
+            (TextDeltaEvent(delta=_BLOCK) for _ in range(blocks)),
+            [ToolCallDeltaEvent(index=0, id="call_1", name="final_answer", arguments_delta='{"a": "')],
+            _endless_arguments(),
+        ))
+
+        final = (await _events(with_output_cap(inner, blocks * len(_BLOCK) + 100)))[-1]
+
+        assert final.response.message.truncated is True
         assert final.response.message.content == []
         assert final.response.message.tool_calls == [ToolCall(id="call_1", name="final_answer")]
 
@@ -204,52 +223,62 @@ class TestRunawayToolCallIsStopped:
         ]
 
 
-class TestRunawayTextEndsTheAnswer:
-    """Cut-off text is recovered by asking the model to carry on from it, which
-    needs that text in the next prompt. An overrun does not fit in one, so
-    there is no tool call to answer and nothing to continue."""
+class TestRunawayTextIsStopped:
+    async def test_text_short_enough_to_send_back_is_kept_and_continued(self) -> None:
+        """A small cap an operator chose: the same recovery as a reply the
+        provider cut off, since the model can still be shown where it stopped."""
+        inner = _Streams(TextDeltaEvent(delta=_FRAGMENT) for _ in itertools.count())
 
-    @pytest.mark.parametrize("event_type", [TextDeltaEvent, ThinkingDeltaEvent])
-    async def test_stream_is_closed_and_the_turn_fails_without_a_retry(
-        self, event_type: type[TextDeltaEvent] | type[ThinkingDeltaEvent],
-    ) -> None:
-        inner = _Streams(event_type(delta=_FRAGMENT) for _ in itertools.count())
-        capped = with_output_cap(inner, 100)
-        events: list[StreamEvent] = []
+        events = await _events(with_output_cap(inner, 100))
 
-        with pytest.raises(TransportError) as raised:
-            async for event in capped.stream(_MESSAGES):
-                events.append(event)  # noqa: PERF401
-
-        assert raised.value.retryable is False
-        assert len(events) == inner.pulled == 21
-        assert not any(isinstance(event, StreamCompleteEvent) for event in events)
+        final = events[-1]
+        assert final.response.message.truncated is True
+        assert final.response.stop_reason == StopReason.MAX_TOKENS
+        assert final.response.message.text == _FRAGMENT * 21
+        assert final.response.message.tool_calls is None
         assert inner.closed == 1
 
-    @pytest.mark.parametrize("cap", [100, 429, 500, 500_000, 1_000_000])
-    async def test_user_sees_the_standard_plain_language_error(self, cap: int) -> None:
-        """Whatever the cap is set to: a number in the error text could match
-        the "500"/"429" hints and tell the user the provider is down."""
-        inner = _Streams(TextDeltaEvent(delta="x" * (cap + 1)) for _ in itertools.count())
+    async def test_text_too_long_to_send_back_becomes_a_plain_answer(self) -> None:
+        """Not marked cut off: the loop would ask the model to continue text it
+        cannot be shown, and join the overrun onto the saved answer."""
+        inner = _Streams(TextDeltaEvent(delta=_BLOCK) for _ in itertools.count())
 
-        with pytest.raises(TransportError) as raised:
-            await _events(with_output_cap(inner, cap))
+        events = await _events(with_output_cap(inner, _TOO_LONG_TO_SEND_BACK))
 
-        code, message = classify_error(f"LLM call failed: {raised.value}")
-        assert code == "unknown"
-        assert message.startswith("Something went wrong while answering. Please try again")
-        assert str(raised.value) not in message
+        final = events[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.message.truncated is False
+        assert final.response.stop_reason == StopReason.END_TURN
+        assert final.response.message.text == OUTPUT_CAP_NOTICE
+        assert final.response.message.tool_calls is None
+        assert inner.pulled == _TOO_LONG_TO_SEND_BACK // len(_BLOCK) + 1
+        assert inner.closed == 1
 
-    async def test_a_call_that_never_got_a_name_cannot_be_retried_either(self) -> None:
+    async def test_reasoning_counts_towards_the_cap_and_leaves_nothing_to_continue(self) -> None:
+        inner = _Streams(ThinkingDeltaEvent(delta=_FRAGMENT) for _ in itertools.count())
+
+        events = await _events(with_output_cap(inner, 100))
+
+        assert inner.pulled == 21
+        assert events[-1].response.message.truncated is False
+        assert events[-1].response.message.text == OUTPUT_CAP_NOTICE
+
+    async def test_a_call_that_never_got_a_name_leaves_nothing_to_retry(self) -> None:
         inner = _Streams(itertools.chain(
             [ToolCallDeltaEvent(index=0, id="call_1", name=None, arguments_delta="")],
             _endless_arguments(),
         ))
 
-        with pytest.raises(TransportError):
-            await _events(with_output_cap(inner, 100))
+        final = (await _events(with_output_cap(inner, 100)))[-1]
 
-        assert inner.closed == 1
+        assert final.response.message.tool_calls is None
+        assert final.response.message.text == OUTPUT_CAP_NOTICE
+
+    def test_the_notice_reads_as_an_answer_not_an_error(self) -> None:
+        assert OUTPUT_CAP_NOTICE == (
+            "My answer grew far too long and I had to stop before finishing it. "
+            "Please ask again, or ask for a shorter answer."
+        )
 
 
 class TestConfiguration:
@@ -329,6 +358,29 @@ class TestOverTheLangChainTransport:
         assert model.closed is True
 
 
+def _agent(transport: Any, *tools: Any) -> Agent:  # noqa: ANN401
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register_tool(tool)
+    transports = TransportRegistry()
+    transports.register("scripted", lambda: transport)
+    return Agent(
+        AgentSpec(
+            name="capped-agent",
+            system_prompt="You are a helpful assistant.",
+            model=ModelSpec(provider="scripted", model="scripted-model"),
+            loop=ReActLoop(),
+            max_turns=4,
+        ),
+        AgentRuntime(transport_registry=transports, tool_registry=registry),
+    )
+
+
+def _text(message: Message) -> str:
+    content = message.content
+    return content if isinstance(content, str) else getattr(message, "text", "")
+
+
 class TestAgentRecoversFromACappedTurn:
     async def test_the_call_is_not_run_and_the_model_gets_to_try_again(self) -> None:
         tool = _NoteTool()
@@ -339,20 +391,7 @@ class TestAgentRecoversFromACappedTurn:
             ),
             [TextDeltaEvent(delta="Short answer."), _complete("Short answer.")],
         )
-        registry = ToolRegistry()
-        registry.register_tool(tool)
-        transports = TransportRegistry()
-        transports.register("scripted", lambda: with_output_cap(inner, 1_000))
-        agent = Agent(
-            AgentSpec(
-                name="capped-agent",
-                system_prompt="You are a helpful assistant.",
-                model=ModelSpec(provider="scripted", model="scripted-model"),
-                loop=ReActLoop(),
-                max_turns=4,
-            ),
-            AgentRuntime(transport_registry=transports, tool_registry=registry),
-        )
+        agent = _agent(with_output_cap(inner, 1_000), tool)
 
         _ = [event async for event in agent.stream(Goal(description="Take a note"))]
         result = agent.last_stream_result
@@ -369,29 +408,62 @@ class TestAgentRecoversFromACappedTurn:
         assert note.tool_call_id == "n1"
         assert "Tool call not executed" in note.text
 
-    async def test_runaway_text_ends_the_run_without_reaching_the_prompt_or_the_answer(self) -> None:
+    async def test_oversized_runaway_text_never_reaches_a_prompt_or_the_answer(self) -> None:
+        """The overrun is larger than a prompt can hold. It must not be joined
+        onto the answer, and the next thing the model is sent must not contain it."""
+        inner = _Streams(
+            (TextDeltaEvent(delta=_BLOCK) for _ in itertools.count()),
+            [TextDeltaEvent(delta="Short answer."), _complete("Short answer.")],
+        )
+        agent = _agent(with_output_cap(inner, _TOO_LONG_TO_SEND_BACK))
+
+        _ = [event async for event in agent.stream(Goal(description="Summarise the quarter"))]
+        first = agent.last_stream_result
+        _ = [event async for event in agent.stream(Goal(description="Just the headline, please"))]
+        follow_up = agent.last_stream_result
+
+        assert first.success is True
+        assert first.output == OUTPUT_CAP_NOTICE
+        assert len(inner.calls) == 2
+        follow_up_prompt = inner.calls[1]["messages"]
+        assert not any(_BLOCK in _text(message) for message in follow_up_prompt)
+        assert [m.text for m in follow_up_prompt if isinstance(m, AssistantMessage)] == [
+            OUTPUT_CAP_NOTICE,
+        ]
+        assert follow_up.output == "Short answer."
+
+    async def test_runaway_text_under_a_small_cap_is_continued_like_any_cut_off_reply(self) -> None:
         inner = _Streams(
             (TextDeltaEvent(delta=_FRAGMENT) for _ in itertools.count()),
-            [TextDeltaEvent(delta="never asked for"), _complete("never asked for")],
+            [TextDeltaEvent(delta="and done."), _complete("and done.")],
         )
-        transports = TransportRegistry()
-        transports.register("scripted", lambda: with_output_cap(inner, 1_000))
-        agent = Agent(
-            AgentSpec(
-                name="capped-agent",
-                system_prompt="You are a helpful assistant.",
-                model=ModelSpec(provider="scripted", model="scripted-model"),
-                loop=ReActLoop(),
-                max_turns=4,
-            ),
-            AgentRuntime(transport_registry=transports, tool_registry=ToolRegistry()),
-        )
+        agent = _agent(with_output_cap(inner, 100))
 
         _ = [event async for event in agent.stream(Goal(description="Summarise the quarter"))]
         result = agent.last_stream_result
 
-        assert result.success is False
-        assert len(inner.calls) == 1
-        assert _FRAGMENT not in (result.output or "")
-        assert classify_error(result.error)[0] == "unknown"
-        assert _FRAGMENT not in classify_error(result.error)[1]
+        assert result.success is True
+        assert result.output == _FRAGMENT * 21 + "and done."
+        continuation_prompt = inner.calls[1]["messages"]
+        assert [m.text for m in continuation_prompt if isinstance(m, AssistantMessage)] == [
+            _FRAGMENT * 21,
+        ]
+        assert "cut off at the maximum output-token limit" in _text(continuation_prompt[-1])
+
+
+class TestSavedAnswerAfterOversizedRunawayText:
+    async def test_the_notice_is_what_is_saved_and_shown_not_the_overrun(self) -> None:
+        """Through the pieces a chat request runs: the live answer held the
+        overrun while it streamed, and the saved answer must not."""
+        inner = _Streams(TextDeltaEvent(delta=_BLOCK) for _ in itertools.count())
+
+        completion, streamer, _, result = await _chat(
+            _context("agui"), with_output_cap(inner, _TOO_LONG_TO_SEND_BACK),
+        )
+
+        assert len(streamer.streamed_answer) > _TOO_LONG_TO_SEND_BACK
+        assert result.success is True
+        assert completion["answer"] == OUTPUT_CAP_NOTICE
+        assert [(part["type"], part["content"]) for part in completion["parts"]] == [
+            ("text", OUTPUT_CAP_NOTICE),
+        ]

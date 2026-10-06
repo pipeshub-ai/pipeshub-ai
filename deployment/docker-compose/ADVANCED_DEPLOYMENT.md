@@ -406,11 +406,14 @@ server that sets no output limit of its own. It counts the characters a single a
 streams (answer text, reasoning and tool-call arguments together). Past the limit the
 stream is closed. If the model was in the middle of a tool call, the call is not run and
 the model is asked for a shorter one, as with any reply a provider cuts off. If it was
-writing plain text, the answer ends with the usual "Something went wrong while answering.
-Please try again" message. The default is about twice the longest reply any supported
-provider can produce, so normal answers never reach it; raise it only if you see the
-"streamed more than ... characters in one turn" warning in the query-service log for
-replies you expected. Blank or a value that is not a number falls back to the default.
+writing plain text, the user gets a short answer saying the reply grew too long and to
+ask again or ask for a shorter one; the overrun itself is not saved or sent back to the
+model. (With a limit set low enough that the text still fits in a prompt, the model is
+asked to carry on from where it stopped instead.) The default is about twice the longest
+reply any supported provider can produce, so normal answers never reach it; raise it only
+if you see the "streamed more than ... characters in one turn" warning in the
+query-service log for replies you expected. Blank or a value that is not a number falls
+back to the default.
 
 These are read from the container environment, so on an existing install add them to
 `.env` yourself — `install.sh --upgrade` reuses your current `.env` and does not append
