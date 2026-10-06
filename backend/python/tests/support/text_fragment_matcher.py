@@ -153,6 +153,8 @@ def _find(
             continue
         end_index = found + len(needle) - 1
         orig_end = folded_block.origin[end_index] + 1
+        while orig_end < len(original) and unicodedata.category(original[orig_end]) == "Mn":
+            orig_end += 1
         if start_bounded and not _is_boundary(original, orig_start):
             continue
         if end_bounded and not _is_boundary(original, orig_end):

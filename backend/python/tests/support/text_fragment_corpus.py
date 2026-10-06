@@ -75,5 +75,5 @@ def dump_cases(raw_cases: list[dict]) -> str:
 def _escape(char: str) -> str:
     category = unicodedata.category(char)
     if char != " " and category in ("Zs", "Zl", "Zp", "Cf", "Mn", "Cc") and char != "\n":
-        return f"\\u{ord(char):04x}"
+        return json.dumps(char, ensure_ascii=True)[1:-1]
     return char

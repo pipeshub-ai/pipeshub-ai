@@ -3,6 +3,7 @@
 Regenerate snapshots with `scripts/text_fragments/regen_golden.py`; see docs/text-fragments.md.
 """
 
+import json
 import re
 import unicodedata
 
@@ -16,6 +17,7 @@ from app.utils.text_fragments import SourceFormat, TextFragmentGenerator
 from tests.support.text_fragment_corpus import (
     HTML_DIR,
     Case,
+    dump_cases,
     generate_url,
     highlight_of,
     load_cases,
@@ -89,6 +91,16 @@ class TestMatcherRejectsBrokenDirectives:
 
     def test_matching_ignores_case_and_accents(self) -> None:
         assert highlight_for_url(self.PAGE, "https://x.test/#:~:text=zurich") == "Zürich"
+
+
+    def test_term_ending_before_a_combining_mark_still_matches_the_whole_word(self) -> None:
+        assert highlight_for_url("<p>Cafe\u0301 next</p>", "https://x.test/#:~:text=Caf%C3%A9") == "Cafe\u0301"
+
+
+class TestDumpCases:
+    def test_supplementary_invisible_characters_round_trip(self) -> None:
+        raw = [{"snippet": "a\U0001d167b\U000e0001c\u200bd\u00a0e"}]
+        assert json.loads(dump_cases(raw)) == raw
 
 
 _MARKDOWN_CASES = [case for case in CASES if case.format is SourceFormat.MARKDOWN]
