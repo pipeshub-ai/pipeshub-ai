@@ -146,12 +146,19 @@ async def org(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         yield _Org(service, org_id, member_id, kbs["team-only"], kbs["direct-only"], kbs["both"])
 
 
-async def _listed(org: _Org, search: str | None) -> tuple[set[str], int]:
+async def _listed(org: _Org, search: str | None) -> tuple[list[str], int]:
     result = await org.service.list_user_knowledge_bases(
         user_id=org.member_id, org_id=org.org_id, page=1, limit=50, search=search,
     )
     assert isinstance(result, dict) and "knowledgeBases" in result, result
-    return {kb["id"] for kb in result["knowledgeBases"]}, result["pagination"]["totalCount"]
+    return [kb["id"] for kb in result["knowledgeBases"]], result["pagination"]["totalCount"]
+
+
+def _assert_listed_once(listed: list[str], total: int, expected: set[str], why: str) -> None:
+    # A list, not a set: a knowledge base reached through a team and directly must appear once.
+    assert len(listed) == len(expected), f"{why} listed {listed}"
+    assert set(listed) == expected, f"{why} listed {listed}"
+    assert total == len(expected), f"{why}: totalCount {total} for {listed}"
 
 
 async def test_a_team_only_knowledge_base_is_found_by_its_name(org: _Org) -> None:
@@ -159,20 +166,18 @@ async def test_a_team_only_knowledge_base_is_found_by_its_name(org: _Org) -> Non
 
     listed, total = await _listed(org, name)
 
-    assert listed == {kb_id}, f"searching {name!r} listed {listed}"
-    assert total == 1
+    _assert_listed_once(listed, total, {kb_id}, f"searching {name!r}")
 
 
 async def test_the_unfiltered_list_holds_every_grant_once(org: _Org) -> None:
     listed, total = await _listed(org, None)
 
-    expected = {org.team_only[0], org.direct_only[0], org.both[0]}
-    assert listed == expected
-    assert total == len(expected)
+    _assert_listed_once(
+        listed, total, {org.team_only[0], org.direct_only[0], org.both[0]}, "the unfiltered list",
+    )
 
 
 async def test_a_name_search_keeps_only_the_matching_ones(org: _Org) -> None:
     listed, total = await _listed(org, "kblist team-only")
 
-    assert listed == {org.team_only[0]}
-    assert total == 1
+    _assert_listed_once(listed, total, {org.team_only[0]}, "searching 'kblist team-only'")
