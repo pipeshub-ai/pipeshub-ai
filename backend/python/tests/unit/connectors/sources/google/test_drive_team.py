@@ -584,3 +584,39 @@ class TestTeamInit:
         })
         with pytest.raises(ValueError, match="Admin email not found"):
             await connector.init()
+
+
+class TestTeamDriveItemPeople:
+    async def test_my_drive_file_carries_owner_author_and_last_modifier(self, connector) -> None:
+        metadata = _make_file_metadata(
+            owners=[{"displayName": "Alice", "emailAddress": "alice@example.com", "permissionId": "p-alice"}],
+            parents=["folder-1"],
+        )
+        metadata["lastModifyingUser"] = {"displayName": "Bob", "emailAddress": "bob@example.com", "permissionId": "p-bob"}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        record = result.record
+        assert [o.email for o in record.owners] == ["alice@example.com"]
+        assert record.authored_by is not None
+        assert record.authored_by.source_id == "p-alice"
+        assert record.last_modified_by is not None
+        assert record.last_modified_by.email == "bob@example.com"
+
+    async def test_shared_drive_file_has_no_author(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(parents=["sd-1"], owners=[])
+        metadata["driveId"] = "sd-1"
+        metadata["lastModifyingUser"] = {"displayName": "Bob", "emailAddress": "bob@example.com", "permissionId": "p-bob"}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="user@example.com", drive_id="sd-1", is_shared_drive=True
+        )
+
+        record = result.record
+        assert record.authored_by is None
+        assert record.owners == []
+        assert record.last_modified_by is not None
+        assert record.last_modified_by.source_id == "p-bob"

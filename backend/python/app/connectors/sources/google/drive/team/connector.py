@@ -69,6 +69,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
 )
+from app.connectors.sources.google.common.drive_people import drive_file_people
 from app.connectors.sources.google.common.impersonation import (
     get_impersonation_candidates,
     is_delegation_error,
@@ -2370,6 +2371,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             parent_external_record_id = (metadata.get("parents") or [None])[0]
 
+            people = drive_file_people(metadata)
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -2404,6 +2406,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
+                authored_by=people.authored_by,
+                last_modified_by=people.last_modified_by,
+                owners=people.owners,
             )
 
             if existing_record and not content_changed:
