@@ -95,6 +95,7 @@ async def backfill(
                     await link_record_people(record, dry, logger)
                 edges = dry.edges
         except Exception as exc:  # a page that fails is reported; the rest carry on
+            logger.exception("record-people backfill page failed (after=%s)", after)
             totals["failed_pages"] += 1
             out.write(json.dumps({"after": after, "error": type(exc).__name__}) + "\n")
             continue

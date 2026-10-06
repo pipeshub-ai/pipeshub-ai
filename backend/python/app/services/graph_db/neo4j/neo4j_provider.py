@@ -762,6 +762,13 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.connectorId, n.id)"
         )
 
+        # COMPOSITE: the record-people backfill pages an org's records by id;
+        # with only orgId indexed every page sorted the whole org.
+        indexes.append(
+            "CREATE INDEX record_org_id_key IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.id)"
+        )
+
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
         # the few records with it set; unindexed that is a label scan per tick.
         indexes.append(
@@ -9713,20 +9720,23 @@ class Neo4jProvider(IGraphDBProvider):
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
-        # Two forms rather than "$after_key IS NULL OR ...": the OR keeps the
-        # planner from seeking the id range, and each page would sort the org.
-        cursor = "AND record.id > $after_key" if after_key is not None else ""
+        # Every page, the first too (after ""), seeks the (orgId, id) index on
+        # an id range and orders by both of its keys, so the index gives the
+        # order and the page stops at the limit; ordering by id alone, or the
+        # first page without a range, sorts the whole org's records instead.
         rows = await self.client.execute_query(
-            f"""
+            """
             MATCH (record:Record)
-            WHERE record.orgId = $org_id AND record.recordType IN $types
+            WHERE record.orgId = $org_id AND record.id > $after_key
+              AND record.recordType IN $types
               AND coalesce(record.isDeleted, false) = false
-              {cursor}
             RETURN record.id AS id
-            ORDER BY record.id
+            ORDER BY record.orgId, record.id
             LIMIT $limit
             """,
-            parameters={"org_id": org_id, "types": list(record_types), "after_key": after_key, "limit": max(1, limit)},
+            parameters={
+                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": max(1, limit),
+            },
         )
         return [str(row["id"]) for row in rows or [] if row.get("id")]
 
