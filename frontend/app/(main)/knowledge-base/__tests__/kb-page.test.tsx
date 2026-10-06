@@ -5,13 +5,14 @@ import '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUploadStore } from '@/lib/store/upload-store';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import KnowledgeBasePage from '../page';
 import KnowledgeBaseSidebarSlot from '../../@sidebar/knowledge-base/page';
 import { loadMoreNodeChildrenPage, loadMoreRootAppList } from '../utils/sidebar-paginated-fetch';
 import { mergeChildrenIntoTree } from '../utils/tree-builder';
-import type { EnhancedFolderTreeNode } from '../types';
+import type { EnhancedFolderTreeNode, NodePermissions } from '../types';
 import {
   collection,
   createNavigation,
@@ -19,6 +20,7 @@ import {
   hubChildrenFake,
   hubNode,
   hubResponse,
+  OWNER_PERMISSIONS,
   openRowMenu,
   queryRow,
   installBrowserShims,
@@ -188,6 +190,7 @@ beforeEach(() => {
   useKnowledgeBaseStore.setState(useKnowledgeBaseStore.getInitialState(), true);
   useToastStore.setState({ toasts: [] });
   useUploadStore.setState(useUploadStore.getInitialState(), true);
+  useFeatureFlagsStore.setState({ flags: {} });
   api.kb.getUploadLimits.mockResolvedValue({ maxFileSizeBytes: 5 * 1024 * 1024 });
   api.hub.getNodeChildren.mockResolvedValue(hubResponse([]));
   share.getSharedMembers.mockResolvedValue([]);
@@ -463,6 +466,82 @@ describe('Knowledge base page — inside a collection', () => {
       ),
     );
     expect(await screen.findByText('Results')).toBeTruthy();
+  });
+
+  it('offers its Recently deleted page only while the trash is on', async () => {
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(
+      folderResponse({ id: 'kb-eng', name: 'Engineering', nodeType: 'app' }, ENGINEERING_TRAIL, [SPEC], {
+        permissions: { ...OWNER_PERMISSIONS, collectionRole: 'OWNER' },
+      }),
+    );
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+    await screen.findByRole('row', { name: SPEC.name });
+    expect(screen.queryByRole('button', { name: /Recently deleted/ })).toBeNull();
+
+    act(() => useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } }));
+    fireEvent.click(await screen.findByRole('button', { name: /Recently deleted/ }));
+
+    expect(router.push).toHaveBeenCalledWith('/knowledge-base/recently-deleted?kbId=kb-eng');
+  });
+
+  // Knowledge Hub's context role: at the collection root it is the collection permission's
+  // role; inside a folder it ranks record permissions, which have no FILEORGANIZER, so a
+  // file organizer reads as READER there. collectionRole is the role the trash API checks.
+  for (const [where, collectionRole, contextRole, shown] of [
+    ['the collection', 'OWNER', 'OWNER', true],
+    ['the collection', 'WRITER', 'WRITER', true],
+    ['the collection', 'FILEORGANIZER', 'FILEORGANIZER', true],
+    ['the collection', 'READER', 'READER', false],
+    ['the collection', 'COMMENTER', 'COMMENTER', false],
+    ['a folder', 'FILEORGANIZER', 'READER', true],
+    ['a folder', 'WRITER', 'WRITER', true],
+    ['a folder', 'READER', 'READER', false],
+  ] as const) {
+    it(`${shown ? 'offers' : 'does not offer'} Recently deleted to a ${collectionRole.toLowerCase()} inside ${where}`, async () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } });
+      withCollections();
+      const canDelete = contextRole === 'OWNER' || contextRole === 'WRITER';
+      const permissions = {
+        ...OWNER_PERMISSIONS,
+        role: contextRole as NodePermissions['role'],
+        canDelete,
+        canEdit: canDelete,
+        collectionRole,
+      };
+      const inFolder = where === 'a folder';
+      api.hub.loadFolderData.mockResolvedValue(
+        inFolder
+          ? folderResponse(
+              { id: 'folder-designs', name: 'Designs', nodeType: 'folder' },
+              [...ENGINEERING_TRAIL, { id: 'folder-designs', name: 'Designs', nodeType: 'folder' }],
+              [hubNode({ id: 'rec-logo', name: 'logo.png', parentId: 'folder-designs' })],
+              { permissions },
+            )
+          : folderResponse({ id: 'kb-eng', name: 'Engineering', nodeType: 'app' }, ENGINEERING_TRAIL, [SPEC], { permissions }),
+      );
+      openAt(inFolder ? '/knowledge-base?nodeType=folder&nodeId=folder-designs' : '/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByRole('row', { name: inFolder ? 'logo.png' : SPEC.name });
+
+      const button = screen.queryByRole('button', { name: /Recently deleted/ });
+      expect(Boolean(button)).toBe(shown);
+      if (button) {
+        fireEvent.click(button);
+        expect(router.push).toHaveBeenCalledWith('/knowledge-base/recently-deleted?kbId=kb-eng');
+      }
+    });
+  }
+
+  it('hides Recently deleted while the collection role is unknown', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } });
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(
+      folderResponse({ id: 'kb-eng', name: 'Engineering', nodeType: 'app' }, ENGINEERING_TRAIL, [SPEC]),
+    );
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+    await screen.findByRole('row', { name: SPEC.name });
+
+    expect(screen.queryByRole('button', { name: /Recently deleted/ })).toBeNull();
   });
 
   it('reloads the collection when Refresh is clicked', async () => {

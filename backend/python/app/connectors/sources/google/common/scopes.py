@@ -156,15 +156,17 @@ GOOGLE_TOOLSET_SCOPES = {
         "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
+    # Invites go out through Calendar's own sendUpdates, so no Gmail scope is needed.
     "calendar": [
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/calendar.events",
-        "https://www.googleapis.com/auth/gmail.send",
     ],
     "meet": [
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/meetings.space.created",
+        # meetings.space.created only covers meetings this app created; the conference-record tools read any.
+        "https://www.googleapis.com/auth/meetings.space.readonly",
     ],
 }
 

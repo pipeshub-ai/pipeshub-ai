@@ -1,8 +1,11 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { RecordRelationService } from '../../../../src/modules/knowledge_base/services/kb.relation.service'
-import { InternalServerError } from '../../../../src/libs/errors/http.errors'
+import {
+  RecordRelationService,
+  RESYNC_NOT_QUEUED_MESSAGE,
+} from '../../../../src/modules/knowledge_base/services/kb.relation.service'
+import { InternalServerError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
 
 describe('RecordRelationService', () => {
   let mockEventProducer: any
@@ -398,7 +401,7 @@ describe('RecordRelationService', () => {
       expect(mockSyncEventProducer.publishEvent.calledOnce).to.be.true
     })
 
-    it('should return failure when publishEvent throws', async () => {
+    it('throws a 503 with a plain message when the event cannot be published', async () => {
       mockSyncEventProducer.publishEvent.rejects(new Error('publish failed'))
 
       const service = new RecordRelationService(
@@ -408,15 +411,21 @@ describe('RecordRelationService', () => {
       )
       await new Promise(resolve => setTimeout(resolve, 10))
 
-      const result = await service.resyncConnectorRecords({
-        connectorName: 'Slack',
-        connectorId: 'conn-2',
-        orgId: 'org-1',
-        origin: 'slack',
-      })
+      let thrown: unknown
+      await service
+        .resyncConnectorRecords({
+          connectorName: 'Slack',
+          connectorId: 'conn-2',
+          orgId: 'org-1',
+          origin: 'slack',
+        })
+        .catch((e: unknown) => {
+          thrown = e
+        })
 
-      expect(result.success).to.be.false
-      expect(result.error).to.equal('publish failed')
+      expect(thrown).to.be.instanceOf(ServiceUnavailableError)
+      expect((thrown as ServiceUnavailableError).statusCode).to.equal(503)
+      expect((thrown as Error).message).to.equal(RESYNC_NOT_QUEUED_MESSAGE)
     })
   })
 

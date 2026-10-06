@@ -221,13 +221,21 @@ class ArangoHTTPClient:
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: List[str], write: List[str]) -> str:
+    async def begin_transaction(
+        self,
+        read: List[str],
+        write: List[str],
+        exclusive: list[str] | None = None,
+        lock_timeout_seconds: float | None = None,
+    ) -> str:
         """
         Begin a database transaction.
 
         Args:
             read: Collections to read from
             write: Collections to write to
+            exclusive: Collections no other transaction may write until this one ends
+            lock_timeout_seconds: How long to wait for those locks before failing
 
         Returns:
             str: Transaction ID
@@ -238,9 +246,11 @@ class ArangoHTTPClient:
             "collections": {
                 "read": read,
                 "write": write,
-                "exclusive": []
+                "exclusive": exclusive or []
             }
         }
+        if lock_timeout_seconds is not None:
+            payload["lockTimeout"] = lock_timeout_seconds
 
         try:
             session = await self._get_session()
@@ -890,6 +900,16 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating collection: {str(e)}")
             return False
 
+    async def get_indexes(self, collection_name: str) -> list[dict]:
+        """The indexes on a collection, as ArangoDB describes them. Raises when they cannot be read."""
+        url = f"{self.base_url}/_db/{self.database}/_api/index?collection={collection_name}"
+        session = await self._get_session()
+        async with session.get(url) as resp:
+            if resp.status != HttpStatusCode.OK.value:
+                raise Exception(f"Could not list the indexes of {collection_name}: {await resp.text()}")
+            body = await resp.json()
+        return list(body.get("indexes", []))
+
     async def ensure_persistent_index(
         self,
         collection_name: str,
@@ -897,6 +917,7 @@ class ArangoHTTPClient:
         unique: bool = False,  # noqa: FBT001, FBT002 - positional, as callers have always passed it
         *,
         sparse: bool = False,
+        name: str | None = None,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
@@ -908,6 +929,8 @@ class ArangoHTTPClient:
                 missing, so an index over a rarely-set field stays small
             unique: Enforce uniqueness. Creation fails outright if the collection
                 already holds duplicates, so callers must tolerate a False return.
+            name: Index name, for queries that hint it. An index that already
+                exists on the same fields keeps the name it has.
 
         Returns:
             bool: True if index exists or was created
@@ -920,6 +943,8 @@ class ArangoHTTPClient:
         }
         if sparse:
             payload["sparse"] = True
+        if name:
+            payload["name"] = name
         try:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:

@@ -13,9 +13,10 @@ SALESFORCE_LOGIN_URL_DESCRIPTION = (
 def salesforce_login_url_field() -> AuthField:
     """The optional login host on a Salesforce OAuth app.
 
-    The connector and the agent toolset both register an OAuth config named
-    "Salesforce", and the later registration replaces the earlier one, so both
-    must declare this field or it drops out of the saved OAuth app.
+    The connector and the agent toolset each register their own OAuth config
+    named "Salesforce". Each side's OAuth app form shows its own registration's
+    fields, and a connector OAuth app saves only the connector's, so both
+    declare this field.
     """
     return AuthField(
         name=AuthFieldKeys.LOGIN_URL,

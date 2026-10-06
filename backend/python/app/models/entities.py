@@ -2597,6 +2597,10 @@ class RecordGroup(BaseModel):
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
     )
+    is_deleted_at_source: bool = Field(
+        default=False,
+        description="Gone at the source and kept only while records in the trash belong to it",
+    )
     permission_model: PermissionModel | None = Field(
         default=None,
         description=(
@@ -2627,6 +2631,9 @@ class RecordGroup(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            # A source that lists the group again takes back a group kept only for the trash.
+            "isDeletedAtSource": False,
+            "deletedAtSourceTimestamp": None,
         }
 
     @staticmethod
@@ -2650,6 +2657,7 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
             permission_model=arango_base_record_group.get("permissionModel"),
+            is_deleted_at_source=arango_base_record_group.get("isDeletedAtSource") is True,
         )
 
 class ArtifactsRecordGroup(RecordGroup):

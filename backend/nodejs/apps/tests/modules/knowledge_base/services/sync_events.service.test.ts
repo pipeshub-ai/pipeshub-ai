@@ -192,6 +192,24 @@ describe('SyncEventProducer - coverage', () => {
   })
 
   describe('publishEvent', () => {
+    it('rejects when the broker refuses the event, so the caller knows nothing was queued', async () => {
+      const instance = Object.create(SyncEventProducer.prototype)
+      ;(instance as any).syncTopic = 'sync-events'
+      const brokerDown = new Error('broker unreachable')
+      ;(instance as any).producer = { publish: sinon.stub().rejects(brokerDown) }
+      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+
+      let thrown: unknown
+      await instance
+        .publishEvent({ eventType: 'googledrive.resync', timestamp: 1, payload: { orgId: 'org-1' } })
+        .catch((e: unknown) => {
+          thrown = e
+        })
+
+      expect(thrown).to.equal(brokerDown)
+      expect(instance.logger.error.calledOnce).to.be.true
+    })
+
     it('should publish event to sync-events topic', async () => {
       const instance = Object.create(SyncEventProducer.prototype)
       ;(instance as any).syncTopic = 'sync-events'
@@ -231,33 +249,6 @@ describe('SyncEventProducer - coverage', () => {
       expect(JSON.parse(message.value)).to.deep.include({ eventType: 'connectorSync' })
       expect(message.headers.eventType).to.equal('connectorSync')
       expect(instance.logger.info.calledOnce).to.be.true
-    })
-
-    it('should log error when publish fails', async () => {
-      const instance = Object.create(SyncEventProducer.prototype)
-      ;(instance as any).syncTopic = 'sync-events'
-      const mockProducer = {
-        isConnected: sinon.stub().returns(true),
-        connect: sinon.stub().resolves(),
-        disconnect: sinon.stub().resolves(),
-        publish: sinon.stub().rejects(new Error('Kafka down')),
-        publishBatch: sinon.stub().resolves(),
-        healthCheck: sinon.stub().resolves(true),
-      }
-      ;(instance as any).producer = mockProducer
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
-
-      const event: Event = {
-        eventType: 'reindex',
-        timestamp: Date.now(),
-        payload: {
-          orgId: 'org-1',
-          statusFilters: ['pending'],
-        } as ReindexEventPayload,
-      }
-
-      await instance.publishEvent(event)
-      expect(instance.logger.error.calledOnce).to.be.true
     })
 
     it('should include timestamp header as string', async () => {
@@ -350,17 +341,23 @@ describe('SyncEventProducer - coverage', () => {
       expect(message.key).to.equal('sync.all')
     })
 
-    it('does not let a publish failure escape', async () => {
+    it('logs a publish failure and passes it to the caller', async () => {
       const logger = loggerDouble()
       const svc = new SyncEventProducer(
         producerDouble(sinon.stub().rejects(new Error('broker down'))),
         logger as unknown as Logger,
       )
-      await svc.publishEvent({
-        eventType: 'confluence.resync',
-        timestamp: 1,
-        payload: { connectorId: 'c1' },
-      })
+      let caught: unknown
+      try {
+        await svc.publishEvent({
+          eventType: 'confluence.resync',
+          timestamp: 1,
+          payload: { connectorId: 'c1' },
+        })
+      } catch (error) {
+        caught = error
+      }
+      expect((caught as Error)?.message).to.equal('broker down')
       expect(logger.error.called).to.be.true
     })
   })

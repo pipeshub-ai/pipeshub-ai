@@ -1861,17 +1861,17 @@ def build_record_relations_info(record: dict[str, Any]) -> str:
 
 # FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
 
-async def _live_record_ids(
-    graph_provider: IGraphDBProvider, record_ids: Iterable[str], org_id: str
+async def live_record_ids(
+    graph_provider: IGraphDBProvider, record_ids: Iterable[str | None], org_id: str | None
 ) -> set[str]:
     """The ids among ``record_ids`` that are live records of ``org_id``.
 
     The FK edge reads return tables in the trash too, so without this a dropped
     table's DDL and rows reach the answer through a table that references it.
-    A failed lookup counts as nothing live.
+    A failed lookup, or no org to scope it to, counts as nothing live.
     """
     ids = list(dict.fromkeys(rid for rid in record_ids if rid))
-    if not ids:
+    if not ids or not org_id:
         return set()
     try:
         docs = await graph_provider.get_records_by_record_ids(
@@ -1977,13 +1977,13 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
         }
 
     checked_ids = set(related_record_ids)
-    live_ids = await _live_record_ids(graph_provider, checked_ids, org_id)
+    live_ids = await live_record_ids(graph_provider, checked_ids, org_id)
     related_record_ids &= live_ids
 
     async def live_relations_only(relations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         unchecked = {rel.get("record_id") for rel in relations if rel.get("record_id")} - checked_ids
         if unchecked:
-            live_ids.update(await _live_record_ids(graph_provider, unchecked, org_id))
+            live_ids.update(await live_record_ids(graph_provider, unchecked, org_id))
             checked_ids.update(unchecked)
         return [rel for rel in relations if rel.get("record_id") in live_ids]
 

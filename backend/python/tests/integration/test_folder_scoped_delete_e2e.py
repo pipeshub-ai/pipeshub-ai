@@ -33,6 +33,7 @@ NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -333,3 +334,48 @@ async def test_a_move_committed_during_the_deletes_deletes_nothing(tree: _Tree) 
     assert result["success"] is False and result.get("code") == 409, result
     for name in ("sub", "s1", "b1"):
         assert await tree.exists(name), f"{name} was deleted by a delete that reported nothing deleted: {result}"
+
+
+# ArangoDB only: Neo4j waits for the other writer's lock instead of failing the write.
+@pytest.mark.parametrize("tree", ["arango"], indirect=True)
+async def test_a_record_another_writer_holds_is_deleted_once_it_lets_go(
+    tree: _Tree, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Indexing updating a record while its folder is deleted made the record REMOVE fail
+    with a write-write conflict; the delete still committed and reported success, and
+    the records stayed in the graph with their edges gone."""
+    records = CollectionNames.RECORDS.value
+    holder = await tree.graph.begin_transaction(read=[records], write=[records])
+    await tree.graph.execute_query(
+        "UPDATE @key WITH { indexingStatus: 'COMPLETED' } IN @@records",
+        bind_vars={"key": tree.ids["a1"], "@records": records},
+        transaction=holder,
+    )
+
+    caplog.set_level(logging.WARNING, logger=DataSourceEntitiesProcessor.__module__)
+
+    def retried() -> bool:
+        return any(
+            "Deadlock or write conflict in on_records_deleted_cascade" in r.getMessage()
+            for r in caplog.records
+        )
+
+    deleting = asyncio.create_task(tree.processor.on_records_deleted_cascade(
+        [tree.ids["folder_a"]], tree.connector_id, soft_delete=False,
+    ))
+    # Let go only once the delete has been refused and is waiting to run again, so the
+    # test shows the conflict happened rather than guessing how long it takes.
+    for _ in range(300):
+        if retried() or deleting.done():
+            break
+        await asyncio.sleep(0.05)
+    await tree.graph.commit_transaction(holder)
+    result = await deleting
+
+    assert retried(), "the delete never ran into the held record, so the conflict was not tested"
+
+    assert result["success"] is True, result
+    left = [name for name in ("folder_a", "a1", "attached", "sub", "s1") if await tree.exists(name)]
+    assert not left, f"reported deleted, still in the graph: {left} ({result})"
+    for name in ("folder_b", "b1", "b_sub", "b_sub_file", "root_file"):
+        assert await tree.exists(name), f"{name} was outside the folder and was deleted: {result}"

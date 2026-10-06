@@ -474,26 +474,26 @@ spec:
             runAsNonRoot: false
             runAsUser: 0
           env:
-            # TLS off because the listener is bound to loopback below and
-            # never leaves the pod's network namespace. That binding is what
-            # makes it safe: 0.0.0.0 would also bind the pod IP, publishing
-            # an unauthenticated root-equivalent API to anything on the
-            # cluster network that can route to this pod.
             - name: DOCKER_TLS_CERTDIR
               value: ""
-          # First arg must be `dockerd`. If it starts with `-`, dockerd-entrypoint.sh
-          # prepends `--host=tcp://0.0.0.0:2375`, which then collides with the
-          # loopback listener below (address already in use) and the sidecar exits.
+            # For the `docker info` probes below.
+            - name: DOCKER_HOST
+              value: "unix:///var/run/dind/docker.sock"
+          # No TCP listener: every container in a pod shares one network
+          # namespace, so a loopback port would hand the raw API to the
+          # application container too. The socket's volume is mounted only
+          # here and in docker-proxy. First arg must be `dockerd`; if it starts
+          # with `-`, dockerd-entrypoint.sh adds its default 0.0.0.0:2375 listener.
           args:
             - dockerd
-            - "--host=tcp://127.0.0.1:{{ .Values.sandbox.dind.port }}"
-            - "--host=unix:///var/run/docker.sock"
-            - "--tls=false"
+            - "--host=unix:///var/run/dind/docker.sock"
           resources:
             {{- toYaml .Values.sandbox.dind.resources | nindent 12 }}
           volumeMounts:
             - name: dind-storage
               mountPath: /var/lib/docker
+            - name: dind-sock
+              mountPath: /var/run/dind
           livenessProbe:
             exec:
               command: ["docker", "info"]
@@ -510,6 +510,60 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 10
             failureThreshold: 30
+        - name: docker-proxy
+          image: {{ .Values.sandbox.proxy.image | default (include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global)) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          # Bypasses the image entrypoint, which drops privileges for the app
+          # and needs capabilities this container deliberately does not have.
+          command: ["python", "-m", "app.docker_proxy_main"]
+          workingDir: /app/python
+          securityContext:
+            # Root only to open the root-owned daemon socket; it holds no
+            # capabilities. Same as the Compose docker-socket-proxy.
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # Loopback only: the default 0.0.0.0 would also serve the pod IP.
+            - name: DOCKER_PROXY_HOST
+              value: "127.0.0.1"
+            - name: DOCKER_PROXY_PORT
+              value: {{ .Values.sandbox.dind.port | quote }}
+            - name: DOCKER_PROXY_UPSTREAM
+              value: "unix:///var/run/dind/docker.sock"
+            - name: DOCKER_PROXY_LOG_LEVEL
+              value: {{ .Values.sandbox.proxy.logLevel | quote }}
+            {{- with .Values.sandbox.proxy.allowedImages }}
+            - name: DOCKER_PROXY_ALLOWED_IMAGES
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SANDBOX_DOCKER_IMAGE
+              value: {{ .Values.config.sandboxDockerImage | quote }}
+            - name: SANDBOX_EGRESS_NETWORK
+              value: {{ .Values.config.sandboxEgressNetwork | quote }}
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          resources:
+            {{- toYaml .Values.sandbox.proxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: dind-sock
+              mountPath: /var/run/dind
+          # A TCP connect, not /_ping: /_ping is forwarded to dockerd, and a
+          # slow daemon should not restart the proxy. The listener is on
+          # loopback, so a kubelet tcpSocket probe (pod IP) cannot reach it.
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import socket; socket.create_connection(('127.0.0.1', {{ .Values.sandbox.dind.port }}), timeout=3).close()"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
         {{- end }}
           {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -533,6 +587,10 @@ spec:
           emptyDir:
             sizeLimit: {{ .Values.sandbox.dind.storage.sizeLimit | quote }}
           {{- end }}
+        - name: dind-sock
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         {{- end }}
         - name: cache
           emptyDir: {}

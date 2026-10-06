@@ -8,6 +8,12 @@
  */
 export const CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME = 'serviceAccountJson' as const;
 
+/**
+ * What the connector config routes return in place of a stored secret
+ * (Python `REDACTED_PLACEHOLDER`). Sent back on save, it keeps the stored value.
+ */
+export const CONNECTOR_SECRET_MASK = '••••••••' as const;
+
 // ========================================
 // Connector instance operational status (backend + optimistic UI)
 // ========================================

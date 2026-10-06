@@ -24,7 +24,6 @@ import pytest_asyncio
 from connector_lifecycle import create_connector_and_await_sync, destructor
 
 from connectors.scenario_matrix import (
-    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
     Role,
@@ -180,4 +179,3 @@ class TestZammadScenarioMatrix(ConnectorScenarioMatrix):
             "(articles are append-only), so old text can never leave a ticket"
         ),
     }
-    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}

@@ -2,9 +2,10 @@ import asyncio
 import functools
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Optional
+from typing import AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
@@ -39,6 +40,8 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+_T = TypeVar("_T")
 
 # An ArangoDB write-write conflict (1200) clears only once the other transaction
 # commits, and an indexing stream transaction can hold a record for seconds. So
@@ -280,6 +283,9 @@ class GraphTransactionStore(TransactionStore):
         self._memo_put(key, value)
         return value
 
+    async def take_back_kept_record_group(self, group_id: str) -> bool:
+        return await self.graph_provider.take_back_kept_record_group(group_id, transaction=self.txn)
+
     async def find_slack_burst_record_by_ts(
         self,
         connector_id: str,
@@ -305,14 +311,16 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         # Every record in a batch carries the same owner, so this is the same
         # lookup a hundred times over. Users are not created inside a record
         # transaction, so the answer cannot go stale within it.
         key = ("user_email", email)
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
-        value = await self.graph_provider.get_user_by_email(email, transaction=self.txn)
+        value = await self.graph_provider.get_user_by_email(
+            email, transaction=self.txn, raise_on_error=raise_on_error
+        )
         self._memo_put(key, value)
         return value
 
@@ -366,6 +374,28 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
+
+    async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
+        await self.graph_provider.replace_edges_to(to_id, to_collection, edges, collection, transaction=self.txn)
+
+    async def replace_record_permissions(
+        self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
+    ) -> None:
+        await self.graph_provider.replace_record_permissions(
+            record_id, edges, record_group_id, inherit=inherit, transaction=self.txn
+        )
+
+    async def link_record_to_group(
+        self,
+        record_id: str,
+        record_group_id: str | None,
+        *,
+        inherit: bool | None,
+        leaving_group_id: str | None = None,
+    ) -> None:
+        await self.graph_provider.link_record_to_group(
+            record_id, record_group_id, inherit=inherit, leaving_group_id=leaving_group_id, transaction=self.txn
+        )
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         """Delete PARENT_CHILD edges pointing to a specific target record"""
@@ -482,11 +512,17 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
-    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
-        return await self.graph_provider.get_person_by_email(email, org_id, transaction=self.txn)
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False
+    ) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(
+            email, org_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
-    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
-        return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> Optional[str]:
+        return await self.graph_provider.upsert_person_by_email(
+            person, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def ensure_app_membership(
         self,
@@ -1013,9 +1049,13 @@ class GraphTransactionStore(TransactionStore):
         """Get all edges originating from a specific node"""
         return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
 
-    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node_with_target_name(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         """Get all edges originating from a specific node with a specific target name"""
-        return await self.graph_provider.get_edges_from_node_with_target_name(from_node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_from_node_with_target_name(
+            from_node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
     
     async def get_related_node_field(
         self, node_id: str, edge_collection: str, target_collection: str,
@@ -1053,14 +1093,17 @@ class GraphTransactionStore(TransactionStore):
         self,
         collection: str,
         filters: dict,
-        return_fields: Optional[list[str]] = None
+        return_fields: Optional[list[str]] = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes from a collection matching multiple field filters."""
         return await self.graph_provider.get_nodes_by_filters(
             collection=collection,
             filters=filters,
             return_fields=return_fields,
-            transaction=self.txn
+            transaction=self.txn,
+            raise_on_error=raise_on_error,
         )
 
     async def find_taxonomy_nodes(
@@ -1147,7 +1190,9 @@ class GraphDataStore(DataStoreProvider):
             # each such cancel leaked one of the pool's 100 connections until
             # every query waited out the 60s acquisition timeout -- which
             # produced more record timeouts, more cancels, more leaks.
-            if isinstance(e, Exception):
+            if isinstance(e, Exception) and self.graph_provider.is_write_conflict(e):
+                self.logger.warning("Transaction hit a write conflict, rolling back: %s", str(e)[:200])
+            elif isinstance(e, Exception):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:
                 self.logger.warning("Transaction interrupted (%s); rolling back", type(e).__name__)
@@ -1182,6 +1227,36 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.warning(
                     "Transient graph transaction failure (attempt %d/%d), retrying in %.1fs: %s",
                     attempts, _RETRY_ATTEMPTS, delay, e,
+                )
+                await asyncio.sleep(delay)
+
+    async def execute_idempotent_in_transaction(
+        self,
+        func: Callable[..., Awaitable[_T]],
+        *args: object,
+        **kwargs: object,
+    ) -> _T:
+        """Run ``func(tx_store, ...)`` in a transaction, re-running it when it
+        collides with a concurrent writer (``is_write_conflict``).
+
+        Unlike :meth:`execute_in_transaction` this retries even where the
+        failed attempt may have partly landed (Neo4j auto-commit), so
+        ``func`` must be safe to run again from the start: read what is
+        there, then write only the difference.
+        """
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                async with self.transaction() as tx_store:
+                    return await func(tx_store, *args, **kwargs)
+            except Exception as e:
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                    raise
+                delay = _retry_delay(attempts - 1)
+                self.logger.warning(
+                    "Graph write conflict (attempt %d/%d), retrying in %.1fs: %s",
+                    attempts, _RETRY_ATTEMPTS, delay, str(e)[:200],
                 )
                 await asyncio.sleep(delay)
 

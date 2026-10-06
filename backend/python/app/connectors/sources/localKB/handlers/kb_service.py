@@ -18,6 +18,7 @@ from app.connectors.services.entity_cleanup_intents import (
     record_pending_entity_cleanup,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.trash_purge import load_purge_settings
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
     build_stored_document_cleanup_events,
@@ -67,6 +68,16 @@ RESTORE_TURNED_OFF_REASON = (
     "Restoring deleted items is turned off in this workspace. Ask an admin to turn on "
     "\"Move Deleted Records to the Trash\" in Labs, then try again."
 )
+TRASH_TURNED_OFF_REASON = (
+    "The trash is turned off in this workspace. Ask an admin to turn on "
+    "\"Move Deleted Records to the Trash\" in Labs, then try again."
+)
+TRASH_NEEDS_EDIT_ACCESS_REASON = (
+    "You need edit access to this collection to see and restore its deleted items. "
+    "Ask the collection's owner for edit access."
+)
+DEFAULT_TRASH_PAGE_SIZE = 25
+MAX_TRASH_PAGE_SIZE = 100
 RESTORE_CHANGED_REASON = (
     "This item changed while it was being restored, so nothing was restored. "
     "Refresh the page and try again."
@@ -1923,7 +1934,8 @@ class KnowledgeBaseService:
             response["reindexPendingRecordIds"] = reindex_pending
             response["reindexPendingReason"] = (
                 "Restored, but some files aren't searchable yet because we couldn't queue them for "
-                "indexing. Open each one and choose Reindex to make it searchable again."
+                "indexing. PipesHub queues them again on its own within about an hour. To do it "
+                "sooner, open each file's menu and choose Start indexing."
             )
         if rename_failed:
             response["renamePendingRecordIds"] = rename_failed
@@ -1967,6 +1979,97 @@ class KnowledgeBaseService:
             "restoredCount": len(restored_ids),
             "failedCount": len(failed),
             "results": results,
+        }
+
+    async def list_trash(
+        self, kb_id: str, user_id: str, org_id: str, page: int = 1, limit: int = DEFAULT_TRASH_PAGE_SIZE
+    ) -> dict:
+        """One page of the collection's "Recently deleted" list: what this user may restore.
+
+        Each item is what one delete action removed, as restore brings it back
+        whole: a folder with its contents, or every item of a multi-select. It
+        says where it was, who deleted it and from when the purge may remove it
+        for good. Owners and writers see every item; a
+        file organizer only single files, as those are all they may restore.
+        """
+        if (
+            isinstance(page, bool) or isinstance(limit, bool)
+            or not isinstance(page, int) or not isinstance(limit, int)
+            or page < 1 or not 1 <= limit <= MAX_TRASH_PAGE_SIZE
+        ):
+            return {
+                "success": False,
+                "code": 400,
+                "reason": f"Ask for a page from 1 up, with 1 to {MAX_TRASH_PAGE_SIZE} items per page.",
+            }
+        try:
+            if not await is_soft_delete_enabled(self.config_service):
+                return {"success": False, "code": 403, "reason": TRASH_TURNED_OFF_REASON}
+            if not org_id:
+                return {"success": False, "code": 404, "reason": "Knowledge base not found"}
+            _user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=list(RESTORE_FILE_ROLES),
+                permission_denied_reason=TRASH_NEEDS_EDIT_ACCESS_REASON,
+            )
+            if err:
+                return err
+            found = await self.graph_provider.list_trashed_records(
+                kb_id, org_id,
+                skip=(page - 1) * limit, limit=limit,
+                single_file_batches_only=user_role not in RESTORE_BATCH_ROLES,
+            )
+            min_age_ms = await self._trash_min_age_ms()
+            total = found.get("total") or 0
+            return {
+                "success": True,
+                "code": 200,
+                "items": [self._trash_item(item, min_age_ms) for item in found.get("items") or []],
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "totalCount": total,
+                    "totalPages": -(-total // limit),
+                },
+                "retention": None if min_age_ms is None else {"minAgeMs": min_age_ms},
+            }
+        except Exception as e:
+            self.logger.error("❌ Failed to list the trash of KB %s: %s", kb_id, e, exc_info=True)
+            return {"success": False, "code": 500, "reason": action_failed("load the recently deleted items")}
+
+    async def _trash_min_age_ms(self) -> int | None:
+        """How long the purge keeps an item, or None when the settings can't be read."""
+        try:
+            return (await load_purge_settings(self.config_service)).min_age_ms
+        except Exception as e:
+            self.logger.warning("Could not read the trash retention settings: %s", e)
+            return None
+
+    @staticmethod
+    def _trash_item(item: dict, min_age_ms: int | None) -> dict:
+        record = item["record"]
+        deleted_at = record.get("deletedAtTimestamp")
+        is_folder = item.get("isFile") is False or record.get("mimeType") == KB_FOLDER_MIME_TYPE
+        deleted_by = None
+        if item.get("deletedByName") or item.get("deletedByEmail"):
+            deleted_by = {"name": item.get("deletedByName"), "email": item.get("deletedByEmail")}
+        return {
+            "id": record["_key"],
+            "name": record.get("recordName"),
+            "recordType": record.get("recordType"),
+            "isFolder": is_folder,
+            "mimeType": None if is_folder else (item.get("fileMimeType") or record.get("mimeType")),
+            "sizeInBytes": None if is_folder else (item.get("sizeInBytes") or record.get("sizeInBytes")),
+            "parentId": item.get("parentId"),
+            "parentName": item.get("parentName"),
+            "parentInTrash": item.get("parentIsDeleted") is True,
+            "itemCount": max(item.get("batchSize") or 1, 1),
+            "rootCount": max(item.get("rootCount") or 1, 1),
+            "otherRootNames": [name for name in item.get("otherRootNames") or [] if isinstance(name, str)],
+            "deletedAtTimestamp": deleted_at,
+            "deletedBy": deleted_by,
+            "removableAfterTimestamp": (
+                deleted_at + min_age_ms if isinstance(deleted_at, int) and min_age_ms is not None else None
+            ),
         }
 
     async def create_kb_permissions(

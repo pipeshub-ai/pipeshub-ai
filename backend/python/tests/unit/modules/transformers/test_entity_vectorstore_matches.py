@@ -509,3 +509,16 @@ class TestSearchPassesAreOneRequest:
         store = _make_store(service)
         assert await store.search_entities_passes("q", "org-1", [EntitySearchPass()]) == [[]]
         service.query_nearest_points.assert_not_awaited()
+
+
+async def test_a_failed_entity_search_logs_no_query_text() -> None:
+    """KG-19: the error line names the failure, not what the user searched."""
+    from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(side_effect=RuntimeError("vector db down"))
+    store = _make_store(service)
+    with pytest.raises(RuntimeError):
+        await store.search_entities_passes("salary of jane doe", "org-1", [EntitySearchPass(org_wide=True)])
+    logged = " ".join(str(a) for c in store.logger.error.call_args_list for a in c.args)
+    assert "vector db down" in logged and "jane" not in logged

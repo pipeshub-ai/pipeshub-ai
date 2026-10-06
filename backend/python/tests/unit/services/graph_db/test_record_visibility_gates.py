@@ -310,6 +310,19 @@ async def test_weburl_lookup_is_live_only(backend) -> None:
     assert live in queries[0]
 
 
+@pytest.mark.parametrize("backend", ["arango", "neo4j"])
+async def test_location_ancestor_check_is_live_only(backend) -> None:
+    """A search hit's Location trail stops at a trashed folder, so its name never renders.
+
+    The parent walk reads the folder whatever its state; this check is what leaves it out.
+    """
+    provider = _arango() if backend == "arango" else _neo4j()
+    await provider.filter_nodes_with_permission_role([{"id": "f1", "type": "record"}], "uk1", "o1")
+    queries = _arango_queries(provider) if backend == "arango" else _neo4j_queries(provider)
+    live = aql_live_record("record") if backend == "arango" else cypher_live_record("record")
+    assert live in queries[0]
+
+
 class TestNeo4jKnowledgeHubBrowse:
     """Arango's browse queries already skipped the trash; Neo4j's did not."""
 

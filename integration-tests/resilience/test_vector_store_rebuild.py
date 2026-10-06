@@ -221,8 +221,10 @@ def _start(pipeshub_client, operation: str) -> None:
 async def _delete_all_embeddings(pipeshub_client, vector_store, org_id: str) -> None:
     _start(pipeshub_client, "cleanup")
 
+    # The cleanup drops the records collection only; the entity index is a projection
+    # of the graph that its own rebuild re-embeds for the current model (#3858).
     async def emptied() -> bool:
-        return await vector_store.count_for_org(org_id) == 0
+        return await vector_store.count_for_org(org_id, collection=COLLECTION) == 0
 
     await _wait_for(
         emptied, "the org's vector points to reach 0 after the Labs cleanup", DROP_TIMEOUT
@@ -498,7 +500,7 @@ async def test_deleting_all_embeddings_again_before_the_model_change(
     journey.require("reindex_same_model")
     journey.require_local_model()
     await _delete_all_embeddings(pipeshub_client, vector_store, journey.org_id)
-    assert await vector_store.count_for_org(journey.org_id) == 0
+    assert await vector_store.count_for_org(journey.org_id, collection=COLLECTION) == 0
     journey.done.add("emptied")
 
 

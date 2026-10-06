@@ -29,7 +29,6 @@ from connectors.bookstack.bookstack_source_helper import (
     BookStackSourceHelper,
 )
 from connectors.scenario_matrix import (
-    FILTER_KEEPS_EXCLUDED_ITEM,
     ConnectorScenarioMatrix,
     Role,
     ScenarioAdapter,
@@ -165,4 +164,3 @@ async def scenario_adapter(
 @pytest.mark.bookstack
 class TestBookStackScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "BookStack"
-    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}

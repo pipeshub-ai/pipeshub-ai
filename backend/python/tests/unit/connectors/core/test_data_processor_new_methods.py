@@ -549,13 +549,14 @@ class TestMigrateGroupPermissionsToUser:
         ]
         # User already has READER permission (lower), should be upgraded to WRITER
         tx.get_edge.return_value = {"role": "READER"}
-        tx.delete_edge.return_value = True
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
         assert result is None
-        # Should have deleted old edge and batch-created new one
-        tx.delete_edge.assert_awaited()
+        # The batch upsert overwrites the edge; a delete first lost it when the batch failed.
+        tx.delete_edge.assert_not_awaited()
         tx.batch_create_edges.assert_awaited_once()
+        (edge,) = tx.batch_create_edges.await_args.args[0]
+        assert (edge["to_id"], edge["role"]) == ("rec-1", "WRITER")
 
     @pytest.mark.asyncio
     async def test_skips_when_existing_permission_is_higher(self):
@@ -732,22 +733,23 @@ class TestRecordPermissionHelpers:
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = None
         await proc.delete_permission_from_record("rec-1", "missing@x.com")
-        tx.delete_edge.assert_not_awaited()
+        tx.batch_delete_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_permission_success(self):
         proc, tx = _make_processor()
         user = _make_user()
         tx.get_user_by_email.return_value = user
-        tx.delete_edge.return_value = True
+        tx.batch_delete_edges.return_value = 1
         await proc.delete_permission_from_record("rec-1", "alice@x.com")
-        tx.delete_edge.assert_awaited_once()
+        tx.batch_delete_edges.assert_awaited_once()
+        tx.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_permission_edge_not_found(self):
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = _make_user()
-        tx.delete_edge.return_value = False
+        tx.batch_delete_edges.return_value = 0
         await proc.delete_permission_from_record("rec-1", "alice@x.com")
         # Should log warning but not raise
 

@@ -695,6 +695,51 @@ class TestGetFilteredConnectorInstances:
         assert total == 0
         assert docs == []
 
+    @pytest.mark.asyncio
+    async def test_configured_and_agent_filters_go_into_both_the_count_and_the_page(self, connected_provider) -> None:
+        """The total and the page must both leave out unconfigured or agent-off connectors."""
+        connected_provider.execute_query = AsyncMock(side_effect=[[0], []])
+
+        await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_configured=True, is_agent_active=True,
+        )
+
+        assert connected_provider.execute_query.await_count == 2
+        for call in connected_provider.execute_query.await_args_list:
+            query, bind_vars = call.args[0], call.kwargs["bind_vars"]
+            assert "FILTER (doc.isConfigured == true) == @is_configured" in query
+            assert "FILTER (doc.isAgentActive == true) == @is_agent_active" in query
+            assert bind_vars["is_configured"] is True
+            assert bind_vars["is_agent_active"] is True
+
+    @pytest.mark.asyncio
+    async def test_only_the_page_query_is_sorted_with_a_tie_break(self, connected_provider) -> None:
+        """Pages are a stable slice; the count needs no order."""
+        connected_provider.execute_query = AsyncMock(side_effect=[[0], []])
+
+        await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", skip=20, limit=10,
+        )
+
+        count_call, page_call = connected_provider.execute_query.await_args_list
+        assert "SORT doc.createdAtTimestamp DESC, doc._key" not in count_call.args[0]
+        assert "SORT doc.createdAtTimestamp DESC, doc._key" in page_call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_registered_types_limit_both_the_count_and_the_page(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(side_effect=[[0], []])
+
+        await connected_provider.get_filtered_connector_instances(
+            collection="apps", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", allowed_connector_types=["Gmail", "Slack"],
+        )
+
+        for call in connected_provider.execute_query.await_args_list:
+            assert "FILTER doc.type IN @allowed_connector_types" in call.args[0]
+            assert call.kwargs["bind_vars"]["allowed_connector_types"] == ["Gmail", "Slack"]
+
 
 # ---------------------------------------------------------------------------
 # _get_user_accessible_team_app_keys
@@ -1404,6 +1449,12 @@ class TestGetNodesByFilters:
         result = await connected_provider.get_nodes_by_filters("records", {"orgId": "org1"})
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_exception_is_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_nodes_by_filters("records", {"orgId": "org1"}, raise_on_error=True)
+
 
 class TestGetNodesByFieldIn:
     @pytest.mark.asyncio
@@ -1482,6 +1533,14 @@ class TestGetEdgesFromNodeWithTargetName:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_edges_from_node_with_target_name("users/u1", "permission")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_is_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_edges_from_node_with_target_name(
+                "users/u1", "permission", raise_on_error=True,
+            )
 
 
 class TestRecordRelationHelpers:
@@ -1623,7 +1682,7 @@ class TestEnsureIndexes:
     async def test_ensure_indexes_success(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.call_count == 48
+        assert connected_provider.http_client.ensure_persistent_index.call_count == 50
 
 
 # ---------------------------------------------------------------------------

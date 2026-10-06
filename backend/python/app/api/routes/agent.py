@@ -2639,13 +2639,17 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         "Cannot disable org-wide sharing for a service account agent. "
                         "Service account agents must always be shared across the organisation."
                     )
-                # Turning OFF org sharing: delete the org permission edge
-                await services["graph_provider"].delete_edge(
-                    from_id=org_key,
-                    from_collection=CollectionNames.ORGS.value,
-                    to_id=agent_id,
-                    to_collection=CollectionNames.AGENT_INSTANCES.value,
-                    collection=CollectionNames.PERMISSION.value
+                # Turning OFF org sharing: delete the org permission edge. Not
+                # delete_edge: ArangoDB's answers False when the delete fails, and the
+                # agent stayed shared with the whole org while reporting that it was not.
+                await services["graph_provider"].batch_delete_edges(
+                    [{
+                        "from_id": org_key,
+                        "from_collection": CollectionNames.ORGS.value,
+                        "to_id": agent_id,
+                        "to_collection": CollectionNames.AGENT_INSTANCES.value,
+                    }],
+                    CollectionNames.PERMISSION.value,
                 )
                 logger.info(f"Deleted org permission edge for agent {agent_id}")
 

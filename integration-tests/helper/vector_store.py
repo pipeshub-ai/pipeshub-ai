@@ -301,12 +301,13 @@ class VectorStoreProbe:
             collection=collection,
         )
 
-    async def count_for_org(self, org_id: str) -> int:
+    async def count_for_org(self, org_id: str, *, collection: str | None = None) -> int:
         return await self._count_matching(
             qmodels.FieldCondition(
                 key="metadata.orgId",
                 match=qmodels.MatchValue(value=org_id),
-            )
+            ),
+            collection=collection,
         )
 
     async def sample_payloads(

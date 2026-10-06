@@ -21,3 +21,11 @@ class PermissionVerificationUnavailableError(Exception):
     honest answer when every candidate is denied — and the two need opposite
     responses: retry later versus "nothing you can read matched".
     """
+
+
+class GraphLockUnavailableError(GraphDBError):
+    """A write could not take the locks it needs, so nothing was attempted.
+
+    Says nothing about the records involved: a caller that counts failures per
+    record must not count this one.
+    """

@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import http from 'http'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import {
@@ -16,6 +17,7 @@ import {
   startHarness,
 } from './connectors-http-harness'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
+import { RESYNC_NOT_QUEUED_MESSAGE } from '../../../../src/modules/knowledge_base/services/kb.relation.service'
 
 const admin = ADMIN
 const member = MEMBER
@@ -286,12 +288,64 @@ describe('Connector routes over HTTP', () => {
       expect(h.syncEvents.published).to.have.length(0)
     })
 
+    it('answers 503, not a 200 with success false, when the sync cannot be queued', async () => {
+      h.backend.on('GET', '/api/v1/connectors/active', activeWith(CONNECTOR_ID))
+      h.backend.on('GET', `/api/v1/connectors/${CONNECTOR_ID}`, instance({ isLocked: false }))
+      h.syncEvents.failWith = new Error('broker unreachable at kafka-0:9092')
+
+      const r = await call(h, 'POST', `/${CONNECTOR_ID}/resync`, sessionToken(h, member), {
+        connectorName: 'Google Drive',
+      })
+
+      expect(r.status).to.equal(503)
+      expect(errorMessage(r)).to.equal(RESYNC_NOT_QUEUED_MESSAGE)
+      expect(JSON.stringify(r.body)).not.to.contain('kafka-0')
+    })
+
     it('requires the connector name', async () => {
       const r = await call(h, 'POST', `/${CONNECTOR_ID}/resync`, sessionToken(h, member), {})
 
       expect(r.status).to.equal(400)
       expect(h.backend.calls).to.have.length(0)
     })
+  })
+
+  describe('GET /active and GET /inactive', () => {
+    const getWithHeaders = (path: string, headers: Record<string, string>): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          { host: '127.0.0.1', port: Number(new URL(h.origin).port), path: `${new URL(h.baseUrl).pathname}${path}`, method: 'GET', headers },
+          (res) => {
+            res.resume()
+            res.on('end', () => resolve(res.statusCode ?? 0))
+          },
+        )
+        req.on('error', reject)
+        req.end()
+      })
+
+    for (const path of ['/active', '/inactive']) {
+      it(`${path} forwards only the allowlisted headers to the connector service`, async () => {
+        h.backend.on('GET', `/api/v1/connectors${path}`, { status: 200, body: { success: true, connectors: [] } })
+        const token = sessionToken(h, member)
+
+        const status = await getWithHeaders(path, {
+          authorization: `Bearer ${token}`,
+          cookie: 'session=browser-cookie',
+          host: 'attacker.example',
+          'client-name': 'desktop',
+          'x-request-id': 'req-123',
+        })
+
+        expect(status).to.equal(200)
+        const forwarded = single(h.backend.callsTo('GET', `/api/v1/connectors${path}`))
+        expect(forwarded.headers.authorization).to.equal(`Bearer ${token}`)
+        expect(forwarded.headers.cookie).to.equal(undefined)
+        expect(forwarded.headers.host).to.equal(new URL(h.backend.url).host)
+        expect(forwarded.headers['client-name']).to.equal(undefined)
+        expect(forwarded.headers['x-request-id']).to.equal('req-123')
+      })
+    }
   })
 
   describe('GET /:connectorId/filters/:filterKey/options', () => {
@@ -314,6 +368,14 @@ describe('Connector routes over HTTP', () => {
       expect(forwarded.query.getAll('excludeContextGroupPath')).to.deep.equal(['Archive', 'Old'])
       expect(forwarded.query.get('page')).to.equal('2')
       expect(forwarded.query.get('limit')).to.equal('50')
+    })
+
+    it('refuses a page size above 100, which the connector service would not accept, with a clear message', async () => {
+      const r = await call(h, 'GET', `/${CONNECTOR_ID}/filters/folders/options?limit=150`, sessionToken(h, member))
+
+      expect(r.status).to.equal(400)
+      expect(errorMessage(r)).to.equal('Limit must be between 1 and 100.')
+      expect(h.backend.calls).to.have.length(0)
     })
 
     it('rejects a page size above 200', async () => {

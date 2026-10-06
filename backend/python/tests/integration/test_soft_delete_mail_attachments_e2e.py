@@ -12,6 +12,9 @@ returns both, and a sync that sees a connector-deleted message and its
 attachment again restores both, every delete field cleared and every surface
 finding them again.
 
+The purge removes the attachment with its mail in one run: the mail waits
+while it still has the attachment, and goes in the walk after it.
+
 Each check is first made on the live records, so a query that finds nothing
 cannot pass, and the untouched mail and attachment must still be found after.
 
@@ -51,11 +54,14 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.services import trash_purge as purge_module
+from app.connectors.services.trash_purge import Outcome, TrashPurger
 from app.models.entities import FileRecord, MailRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.utils import TRASH_STATE_FIELDS
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.integration.test_trash_purge_e2e import _KV, DAY_MS, _Broker, _Lease
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -156,10 +162,11 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
         if isinstance(graph, Neo4jProvider):
-            # The index restore reads batches by; ensure_schema creates it on a real install.
-            await graph.client.execute_query(
-                "CREATE INDEX record_delete_batch IF NOT EXISTS FOR (n:Record) ON (n.deleteBatchId)"
-            )
+            # The indexes ensure_schema creates on a real install: restore reads batches
+            # by one, and the purge waits until its walk index is online.
+            for statement in graph._generate_performance_indexes():
+                await graph.client.execute_query(statement)
+            await graph.client.execute_query("CALL db.awaitIndexes(300)")
         suffix = uuid.uuid4().hex[:10]
         w = _World(
             graph=graph, org_id=f"org-mailatt-{suffix}", user_id=f"user-mailatt-{suffix}",
@@ -403,3 +410,40 @@ async def test_a_sync_that_sees_the_message_again_brings_its_attachment_back(
             world.ids[name], CollectionNames.RECORDS.value, {"indexingStatus": ProgressStatus.COMPLETED.value}
         )
     await _assert_all_found(world, NAMES)
+
+
+async def test_the_purge_removes_the_attachment_with_its_mail_in_one_run(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOFT_DELETE_PURGE_INTERVAL_SECONDS", "0")
+    monkeypatch.delenv("SOFT_DELETE_PURGE_MIN_AGE_SECONDS", raising=False)
+    # Only this test's org, whatever else the shared database holds.
+    monkeypatch.setattr(TrashPurger, "_org_ids", AsyncMock(return_value=[world.org_id]))
+    await _trash_mail(world)
+    broker = _Broker()
+    kv = _KV({"featureFlags": {"ENABLE_SOFT_DELETE": True}, "softDeletePurge": {"pageSize": 500}})
+    later = get_epoch_timestamp_in_ms() + 15 * DAY_MS
+    purger = TrashPurger(logger, world.graph, kv, broker, _Lease(), clock=lambda: later, sleep=AsyncMock())
+    listed = world.graph.get_purgeable_trashed_records
+    walks: list[tuple[set[str], int]] = []
+
+    async def record_walk(*args: object, **kwargs: object) -> dict:
+        page = await listed(*args, **kwargs)
+        walks.append(({row["id"] for row in page.get("records") or []}, int(page.get("held") or 0)))
+        return page
+
+    monkeypatch.setattr(world.graph, "get_purgeable_trashed_records", record_walk)
+
+    assert await purger.tick() == Outcome.FINISHED
+
+    # The mail is held while it has its attachment, then goes in the next walk of the same run.
+    assert walks[:2] == [({world.ids["attachment"]}, 1), ({world.ids["mail"]}, 0)], walks
+
+    for name in ("mail", "attachment"):
+        assert await world.graph.get_document(world.ids[name], CollectionNames.RECORDS.value) is None, (
+            f"{name} is still stored after the run"
+        )
+    assert await world.graph.get_document(world.ids["mail"], CollectionNames.MAILS.value) is None
+    assert sorted(broker.deleted_record_ids()) == sorted([world.ids["mail"], world.ids["attachment"]])
+    assert kv.values[purge_module.STATE_KEY]["lastCounts"]["purged"] == 2
+    await _assert_all_found(world, ("other_mail", "other_attachment"))

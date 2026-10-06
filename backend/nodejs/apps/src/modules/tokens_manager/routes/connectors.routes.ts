@@ -224,6 +224,9 @@ const saveConnectorInstanceFilterOptionsSchema = z.object({
   }),
 });
 
+// The connector service pages filter options 100 at a time at most.
+const FILTER_OPTIONS_LIMIT_MESSAGE = 'Limit must be between 1 and 100.';
+
 /**
  * Schema for getting filter field options (dynamic with pagination)
  */
@@ -237,7 +240,7 @@ const getFilterFieldOptionsSchema = z.object({
       .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1, FILTER_OPTIONS_LIMIT_MESSAGE).max(100, FILTER_OPTIONS_LIMIT_MESSAGE))
       .optional(),
     search: z.string().optional(),
     cursor: z.string().optional(),

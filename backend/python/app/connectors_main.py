@@ -773,6 +773,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.oauth_config_registry = oauth_registry
     logger.info("✅ OAuth config registry initialized")
 
+    # Needs the connectors' OAuth registrations, so it runs after the registry is built.
+    try:
+        from app.migrations.connector_oauth_toolset_fields_migration import (
+            run_connector_oauth_toolset_fields_repair,
+        )
+
+        repair_result = await run_connector_oauth_toolset_fields_repair(
+            app_container.config_service(), oauth_registry, logger
+        )
+        if not repair_result.get("skipped"):
+            logger.info(
+                "Connector OAuth app repair: %s app(s) repaired, %s failure(s)",
+                repair_result.get("apps_repaired", 0),
+                repair_result.get("failures", 0),
+            )
+    except Exception as e:
+        logger.error(f"❌ Connector OAuth app repair failed: {e}", exc_info=True)
+
     logger.debug("🚀 Starting application")
 
     # Start messaging producer first
@@ -847,6 +865,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
 
+    # Needs the producer started above; a Redis lease keeps it to one replica.
+    from app.connectors.services.trash_purge import run_trash_purge_loop
+    app.state.trash_purge_task = asyncio.create_task(
+        run_trash_purge_loop(app_container, graph_provider), name="trash_purge"
+    )
+
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
 
@@ -860,13 +884,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    connector_metrics_task = getattr(app.state, "connector_metrics_task", None)
-    if connector_metrics_task is not None and not connector_metrics_task.done():
-        connector_metrics_task.cancel()
-        try:
-            await connector_metrics_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task_name in ("connector_metrics_task", "trash_purge_task"):
+        task = getattr(app.state, task_name, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
     try:
@@ -1036,12 +1061,13 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
             )
-        except Exception as e:
+        except Exception:
+            request.app.container.logger().error("ArangoDB health check failed", exc_info=True)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"ArangoDB health check failed: {str(e)}",
+                    "error": "ArangoDB health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
@@ -1064,27 +1090,34 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
             )
         except AuthError as e:
+            request.app.container.logger().error("Neo4j auth failed: %s", e)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"Neo4j auth failed: {str(e)}",
+                    "error": "Neo4j auth failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
         except ServiceUnavailable as e:
+            request.app.container.logger().error("Neo4j unavailable: %s", e)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"Neo4j unavailable: {str(e)}",
+                    "error": "Neo4j unavailable",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        except Exception as e:
+        except Exception:
+            request.app.container.logger().error("Neo4j health check failed", exc_info=True)
             return JSONResponse(
                 status_code=503,
-                content={"status": "unhealthy", "error": str(e), "timestamp": get_epoch_timestamp_in_ms()},
+                content={
+                    "status": "unhealthy",
+                    "error": "Neo4j health check failed",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
             )
         finally:
             if driver:
@@ -1144,16 +1177,22 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
                 },
             )
         else:
+            request.app.container.logger().warning(
+                "Vector DB (%s) reported unhealthy: %s", vector_db_type, result.message
+            )
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
                     "provider": vector_db_type,
-                    "error": result.message or f"{vector_db_type} health check failed",
+                    "error": f"{vector_db_type} health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-    except Exception as e:
+    except Exception:
+        request.app.container.logger().error(
+            "Vector DB (%s) health check failed", vector_db_type, exc_info=True
+        )
         # Clear cached provider so next call retries connection
         request.app.state._vector_db_health_provider = None
         return JSONResponse(
@@ -1161,7 +1200,7 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
             content={
                 "status": "unhealthy",
                 "provider": vector_db_type,
-                "error": f"Vector DB ({vector_db_type}) health check failed: {str(e)}",
+                "error": f"Vector DB ({vector_db_type}) health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

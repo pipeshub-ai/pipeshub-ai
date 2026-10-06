@@ -137,6 +137,7 @@ from app.models.entities import (  # noqa: E402
     User,
 )
 from app.models.permission import PermissionType  # noqa: E402
+from app.utils.user_messages import action_failed  # noqa: E402
 
 
 class TestLocalFsApp:
@@ -753,6 +754,44 @@ class TestLocalFsConnectorAsync:
         with pytest.raises(HTTPException) as ei:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.NOT_FOUND.value
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            LocalFsDesktopRemoteError(
+                "INTERNAL", "SENTINEL EACCES /Users/ada/Notes/a.txt", retryable=True
+            ),
+            LocalFsDesktopTimeoutError("SENTINEL Desktop content fetch timed out (a.txt)"),
+        ],
+        ids=["desktop-answered-with-a-failure", "desktop-did-not-answer"],
+    )
+    async def test_stream_record_desktop_failure_is_503_with_fixed_text(
+        self, folder_connector: LocalFsConnector, error: Exception
+    ):
+        folder_connector._fetch_desktop_content = AsyncMock(side_effect=error)
+        rec = FileRecord(
+            record_name="a.txt",
+            record_type=RecordType.FILE,
+            external_record_id="e5",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="c1",
+            is_file=True,
+            path="a.txt",
+            local_fs_relative_path="a.txt",
+            mime_type="text/plain",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.stream_record(rec)
+        assert ei.value.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value
+        assert ei.value.detail == action_failed("open this file from the desktop app")
+        assert "SENTINEL" not in ei.value.detail
+        assert ei.value.__cause__ is error
+        log_call = folder_connector.logger.warning.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
 
     async def test_stream_record_storage_path_delegates_to_storage(
         self, folder_connector: LocalFsConnector

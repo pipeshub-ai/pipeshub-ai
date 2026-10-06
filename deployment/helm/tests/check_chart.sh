@@ -144,6 +144,39 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
 fi
 
+# The DinD daemon must be reachable only through the policy proxy: no TCP
+# listener (pod containers share one network namespace), and its socket volume
+# mounted into dind and docker-proxy alone, never the app container.
+check_docker_proxy() { # variant
+  local doc="$OUT/$1.yaml"
+  [[ -f "$doc" ]] || return 0
+  expect "$1" 'app.docker_proxy_main' present
+  expect "$1" '--host=tcp://' absent
+  if python3 - "$doc" <<'PY'; then echo "ok $1: dind socket reachable only through docker-proxy"; else failed=1; fi
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai")["spec"]["template"]["spec"]
+containers = {c["name"]: c for c in pod["containers"]}
+errors = []
+mounting = sorted(n for n, c in containers.items() if any(m["name"] == "dind-sock" for m in c.get("volumeMounts") or []))
+if mounting != ["dind", "docker-proxy"]:
+    errors.append(f"dind-sock is mounted into {mounting}, expected only dind and docker-proxy")
+if any("tcp://" in a for a in containers["dind"].get("args") or []):
+    errors.append("dind has a TCP listener")
+env = {e["name"]: e.get("value") for e in containers["docker-proxy"].get("env") or []}
+if env.get("DOCKER_PROXY_HOST") != "127.0.0.1":
+    errors.append(f"docker-proxy DOCKER_PROXY_HOST is {env.get('DOCKER_PROXY_HOST')!r}, expected 127.0.0.1")
+app_env = {e["name"]: e.get("value") for e in containers["pipeshub-ai"].get("env") or []}
+if app_env.get("DOCKER_HOST") != f"tcp://127.0.0.1:{env.get('DOCKER_PROXY_PORT')}":
+    errors.append(f"app DOCKER_HOST {app_env.get('DOCKER_HOST')!r} is not the docker-proxy listener")
+for e in errors:
+    print(f"!! {sys.argv[1]}: {e}")
+sys.exit(1 if errors else 0)
+PY
+}
+check_docker_proxy defaults-dind
+check_docker_proxy eks
+
 # name | expected message fragment | helm arguments (after SECRETS)
 REFUSED=(
   "no graph database|No graph database is enabled|${LOCAL[*]} --set neo4j.enabled=false"
@@ -152,6 +185,20 @@ REFUSED=(
   "placeholder neo4j password|must not use default placeholder|${LOCAL[*]} --set neo4j.auth.password=your_password"
   "docker sandbox without a daemon|no Docker daemon is configured|--set persistence.accessModes={ReadWriteMany}"
   "shared RWO volume across replicas|persistence requires ReadWriteMany|--set sandbox.dind.enabled=true"
+  "docker socket mounted into the app|mounts a Docker socket into the application container|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/var/run/docker.sock"
+  "docker socket mounted under another path|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/docker.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/tmp/d"
+  "dind socket volume mounted into the app|mounts a Docker socket into the application container|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraVolumeMounts[0].name=dind-sock --set extraVolumeMounts[0].mountPath=/var/run/dind"
+  "host /var/run directory mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/ --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/host-run"
+  "host /run directory mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=//run --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/host-run"
+  "host root mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/ --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/host"
+  "containerd socket directory mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/run/containerd --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/c"
+  "k3s containerd socket mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/run/k3s/containerd/containerd.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/c"
+  "k3s directory under /run mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/run/k3s --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/runtime"
+  "k3s directory under /var/run mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/k3s --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/runtime"
+  "podman directory under /var/run mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/run/podman --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/runtime"
+  "dockershim socket under /run mounted into the app|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/run/dockershim.sock --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/runtime"
+  "any hostPath of type Socket|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/opt/engine/api.sock --set extraVolumes[0].hostPath.type=Socket --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/e"
+  "docker socket picked out by subPath|mounts a Docker socket into the application container|${LOCAL[*]} --set-json extraVolumes=[{\"name\":\"s\",\"emptyDir\":{}}] --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/tmp/d --set extraVolumeMounts[0].subPath=docker.sock"
   "cluster mode on the bundled redis|requires redis.external.enabled=true|${LOCAL[*]} --set redis.mode=cluster"
   "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
@@ -169,6 +216,29 @@ for entry in "${REFUSED[@]}"; do
     echo "ok refused: ${name}"
   fi
 done
+
+# The socket checks must not refuse ordinary host paths that only look similar.
+ACCEPTED=(
+  "host log directory|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/log/pipeshub --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/logs"
+  "host path sharing the /var/run prefix|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/var/runner-cache --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/cache"
+)
+for entry in "${ACCEPTED[@]}"; do
+  IFS='|' read -r name rest <<<"$entry"
+  read -r -a args <<<"$rest"
+  if helm template ci . "${SECRETS[@]}" "${args[@]}" >/dev/null 2>"$OUT/accepted.err"; then
+    echo "ok rendered: ${name}"
+  else
+    echo "!! ${name}: refused, but it is not a runtime socket:"; cat "$OUT/accepted.err"; failed=1
+  fi
+done
+
+# The no-daemon error used to suggest mounting the node's socket.
+if helm template ci . "${SECRETS[@]}" --set 'persistence.accessModes={ReadWriteMany}' >/dev/null 2>"$OUT/refused.err" \
+   || grep -qF 'docker.sock' "$OUT/refused.err"; then
+  echo "!! docker sandbox without a daemon: error must not suggest mounting docker.sock"; failed=1
+else
+  echo "ok refused: docker sandbox without a daemon suggests no socket mount"
+fi
 
 if [[ "$failed" -ne 0 ]]; then
   echo "check_chart: FAILED" >&2

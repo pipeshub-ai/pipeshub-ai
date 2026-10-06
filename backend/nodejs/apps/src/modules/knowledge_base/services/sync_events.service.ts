@@ -83,6 +83,9 @@ export class SyncEventProducer {
       this.logger.info(`Published event: ${event.eventType} to topic ${this.syncTopic}`);
     } catch (error) {
       this.logger.error(`Failed to publish event: ${event.eventType}`, error);
+      // Callers must learn the sync was never queued: a resync answers with an
+      // error, and a scheduled run fails so BullMQ retries it.
+      throw error;
     }
   }
 }

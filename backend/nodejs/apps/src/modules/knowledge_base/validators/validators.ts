@@ -56,6 +56,26 @@ export const restoreRecordsSchema = z.object({
   }),
 });
 
+// Matches MAX_TRASH_PAGE_SIZE in the connector service.
+export const MAX_TRASH_PAGE_SIZE = 100;
+
+const positiveIntString = (label: string, max?: number) =>
+  z
+    .string()
+    .regex(/^\d{1,9}$/, `${label} must be a whole number.`)
+    .refine((val) => {
+      const n = Number(val);
+      return n >= 1 && (max === undefined || n <= max);
+    }, max === undefined ? `${label} must be 1 or more.` : `${label} must be between 1 and ${max}.`);
+
+export const listTrashSchema = z.object({
+  params: z.object({ kbId: z.string().min(1) }),
+  query: z.object({
+    page: positiveIntString('Page').optional(),
+    limit: positiveIntString('Limit', MAX_TRASH_PAGE_SIZE).optional(),
+  }),
+});
+
 export const reindexRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
   body: z
