@@ -381,6 +381,26 @@ class EntityVectorStore:
         delete), and the chat routes hide the entity tools."""
         return await self.vector_db_service.collection_exists(self.collection_name)
 
+    async def points_count(self) -> int:
+        """Points the collection holds, 0 when it does not exist. Needs no
+        embeddings; raises when the collection cannot be read."""
+        info = await self.vector_db_service.get_collection_info(self.collection_name)
+        return (info.points_count or 0) if info.exists else 0
+
+    async def ensure_collection(self) -> None:
+        """Create the collection and its payload indexes where they are missing.
+
+        Initialisation does this once per model, so a collection dropped or
+        recreated from outside afterwards would stay as it was left until the
+        service restarts. For the rebuild leader only: like initialisation
+        with ``recreate``, it drops a collection of another dimension."""
+        await self._ensure_initialized(recreate=True)
+        async with self._init_lock:
+            # A re-initialisation that failed meanwhile sets the collection up
+            # itself when it next succeeds.
+            if self._initialized:
+                await self._init_collection(recreate=self.recreate_on_dimension_mismatch)
+
     async def _init_embeddings(self, embedding_configs: list[dict[str, Any]] | None = None) -> None:
         if not embedding_configs:
             self._dense_embeddings = get_default_embedding_model()
@@ -412,6 +432,13 @@ class EntityVectorStore:
 
     async def _init_collection(self, *, recreate: bool = False) -> None:
         info = await self.vector_db_service.get_collection_info(self.collection_name)
+        if info.exists:
+            # Ensured on every start, not only at creation: a process that
+            # died between the two left the collection without them. Before
+            # the mismatch check, which filters on one: a collection recreated
+            # from outside this store has none, and Redis cannot filter on a
+            # field its index does not have.
+            await self._ensure_payload_indexes()
         mismatch = await self._collection_mismatch(info)
         if mismatch:
             if not recreate:
@@ -434,11 +461,12 @@ class EntityVectorStore:
                 ),
             )
             self.logger.info("Created entity vector collection '%s'", self.collection_name)
-        # Ensured on every start, not only at creation: create_index is
-        # idempotent on every provider, and a process that died between the
-        # two left the collection without them. connectorIds and
-        # recordGroupIds are top-level payload siblings of metadata (not
-        # nested in it) — see ``upsert_entities_batch``.
+            await self._ensure_payload_indexes()
+
+    async def _ensure_payload_indexes(self) -> None:
+        """create_index is idempotent on every provider. connectorIds and
+        recordGroupIds are top-level payload siblings of metadata (not nested
+        in it) — see ``upsert_entities_batch``."""
         for field, schema in [
             ("metadata.orgId", {"type": "keyword"}),
             ("metadata.entityType", {"type": "keyword"}),

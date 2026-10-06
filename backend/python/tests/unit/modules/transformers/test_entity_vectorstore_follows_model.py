@@ -384,3 +384,125 @@ class TestConfigReads:
 
         assert db.deletions == 0
         assert outcome.unchanged == 1
+
+
+class TestACollectionChangedFromOutside:
+    """The store sets its collection up when it initialises. One dropped or
+    recreated afterwards (by hand, or by a records rebuild in a release that
+    took the entity index with it) stayed as it was left until a restart."""
+
+    async def test_the_count_needs_no_model_and_reads_a_missing_collection_as_empty(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(BROKEN_CONFIG)
+        store = _store(db, config)
+        assert await store.points_count() == 0
+
+        db.dimension = 6
+        db.points = {"p1": object(), "p2": object()}
+        assert await store.points_count() == 2
+
+    async def test_a_dropped_collection_is_created_again(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await db.delete_collection("entities")
+        assert (await store.upsert_entities_batch([_topic()], merge_membership=False)).failed == 1
+
+        await store.ensure_collection()
+        outcome = await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert db.dimension == SMALL.dimension
+        assert outcome.written == 1
+
+    async def test_a_collection_recreated_at_another_dimension_is_replaced(self) -> None:
+        """The old rebuild recreated it at the dimension the manifest recorded
+        when it was adopted, which a model change since had left behind."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await db.delete_collection("entities")
+        db.dimension = BGE.dimension
+
+        await store.ensure_collection()
+
+        assert db.dimension == SMALL.dimension
+
+    async def test_a_healthy_collection_keeps_its_points(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        await store.ensure_collection()
+
+        assert db.deletions == 0
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_a_store_that_does_not_own_the_collection_never_drops_it(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config, owner=False)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await db.delete_collection("entities")
+        db.dimension = BGE.dimension
+
+        with pytest.raises(VectorStoreError, match="dimension 4"):
+            await store.ensure_collection()
+
+        assert db.deletions == 1 and db.dimension == BGE.dimension
+
+
+class _SchemaBoundDB(FakeEntityVectorDB):
+    """Refuses a filter on a field it holds no index for: the strict reading
+    of a backend whose index is its schema (Redis)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.indexes: set[str] = set()
+
+    async def delete_collection(self, collection_name: str) -> None:
+        await super().delete_collection(collection_name)
+        self.indexes.clear()
+
+    async def create_index(self, collection_name: str, field_name: str, field_schema: dict) -> None:
+        await super().create_index(collection_name, field_name, field_schema)
+        self.indexes.add(field_name)
+
+    async def scroll(self, collection_name: str, scroll_filter: dict, *args: object, **kwargs: object) -> object:
+        missing = sorted(set(scroll_filter["must"]) - self.indexes)
+        if missing:
+            raise RuntimeError(f"Unknown field {missing}")
+        return await super().scroll(collection_name, scroll_filter, *args, **kwargs)
+
+
+class TestACollectionWithoutItsPayloadIndexes:
+    """As a records rebuild left the entities collection in a release that
+    took it along: created through the records registry, so without the
+    entity indexes. The stored-model check filters on one of them and ran
+    before they were ensured."""
+
+    @staticmethod
+    async def _recreated_from_outside(db: _SchemaBoundDB) -> None:
+        await db.delete_collection("entities")
+        db.dimension = SMALL.dimension
+
+    async def test_a_restarted_store_initialises_on_it(self) -> None:
+        db, config = _SchemaBoundDB(), config_service(SMALL_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        await self._recreated_from_outside(db)
+
+        restarted = _store(db, config)
+        outcome = await restarted.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert outcome.written == 1
+        assert {"metadata.entityType", "metadata.entityId", "metadata.level"} <= db.indexes
+        refs, _ = await restarted.page_entity_points(ORG, ["topic"])
+        assert [ref.entity_id for ref in refs] == ["t1"]
+
+    async def test_the_running_store_gives_it_its_indexes_back(self) -> None:
+        db, config = _SchemaBoundDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await self._recreated_from_outside(db)
+
+        await store.ensure_collection()
+
+        assert {"metadata.orgId", "metadata.entityType", "metadata.entityId", "metadata.level"} <= db.indexes
+        assert db.deletions == 1

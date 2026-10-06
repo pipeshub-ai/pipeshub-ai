@@ -173,7 +173,9 @@ without extraction or model calls other than embedding:
 
 A document is done when its `entityIndexState` equals
 `v<ENTITY_INDEX_VERSION>:<provider>:<model>:<dimension>`, so changing the
-embedding model re-runs every pass. Each point also records the model that
+embedding model re-runs every pass. (After a refill of an emptied index the
+version part also carries a refill count, `v1r2:...`; see "An index emptied
+from outside" below.) Each point also records the model that
 embedded it (`metadata.embeddingModel`). A write re-embeds a point from
 another model, or one written before this field existed, even when its text
 is unchanged. Indexing therefore repairs whatever a pass missed. The first
@@ -229,6 +231,36 @@ are re-embedded in place.
 
 Points of legacy nodes without an org are not projected, so after a recreate
 they return only when their records are reindexed.
+
+### An index emptied from outside
+
+The entity index is not part of "Delete all embeddings", nor of the records
+rebuild that an embedding model change runs. Both go through
+`CollectionRegistry.recreate_records_collections`, which drops and recreates
+records collections only. That holds even where the collection manifest lists
+`entities`: an earlier release adopted it into the manifest on some
+deployments, and there the cleanup dropped it. On a model change the entity
+store recreates and refills its own collection, as described above.
+
+Nothing else would notice an entities collection that was emptied anyway
+(dropped by hand, or by that earlier cleanup), because every document still
+says done. So on each idle tick, when every pass is done and no sweep is due,
+the leader counts the collection's points:
+
+- If it has read as empty or missing for 45 seconds, with no pass run in
+  between, the leader creates the collection and its payload indexes again
+  and starts a new refill generation. The wait is there because a count lags
+  the writes: OpenSearch publishes them every 30 seconds.
+- The generation is kept in the key-value store at
+  `/services/entityIndex/refill` and is part of the marker
+  (`v1r<generation>:<fingerprint>`, left out while it is 0). A new one
+  therefore re-runs every pass, as a model change does.
+- The same record holds `emptySinceRefill`. It is set with the new generation
+  and cleared once the index is seen holding a point. While it is set, an
+  empty index is not refilled again, so a deployment with nothing to index is
+  refilled once and then left alone.
+- The marker cannot be computed without that record. While the key-value
+  store cannot be read, the tick fails and is retried with backoff.
 
 The rebuild runs on one indexing replica at a time (Redis leader
 `entity_index_rebuild:leader`), one page per tick. It resumes from the cursor
