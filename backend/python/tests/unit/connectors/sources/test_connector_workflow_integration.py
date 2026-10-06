@@ -466,6 +466,41 @@ class MockTransactionStore:
         for edge in edges:
             self._s.add_edge(collection, edge)
 
+    async def replace_record_permissions(
+        self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
+    ) -> None:
+        await self.replace_edges_to(
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value
+        )
+        if record_group_id:
+            await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+
+    async def link_record_to_group(
+        self,
+        record_id: str,
+        record_group_id: str | None,
+        *,
+        inherit: bool | None,
+        leaving_group_id: str | None = None,
+    ) -> None:
+        if leaving_group_id:
+            self._s.delete_edge(
+                CollectionNames.BELONGS_TO.value,
+                record_id, CollectionNames.RECORDS.value,
+                leaving_group_id, CollectionNames.RECORD_GROUPS.value,
+            )
+            await self._set_inheritance(record_id, leaving_group_id, inherit=False)
+        if record_group_id:
+            await self.create_record_group_relation(record_id, record_group_id)
+            if inherit is not None:
+                await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+
+    async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> None:
+        if inherit:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+        else:
+            await self.delete_inherit_permissions_relation_record_group(record_id, record_group_id)
+
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
 

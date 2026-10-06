@@ -11,7 +11,18 @@ write below is now one statement on Neo4j:
 - a record upsert: the Record node committed before its type node and its
   IS_OF_TYPE edge;
 - a hard delete: the type nodes went first, and the records stayed live
-  without them.
+  without them;
+- a record's permission rewrite: the old edges, the new ones and the
+  inherit-permissions edge were three writes, so a failure on the last left a
+  file its drive should no longer read still readable through the drive;
+- a record changing record group: it left the old group before it lost that
+  group's inherit-permissions edge, with the same result;
+- a permission upgrade: the old edge was deleted before the new one was written.
+
+A failed permission write is also raised now on both stores, where it used to
+be logged and the surrounding write committed without the permissions. On
+ArangoDB the same goes for a failed delete of a record's inherit-permissions or
+belongs-to edge, which was answered with False and the rest committed.
 
 Each test makes the write fail inside the database, partway through: another
 transaction holds a lock that only the later part of the write needs. Neo4j
@@ -19,8 +30,10 @@ gives up on it after db.lock.acquisition.timeout, which the compose file sets
 (a write already committing cannot be terminated, only timed out); ArangoDB
 fails it as a write-write conflict. The permission edges have random keys on
 ArangoDB, so nothing can be held there: a unique index that the second new edge
-breaks fails it instead. Each test checks its setup took, that the write failed
-for the reason given, and that the same write succeeds once nothing is in its way.
+breaks fails it instead. A single edge has no later part to hold, so its upgrade
+is given a value that both stores refuse to write. Each test checks its setup
+took, that the write failed for the reason given, and that the same write
+succeeds once nothing is in its way.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
@@ -141,7 +154,11 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         cleanup.push_async_callback(graph.disconnect)
         processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
         processor.org_id = f"org-pw-{suffix}"
-        processor.messaging_producer = MagicMock(send_message=AsyncMock(), send_event=AsyncMock())
+        processor.messaging_producer = MagicMock(
+            send_message=AsyncMock(),
+            send_event=AsyncMock(),
+            send_messages=AsyncMock(side_effect=lambda _topic, messages: [True] * len(messages)),
+        )
         w = _World(graph=graph, processor=processor, org_id=processor.org_id, connector_id=f"conn-pw-{suffix}")
         if w.neo4j:
             await _require_lock_timeout(graph)
@@ -317,7 +334,7 @@ async def test_a_failed_permission_rewrite_keeps_the_old_edges(world: _World, ki
     assert await _sources(w, target.node.id, target.collection) == {alice, bob}
 
 
-def _file(w: _World, name: str) -> FileRecord:
+def _file(w: _World, name: str, group: _Target | None = None) -> FileRecord:
     record_id = f"rec-{name}-{uuid.uuid4().hex[:8]}"
     w.ids.add(record_id)
     return FileRecord(
@@ -325,6 +342,8 @@ def _file(w: _World, name: str) -> FileRecord:
         external_record_id=f"ext-{record_id}", version=1, origin=OriginTypes.CONNECTOR,
         connector_name=Connectors.GOOGLE_DRIVE, connector_id=w.connector_id, mime_type="application/pdf",
         indexing_status=ProgressStatus.NOT_STARTED.value, is_file=True, extension="pdf",
+        external_record_group_id=group.node.external_group_id if group else None,
+        record_group_type=RecordGroupType.DRIVE if group else None,
     )
 
 
@@ -397,3 +416,256 @@ async def test_a_failed_hard_delete_keeps_records_and_their_types(world: _World)
     result = await delete()
     assert result["successfully_deleted"] == 1, result
     assert await _typed(w, record.id) == (False, False, False)
+
+
+async def _add_app(w: _World, *users: str) -> None:
+    """The connector's app and the users who have it: a connector's record is read only through it."""
+    now = get_epoch_timestamp_in_ms()
+    await w.graph.batch_upsert_nodes(
+        [{"id": w.connector_id, "name": "Drive", "type": "Drive", "appGroup": "Google Workspace",
+          "scope": "team", "isActive": True, "orgId": w.org_id, "createdAtTimestamp": now,
+          "updatedAtTimestamp": now}],
+        collection=CollectionNames.APPS.value,
+    )
+    await w.graph.batch_create_edges(
+        [{"from_id": user, "from_collection": CollectionNames.USERS.value, "to_id": w.connector_id,
+          "to_collection": CollectionNames.APPS.value, "syncState": "COMPLETED", "lastSyncUpdate": now,
+          "createdAtTimestamp": now, "updatedAtTimestamp": now} for user in users],
+        collection=CollectionNames.USER_APP_RELATION.value,
+    )
+
+
+async def _readers(w: _World, record_id: str, *users: str) -> set[str]:
+    """Which of the users the product's own permission check lets read the record."""
+    return {
+        user for user in users
+        if record_id in await w.graph.filter_accessible_record_ids([record_id], user, w.org_id)
+    }
+
+
+async def _links(w: _World, record_id: str, group: _Target) -> set[str]:
+    """The edge collections that hold an edge from the record to the record group."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (:Record {id: $record})-[e]->(:RecordGroup {id: $group}) RETURN type(e) AS type",
+            parameters={"record": record_id, "group": group.node.id},
+        )
+        names = {"BELONGS_TO": CollectionNames.BELONGS_TO.value,
+                 "INHERIT_PERMISSIONS": CollectionNames.INHERIT_PERMISSIONS.value}
+        return {names[row["type"]] for row in rows or []}
+    rows = await w.graph.http_client.execute_aql(
+        "FOR name IN APPEND("
+        "(FOR e IN belongsTo FILTER e._from == @from AND e._to == @to RETURN 'belongsTo'), "
+        "(FOR e IN inheritPermissions FILTER e._from == @from AND e._to == @to RETURN 'inheritPermissions')) "
+        "RETURN name",
+        {"from": f"records/{record_id}", "to": f"recordGroups/{group.node.id}"},
+    )
+    return set(rows or [])
+
+
+def _holding_group(w: _World, group: _Target) -> contextlib.AbstractAsyncContextManager[None]:
+    """Another sync is writing to the record group, so no edge to it can be written or removed."""
+    return _neo4j_hold(
+        w, "MATCH (g:RecordGroup {id: $id}) SET g.heldByTest = true RETURN count(g) AS n", {"id": group.node.id}
+    )
+
+
+def _holding_inherit_edge(w: _World, record_id: str, group: _Target) -> contextlib.AbstractAsyncContextManager[None]:
+    """Another ArangoDB writer holds the record's inherit-permissions edge to the group, and nothing else."""
+    return _arango_hold(
+        w, CollectionNames.INHERIT_PERMISSIONS.value,
+        "FOR e IN inheritPermissions FILTER e._from == @from AND e._to == @to "
+        "UPDATE e WITH {heldByTest: true} IN inheritPermissions RETURN 1",
+        {"from": f"records/{record_id}", "to": f"recordGroups/{group.node.id}"},
+    )
+
+
+BELONGS_AND_INHERITS = {CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value}
+
+
+async def test_a_failed_record_permission_rewrite_leaves_no_stale_access(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    carol, carol_email = await _add_user(w, "carol")
+    await _add_app(w, alice, bob, carol)
+    drive = _Target("record_group", w)
+    await drive.sync(alice_email)
+
+    # Alice reads the file through its drive, Bob through a share of his own.
+    record = _file(w, "plan", drive)
+    await w.processor.on_updated_record_permissions(record, _grants(bob_email))
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {bob}
+    assert await _links(w, record.id, drive) == BELONGS_AND_INHERITS
+    assert await _readers(w, record.id, alice, bob, carol) == {alice, bob}
+
+    # The file stops inheriting from the drive and is shared with Carol alone. The
+    # write fails on the inherit edge, after Bob's edge is deleted and Carol's written.
+    private = record.model_copy(update={"inherit_permissions": False})
+    if w.neo4j:
+        hold = _holding_group(w, drive)
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _holding_inherit_edge(w, record.id, drive)
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(
+            lambda: w.processor.on_updated_record_permissions(private, _grants(carol_email))
+        )
+
+    # Nothing of it stayed: not Carol's edge beside the drive's access.
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {bob}
+    assert await _links(w, record.id, drive) == BELONGS_AND_INHERITS
+    assert await _readers(w, record.id, alice, bob, carol) == {alice, bob}
+
+    await w.processor.on_updated_record_permissions(private, _grants(carol_email))
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {carol}
+    assert await _links(w, record.id, drive) == {CollectionNames.BELONGS_TO.value}
+    assert await _readers(w, record.id, alice, bob, carol) == {carol}
+
+
+async def test_a_failed_permission_write_is_raised(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    record = _file(w, "budget")
+    await _upsert(w, record)
+    await w.processor.add_permission_to_record(record, _grants(alice_email))
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
+
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": bob})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_unique(w, CollectionNames.PERMISSION.value, ["_to", "role"])
+        expected = "unique constraint violated"
+    async with hold:
+        assert expected in await _failure(lambda: w.processor.add_permission_to_record(record, _grants(bob_email)))
+
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
+
+    await w.processor.add_permission_to_record(record, _grants(bob_email))
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice, bob}
+
+
+async def test_a_failed_move_between_record_groups_keeps_the_record_in_its_old_group(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    old_drive, new_drive = _Target("record_group", w), _Target("record_group", w)
+    await old_drive.sync(alice_email)
+    await new_drive.sync(bob_email)
+    record = _file(w, "roadmap", old_drive)
+    await w.processor.on_new_records([(record, [])])
+    assert await _links(w, record.id, old_drive) == BELONGS_AND_INHERITS
+    assert await _readers(w, record.id, alice, bob) == {alice}
+
+    # The source moves the file to Bob's drive. On Neo4j the write fails on joining
+    # that drive, after the file has left the old one; a lock on the old drive's
+    # inherit edge alone would stop the first delete too. On ArangoDB it fails on
+    # that inherit edge, after the file's membership of the old drive is deleted.
+    moved = _file(w, "roadmap", new_drive).model_copy(
+        update={"id": record.id, "external_record_id": record.external_record_id}
+    )
+    if w.neo4j:
+        hold = _holding_group(w, new_drive)
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _holding_inherit_edge(w, record.id, old_drive)
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(lambda: w.processor.on_new_records([(moved, [])]))
+
+    assert await _links(w, record.id, old_drive) == BELONGS_AND_INHERITS
+    assert await _links(w, record.id, new_drive) == set()
+    assert await _readers(w, record.id, alice, bob) == {alice}
+
+    await w.processor.on_new_records([(moved, [])])
+    assert await _links(w, record.id, old_drive) == set()
+    assert await _links(w, record.id, new_drive) == BELONGS_AND_INHERITS
+    assert await _readers(w, record.id, alice, bob) == {bob}
+
+
+async def _roles(w: _World, user: str, to_id: str) -> list[str]:
+    """The role on each PERMISSION edge from the user to the node."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (:User {id: $user})-[e:PERMISSION]->({id: $to}) RETURN e.role AS role",
+            parameters={"user": user, "to": to_id},
+        )
+        return [row["role"] for row in rows or []]
+    return await w.graph.http_client.execute_aql(
+        "FOR e IN permission FILTER e._from == @from AND PARSE_IDENTIFIER(e._to).key == @to RETURN e.role",
+        {"from": f"users/{user}", "to": to_id},
+    ) or []
+
+
+async def test_a_failed_permission_upgrade_keeps_the_old_permission(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    record = _file(w, "contract")
+    await _upsert(w, record)
+    await w.processor.add_permission_to_record(record, _grants(alice_email))
+    assert await _roles(w, alice, record.id) == ["READER"]
+
+    def upgrade(permission: Permission) -> Awaitable[object]:
+        return w.processor.upsert_permission_edge(
+            alice, CollectionNames.USERS.value, record.id, CollectionNames.RECORDS.value, permission
+        )
+
+    # Neither store can write this edge: Neo4j takes no map as a property value,
+    # and ArangoDB's schema wants a number.
+    refused = Permission.model_construct(
+        type=PermissionType.WRITE, entity_type=EntityType.USER, created_at={"refused": True},
+        updated_at=get_epoch_timestamp_in_ms(),
+    )
+    expected = "Property values can only be of primitive types" if w.neo4j else "permissions schema"
+    assert expected in await _failure(lambda: upgrade(refused))
+
+    assert await _roles(w, alice, record.id) == ["READER"]
+
+    await upgrade(Permission(type=PermissionType.WRITE, entity_type=EntityType.USER))
+    assert await _roles(w, alice, record.id) == ["WRITER"]
+
+
+async def test_a_failed_group_to_user_migration_keeps_the_users_own_permissions(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    team = _Target("user_group", w)
+    await team.sync()
+    handbook, payroll = _file(w, "handbook"), _file(w, "payroll")
+    for record in (handbook, payroll):
+        await _upsert(w, record)
+    # The group may write both files; Alice may read the first on her own.
+    await w.graph.batch_create_edges(
+        [Permission(type=PermissionType.WRITE, entity_type=EntityType.GROUP).to_arango_permission(
+            team.node.id, CollectionNames.GROUPS.value, record.id, CollectionNames.RECORDS.value)
+         for record in (handbook, payroll)],
+        collection=CollectionNames.PERMISSION.value,
+    )
+    await w.processor.add_permission_to_record(handbook, _grants(alice_email))
+    assert await _roles(w, alice, handbook.id) == ["READER"]
+
+    def migrate() -> Awaitable[None]:
+        return w.processor.migrate_group_permissions_to_user(team.node.id, alice_email, w.connector_id)
+
+    # The upgrade of Alice's edge to the first file and her new edge to the second
+    # are written together, and the second file cannot be written to.
+    if w.neo4j:
+        hold = _neo4j_hold(
+            w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": payroll.id}
+        )
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_unique(w, CollectionNames.PERMISSION.value, ["_to", "role"])
+        expected = "unique constraint violated"
+    async with hold:
+        assert expected in await _failure(migrate)
+
+    assert await _roles(w, alice, handbook.id) == ["READER"]
+    assert await _roles(w, alice, payroll.id) == []
+
+    await migrate()
+    assert await _roles(w, alice, handbook.id) == ["WRITER"]
+    assert await _roles(w, alice, payroll.id) == ["WRITER"]

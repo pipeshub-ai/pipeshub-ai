@@ -1096,7 +1096,7 @@ class TestHandleRecordPermissions:
 class TestOnUpdatedRecordPermissions:
     @pytest.mark.asyncio
     async def test_deletes_and_recreates_permissions(self):
-        """Old permissions are deleted and new ones created."""
+        """Old permissions and new ones go to the store in one call."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -1122,7 +1122,11 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [permission])
 
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with(
+            "rec-1", [{"_from": "u/1", "_to": "r/1"}], None, inherit=False
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
+        tx_store.batch_create_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1577,8 +1581,9 @@ class TestLinkRecordToGroup:
 
         await proc._link_record_to_group(record, "group-1", tx_store)
 
-        tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "group-1")
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once()
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=True, leaving_group_id=None
+        )
 
     @pytest.mark.asyncio
     async def test_deletes_inherit_when_no_inherit_on_an_existing_record(self):
@@ -1594,7 +1599,9 @@ class TestLinkRecordToGroup:
 
         await proc._link_record_to_group(record, "group-1", tx_store, existing)
 
-        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once()
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=False, leaving_group_id=None
+        )
 
     @pytest.mark.asyncio
     async def test_a_pre_existing_placeholder_still_gets_its_stale_edge_removed(self):
@@ -1627,7 +1634,9 @@ class TestLinkRecordToGroup:
         ):
             await proc._handle_parent_record(child, tx_store)
 
-        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited()
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "ph-1", "group-1", inherit=False, leaving_group_id=None
+        )
 
     @pytest.mark.asyncio
     async def test_no_inherit_delete_for_a_brand_new_record(self):
@@ -1644,7 +1653,9 @@ class TestLinkRecordToGroup:
 
         await proc._link_record_to_group(record, "group-1", tx_store, None)
 
-        tx_store.delete_inherit_permissions_relation_record_group.assert_not_awaited()
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=None, leaving_group_id=None
+        )
 
     @pytest.mark.asyncio
     async def test_a_new_record_keeps_the_id_its_connector_set(self):
@@ -1670,7 +1681,7 @@ class TestLinkRecordToGroup:
 
     @pytest.mark.asyncio
     async def test_deletes_old_group_edge_when_group_changed(self):
-        """Deletes old edge when group changes."""
+        """Leaving the old group and joining the new one are one call to the store."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         record = _make_record()
@@ -1681,10 +1692,13 @@ class TestLinkRecordToGroup:
         existing.id = "rec-1"
         existing.record_group_id = "old-group"
 
-        await proc._link_record_to_group(record, "new-group", tx_store, existing_record=existing)
+        moved = await proc._link_record_to_group(record, "new-group", tx_store, existing_record=existing)
 
-        # Should delete edge from old group
-        tx_store.delete_edge.assert_awaited()
+        assert moved is True
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "new-group", inherit=True, leaving_group_id="old-group"
+        )
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_shared_with_me_group_linked(self):
@@ -1704,8 +1718,10 @@ class TestLinkRecordToGroup:
 
         await proc._link_record_to_group(record, "group-1", tx_store)
 
-        # Should create relation for shared group too
-        assert tx_store.create_record_group_relation.call_count >= 2
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=True, leaving_group_id=None
+        )
+        tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "shared-group-internal-id")
 
 
 # ===========================================================================
@@ -2400,7 +2416,7 @@ class TestOnUpdatedRecordPermissionsAdditional:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=True)
 
     @pytest.mark.asyncio
     async def test_no_belongs_to_triggers_process_record(self):

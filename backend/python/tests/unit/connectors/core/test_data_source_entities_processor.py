@@ -1415,6 +1415,73 @@ class TestOnUserGroupDeleted:
 # ===========================================================================
 
 
+class TestFailedPermissionWritesAreRaised:
+    @pytest.mark.asyncio
+    async def test_a_failed_record_permission_write_is_raised(self) -> None:
+        """Logged and swallowed, it let the surrounding write commit the record with no permissions."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        user = MagicMock()
+        user.id = "user-1"
+        tx_store.get_user_by_email.return_value = user
+        tx_store.batch_create_edges.side_effect = RuntimeError("write conflict")
+
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, email="user@test.com")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await proc._handle_record_permissions(record, [perm], tx_store)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_permission_rewrite_is_raised_before_anything_is_reported_done(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_edges_from_node.return_value = [{"some": "edge"}]
+        tx_store.replace_record_permissions.side_effect = RuntimeError("lock timeout")
+
+        record = _make_record()
+        record.id = "rec-1"
+
+        with pytest.raises(RuntimeError, match="lock timeout"):
+            await proc.on_updated_record_permissions(record, [])
+
+
+class TestUpsertPermissionEdge:
+    @staticmethod
+    def _proc_with(existing_edge: dict | None) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_edge.return_value = existing_edge
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_changed_role_is_written_without_a_delete_first(self) -> None:
+        """A delete first lost the grant when the write after it failed."""
+        proc, tx_store = self._proc_with({"role": "READER"})
+        perm = Permission(type=PermissionType.WRITE, entity_type=EntityType.USER.value)
+
+        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm)
+
+        assert old == {"role": "READER"}
+        tx_store.delete_edge.assert_not_awaited()
+        tx_store.batch_create_edges.assert_awaited_once()
+        (edge,) = tx_store.batch_create_edges.await_args.args[0]
+        assert (edge["from_id"], edge["to_id"], edge["role"]) == ("user-1", "rec-1", "WRITER")
+
+    @pytest.mark.asyncio
+    async def test_upgrade_only_keeps_a_higher_role(self) -> None:
+        proc, tx_store = self._proc_with({"role": "OWNER"})
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value)
+
+        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm, upgrade_only=True)
+
+        assert old == {"role": "OWNER"}
+        tx_store.batch_create_edges.assert_not_awaited()
+
+
 class TestMigrateGroupPermissionsToUser:
     @pytest.mark.asyncio
     async def test_no_tx_store_creates_transaction(self):
@@ -1548,9 +1615,11 @@ class TestMigrateGroupPermissionsToUser:
         )
 
         assert result is None
-        # Should delete old edge and create new one
-        tx_store.delete_edge.assert_awaited()
-        tx_store.batch_create_edges.assert_awaited()
+        # The upsert overwrites the edge: a delete first would lose it if the upsert failed.
+        tx_store.delete_edge.assert_not_awaited()
+        tx_store.batch_create_edges.assert_awaited_once()
+        (edge,) = tx_store.batch_create_edges.await_args.args[0]
+        assert (edge["from_id"], edge["to_id"], edge["role"]) == ("user-1", "rec-1", "WRITER")
 
     @pytest.mark.asyncio
     async def test_skips_existing_permission_same_or_higher(self):
@@ -2374,7 +2443,7 @@ class TestOnUpdatedRecordPermissionsAdditional:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=True)
 
     @pytest.mark.asyncio
     async def test_inherit_permissions_false_deletes_edge(self):
@@ -2394,7 +2463,8 @@ class TestOnUpdatedRecordPermissionsAdditional:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.delete_edge.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=False)
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -2485,7 +2555,8 @@ class TestHandleParentRecordParentChild:
         await proc._handle_parent_record(record, tx_store)
 
         tx_store.batch_upsert_records.assert_awaited()
-        tx_store.create_record_group_relation.assert_awaited()
+        tx_store.link_record_to_group.assert_awaited()
+        assert tx_store.link_record_to_group.await_args.args[1] == "grp-internal-1"
 
     @pytest.mark.asyncio
     async def test_existing_placeholder_parent_reanchored_to_group(self):
@@ -2510,7 +2581,8 @@ class TestHandleParentRecordParentChild:
 
         await proc._handle_parent_record(record, tx_store)
 
-        tx_store.create_record_group_relation.assert_awaited_with("parent-id", "grp-internal-1")
+        tx_store.link_record_to_group.assert_awaited_once()
+        assert tx_store.link_record_to_group.await_args.args[:2] == ("parent-id", "grp-internal-1")
         tx_store.create_record_relation.assert_awaited()
 
     @pytest.mark.asyncio
@@ -3735,9 +3807,36 @@ class TestLinkRecordToGroupEdgeCases:
 
         await proc._link_record_to_group(record, "new-grp", tx_store, existing)
 
-        tx_store.delete_edge.assert_awaited()
-        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited()
-        tx_store.create_record_group_relation.assert_awaited_with("rec-1", "new-grp")
+        # One call: apart, a failure between them left the record out of its old
+        # group but still inheriting that group's permissions.
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "new-grp", inherit=False, leaving_group_id="old-grp"
+        )
+        tx_store.delete_edge.assert_not_awaited()
+        tx_store.create_record_group_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leaving_a_group_for_none_still_removes_its_edges(self) -> None:
+        """A record left with only shared-with-me groups leaves its old group."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = None
+
+        record = _make_record()
+        record.id = "rec-1"
+        record.shared_with_me_record_group_ids = ["shared-ext-grp"]
+        record.inherit_permissions = False
+
+        existing = MagicMock()
+        existing.id = "rec-1"
+        existing.record_group_id = "old-grp"
+
+        moved = await proc._link_record_to_group(record, None, tx_store, existing)
+
+        assert moved is True
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", None, inherit=False, leaving_group_id="old-grp"
+        )
 
     @pytest.mark.asyncio
     async def test_shared_with_me_record_group_found(self):
@@ -3756,8 +3855,10 @@ class TestLinkRecordToGroupEdgeCases:
 
         await proc._link_record_to_group(record, "main-grp", tx_store)
 
-        # Should be called at least twice: main group + shared group
-        assert tx_store.create_record_group_relation.await_count >= 2
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "main-grp", inherit=None, leaving_group_id=None
+        )
+        tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "shared-grp-id")
 
     @pytest.mark.asyncio
     async def test_inherit_permissions_true_creates_edge(self):
@@ -3771,7 +3872,9 @@ class TestLinkRecordToGroupEdgeCases:
 
         await proc._link_record_to_group(record, "grp-1", tx_store)
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_with("rec-1", "grp-1")
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "grp-1", inherit=True, leaving_group_id=None
+        )
 
 
 # ===========================================================================
@@ -4932,7 +5035,7 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=True)
 
     @pytest.mark.asyncio
     async def test_deletes_inherit_permissions_when_false(self):
@@ -4952,7 +5055,8 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.delete_edge.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=False)
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_with_permissions_handles_them(self):
@@ -4978,7 +5082,11 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [perm])
 
-        tx_store.batch_create_edges.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once()
+        record_id, edges, group_id = tx_store.replace_record_permissions.await_args.args
+        assert (record_id, group_id) == ("rec-1", None)
+        assert tx_store.replace_record_permissions.await_args.kwargs == {"inherit": False}
+        assert [(e["from_id"], e["to_id"], e["role"]) for e in edges] == [("user-1", "rec-1", "READER")]
 
 
 # ===========================================================================

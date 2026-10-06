@@ -549,13 +549,14 @@ class TestMigrateGroupPermissionsToUser:
         ]
         # User already has READER permission (lower), should be upgraded to WRITER
         tx.get_edge.return_value = {"role": "READER"}
-        tx.delete_edge.return_value = True
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
         assert result is None
-        # Should have deleted old edge and batch-created new one
-        tx.delete_edge.assert_awaited()
+        # The batch upsert overwrites the edge; a delete first lost it when the batch failed.
+        tx.delete_edge.assert_not_awaited()
         tx.batch_create_edges.assert_awaited_once()
+        (edge,) = tx.batch_create_edges.await_args.args[0]
+        assert (edge["to_id"], edge["role"]) == ("rec-1", "WRITER")
 
     @pytest.mark.asyncio
     async def test_skips_when_existing_permission_is_higher(self):
