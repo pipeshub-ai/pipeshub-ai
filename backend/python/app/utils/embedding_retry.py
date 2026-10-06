@@ -131,7 +131,7 @@ def call_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                exc,
+                str(exc) or type(exc).__name__,
                 delay,
             )
             time.sleep(delay)
@@ -167,7 +167,7 @@ async def await_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                exc or type(exc).__name__,
+                str(exc) or type(exc).__name__,
                 delay,
             )
             await asyncio.sleep(delay)

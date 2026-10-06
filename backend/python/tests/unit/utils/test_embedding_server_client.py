@@ -1,5 +1,6 @@
 """Unit tests for the shared embedding retry policy and the embedding server client."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
@@ -43,6 +44,25 @@ class TestRetriableErrors:
 
     def test_a_callers_own_attempt_deadline_is_retriable(self) -> None:
         assert is_retriable_embedding_error(TimeoutError())
+
+    @pytest.mark.asyncio
+    async def test_a_retried_timeout_is_named_in_the_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A bare TimeoutError has no message, so the warning names its type instead."""
+        attempts = []
+
+        async def fn() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise TimeoutError()
+            return "ok"
+
+        with patch("app.utils.embedding_retry.retry_delay_seconds", return_value=0), \
+                caplog.at_level(logging.WARNING, logger="app.utils.embedding_retry"):
+            assert await await_with_retry(
+                fn, max_retries=2, operation="aembed_query", service_name="retrieval"
+            ) == "ok"
+
+        assert "failed (attempt 1/2): TimeoutError;" in caplog.text
 
     def test_503_is_retriable(self):
         response = MagicMock()
