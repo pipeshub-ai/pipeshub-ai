@@ -60,7 +60,7 @@ async def _cleanup(provider: Neo4jProvider | ArangoHTTPProvider, org: str, *, di
             await provider.disconnect()
         return
     aql = provider.http_client.execute_aql
-    for edges in (CollectionNames.ENTITY_RELATIONS.value, CollectionNames.IS_OF_TYPE.value):
+    for edges in (CollectionNames.ENTITY_RELATIONS.value, CollectionNames.IS_OF_TYPE.value, CollectionNames.PERMISSION.value):
         await aql(f"FOR e IN {edges} FILTER CONTAINS(e._from, @org) REMOVE e IN {edges}", {"org": org})
     await aql(f"REMOVE {{_key: @org}} IN {CollectionNames.ORGS.value} OPTIONS {{ignoreErrors: true}}", {"org": org})
     for docs in (
@@ -290,3 +290,31 @@ async def test_a_user_of_another_org_never_surfaces_through_this_orgs_records(ba
         assert await provider.get_record_people(f"{org}-case", org) == []
     finally:
         await _cleanup(provider, f"{org}-x", disconnect=False)
+
+
+async def test_a_person_is_reachable_only_through_records_the_viewer_may_read(backend) -> None:
+    """People are visible only through records a user can open: Bob is named
+    by a mail and a case; a viewer granted the mail reaches Bob through it
+    alone, and a viewer with no grant reaches nothing, so cannot even learn
+    that Bob is named anywhere."""
+    provider, org = backend
+    await provider.ensure_schema()
+    mail_id = await _seed(provider, org)
+    store = GraphDataStore(logger, provider)
+    await backfill(provider, store, org, apply=True, logger=logger, out=io.StringIO())
+    reader, stranger = f"{org}-reader", f"{org}-stranger"
+    await provider.batch_upsert_nodes([
+        {"id": reader, "userId": reader, "orgId": org, "email": f"reader@{org}.test", "isActive": True},
+        {"id": stranger, "userId": stranger, "orgId": org, "email": f"stranger@{org}.test", "isActive": True},
+    ], CollectionNames.USERS.value)
+    await provider.batch_create_edges([{
+        "from_id": reader, "from_collection": CollectionNames.USERS.value,
+        "to_id": mail_id, "to_collection": CollectionNames.RECORDS.value,
+        "type": "USER", "role": "READER",
+    }], collection=CollectionNames.PERMISSION.value)
+
+    ref = {"id": f"{org}-bob", "type": "person", "connectorIds": [f"{org}-conn"]}
+    seen = await provider.get_permitted_entity_records([ref], org, reader, app_level_connector_ids=[])
+    assert [r["_key"] for r in seen[("person", f"{org}-bob")]] == [mail_id]
+    unseen = await provider.get_permitted_entity_records([ref], org, stranger, app_level_connector_ids=[])
+    assert list(unseen[("person", f"{org}-bob")]) == []
