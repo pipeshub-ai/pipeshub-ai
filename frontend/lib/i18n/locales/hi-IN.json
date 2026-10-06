@@ -1353,6 +1353,16 @@
         "respondingAgent": "एजेंट",
         "respondingAgentAria": "{{name}} द्वारा उत्तर दिया गया"
       },
+      "timeline": {
+        "today": "आज",
+        "yesterday": "कल",
+        "replyingTo": "{{name}} को उत्तर",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}, {{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "बातचीत",
+        "answerViews": "उत्तर के दृश्य"
+      },
       "consent": {
         "audience_one": "{{count}} व्यक्ति को दिखेगा · स्वामी अन्य लोगों को भी जोड़ सकते हैं · आपके द्वारा जोड़ी गई फ़ाइलें साझा होती हैं",
         "audience_other": "{{count}} लोगों को दिखेगा · स्वामी अन्य लोगों को भी जोड़ सकते हैं · आपके द्वारा जोड़ी गई फ़ाइलें साझा होती हैं",

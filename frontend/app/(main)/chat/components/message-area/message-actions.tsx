@@ -47,6 +47,8 @@ const DISLIKE_CATEGORIES: FeedbackCategory[] = [
 const OTHER_VALUE = 'other';
 
 interface MessageActionsProps {
+  /** Tighter bottom spacing, for a reply row that has a line under it. */
+  compact?: boolean;
   /** The raw markdown content of the message */
   content: string;
   /** Citation maps for resolving [N] markers in copied markdown */
@@ -120,6 +122,7 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   allowRegenerate = true,
+  compact = false,
 }: MessageActionsProps) {
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
@@ -325,7 +328,7 @@ export function MessageActions({
         style={{
           width: '100%',
           marginTop: 'var(--space-1)',
-          paddingBottom: 'var(--space-4)',
+          paddingBottom: compact ? 'var(--space-1)' : 'var(--space-4)',
           animation: 'msgActionsIn 150ms ease-out both',
           flexWrap: 'wrap',
           rowGap: 'var(--space-1)',

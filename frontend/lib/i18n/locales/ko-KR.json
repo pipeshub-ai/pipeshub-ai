@@ -1434,6 +1434,16 @@
         "respondingAgent": "에이전트",
         "respondingAgentAria": "{{name}}의 답변"
       },
+      "timeline": {
+        "today": "오늘",
+        "yesterday": "어제",
+        "replyingTo": "{{name}}님에게 답변",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}, {{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "대화",
+        "answerViews": "답변 보기"
+      },
       "consent": {
         "audience_other": "{{count}}명에게 표시됨 · 소유자가 더 추가할 수 있음 · 추가한 파일은 공유됨",
         "audienceUnknown": "이 채팅의 모든 사람에게 표시됨 · 소유자가 더 추가할 수 있음 · 추가한 파일은 공유됨",

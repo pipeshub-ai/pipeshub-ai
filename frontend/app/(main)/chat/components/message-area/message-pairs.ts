@@ -41,6 +41,10 @@ export interface MessagePair {
   requestedBy?: MessageAuthor | null;
   /** The guest agent that answered this turn. */
   respondingAgent?: RespondingAgent;
+  /** ISO time the answer was stored; absent while it streams. */
+  answeredAt?: string;
+  /** How many notes were posted between this answer's question and the answer. */
+  interleavedNotes?: number;
   /** Set for a note: `question` holds its text, there is no answer, and nobody asked the AI. */
   note?: boolean;
 }
@@ -70,6 +74,7 @@ type AssistantCustom = {
   status?: 'stopped';
   requestedBy?: MessageAuthor | null;
   respondingAgent?: RespondingAgent;
+  createdAt?: string;
 };
 
 type UserCustom = {
@@ -187,6 +192,10 @@ export function buildMessagePairs(
         ? extractTextContent(prevMsg.content as MessageContent)
         : 'Question';
 
+      let notesBetween = 0;
+      for (let j = i - 1; j >= 0 && isNote(messages[j]); j -= 1) notesBetween += 1;
+      if (prevMsg?.role !== 'user') notesBetween = 0;
+
       // Check if this message is being regenerated
       const isBeingRegenerated = Boolean(
         regenerateMessageId &&
@@ -242,6 +251,8 @@ export function buildMessagePairs(
         ...(userMsgCustom?.author !== undefined ? { author: userMsgCustom.author } : {}),
         ...(metadata?.requestedBy !== undefined ? { requestedBy: metadata.requestedBy } : {}),
         ...(metadata?.respondingAgent ? { respondingAgent: metadata.respondingAgent } : {}),
+        ...(metadata?.createdAt ? { answeredAt: metadata.createdAt } : {}),
+        ...(notesBetween > 0 ? { interleavedNotes: notesBetween } : {}),
       });
     }
   }

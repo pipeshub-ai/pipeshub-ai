@@ -1434,6 +1434,16 @@
         "respondingAgent": "智能体",
         "respondingAgentAria": "由 {{name}} 回答"
       },
+      "timeline": {
+        "today": "今天",
+        "yesterday": "昨天",
+        "replyingTo": "回复 {{name}}",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}，{{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "对话",
+        "answerViews": "回答视图"
+      },
       "consent": {
         "audience_other": "{{count}} 人可见 · 拥有者可添加更多人 · 您添加的文件将被共享",
         "audienceUnknown": "此聊天中的所有人可见 · 拥有者可添加更多人 · 您添加的文件将被共享",

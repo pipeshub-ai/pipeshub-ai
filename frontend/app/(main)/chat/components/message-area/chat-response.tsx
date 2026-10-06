@@ -20,6 +20,8 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { AuthorChip } from '../collaboration/author-chip';
 import { AnsweredAsLabel } from '../collaboration/answered-as-label';
+import { HumanMessage } from './timeline/human-message';
+import { ReplyMessage } from './timeline/reply-message';
 import { AgentAnswerHeader } from '../collaboration/agent-answer-header';
 import { useCollabMessageContext } from '../../hooks/use-collab-message-context';
 import { askCardReadOnlyFor, askerOf, attributionVisible, regenerateAllowed } from '../../utils/collab-attribution';
@@ -151,6 +153,14 @@ interface ChatResponseProps {
   requestedBy?: MessageAuthor | null;
   /** The guest agent that answered this turn; shown in place of the assistant. */
   respondingAgent?: RespondingAgent;
+  /** Collaborative timeline: draw only the person's message or only the reply. Default draws both, as a solo chat does. */
+  rowMode?: 'both' | 'human' | 'reply';
+  /** Timeline: continue the previous message from the same author without avatar and name. */
+  showHeader?: boolean;
+  /** Timeline: ISO time the answer was stored. */
+  answeredAt?: string;
+  /** Timeline: set when messages came between the question and this reply. */
+  replyingTo?: MessageAuthor | null;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -187,6 +197,10 @@ export const ChatResponse = React.memo(function ChatResponse({
   author,
   requestedBy,
   respondingAgent,
+  rowMode = 'both',
+  showHeader = true,
+  answeredAt,
+  replyingTo,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -585,7 +599,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     switch (activeTab) {
       case 'answer':
         return (
-          <Box style={{ padding: 'var(--space-4) 0' }}>
+          <Box style={{ padding: rowMode === 'reply' ? 'var(--space-1) 0' : 'var(--space-4) 0' }}>
             {/* Show confidence only when not streaming and has answer */}
             {!isStreaming && !isCapabilityCard && confidence && <ConfidenceIndicator confidence={confidence} />}
 
@@ -828,48 +842,8 @@ export const ChatResponse = React.memo(function ChatResponse({
     ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
     : visibleAnswer;
 
-  const shell = (
-    <Box style={{ width: '100%' }}>
-      <Box
-        style={{
-          marginBottom:
-            (collections && collections.length > 0) ||
-            (appliedFilters &&
-              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
-              ? 'var(--space-3)'
-              : 'var(--space-4)',
-        }}
-      >
-        <ExpandableUserQuery
-          question={question}
-          isMobile={isMobile}
-          messageId={messageId}
-          isStreaming={isStreaming}
-          onEdit={handleEditQuery}
-        />
-        {attributionVisible(collabActive, collabAccess.collabEnabled, author, meUserId) ? (
-          <Flex align="center" gap="2" wrap="wrap" style={{ marginTop: 'var(--space-1)' }}>
-            <AuthorChip author={author} meUserId={meUserId} />
-            {createdAt && (
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                {formatMessageTime(createdAt)}
-              </Text>
-            )}
-          </Flex>
-        ) : createdAt && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--slate-9)',
-              marginTop: 'var(--space-1)',
-              display: 'block',
-            }}
-          >
-            {formatMessageTime(createdAt)}
-          </Text>
-        )}
-      </Box>
-
+  const filtersAndAttachments = (
+    <>
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
       {appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0) && (
         <Box style={{ marginBottom: 'var(--space-3)' }}>
@@ -959,6 +933,134 @@ export const ChatResponse = React.memo(function ChatResponse({
         </Flex>
       )}
 
+    </>
+  );
+
+  const previewDialog = textPreviewAttachment ? (
+    <TextPreviewDialog
+      key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
+      open
+      onOpenChange={(open) => {
+        if (!open) setTextPreviewAttachment(null);
+      }}
+      title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
+      loadText={async () => {
+        const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
+        return blob.text();
+      }}
+    />
+  ) : null;
+
+  if (rowMode === 'human') {
+    return (
+      <>
+        <HumanMessage
+          text={question}
+          author={author}
+          meUserId={meUserId}
+          time={createdAt}
+          showHeader={showHeader}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={handleEditQuery}
+        >
+          {filtersAndAttachments}
+        </HumanMessage>
+        {previewDialog}
+      </>
+    );
+  }
+
+  if (rowMode === 'reply') {
+    const showChips = !unanswered && !isCapabilityCard && (sourcesCount > 0 || citationCount > 0 || activeTab !== 'answer') && !(askQuestionMatchesRow || persistedAskUserQuestion);
+    const reply = (
+      <ReplyMessage respondingAgent={respondingAgent} time={answeredAt} replyingTo={replyingTo} meUserId={meUserId}>
+        {renderTabContent()}
+        {showChips ? (
+          <ResponseTabs
+            variant="chips"
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            sourcesCount={sourcesCount}
+            citationCount={citationCount}
+          />
+        ) : null}
+        {activeTab === 'answer' && (
+          <MessageActions
+            compact
+            allowRegenerate={regenerateAllowed(
+              collabAccess,
+              collabAccess.collabEnabled,
+              { requestedBy, author },
+              meUserId,
+            )}
+            content={speakContent}
+            citationMaps={effectiveCitationMaps}
+            modelInfo={modelInfo}
+            isStreaming={isStreaming}
+            messageId={messageId}
+            question={question}
+            isLastMessage={isLastMessage && !questionPending}
+            appliedFilters={appliedFilters}
+            feedbackInfo={feedbackInfo}
+          />
+        )}
+        {!isStreaming && activeTab === 'answer' && attributionVisible(collabActive, collabAccess.collabEnabled, asker, meUserId) && (
+          <AnsweredAsLabel asker={asker} meUserId={meUserId} />
+        )}
+      </ReplyMessage>
+    );
+    return citationMessageRowKey ? (
+      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>{reply}</CitationMessageRowKeyContext.Provider>
+    ) : (
+      reply
+    );
+  }
+
+  const shell = (
+    <Box style={{ width: '100%' }}>
+      <Box
+        style={{
+          marginBottom:
+            (collections && collections.length > 0) ||
+            (appliedFilters &&
+              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
+              ? 'var(--space-3)'
+              : 'var(--space-4)',
+        }}
+      >
+        <ExpandableUserQuery
+          question={question}
+          isMobile={isMobile}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={handleEditQuery}
+        />
+        {attributionVisible(collabActive, collabAccess.collabEnabled, author, meUserId) ? (
+          <Flex align="center" gap="2" wrap="wrap" style={{ marginTop: 'var(--space-1)' }}>
+            <AuthorChip author={author} meUserId={meUserId} />
+            {createdAt && (
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                {formatMessageTime(createdAt)}
+              </Text>
+            )}
+          </Flex>
+        ) : createdAt && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-9)',
+              marginTop: 'var(--space-1)',
+              display: 'block',
+            }}
+          >
+            {formatMessageTime(createdAt)}
+          </Text>
+        )}
+      </Box>
+
+      {filtersAndAttachments}
+
       {!unanswered && respondingAgent && <AgentAnswerHeader agent={respondingAgent} />}
 
       {/* Tabs */}
@@ -1002,21 +1104,7 @@ export const ChatResponse = React.memo(function ChatResponse({
         />
       )}
 
-      {/* Pasted-text attachment preview — read-only (this message already sent) */}
-      {textPreviewAttachment && (
-        <TextPreviewDialog
-          key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
-          open
-          onOpenChange={(open) => {
-            if (!open) setTextPreviewAttachment(null);
-          }}
-          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
-          loadText={async () => {
-            const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
-            return blob.text();
-          }}
-        />
-      )}
+      {previewDialog}
     </Box>
   );
 

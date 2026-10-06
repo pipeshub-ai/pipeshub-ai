@@ -84,6 +84,69 @@ for (const combo of COMBOS) {
       await own.close();
     });
 
+    test('a guest agent answering in a shared chat', async ({ browser }) => {
+      const own = makeCast(browser, combo, { owner: await fake.freshActor(`m2tl${Date.now().toString(36)}`) });
+      const alice = await own.open('owner');
+      const bob = await own.open('write_recipient');
+      await scriptAgents(alice.actor.userId);
+      const sessionId = await alice.api.startChat(key('timeline'));
+      expect((await alice.api.share(sessionId, bob.actor, 'write')).status).toBe(200);
+      await openConversation(alice.page, sessionId);
+      await stage('10', 'timeline-guest-agent-owner-tab', async () => {
+        await composer(alice.page).click();
+        await alice.page.keyboard.type('tell me a joke @joke-buddy ');
+        await fake.script('agent_chat_stream', { kind: 'stream_answer', text: 'Why do programmers prefer dark mode? Because light attracts bugs.' });
+        await alice.page.getByRole('button', { name: 'Send message' }).click();
+        await expect(alice.page.getByText('light attracts bugs')).toBeVisible({ timeout: 45_000 });
+        const reply = alice.page.getByTestId('reply-message').last();
+        await expect(reply.getByTestId('message-author')).toHaveText('Joke Buddy');
+        await shot(alice.page, '10', 'timeline-guest-agent-owner-tab', 'A shared chat, the owner\'s tab: her question is a message row, the guest agent\'s reply is a row of its own headed "Joke Buddy".', reply);
+      }, alice.page);
+      await stage('11', 'timeline-multi-user-qa', async () => {
+        await openConversation(bob.page, sessionId);
+        await expect(bob.page.getByText('light attracts bugs')).toBeVisible({ timeout: 30_000 });
+        await composer(bob.page).click();
+        await bob.page.keyboard.type('@assistant explain that joke');
+        await fake.script('chat_stream', { kind: 'stream_answer', text: 'It plays on bugs: light attracts insects, and dark mode avoids both.' });
+        await bob.page.getByRole('button', { name: 'Send message' }).click();
+        await expect(bob.page.getByText('light attracts insects')).toBeVisible({ timeout: 45_000 });
+        await bob.page.locator('.chat-message-scroll').evaluate((el) => { el.scrollTop = 0; });
+        await shot(bob.page, '11', 'timeline-multi-user-qa', 'The same chat in the second person\'s tab after they ask the assistant: two askers, two replies, each row with its own avatar, name and time.');
+      }, bob.page);
+      await own.close();
+    });
+
+    test('notes posted while the assistant is answering', async ({ browser }) => {
+      const own = makeCast(browser, combo, { owner: await fake.freshActor(`m2nt${Date.now().toString(36)}`) });
+      const alice = await own.open('owner');
+      const bob = await own.open('write_recipient');
+      const sessionId = await alice.api.startChat(key('notes'));
+      expect((await alice.api.share(sessionId, bob.actor, 'write')).status).toBe(200);
+      await openConversation(alice.page, sessionId);
+      await stage('12', 'timeline-replying-to-and-grouped-notes', async () => {
+        await fake.script('chat_stream', { kind: 'held_stream', gate: 'tl-run', text: 'Here is the launch checklist: scope, owners, dates.', runId: 'run-tl' });
+        await composer(alice.page).click();
+        await alice.page.keyboard.type('@assistant draft the launch checklist');
+        await alice.page.getByRole('button', { name: 'Send message' }).click();
+        await expect.poll(() => fake.gateReached('tl-run'), { timeout: 30_000 }).toBe(true);
+        for (const [i, text] of ['I can review it after lunch', 'and I will tag the owners'].entries()) {
+          const posted = await bob.api.call('POST', `/api/v1/conversations/${sessionId}/notes`, {
+            query: `<@user:${alice.actor.userId}> ${text}`,
+            mentions: [{ type: 'user', id: alice.actor.userId }],
+            clientMessageId: `tl-note-${i}-${Date.now()}`,
+          });
+          expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+        }
+        await fake.openGate('tl-run');
+        await expect(alice.page.getByText('scope, owners, dates')).toBeVisible({ timeout: 45_000 });
+        await expect(alice.page.getByText('and I will tag the owners')).toBeVisible({ timeout: 30_000 });
+        await expect(alice.page.getByTestId('replying-to')).toBeVisible({ timeout: 30_000 });
+        await alice.page.locator('.chat-message-scroll').evaluate((el) => { el.scrollTop = 0; });
+        await shot(alice.page, '12', 'timeline-replying-to-and-grouped-notes', 'Two notes posted while the assistant was answering: the second continues the first without avatar or name (time in the gutter on hover), and the reply says "Replying to" the person who asked.');
+      }, alice.page);
+      await own.close();
+    });
+
     test('people from the whole organization, the Add people row and its drawer', async () => {
       const alice = await cast.open('owner');
       const { page } = alice;

@@ -52,7 +52,7 @@ function ActionIconButton({
   );
 }
 
-function ToggleButton({
+export function ToggleButton({
   expanded,
   onToggle,
 }: {
@@ -85,7 +85,7 @@ function ToggleButton({
   );
 }
 
-function QueryActions({
+export function QueryActions({
   question,
   showEdit,
   onEdit,

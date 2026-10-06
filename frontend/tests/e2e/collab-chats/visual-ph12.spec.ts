@@ -25,7 +25,7 @@ async function stage(id: string, slug: string, run: () => Promise<void>, page?: 
 
 async function openChat(page: Page, id: string): Promise<void> {
   await page.goto(`/chat/?conversationId=${id}`);
-  await expect(page.getByTestId('user-query-heading').first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-testid="user-query-heading"], [data-testid="human-message"]').first()).toBeVisible({ timeout: 30_000 });
 }
 
 for (const combo of COMBOS) {

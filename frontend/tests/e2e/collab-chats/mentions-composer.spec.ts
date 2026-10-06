@@ -1,7 +1,7 @@
 import { test, expect } from './support/two-users.fixture';
 import { fake } from './support/stack';
 import { expectNoBlockingViolations } from './support/a11y';
-import { SYNC_BUDGET_MS, composer, openChat } from './support/chat-ui';
+import { SYNC_BUDGET_MS, composer, humanMessageOf, openChat } from './support/chat-ui';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -127,16 +127,17 @@ test('mentions: B mentions only A, so a note appears for both and no AI request 
     mentions: [{ type: 'user', id: a.actor.userId }],
   });
 
-  const noteOnB = b.page.getByTestId('note-bubble');
+  const noteOnB = humanMessageOf(b.page, 'please review the thread');
   await expect(noteOnB).toBeVisible();
   await expect(noteOnB).toContainText('please review the thread');
   await expect(noteOnB.getByTestId('mention-chip')).toHaveText(`@${ownerName}`);
   await expect(composer(b.page)).toHaveText('');
 
-  const noteOnA = a.page.getByTestId('note-bubble');
+  const noteOnA = humanMessageOf(a.page, 'please review the thread');
   await expect(noteOnA).toBeVisible({ timeout: SYNC_BUDGET_MS });
   await expect(noteOnA).toContainText('please review the thread');
-  await expect(noteOnA.getByTestId('author-chip')).toContainText('User Writer');
+  await expect(noteOnA.getByTestId('message-author')).toHaveText('User Writer');
+  await expect(noteOnA.getByTestId('mention-chip')).toBeVisible();
 
   expect(streamed).toEqual([]);
   expect(await fake.requests(['chat_stream'], mark)).toHaveLength(0);
@@ -159,7 +160,7 @@ test('mentions: B mentions @assistant, so the AI runs with the mention', { tag: 
   expect(body.query).toBe('@assistant recap the thread');
   await expect(b.page.getByText('Here is the recap')).toBeVisible({ timeout: 30_000 });
   expect(await fake.requests(['chat_stream'], mark)).toHaveLength(1);
-  await expect(b.page.getByTestId('note-bubble')).toHaveCount(0);
+  await expect(b.page.getByTestId('reply-message').filter({ hasText: 'Here is the recap' })).toHaveCount(1);
 });
 
 test('mentions: the list stays on screen while filtering, and a mouse pick inserts a chip', { tag: '@collab' }, async ({ users }) => {

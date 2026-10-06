@@ -1,6 +1,6 @@
 import { test, expect } from './support/two-users.fixture';
 import { AI_ROUTES, fake, type NodeApi } from './support/stack';
-import { SYNC_BUDGET_MS, composer, openChat } from './support/chat-ui';
+import { SYNC_BUDGET_MS, humanMessageOf, composer, openChat } from './support/chat-ui';
 import { expectNoBlockingViolations } from './support/a11y';
 import { chatTitle, shareChat } from './support/collab.helper';
 
@@ -47,12 +47,12 @@ test('J-12: B mentions A in a note, A gets a bell entry, nobody asks the AI; @as
   expect((await posted).status()).toBe(201);
 
   // A note, not a question: the bubble is on both screens, the AI was not asked, and no answer follows it.
-  const noteOnB = b.page.getByTestId('note-bubble');
+  const noteOnB = humanMessageOf(b.page, 'can you approve the launch checklist?');
   await expect(noteOnB).toContainText('can you approve the launch checklist?');
-  const noteOnA = a.page.getByTestId('note-bubble');
+  const noteOnA = humanMessageOf(a.page, 'can you approve the launch checklist?');
   await expect(noteOnA).toBeVisible({ timeout: SYNC_BUDGET_MS });
-  await expect(noteOnA.getByTestId('author-chip')).toContainText(`User ${b.actor.name}`);
-  await expectNoBlockingViolations(a.page, 'note-bubble');
+  await expect(noteOnA.getByTestId('message-author')).toHaveText(`User ${b.actor.name}`);
+  await expectNoBlockingViolations(a.page, 'note-message');
   expect(streamed).toEqual([]);
   expect(await fake.requests(AI_ROUTES, mark)).toEqual([]);
 
@@ -78,7 +78,7 @@ test('J-12: B mentions A in a note, A gets a bell entry, nobody asks the AI; @as
   expect(body.mentions).toEqual([{ type: 'assistant', id: 'self' }]);
   await expect(b.page.getByText('Here is the recap')).toBeVisible({ timeout: 30_000 });
   expect(await fake.requests(['chat_stream'], mark)).toHaveLength(1);
-  await expect(b.page.getByTestId('note-bubble')).toHaveCount(1);
+  await expect(humanMessageOf(b.page, 'can you approve the launch checklist?')).toHaveCount(1);
   expect(await mentioned(a.api)).toHaveLength(1);
 });
 

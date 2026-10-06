@@ -1370,6 +1370,16 @@
         "respondingAgent": "Agente",
         "respondingAgentAria": "Respondido por {{name}}"
       },
+      "timeline": {
+        "today": "Hoy",
+        "yesterday": "Ayer",
+        "replyingTo": "Respondiendo a {{name}}",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}, {{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "Conversación",
+        "answerViews": "Vistas de la respuesta"
+      },
       "consent": {
         "audience_one": "Visible para {{count}} persona · el propietario puede añadir más · los archivos que añadas se comparten",
         "audience_many": "Visible para {{count}} de personas · el propietario puede añadir más · los archivos que añadas se comparten",

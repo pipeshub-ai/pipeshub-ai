@@ -5,7 +5,7 @@ export const SYNC_BUDGET_MS = 20_000;
 
 export async function openChat(page: Page, conversationId: string): Promise<void> {
   await page.goto(`/chat/?conversationId=${conversationId}`);
-  await expect(page.getByTestId('user-query-heading').first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-testid="user-query-heading"], [data-testid="human-message"]').first()).toBeVisible({ timeout: 30_000 });
 }
 
 export const composer = (page: Page) => page.getByTestId('chat-composer');
@@ -46,6 +46,8 @@ export async function shareWith(
   expect((await shared).status()).toBe(200);
 }
 
-/** The author chip of the turn whose question is `question` (the chip sits beside the question heading, so take the nearest ancestor that holds one). */
-export const authorChipOf = (page: Page, question: string) =>
-  page.getByTestId('user-query-heading').filter({ hasText: question }).locator("xpath=ancestor::*[.//*[@data-testid='author-chip']][1]").getByTestId('author-chip');
+/** The row of a person's message (a question or a note) whose text contains `text`. */
+export const humanMessageOf = (page: Page, text: string) => page.getByTestId('human-message').filter({ hasText: text });
+
+/** The author name on that row. */
+export const authorOf = (page: Page, text: string) => humanMessageOf(page, text).getByTestId('message-author');

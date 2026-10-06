@@ -197,4 +197,22 @@ describe('buildMessagePairs, collaboration fields', () => {
     expect(pair.persistedAgentDraft).toEqual(draft);
     expect(pair.agentDraftAuthor).toBe('Alice');
   });
+
+  it('carries the answer time, and counts the notes posted between a question and its answer', () => {
+    const noteRow = (id: string) => ({
+      id,
+      role: 'system',
+      content: [{ type: 'text', text: 'hi' }],
+      metadata: { custom: { messageType: 'note' } },
+    });
+    const answer = { ...assistant('a1', 'A'), metadata: { custom: { messageId: 'a1', createdAt: '2026-09-18T10:02:00Z' } } };
+    const pairs = buildMessagePairs([user('u1', 'Q'), noteRow('n1'), noteRow('n2'), answer], OPTIONS);
+    const pair = pairs.find((p) => p.key === 'a1');
+    expect(pair?.answeredAt).toBe('2026-09-18T10:02:00Z');
+    expect(pair?.interleavedNotes).toBe(2);
+
+    const [plain] = buildMessagePairs([user('u1', 'Q'), assistant('a1', 'A')], OPTIONS);
+    expect(plain.interleavedNotes).toBeUndefined();
+    expect(plain.answeredAt).toBeUndefined();
+  });
 });

@@ -168,7 +168,7 @@ for (const combo of COMBOS) {
       });
       await stage('08', 'sent-message-chips', async () => {
         await expect(bob.page.getByText('support is briefed on Friday')).toBeVisible({ timeout: 30_000 });
-        const heading = bob.page.getByTestId('user-query-heading').filter({ hasText: 'what changed' });
+        const heading = bob.page.getByTestId('human-message').filter({ hasText: 'what changed' });
         await heading.scrollIntoViewIfNeeded();
         await expect(heading.getByTestId('mention-chip').filter({ hasText: 'User Owner' })).toHaveCount(1);
         await shot(bob.page, '08', 'sent-message-chips', 'The sent question renders the person token as a chip ("@User Owner") and the typed @assistant as an assistant chip, followed by the answer.', heading);
@@ -196,17 +196,17 @@ for (const combo of COMBOS) {
         await tip.getByRole('button', { name: 'Got it' }).click();
       });
       await stage('11', 'note-bubble-author', async () => {
-        const note = bob.page.getByTestId('note-bubble').last();
+        const note = bob.page.getByTestId('human-message').filter({ hasText: 'can you approve the launch checklist?' }).last();
         await expect(note).toBeVisible();
         await note.scrollIntoViewIfNeeded();
-        await shot(bob.page, '11', 'note-bubble-author', 'The note in Bob\'s (author\'s) tab: NOTE label, "You" chip, time, the mention chip and the text.', note);
+        await shot(bob.page, '11', 'note-bubble-author', 'The note in Bob\'s (author\'s) tab: avatar, name, time, the mention chip and the text, with no label or box.', note);
       });
       await stage('12', 'note-bubble-other', async () => {
         await openConversation(alice.page, sessionId);
-        const note = alice.page.getByTestId('note-bubble').last();
+        const note = alice.page.getByTestId('human-message').filter({ hasText: 'can you approve the launch checklist?' }).last();
         await expect(note).toBeVisible({ timeout: 30_000 });
         await note.scrollIntoViewIfNeeded();
-        await shot(alice.page, '12', 'note-bubble-other', 'The same note in Alice\'s tab: author chip "User Writer" and a "@you" chip for the mention of her.', note);
+        await shot(alice.page, '12', 'note-bubble-other', 'The same note in Alice\'s tab: author name "User Writer" and a "@you" chip for the mention of her.', note);
       });
       await stage('13', 'notification-mentioned', async () => {
         await expect.poll(async () => {
@@ -256,7 +256,7 @@ for (const combo of COMBOS) {
           await composer(who.page).click();
           await typeMention(who.page, 'Rea', 'User Reader');
           await who.page.keyboard.type('the pricing risk is handled');
-          const notes = who.page.getByTestId('note-bubble');
+          const notes = who.page.getByTestId('human-message').filter({ hasText: 'the pricing risk is handled' });
           const notesBefore = await notes.count();
           await who.page.getByRole('button', { name: SEND }).click();
           const prompt = who.page.getByTestId('non-participant-prompt');

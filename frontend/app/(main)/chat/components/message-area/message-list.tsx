@@ -6,6 +6,9 @@ import { Flex, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse, formatMessageTime } from './chat-response';
 import { NoteBubble } from './note-bubble';
+import { DayDivider } from './timeline/day-divider';
+import { useCollabMessageContext } from '../../hooks/use-collab-message-context';
+import { buildTimeline } from '../../utils/collab-timeline';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
@@ -55,6 +58,7 @@ const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
 export function MessageList() {
   const meUserId = useUserStore((s) => s.profile?.userId ?? null);
+  const { collabActive } = useCollabMessageContext();
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
@@ -181,7 +185,7 @@ export function MessageList() {
     streamingScrollTopRef.current = scrollContainerRef.current.scrollTop;
   }
 
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const isMobile = useIsMobile();
 
   // Use useThread to get reactive thread state
@@ -1007,6 +1011,47 @@ export function MessageList() {
     [threadRuntime]
   );
 
+  const renderResponse = (pair: MessagePair, isLast: boolean, extra: Partial<React.ComponentProps<typeof ChatResponse>> = {}) => (
+    <ChatResponse
+                  question={pair.question}
+                  answer={pair.answer}
+                  citationMaps={pair.citationMaps}
+                  citationCallbacks={citationCallbacks}
+                  confidence={pair.confidence}
+                  answerMatchType={pair.answerMatchType}
+                  isStreaming={pair.isStreaming}
+                  modelInfo={pair.modelInfo}
+                  collections={pair.collections}
+                  appliedFilters={pair.appliedFilters}
+                  attachments={pair.attachments}
+                  messageId={pair.messageId}
+                  isLastMessage={isLast}
+                  citationMessageRowKey={pair.key}
+                  createdAt={pair.createdAt}
+                  streamingContent={pair.isStreaming ? streamingContent : undefined}
+                  currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
+                  streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
+                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                  streamingParts={pair.isStreaming ? streamingParts : undefined}
+                  latestArtifactVersions={latestArtifactVersions}
+                  persistedParts={pair.persistedParts}
+                  persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
+                  persistedAgentDraft={pair.persistedAgentDraft}
+                  agentDraftAuthor={pair.agentDraftAuthor}
+                  agentDraftMessageId={pair.agentDraftMessageId}
+                  feedbackInfo={pair.feedbackInfo}
+                  status={pair.status}
+                  unanswered={pair.unanswered}
+                  author={pair.author}
+                  requestedBy={pair.requestedBy}
+                  respondingAgent={pair.respondingAgent}
+      {...extra}
+    />
+  );
+
+  const timelineGroups = useMemo(() => (collabActive ? buildTimeline(messagePairs) : []), [collabActive, messagePairs]);
+
   return (
     <Box
       ref={scrollContainerRef}
@@ -1050,7 +1095,44 @@ export function MessageList() {
             </Flex>
           )}
 
-          {messagePairs.map((pair, index) => {
+          {collabActive ? (
+            <div
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
+              aria-label={t('chat.collab.timeline.logLabel')}
+              data-testid="message-timeline"
+              style={{ display: 'flex', flexDirection: 'column' }}
+            >
+              {timelineGroups.map((group) => (
+                <div key={group.key} ref={group.refKey ? (el) => setMessageRef(group.refKey as string, el) : undefined}>
+                  {group.rows.map((row) => {
+                    const isLast = row.pair === messagePairs[messagePairs.length - 1];
+                    return (
+                      <React.Fragment key={row.key}>
+                        {row.dayDivider ? <DayDivider iso={row.dayDivider} /> : null}
+                        {row.kind === 'human'
+                          ? renderResponse(row.pair, isLast, {
+                              rowMode: 'human',
+                              showHeader: row.showHeader,
+                              streamingContent: undefined,
+                              currentStatusMessage: undefined,
+                              streamingCitationMaps: undefined,
+                              streamingArtifacts: undefined,
+                              streamingParts: undefined,
+                            })
+                          : renderResponse(row.pair, isLast, {
+                              rowMode: 'reply',
+                              answeredAt: row.pair.answeredAt,
+                              replyingTo: row.replyingTo,
+                            })}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          ) : messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
             if (pair.note) {
               return (
@@ -1069,41 +1151,7 @@ export function MessageList() {
                 key={pair.key}
                 ref={(el) => setMessageRef(pair.key, el)}
               >
-                <ChatResponse
-                  question={pair.question}
-                  answer={pair.answer}
-                  citationMaps={pair.citationMaps}
-                  citationCallbacks={citationCallbacks}
-                  confidence={pair.confidence}
-                  answerMatchType={pair.answerMatchType}
-                  isStreaming={pair.isStreaming}
-                  modelInfo={pair.modelInfo}
-                  collections={pair.collections}
-                  appliedFilters={pair.appliedFilters}
-                  attachments={pair.attachments}
-                  messageId={pair.messageId}
-                  isLastMessage={isLast}
-                  citationMessageRowKey={pair.key}
-                  createdAt={pair.createdAt}
-                  streamingContent={pair.isStreaming ? streamingContent : undefined}
-                  currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
-                  streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
-                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
-                  streamingParts={pair.isStreaming ? streamingParts : undefined}
-                  latestArtifactVersions={latestArtifactVersions}
-                  persistedParts={pair.persistedParts}
-                  persistedAskUserQuestion={pair.persistedAskUserQuestion}
-                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
-                  persistedAgentDraft={pair.persistedAgentDraft}
-                  agentDraftAuthor={pair.agentDraftAuthor}
-                  agentDraftMessageId={pair.agentDraftMessageId}
-                  feedbackInfo={pair.feedbackInfo}
-                  status={pair.status}
-                  unanswered={pair.unanswered}
-                  author={pair.author}
-                  requestedBy={pair.requestedBy}
-                  respondingAgent={pair.respondingAgent}
-                />
+                {renderResponse(pair, isLast)}
 
                 {/* Ask More — follow-up suggestions after the last bot response.
                     Placed inside the last message wrapper so the ResizeObserver

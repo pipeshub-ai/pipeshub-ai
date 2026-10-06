@@ -10,6 +10,8 @@ interface ResponseTabsProps {
   onTabChange: (tab: ResponseTab) => void;
   sourcesCount?: number;
   citationCount?: number;
+  /** `chips` is the compact toggle row used under an answer in a collaborative timeline. */
+  variant?: 'tabs' | 'chips';
 }
 
 interface TabItemProps {
@@ -95,8 +97,58 @@ export function ResponseTabs({
   onTabChange,
   sourcesCount,
   citationCount,
+  variant = 'tabs',
 }: ResponseTabsProps) {
   const { t } = useTranslation();
+  if (variant === 'chips') {
+    const chips: Array<{ tab: ResponseTab; label: string; count?: number; disabled: boolean }> = [
+      { tab: 'answer', label: t('chat.answer'), disabled: false },
+      { tab: 'sources', label: t('chat.sources'), count: sourcesCount, disabled: !sourcesCount },
+      { tab: 'citation', label: t('chat.citation'), count: citationCount, disabled: !citationCount },
+    ];
+    return (
+      <Flex
+        align="center"
+        gap="2"
+        wrap="wrap"
+        role="group"
+        aria-label={t('chat.collab.timeline.answerViews')}
+        data-testid="response-chips"
+        style={{ marginTop: 'var(--space-1)' }}
+      >
+        {chips.map((chip) => {
+          const active = activeTab === chip.tab;
+          return (
+            <button
+              key={chip.tab}
+              type="button"
+              aria-pressed={active}
+              disabled={chip.disabled}
+              onClick={() => onTabChange(chip.tab)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 'var(--space-1)',
+                padding: '2px var(--space-2)',
+                borderRadius: 'var(--radius-full)',
+                border: `1px solid ${active ? 'var(--accent-a7)' : 'var(--slate-a6)'}`,
+                background: active ? 'var(--accent-a3)' : 'transparent',
+                color: active ? 'var(--accent-11)' : 'var(--slate-11)',
+                fontFamily: 'inherit',
+                fontSize: 'var(--font-size-1)',
+                lineHeight: 'var(--line-height-1)',
+                cursor: chip.disabled ? 'not-allowed' : 'pointer',
+                opacity: chip.disabled ? 0.5 : 1,
+              }}
+            >
+              {chip.label}
+              {chip.count ? <span style={{ fontWeight: 500 }}>{chip.count}</span> : null}
+            </button>
+          );
+        })}
+      </Flex>
+    );
+  }
   return (
     <Flex
       align="center"

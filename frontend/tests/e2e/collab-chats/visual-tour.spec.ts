@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { fake, waitFor } from './support/stack';
-import { authorChipOf, composer, openChat } from './support/chat-ui';
+import { authorOf, composer, openChat } from './support/chat-ui';
 import { COMBOS, TOUR_ENABLED, makeCast, markExhausted, reserveMutations, waitQuiet, observe, setCurrentCombo, shot, unreachable, writeIndex, type Cast } from './support/visual-tour';
 
 /**
@@ -155,7 +155,7 @@ for (const combo of COMBOS) {
       await bob.page.route('**/feed**', (route) => (freeze ? route.abort() : route.continue()));
       await openChat(bob.page, chat);
       await expect(bob.page.getByRole('button', { name: 'Share', exact: true }).first()).toBeVisible();
-      await expect(authorChipOf(bob.page, Q1)).toHaveAttribute('aria-label', 'Sent by User Owner', { timeout: 30_000 });
+      await expect(authorOf(bob.page, Q1)).toHaveText('User Owner', { timeout: 30_000 });
       freeze = true;
       expect((await alice.api.call('PATCH', `/api/v1/conversations/${chat}/collaboration-settings`, { editorsCanInvite: false })).status).toBe(200);
       await bob.page.getByRole('button', { name: 'Share', exact: true }).first().click();
@@ -183,9 +183,9 @@ for (const combo of COMBOS) {
       await bob.page.getByRole('button', { name: 'Send message' }).click();
       await expect(bob.page.getByText('Team plan stays at')).toBeVisible({ timeout: 40_000 });
       await expect(bob.page.getByTestId('answered-as-label')).toHaveCount(2);
-      await bob.page.getByTestId('user-query-heading').first().scrollIntoViewIfNeeded();
+      await bob.page.getByTestId('human-message').first().scrollIntoViewIfNeeded();
       await shot(bob.page, '13', 'history-bob-tab', 'Bob\'s tab: Alice\'s turn (chip "User Owner", "Asked by User Owner · answered using ...") and Bob\'s own turn ("You", "Asked by you · answered using your access").');
-      await bob.page.getByTestId('user-query-heading').last().scrollIntoViewIfNeeded();
+      await bob.page.getByTestId('human-message').last().scrollIntoViewIfNeeded();
       await openChat(alice.page, chat);
       await expect(alice.page.getByText('Team plan stays at')).toBeVisible({ timeout: 30_000 });
       await shot(alice.page, '14', 'history-alice-tab', 'Alice\'s tab of the same chat: her own turn is "You", Bob\'s turn carries "User Writer" and his answered-using label.');

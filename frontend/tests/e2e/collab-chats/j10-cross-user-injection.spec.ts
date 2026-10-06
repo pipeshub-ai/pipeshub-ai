@@ -73,7 +73,7 @@ test('J-10: B\'s send names B as the sender and labels A\'s planted message with
   for (const key of ['userId', 'orgId', 'email', 'authorUserId', 'requestedBy']) expect(blob).not.toContain(key);
 
   // The UI shows the turns with their real authors, which is a Node-side fact the AI backend never gets.
-  await expect(b.page.getByTestId('author-chip').first()).toBeVisible();
+  await expect(b.page.getByTestId('message-author').first()).toBeVisible();
 });
 
 test('J-10: when the write guard refuses the planted action, the sender sees a confirmation card and the other person sees it read-only', { tag: '@collab' }, async ({ users }) => {

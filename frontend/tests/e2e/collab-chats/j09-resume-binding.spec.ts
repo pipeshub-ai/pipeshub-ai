@@ -37,7 +37,7 @@ test('J-09: B parks a question; A sees it read-only and cannot answer it; B answ
   await send(a.page, 'User selections: staging');
   await expect(a.page.getByText(NOT_ASKER).first()).toBeVisible({ timeout: 15_000 });
   // The refused attempt leaves no local-only bubble; the text goes back to the composer.
-  await expect(a.page.getByTestId('user-query-heading').filter({ hasText: 'User selections: staging' })).toHaveCount(0);
+  await expect(a.page.getByTestId('human-message').filter({ hasText: 'User selections: staging' })).toHaveCount(0);
   await expectComposerText(a.page, 'User selections: staging');
   await composer(a.page).fill('');
 
