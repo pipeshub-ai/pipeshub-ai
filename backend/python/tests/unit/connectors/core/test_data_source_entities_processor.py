@@ -1211,11 +1211,17 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "group-1"
         mock_group.name = "Test Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = True
+        tx_store.batch_delete_edges.return_value = 1
 
         result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
         assert result is True
+        # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+        tx_store.batch_delete_edges.assert_awaited_once_with(
+            [{"from_id": "user-1", "from_collection": "users", "to_id": "group-1", "to_collection": "groups"}],
+            collection="permission",
+        )
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_edge_not_found(self):
@@ -1232,7 +1238,7 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "group-1"
         mock_group.name = "Test Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = False
+        tx_store.batch_delete_edges.return_value = 0
 
         result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
@@ -1240,18 +1246,52 @@ class TestOnUserGroupMemberRemoved:
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, it read as "was not a member" and the user kept the group's access."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        mock_group = MagicMock()
+        mock_group.id = "group-1"
+        mock_group.name = "Test Group"
+        tx_store.get_user_group_by_external_id.return_value = mock_group
+        tx_store.batch_delete_edges.side_effect = RuntimeError("write conflict")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lookup", ["get_user_by_email", "get_user_group_by_external_id"])
+    async def test_a_failed_lookup_is_raised(self, lookup: str) -> None:
+        """Taken for "no such user" or "no such group", it returned with the membership in place."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        getattr(tx_store, lookup).side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
+
+        assert getattr(tx_store, lookup).await_args.kwargs["raise_on_error"] is True
+        tx_store.batch_delete_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_transaction_that_cannot_start_is_raised(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
         ctx = _make_ctx(tx_store)
         ctx.__aenter__.side_effect = RuntimeError("db fail")
         proc.data_store_provider.transaction.return_value = ctx
 
-        result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
-
-        assert result is False
-        proc.logger.error.assert_called()
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
 
 # ===========================================================================
@@ -1392,8 +1432,8 @@ class TestOnUserGroupDeleted:
         tx_store.delete_nodes_and_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, nobody had to look, and the group kept giving its members access."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -1404,10 +1444,22 @@ class TestOnUserGroupDeleted:
         tx_store.get_user_group_by_external_id.return_value = mock_group
         tx_store.delete_nodes_and_edges.side_effect = RuntimeError("db fail")
 
-        result = await proc.on_user_group_deleted("ext-grp", "conn-1")
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_user_group_deleted("ext-grp", "conn-1")
 
-        assert result is False
-        proc.logger.error.assert_called()
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised(self) -> None:
+        """Taken for "no such group", it was reported as already deleted, and stayed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_group_by_external_id.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_user_group_deleted("ext-grp", "conn-1")
+
+        assert tx_store.get_user_group_by_external_id.await_args.kwargs["raise_on_error"] is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1860,8 +1912,8 @@ class TestOnAppRoleDeleted:
         )
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, nobody had to look, and the role kept giving its members access."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -1872,10 +1924,22 @@ class TestOnAppRoleDeleted:
         tx_store.get_app_role_by_external_id.return_value = mock_role
         tx_store.delete_nodes_and_edges.side_effect = RuntimeError("db fail")
 
-        result = await proc.on_app_role_deleted("ext-role-1", "conn-1")
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_app_role_deleted("ext-role-1", "conn-1")
 
-        assert result is False
-        proc.logger.error.assert_called()
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised(self) -> None:
+        """Taken for "no such role", the deletion was dropped and the role stayed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_app_role_by_external_id.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_app_role_deleted("ext-role-1", "conn-1")
+
+        assert tx_store.get_app_role_by_external_id.await_args.kwargs["raise_on_error"] is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
 
 
 # ===========================================================================

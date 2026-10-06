@@ -375,16 +375,20 @@ class FakeRecordsDb:
             self.user_groups[group.source_user_group_id] = [m.email for m in members]
 
     async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        # Like the real processor: a delete that fails raises.
         if external_group_id in self.fail_group_delete:
-            return False
+            raise RuntimeError(f"database unavailable deleting group {external_group_id}")
         self.deleted_groups.append(external_group_id)
         self.user_groups.pop(external_group_id, None)
         return True
 
     async def on_user_group_member_removed(self, external_group_id: str, user_email: str, connector_id: str) -> bool:
-        # Like the real processor: False when the user or the edge isn't stored, or the delete fails.
+        # Like the real processor: a delete that fails raises; False only when the
+        # user or the membership isn't stored, so there was nothing to remove.
+        if (external_group_id, user_email) in self.fail_member_removal:
+            raise RuntimeError(f"database unavailable removing {user_email} from group {external_group_id}")
         members = self.user_groups.get(external_group_id, [])
-        if user_email not in members or (external_group_id, user_email) in self.fail_member_removal:
+        if user_email not in members:
             return False
         members.remove(user_email)
         self.removed_members.append((external_group_id, user_email))

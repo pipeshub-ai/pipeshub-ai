@@ -5,6 +5,10 @@ every store; a listing or a lookup BookStack could not answer must remove
 nothing. The fakes answer the way the real services do: BookStack reports an
 error as a JSON body with no page list, the store hands back a plain ``Record``
 from ``get_record_by_external_id``, and sync points hold only strings.
+
+A role deleted in BookStack must leave the store too. When that delete fails,
+the role sync must not move its checkpoint, so the next sync reads the deletion
+from the audit log again.
 """
 
 import json
@@ -490,3 +494,94 @@ async def test_a_record_store_that_cannot_be_read_removes_nothing(world) -> None
     await connector._sync_records()
 
     assert store.deleted == []
+
+
+class FakeBookStackRoles:
+    """Roles, their users and the role audit log, which is asked for events since a timestamp."""
+
+    def __init__(self) -> None:
+        self.users: dict[int, dict[str, Any]] = {}
+        self.roles: dict[int, dict[str, Any]] = {}
+        self.audit: list[dict[str, Any]] = []
+        self.now = "2026-01-01T00:00:00Z"
+
+    def add_user(self, user_id: int, email: str) -> None:
+        self.users[user_id] = {"id": user_id, "email": email, "name": email}
+
+    def add_role(self, role_id: int, name: str, *user_ids: int) -> None:
+        self.roles[role_id] = {"id": role_id, "display_name": name, "users": [{"id": u} for u in user_ids]}
+
+    def delete_role(self, role_id: int) -> None:
+        role = self.roles.pop(role_id)
+        self.audit.append({"type": "role_delete", "detail": f"({role_id}) {role['display_name']}", "created_at": self.now})
+
+    @staticmethod
+    def _page(rows: list[dict[str, Any]], count: int | None, offset: int | None) -> BookStackResponse:
+        start = offset or 0
+        return BookStackResponse(success=True, data={"data": rows[start:start + (count or 100)], "total": len(rows)})
+
+    async def list_audit_log(self, filter: dict[str, str]) -> BookStackResponse:  # noqa: A002
+        since = filter["created_at:gte"]
+        events = [e for e in self.audit if e["type"] == filter["type"] and e["created_at"] >= since]
+        return BookStackResponse(success=True, data={"data": events, "total": len(events)})
+
+    async def list_users(self, count: int | None = None, offset: int | None = None) -> BookStackResponse:
+        return self._page(list(self.users.values()), count, offset)
+
+    async def get_user(self, user_id: int) -> BookStackResponse:
+        return BookStackResponse(success=True, data=self.users[user_id])
+
+    async def list_roles(self, count: int | None = None, offset: int | None = None) -> BookStackResponse:
+        return self._page([{"id": r["id"], "display_name": r["display_name"]} for r in self.roles.values()], count, offset)
+
+    async def get_role(self, role_id: int) -> BookStackResponse:
+        return BookStackResponse(success=True, data=self.roles[role_id])
+
+
+class FakeRoleStore:
+    """The role methods of ``DataSourceEntitiesProcessor``: each role's member emails, by BookStack role id."""
+
+    def __init__(self) -> None:
+        self.org_id = "org-1"
+        self.roles: dict[str, list[str]] = {}
+        self.fail_role_delete = False
+
+    async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
+        for role, members in roles:
+            self.roles[role.source_role_id] = [m.email for m in members]
+
+    async def on_app_role_deleted(self, external_role_id: str, connector_id: str) -> bool:
+        # Like the real processor: a delete that fails raises; False when the role isn't stored.
+        if self.fail_role_delete:
+            raise RuntimeError("graph unavailable")
+        return self.roles.pop(external_role_id, None) is not None
+
+
+ROLE_CHECKPOINT = "bookstack/user_role_logs/global"
+
+
+async def test_a_role_deletion_the_store_refuses_is_read_again_on_the_next_sync() -> None:
+    source, store = FakeBookStackRoles(), FakeRoleStore()
+    source.add_user(1, "ana@acme.com")
+    source.add_role(7, "Editors", 1)
+    source.add_role(8, "Viewers", 1)
+    with _connector(source, store) as connector:
+        connector._get_iso_time = lambda: source.now
+        await connector._sync_user_roles()
+        assert store.roles == {"7": ["ana@acme.com"], "8": ["ana@acme.com"]}
+
+        source.now = "2026-01-02T00:00:00Z"
+        source.delete_role(8)
+        source.now = "2026-01-03T00:00:00Z"
+        store.fail_role_delete = True
+        with pytest.raises(RuntimeError, match="graph unavailable"):
+            await connector._sync_user_roles()
+
+        assert "8" in store.roles, "the deleted role still gives its members access"
+        assert connector.app_role_sync_point.points[ROLE_CHECKPOINT] == {"timestamp": "2026-01-01T00:00:00Z"}
+
+        store.fail_role_delete = False
+        await connector._sync_user_roles()
+
+        assert store.roles == {"7": ["ana@acme.com"]}
+        assert connector.app_role_sync_point.points[ROLE_CHECKPOINT] == {"timestamp": "2026-01-03T00:00:00Z"}

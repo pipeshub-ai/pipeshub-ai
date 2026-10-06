@@ -439,6 +439,65 @@ class TestAzureAdGroups:
         assert db.user_groups == {"g1": ["ana@contoso.com"]}
         assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
 
+    async def test_a_member_removal_the_database_refuses_is_read_again_on_the_next_run(self, connector, api, db, checkpoints) -> None:
+        serve_groups_delta(api, {
+            None: page([], delta_link=groups_delta_url("D1")),
+            "D1": page([
+                {"id": "g1", "displayName": "Eng", "members@delta": [
+                    {"@odata.type": "#microsoft.graph.user", "id": "u2", "@removed": {"reason": "deleted"}}]},
+            ], delta_link=groups_delta_url("D2")),
+        })
+        api.on("GET", "/v1.0/groups", page([]))
+        await connector._sync_azure_ad_groups()
+        # The member list still names Bo, so only the removal takes him out of the group.
+        api.on("GET", "/v1.0/groups/g1/members", page([user_member("u1", "ana@contoso.com"), user_member("u2", "bo@contoso.com")]))
+        api.on("GET", "/v1.0/users/u2", {"id": "u2", "mail": "bo@contoso.com"})
+        db.fail_member_removal.add(("g1", "bo@contoso.com"))
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com", "bo@contoso.com"]}
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1")
+
+        db.fail_member_removal.clear()
+        await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com"]}
+        assert db.removed_members == [("g1", "bo@contoso.com")]
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
+
+    async def test_a_refused_member_removal_on_a_later_page_is_read_again_without_losing_a_deletion_after_it(
+        self, connector, api, db, checkpoints
+    ) -> None:
+        serve_groups_delta(api, {
+            None: page([], delta_link=groups_delta_url("D1")),
+            "D1": page([], next_link=groups_delta_url("P2")),
+            "P2": page([
+                {"id": "g1", "displayName": "Eng", "members@delta": [
+                    {"@odata.type": "#microsoft.graph.user", "id": "u2", "@removed": {"reason": "deleted"}}]},
+            ], next_link=groups_delta_url("P3")),
+            "P3": page([{"id": "g-old", "@removed": {"reason": "deleted"}}], delta_link=groups_delta_url("D2")),
+        })
+        api.on("GET", "/v1.0/groups", page([]))
+        await connector._sync_azure_ad_groups()
+        db.user_groups["g-old"] = ["x@contoso.com"]
+        api.on("GET", "/v1.0/groups/g1/members", page([user_member("u1", "ana@contoso.com"), user_member("u2", "bo@contoso.com")]))
+        api.on("GET", "/v1.0/users/u2", {"id": "u2", "mail": "bo@contoso.com"})
+        db.fail_member_removal.add(("g1", "bo@contoso.com"))
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector._sync_azure_ad_groups()
+
+        assert group_link(checkpoints)["nextLink"] == groups_delta_url("P2"), "stopped on the page with the removal"
+
+        db.fail_member_removal.clear()
+        await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com"]}, "Bo is out, and the group deleted on the next page is gone"
+        assert db.deleted_groups == ["g-old"]
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
+
     @pytest.mark.xfail(strict=True, reason=(
         "When a changed group's member list can't be read, the group is saved with no members, so everyone in it "
         "loses the access the group gives (msgraph_client.get_group_members returns [] on error; "
@@ -457,10 +516,6 @@ class TestAzureAdGroups:
 
         assert db.user_groups["g1"] == ["ana@contoso.com"]
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "An interrupted group delta sync forgets where it was: the saved next page is ignored and the next run "
-        "does a full listing, which never removes groups, so a group deleted meanwhile keeps its members "
-        "(sharepoint_online/connector.py:3290, 3453-3457)"))
     async def test_an_interrupted_group_delta_resumes_from_the_saved_page(self, connector, api, db, checkpoints) -> None:
         serve_groups_delta(api, {
             None: page([], delta_link=groups_delta_url("D1")),

@@ -3775,56 +3775,62 @@ class DataSourceEntitiesProcessor:
         user_email: str,
         connector_id: str
     ) -> bool:
+        """
+        Remove a user from a user group.
 
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
-                if not user:
-                    self.logger.warning(
-                        f"Cannot remove member from group {external_group_id}: "
-                        f"User with email {user_email} not found in database"
-                    )
-                    return False
+        Returns:
+            bool: True if the membership was removed. False if there was nothing to
+            remove: the user or the group is not stored, or the user was not a member.
 
-                # 2. Look up the user group by external ID
-                user_group = await tx_store.get_user_group_by_external_id(
-                    connector_id=connector_id,
-                    external_id=external_group_id
+        Raises:
+            Exception: if a lookup or the delete fails. The user is then still in the
+            group and keeps its access, so the caller must try the removal again.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            # A user or group that could not be read is not one that is not there:
+            # returning False on a failed read would leave the user in the group.
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            if not user:
+                self.logger.warning(
+                    f"Cannot remove member from group {external_group_id}: "
+                    f"User with email {user_email} not found in database"
                 )
-                if not user_group:
-                    self.logger.warning(
-                        f"Cannot remove member from group: "
-                        f"Group with external ID {external_group_id} not found in database"
-                    )
-                    return False
+                return False
 
-                # 3. Delete the permission edge
-                edge_deleted = await tx_store.delete_edge(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=user_group.id,
-                    to_collection=CollectionNames.GROUPS.value,
-                    collection=CollectionNames.PERMISSION.value
+            user_group = await tx_store.get_user_group_by_external_id(
+                connector_id=connector_id,
+                external_id=external_group_id,
+                raise_on_error=True,
+            )
+            if not user_group:
+                self.logger.warning(
+                    f"Cannot remove member from group: "
+                    f"Group with external ID {external_group_id} not found in database"
                 )
+                return False
 
-                if edge_deleted:
-                    self.logger.debug(
-                        f"Successfully removed user {user_email} from group {user_group.name} "
-                        f"(external_id: {external_group_id})"
-                    )
-                    return True
-                else:
-                    self.logger.warning(
-                        f"No permission edge found between user {user_email} "
-                        f"and group {user_group.name} (external_id: {external_group_id})"
-                    )
-                    return False
+            # Not delete_edge: ArangoDB's answers False when the delete fails, the
+            # same answer as "was not a member".
+            deleted = await tx_store.batch_delete_edges(
+                [{
+                    "from_id": user.id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": user_group.id,
+                    "to_collection": CollectionNames.GROUPS.value,
+                }],
+                collection=CollectionNames.PERMISSION.value,
+            )
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to remove user {user_email} from group {external_group_id}: {str(e)}",
-                exc_info=True
+            if deleted:
+                self.logger.debug(
+                    f"Successfully removed user {user_email} from group {user_group.name} "
+                    f"(external_id: {external_group_id})"
+                )
+                return True
+
+            self.logger.warning(
+                f"No permission edge found between user {user_email} "
+                f"and group {user_group.name} (external_id: {external_group_id})"
             )
             return False
 
@@ -3975,43 +3981,40 @@ class DataSourceEntitiesProcessor:
             connector_id: The ID of the connector (e.g., 'DROPBOX')
 
         Returns:
-            bool: True if the group was successfully deleted, False otherwise
+            bool: True once the group is gone, including when it was not stored.
+
+        Raises:
+            Exception: if the lookup or the delete fails. The group then still gives
+            its members access, so the caller must try the deletion again.
         """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the user group by external ID
-                user_group = await tx_store.get_user_group_by_external_id(
-                    connector_id=connector_id,
-                    external_id=external_group_id
-                )
+        async with self.data_store_provider.transaction() as tx_store:
+            # Raising: a group that could not be read would otherwise be reported
+            # as already deleted, and stay.
+            user_group = await tx_store.get_user_group_by_external_id(
+                connector_id=connector_id,
+                external_id=external_group_id,
+                raise_on_error=True,
+            )
 
-                if not user_group:
-                    self.logger.warning(
-                        f"❕ Group with external ID {external_group_id} not in database, skipping deletion"
-                    )
-                    return True
-
-                group_internal_id = user_group.id
-                group_name = user_group.name
-
-                self.logger.debug(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
-
-                #Delete the node and edges
-                await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
-
-                self.logger.debug(
-                    f"Successfully deleted user group {group_name} "
-                    f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
-                    f"and all associated edges"
+            if not user_group:
+                self.logger.warning(
+                    f"❕ Group with external ID {external_group_id} not in database, skipping deletion"
                 )
                 return True
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to delete user group {external_group_id}: {str(e)}",
-                exc_info=True
+            group_internal_id = user_group.id
+            group_name = user_group.name
+
+            self.logger.debug(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
+
+            await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
+
+            self.logger.debug(
+                f"Successfully deleted user group {group_name} "
+                f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
+                f"and all associated edges"
             )
-            return False
+            return True
 
     @retry_on_deadlock()
     async def delete_user_group_by_id(self, group_id: str) -> None:
@@ -4255,43 +4258,39 @@ class DataSourceEntitiesProcessor:
             connector_id: The instance ID of the connector
 
         Returns:
-            bool: True if the role was successfully deleted, False otherwise
+            bool: True if the role was deleted, False if it was not stored.
+
+        Raises:
+            Exception: if the lookup or the delete fails. The role then still gives
+            its members access, so the caller must try the deletion again.
         """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the app role by external ID
-                app_role = await tx_store.get_app_role_by_external_id(
-                    connector_id=connector_id,
-                    external_id=external_role_id
-                )
-
-                if not app_role:
-                    self.logger.warning(
-                        f"Cannot delete role: Role with external ID {external_role_id} not found in database"
-                    )
-                    return False
-
-                role_internal_id = app_role.id
-                role_name = app_role.name
-
-                self.logger.debug(f"Deleting app role: {role_name} (internal_id: {role_internal_id})")
-
-                # Delete the node and all associated edges
-                await tx_store.delete_nodes_and_edges([role_internal_id], CollectionNames.ROLES.value)
-
-                self.logger.debug(
-                    f"Successfully deleted app role {role_name} "
-                    f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
-                    f"and all associated edges"
-                )
-                return True
-
-        except Exception as e:
-            self.logger.error(
-                f"Failed to delete app role {external_role_id}: {str(e)}",
-                exc_info=True
+        async with self.data_store_provider.transaction() as tx_store:
+            # Raising: a role that could not be read is not a role that is not there.
+            app_role = await tx_store.get_app_role_by_external_id(
+                connector_id=connector_id,
+                external_id=external_role_id,
+                raise_on_error=True,
             )
-            return False
+
+            if not app_role:
+                self.logger.warning(
+                    f"Cannot delete role: Role with external ID {external_role_id} not found in database"
+                )
+                return False
+
+            role_internal_id = app_role.id
+            role_name = app_role.name
+
+            self.logger.debug(f"Deleting app role: {role_name} (internal_id: {role_internal_id})")
+
+            await tx_store.delete_nodes_and_edges([role_internal_id], CollectionNames.ROLES.value)
+
+            self.logger.debug(
+                f"Successfully deleted app role {role_name} "
+                f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
+                f"and all associated edges"
+            )
+            return True
 
     @retry_on_deadlock()
     async def on_record_group_deleted(

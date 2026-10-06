@@ -103,6 +103,19 @@ from app.utils.streaming import create_stream_record_response, stream_content
 
 # from dropbox.team import GroupSelector
 
+
+# Runs that may fail on one page of group events before its failed removals are skipped.
+MAX_GROUP_EVENT_PAGE_ATTEMPTS = 5
+
+
+class GroupAccessRemovalError(Exception):
+    """A member removal or group deletion in the group event log that could not be saved.
+
+    Dropbox lists an event once, so the handlers let this one through instead of
+    logging it: the group event cursor then stays before the event.
+    """
+
+
 # Add these helper functions at the top of the file
 def get_parent_path_from_path(path: str) -> Optional[str]:
     """Extracts the parent path from a file/folder path."""
@@ -1748,6 +1761,8 @@ class DropboxConnector(BaseConnector):
             has_more = True
             latest_cursor_to_save = cursor
             events_processed = 0
+            # Runs that already failed on the page at the saved cursor.
+            failed_runs = int(sync_point.get('heldAttempts') or 0)
 
             while has_more:
                 try:
@@ -1767,6 +1782,17 @@ class DropboxConnector(BaseConnector):
                         try:
                             await self._process_group_event(event)
                             events_processed += 1
+                        except GroupAccessRemovalError as e:
+                            # A page is held for a bounded number of runs, so one removal
+                            # that can never be saved can't stop every later group change.
+                            if failed_runs + 1 < MAX_GROUP_EVENT_PAGE_ATTEMPTS:
+                                raise
+                            self.logger.error(
+                                f"❌ {e}; still failing after {failed_runs + 1} runs, so it is skipped and "
+                                "the access it should have removed stays in place",
+                                exc_info=True,
+                            )
+                            continue
                         except Exception as e:
                             self.logger.error(f"Error processing group event: {e}", exc_info=True)
                             continue
@@ -1775,7 +1801,18 @@ class DropboxConnector(BaseConnector):
                     latest_cursor_to_save = response.data.cursor
                     has_more = response.data.has_more
                     cursor = latest_cursor_to_save
+                    failed_runs = 0
 
+                except GroupAccessRemovalError as e:
+                    # latest_cursor_to_save still points before this page, so the next
+                    # run reads the event again; the events before it are safe to repeat.
+                    failed_runs += 1
+                    self.logger.error(
+                        f"❌ {e}; group events will be read again from this page on the next run "
+                        f"(attempt {failed_runs} of {MAX_GROUP_EVENT_PAGE_ATTEMPTS})",
+                        exc_info=True,
+                    )
+                    has_more = False
                 except Exception as e:
                     self.logger.error(f"⚠️ Error in group sync loop: {e}", exc_info=True)
                     has_more = False
@@ -1785,7 +1822,7 @@ class DropboxConnector(BaseConnector):
                 self.logger.info(f"Storing latest group sync cursor for key {sync_point_key}")
                 await self.dropbox_cursor_sync_point.update_sync_point(
                     sync_point_key,
-                    sync_point_data={"cursor": latest_cursor_to_save}
+                    sync_point_data={"cursor": latest_cursor_to_save, "heldAttempts": failed_runs}
                 )
 
             self.logger.info(f"Incremental group sync completed. Processed {events_processed} events.")
@@ -1818,6 +1855,8 @@ class DropboxConnector(BaseConnector):
             else:
                 self.logger.debug(f"Ignoring event type: {event_type}")
 
+        except GroupAccessRemovalError:
+            raise
         except Exception as e:
             self.logger.error(f"Error processing group event of type {getattr(event, 'event_type', 'unknown')}: {e}", exc_info=True)
 
@@ -1864,11 +1903,16 @@ class DropboxConnector(BaseConnector):
         elif event_type == "group_remove_member":
             self.logger.info(f"Removing member '{member_name}' ({member_email}) from group '{group_name}' ({group_id})")
 
-            await self.data_entities_processor.on_user_group_member_removed(
-                external_group_id=group_id,
-                user_email=member_email,
-                connector_id=self.connector_id
-            )
+            try:
+                await self.data_entities_processor.on_user_group_member_removed(
+                    external_group_id=group_id,
+                    user_email=member_email,
+                    connector_id=self.connector_id
+                )
+            except Exception as e:
+                raise GroupAccessRemovalError(
+                    f"Could not remove {member_email} from group '{group_name}' ({group_id}): {e}"
+                ) from e
 
     async def _handle_group_deleted_event(self, event) -> None:
         """Handle group_delete events from Dropbox audit log."""
@@ -1891,10 +1935,13 @@ class DropboxConnector(BaseConnector):
 
         self.logger.info(f"Deleting group {group_name} ({group_id})")
 
-        await self.data_entities_processor.on_user_group_deleted(
-            external_group_id=group_id,
-            connector_id=self.connector_id
-        )
+        try:
+            await self.data_entities_processor.on_user_group_deleted(
+                external_group_id=group_id,
+                connector_id=self.connector_id
+            )
+        except Exception as e:
+            raise GroupAccessRemovalError(f"Could not delete group '{group_name}' ({group_id}): {e}") from e
 
     async def _handle_group_created_event(self, event) -> None:
         """Handle group_create events from Dropbox audit log."""
