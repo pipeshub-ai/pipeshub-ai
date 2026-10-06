@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import requests
 
 from helper.http.api_client import APIClient
@@ -30,14 +32,17 @@ PYTHON_SERVICE_KEYS = ("query", "connector", "indexing", "docling", "embedding")
 # Present only when the Node process runs with USE_PARSING_SERVICE=true.
 PARSING_SERVICE_KEYS = ("parsing", "extraction")
 
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+
 
 class HealthClient(APIClient):
     """Client for /api/v1/health; the router has no auth middleware."""
 
     BASE = HEALTH_BASE
 
-    def root(self, *, auth: bool = True) -> requests.Response:
-        return self.get("", auth=auth)
+    def root(self, *, auth: bool = True, **kwargs: Any) -> requests.Response:
+        return self.get("", auth=auth, **kwargs)
 
-    def services(self, *, auth: bool = True) -> requests.Response:
-        return self.get("/services", auth=auth)
+    def services(self, *, auth: bool = True, **kwargs: Any) -> requests.Response:
+        return self.get("/services", auth=auth, **kwargs)

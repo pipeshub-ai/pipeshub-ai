@@ -5,8 +5,23 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import pytest
-from notifications_audit_support import MALFORMED_NOTIFICATION_ID, MISSING_NOTIFICATION_ID
-from strict_openapi import assert_strict_openapi_response
+from bson import ObjectId
+from notifications_audit_support import (
+    MALFORMED_NOTIFICATION_ID,
+    MISSING_NOTIFICATION_ID,
+    NOT_FOUND_BODY,
+    OUT_OF_SCOPE_KINDS,
+    NotificationsClient,
+    SeedNotification,
+    out_of_scope_fields,
+)
+from helper.second_user import SecondUser
+from pymongo.collection import Collection
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -24,21 +39,21 @@ def test_mark_unread_returns_updated_notification(
     notification = resp.json()["notification"]
     assert notification["_id"] == notification_id
     assert notification["status"] == "unread"
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_mark_unread_without_token_is_unauthorized(notifications_client: Any) -> None:
     resp = notifications_client.set_state(MISSING_NOTIFICATION_ID, "unread", auth=False)
 
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_mark_unread_malformed_id_fails_validation(notifications_client: Any) -> None:
     resp = notifications_client.set_state(MALFORMED_NOTIFICATION_ID, "unread")
 
     assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_mark_unread_unknown_id_is_not_found(notifications_client: Any) -> None:
@@ -46,7 +61,7 @@ def test_mark_unread_unknown_id_is_not_found(notifications_client: Any) -> None:
 
     assert resp.status_code == 404, resp.text[:500]
     assert resp.json() == {"message": "Notification not found"}
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_mark_unread_archived_notification_is_not_found(
@@ -58,4 +73,56 @@ def test_mark_unread_archived_notification_is_not_found(
     resp = notifications_client.set_state(notification_id, "unread")
 
     assert resp.status_code == 404, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("kind", OUT_OF_SCOPE_KINDS)
+def test_unread_notification_outside_the_filter_is_not_found(
+    notifications_client: NotificationsClient,
+    seed_notification: SeedNotification,
+    kind: str,
+) -> None:
+    notification_id = seed_notification(status="read", **out_of_scope_fields(kind))
+
+    resp = notifications_client.set_state(notification_id, "unread")
+
+    assert resp.status_code == 404, resp.text[:500]
+    assert resp.json() == NOT_FOUND_BODY
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_unread_another_users_notification_is_not_found(
+    notifications_client: NotificationsClient,
+    seed_notification: SeedNotification,
+    second_user: SecondUser,
+    notifications_collection: Collection,
+) -> None:
+    notification_id = seed_notification(status="read", assigned_to=second_user.user_id)
+
+    resp = notifications_client.set_state(notification_id, "unread")
+
+    assert resp.status_code == 404, resp.text[:500]
+    assert resp.json() == NOT_FOUND_BODY
+    stored = notifications_collection.find_one({"_id": ObjectId(notification_id)})
+    assert stored is not None and stored["status"] == "read"
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_unread_reads_neither_query_nor_body(
+    notifications_client: NotificationsClient, seed_notification: SeedNotification
+) -> None:
+    notification_id = seed_notification(status="read")
+
+    with outside_request_contract("the validator checks only the id path parameter"):
+        resp = notifications_client.set_state(
+            notification_id,
+            "unread",
+            params={"status": "unread"},
+            json={"status": "unread", "isDeleted": True},
+        )
+
+    assert resp.status_code == 200, resp.text[:500]
+    notification = resp.json()["notification"]
+    assert notification["status"] == "unread"
+    assert notification["isDeleted"] is False
     assert_strict_openapi_response(resp, ROUTE)
