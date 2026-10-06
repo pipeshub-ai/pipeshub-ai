@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 
+# The rewrite and expansion are optional, and the LLM's own timeout is minutes long;
+# past this the search goes on with what the user typed.
+QUERY_TRANSFORM_TIMEOUT_SECONDS = 20.0
+
 
 # Pydantic models
 class SearchQuery(BaseModel):
@@ -70,7 +74,7 @@ async def _transform_query(
     (provider down, content filter, timeout) must not cost the whole search.
     """
     try:
-        return await chain.ainvoke(query)
+        return await asyncio.wait_for(chain.ainvoke(query), timeout=QUERY_TRANSFORM_TIMEOUT_SECONDS)
     except HTTPException:
         raise
     except Exception as exc:

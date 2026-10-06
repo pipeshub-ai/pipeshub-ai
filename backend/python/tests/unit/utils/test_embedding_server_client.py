@@ -41,6 +41,9 @@ class TestRetriableErrors:
     def test_timeout_is_retriable(self):
         assert is_retriable_embedding_error(openai.APITimeoutError(request=MagicMock()))
 
+    def test_a_callers_own_attempt_deadline_is_retriable(self) -> None:
+        assert is_retriable_embedding_error(TimeoutError())
+
     def test_503_is_retriable(self):
         response = MagicMock()
         response.status_code = 503
