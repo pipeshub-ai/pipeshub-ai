@@ -404,3 +404,37 @@ class TestReviewFixesAuthorship:
         await link_record_people(_file(authored_by=SourcePerson(email="ann@acme.com")), store, logging.getLogger("t"))
         store.batch_create_entity_relations.assert_not_awaited()
         store.upsert_person_by_email.assert_not_awaited()
+
+
+class TestTicketsNamedBySourceId:
+    """Jira with hidden emails, and personal Jira (no user directory), name a
+    ticket's people only by account id."""
+
+    def _ticket(self) -> TicketRecord:
+        return TicketRecord(
+            record_type=RecordType.TICKET, is_email_hidden=True,
+            assignee="Ann Lee", assignee_source_id=["acc-ann"],
+            reporter_name="Dan Roe", reporter_source_id="acc-dan",
+            created_by=SourcePerson(source_id="acc-eve", display_name="Eve Poe"),
+            **BASE,
+        )
+
+    async def test_non_members_get_person_nodes_named_after_them(self) -> None:
+        store = _person_store()
+        await link_record_people(self._ticket(), store, logging.getLogger("t"))
+        assert _edges(store) == {
+            ("person/p-conn-1:acc-ann", "ASSIGNED_TO"),
+            ("person/p-conn-1:acc-dan", "REPORTED_BY"),
+            ("person/p-conn-1:acc-eve", "CREATED_BY"),
+        }
+        names = {c.args[0].source_key: c.args[0].full_name for c in store.upsert_person_by_source_key.await_args_list}
+        assert names == {"conn-1:acc-ann": "Ann Lee", "conn-1:acc-dan": "Dan Roe", "conn-1:acc-eve": "Eve Poe"}
+        store.upsert_person_by_email.assert_not_awaited()
+
+    async def test_members_resolve_by_their_source_id(self) -> None:
+        store = _person_store()
+        ticket = self._ticket().model_copy(update={"assignee_source_id": ["src-ann"], "reporter_source_id": "src-dan"})
+        await link_record_people(ticket, store, logging.getLogger("t"))
+        assert {e for e in _edges(store) if e[0].startswith("users/")} == {
+            ("users/u-ann", "ASSIGNED_TO"), ("users/u-dan", "REPORTED_BY"),
+        }

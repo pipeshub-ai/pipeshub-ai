@@ -80,6 +80,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
     AtlassianScope,
 )
+from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -104,6 +105,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     RelatedExternalRecord,
+    SourcePerson,
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -875,6 +877,7 @@ class JiraConnector(BaseConnector):
             reporter_name=issue_data["reporter_name"],
             assignee=issue_data["assignee_name"],
             assignee_email=issue_data["assignee_email"],
+            **issue_data["ticket_people"],
             external_record_id=stub.external_record_id,
             external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{issue_data['updated_at']}",
             record_name=issue_data["issue_name"],
@@ -3394,28 +3397,10 @@ class JiraConnector(BaseConnector):
         raw_priority = priority_obj.get("name") if priority_obj else None
         priority = self.value_mapper.map_priority(raw_priority)
 
-        # Extract user information by accountId (email not available in issue fields)
-        creator = fields.get("creator")
-        creator_account_id = creator.get("accountId") if creator else None
-        creator_name = creator.get("displayName") if creator else None
-        creator_email = None
-        if creator_account_id and creator_account_id in user_by_account_id:
-            creator_email = user_by_account_id[creator_account_id].email
-
-        # Reporter (can be changed, unlike creator which is immutable)
-        reporter = fields.get("reporter")
-        reporter_account_id = reporter.get("accountId") if reporter else None
-        reporter_name = reporter.get("displayName") if reporter else None
-        reporter_email = None
-        if reporter_account_id and reporter_account_id in user_by_account_id:
-            reporter_email = user_by_account_id[reporter_account_id].email
-
-        assignee = fields.get("assignee")
-        assignee_account_id = assignee.get("accountId") if assignee else None
-        assignee_name = assignee.get("displayName") if assignee else None
-        assignee_email = None
-        if assignee_account_id and assignee_account_id in user_by_account_id:
-            assignee_email = user_by_account_id[assignee_account_id].email
+        # The issue payload rarely carries emailAddress; the synced directory fills it.
+        creator = jira_user(fields.get("creator"), user_by_account_id)
+        reporter = jira_user(fields.get("reporter"), user_by_account_id)
+        assignee = jira_user(fields.get("assignee"), user_by_account_id)
 
         created_at = self._parse_jira_timestamp(fields.get("created"))
         updated_at = self._parse_jira_timestamp(fields.get("updated"))
@@ -3428,12 +3413,13 @@ class JiraConnector(BaseConnector):
             "parent_external_id": parent_external_id,
             "status": status,
             "priority": priority,
-            "creator_email": creator_email,
-            "creator_name": creator_name,
-            "reporter_email": reporter_email,
-            "reporter_name": reporter_name,
-            "assignee_email": assignee_email,
-            "assignee_name": assignee_name,
+            "creator_email": creator.email if creator else None,
+            "creator_name": creator.display_name if creator else None,
+            "reporter_email": reporter.email if reporter else None,
+            "reporter_name": reporter.display_name if reporter else None,
+            "assignee_email": assignee.email if assignee else None,
+            "assignee_name": assignee.display_name if assignee else None,
+            "ticket_people": ticket_people(creator, reporter, assignee),
             "created_at": created_at,
             "updated_at": updated_at,
         }
@@ -3599,6 +3585,7 @@ class JiraConnector(BaseConnector):
             reporter_name=reporter_name,
             assignee=assignee_name,
             assignee_email=assignee_email,
+            **issue_data["ticket_people"],
             external_record_id=issue_id,
             external_revision_id=str(updated_at) if updated_at else None,
             record_name=issue_name,
@@ -3842,6 +3829,7 @@ class JiraConnector(BaseConnector):
                         weburl=weburl,
                         record_id=record_id,
                         version=version,
+                        authored_by=atlassian_person(attachment.get("author")),
                     )
 
                     # Attachments inherit permissions from parent issue
@@ -4361,6 +4349,7 @@ class JiraConnector(BaseConnector):
                         parent_node_id=issue_node_id,
                         project_id=project_id,
                         weburl=issue_weburl,
+                        authored_by=atlassian_person(attachment.get("author")),
                     )
 
                     new_file_records.append((file_record, []))
@@ -4687,6 +4676,7 @@ class JiraConnector(BaseConnector):
         version: int = 0,
         external_id_prefix: str = "attachment_",
         skip_filter_check: bool = False,
+        authored_by: SourcePerson | None = None,
     ) -> FileRecord:
         """
         Create a FileRecord for an attachment with consistent settings.
@@ -4740,6 +4730,7 @@ class JiraConnector(BaseConnector):
             is_file=True,
             is_dependent_node=True,
             parent_node_id=parent_node_id,
+            authored_by=authored_by,
         )
 
         # Set indexing status based on filters (if loaded and not skipping filter check)
@@ -5183,6 +5174,7 @@ class JiraConnector(BaseConnector):
                 reporter_name=issue_data["reporter_name"],
                 assignee=issue_data["assignee_name"],
                 assignee_email=issue_data["assignee_email"],
+                **issue_data["ticket_people"],
                 external_record_id=issue_id,
                 external_revision_id=str(current_updated_at) if current_updated_at else None,
                 record_name=issue_data["issue_name"],
@@ -5324,6 +5316,7 @@ class JiraConnector(BaseConnector):
                 record_id=record.id,
                 version=version,
                 skip_filter_check=True,
+                authored_by=atlassian_person(attachment_data.get("author")),
             )
 
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
