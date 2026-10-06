@@ -266,6 +266,7 @@ class FakeRecordsDb:
         self.active_users: list[Any] = []
         self.user_groups: dict[str, list[Any]] = {}
         self.user_group_writes: list[tuple[Any, list[Any]]] = []
+        self.fail_group_write: set[str] = set()
         self.deleted_groups: list[str] = []
         self.fail_group_delete: set[str] = set()
         self.removed_members: list[tuple[str, str]] = []
@@ -370,6 +371,10 @@ class FakeRecordsDb:
         return list(self.active_users)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        # Like the real processor: a write that fails raises, and none of the batch is saved.
+        for group, _ in groups:
+            if group.source_user_group_id in self.fail_group_write:
+                raise RuntimeError(f"database unavailable saving group {group.source_user_group_id}")
         for group, members in groups:
             self.user_group_writes.append((group, list(members)))
             self.user_groups[group.source_user_group_id] = [m.email for m in members]

@@ -467,6 +467,49 @@ class TestAzureAdGroups:
         assert db.removed_members == [("g1", "bo@contoso.com")]
         assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
 
+    async def test_a_member_removal_is_applied_when_the_groups_members_cannot_be_saved(self, connector, api, db, checkpoints) -> None:
+        await self._bo_removed_from_g1(connector, api, db)
+        db.fail_group_write.add("g1")
+
+        await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com"]}, "the removal needs no member list, so Bo is out"
+        assert db.removed_members == [("g1", "bo@contoso.com")]
+
+    async def test_a_database_that_refuses_the_group_and_the_removal_keeps_the_delta_link(self, connector, api, db, checkpoints) -> None:
+        await self._bo_removed_from_g1(connector, api, db)
+        db.fail_group_write.add("g1")
+        db.fail_member_removal.add(("g1", "bo@contoso.com"))
+
+        with pytest.raises(RuntimeError, match="database unavailable removing"):
+            await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com", "bo@contoso.com"]}
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D1")
+
+        db.fail_group_write.clear()
+        db.fail_member_removal.clear()
+        await connector._sync_azure_ad_groups()
+
+        assert db.user_groups == {"g1": ["ana@contoso.com"]}
+        assert group_link(checkpoints)["deltaLink"] == groups_delta_url("D2")
+
+    @staticmethod
+    async def _bo_removed_from_g1(connector, api, db) -> None:
+        """A first sync, then a delta page on which Bo leaves group g1; Graph no longer lists him."""
+        serve_groups_delta(api, {
+            None: page([], delta_link=groups_delta_url("D1")),
+            "D1": page([
+                {"id": "g1", "displayName": "Eng", "members@delta": [
+                    {"@odata.type": "#microsoft.graph.user", "id": "u2", "@removed": {"reason": "deleted"}}]},
+            ], delta_link=groups_delta_url("D2")),
+        })
+        api.on("GET", "/v1.0/groups", page([]))
+        await connector._sync_azure_ad_groups()
+        db.user_groups["g1"] = ["ana@contoso.com", "bo@contoso.com"]
+        api.on("GET", "/v1.0/groups/g1/members", page([user_member("u1", "ana@contoso.com")]))
+        api.on("GET", "/v1.0/users/u2", {"id": "u2", "mail": "bo@contoso.com"})
+
     async def test_a_refused_member_removal_on_a_later_page_is_read_again_without_losing_a_deletion_after_it(
         self, connector, api, db, checkpoints
     ) -> None:

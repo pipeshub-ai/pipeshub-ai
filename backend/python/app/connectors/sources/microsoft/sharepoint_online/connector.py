@@ -3455,9 +3455,9 @@ class SharePointConnector(BaseConnector):
                 success = await self._handle_group_create(group)
                 if not success:
                     self.logger.error(f"❌ Error handling group create for {group.id}")
-                    continue
 
-                # Handle MEMBER changes
+                # Applied even when the save above failed: a removal listed here needs no
+                # member read, and is lost for good once the delta link moves past this page.
                 member_changes = (group.additional_data or {}).get('members@delta', [])
 
                 if member_changes:
