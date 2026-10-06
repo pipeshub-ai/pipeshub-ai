@@ -219,8 +219,10 @@ from app.services.graph_db.taxonomy import (
 from app.services.graph_db.user_email_identity import (
     GraphUserEmailConflictError,
     STUB_EDGE_COLLECTIONS,
+    STUB_EDGE_IDENTITY_FIELDS,
     VERIFIED_EMAIL_WRITE_COLLECTIONS,
     classify_email_peer,
+    connector_ids_of_users,
     graph_user_key,
 )
 from app.services.graph_db.vector_membership_queries import (
@@ -5671,6 +5673,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if peer_key:
                 stub_keys.append(peer_key)
 
+        connector_ids = await connector_ids_of_users(self, stub_keys)
         txn = await self.begin_transaction(
             list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
             list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
@@ -5695,7 +5698,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception:
             await self.rollback_transaction(txn)
             raise
-        return {"email": email, "mergedStubKeys": stub_keys}
+        return {"email": email, "mergedStubKeys": stub_keys, "connectorIds": connector_ids}
 
     async def _list_graph_users_by_email(self, email: str, org_id: str) -> list[dict]:
         query = f"""
@@ -5719,6 +5722,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         stub_id = f"{CollectionNames.USERS.value}/{stub_key}"
         keep_id = f"{CollectionNames.USERS.value}/{keep_key}"
         for collection in STUB_EDGE_COLLECTIONS:
+            identity_filter = "".join(
+                f" AND other.{field} == e.{field}"
+                for field in STUB_EDGE_IDENTITY_FIELDS.get(collection, ())
+            )
             query = f"""
             FOR e IN {collection}
                 FILTER e._from == @stub_id OR e._to == @stub_id
@@ -5727,7 +5734,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER newFrom != newTo
                 LET exists = FIRST(
                     FOR other IN {collection}
-                        FILTER other._from == newFrom AND other._to == newTo
+                        FILTER other._from == newFrom AND other._to == newTo{identity_filter}
                         LIMIT 1
                         RETURN 1
                 )

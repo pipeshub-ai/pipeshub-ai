@@ -171,8 +171,10 @@ from app.utils.env_utils import env_bool
 from app.services.graph_db.user_email_identity import (
     GraphUserEmailConflictError,
     STUB_EDGE_COLLECTIONS,
+    STUB_EDGE_IDENTITY_FIELDS,
     VERIFIED_EMAIL_WRITE_COLLECTIONS,
     classify_email_peer,
+    connector_ids_of_users,
     graph_user_key,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -4301,6 +4303,7 @@ class Neo4jProvider(IGraphDBProvider):
             if peer_key:
                 stub_keys.append(peer_key)
 
+        connector_ids = await connector_ids_of_users(self, stub_keys)
         txn = await self.begin_transaction(
             list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
             list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
@@ -4325,7 +4328,7 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception:
             await self.rollback_transaction(txn)
             raise
-        return {"email": email, "mergedStubKeys": stub_keys}
+        return {"email": email, "mergedStubKeys": stub_keys, "connectorIds": connector_ids}
 
     async def _list_graph_users_by_email(self, email: str, org_id: str) -> list[dict]:
         query = """
@@ -4356,6 +4359,11 @@ class Neo4jProvider(IGraphDBProvider):
         allowed_rels = {
             EDGE_COLLECTION_TO_RELATIONSHIP[collection]
             for collection in STUB_EDGE_COLLECTIONS
+            if collection in EDGE_COLLECTION_TO_RELATIONSHIP
+        }
+        identity_fields = {
+            EDGE_COLLECTION_TO_RELATIONSHIP[collection]: fields
+            for collection, fields in STUB_EDGE_IDENTITY_FIELDS.items()
             if collection in EDGE_COLLECTION_TO_RELATIONSHIP
         }
         label_to_collection = {label: coll for coll, label in COLLECTION_TO_LABEL.items()}
@@ -4392,7 +4400,9 @@ class Neo4jProvider(IGraphDBProvider):
                 to_id = keep_key
             if from_id == to_id:
                 continue
-            dedupe_key = (rel_type, from_id, to_id)
+            props = dict(record.get("props") or {})
+            fields = identity_fields.get(rel_type, ())
+            dedupe_key = (rel_type, from_id, to_id, *(props.get(f) for f in fields))
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
@@ -4414,16 +4424,21 @@ class Neo4jProvider(IGraphDBProvider):
                 continue
             if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", to_label):
                 continue
-            props = dict(record.get("props") or {})
+            identity = ", ".join(f"{f}: $identity_{f}" for f in fields)
             merge_query = f"""
             MATCH (from:{from_label} {{id: $from_id}})
             MATCH (to:{to_label} {{id: $to_id}})
-            MERGE (from)-[r:{rel_type}]->(to)
+            MERGE (from)-[r:{rel_type} {{{identity}}}]->(to)
             ON CREATE SET r = $props
             """
             await self.client.execute_query(
                 merge_query,
-                parameters={"from_id": from_id, "to_id": to_id, "props": props},
+                parameters={
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "props": props,
+                    **{f"identity_{f}": props.get(f) for f in fields},
+                },
                 txn_id=transaction,
             )
         await self.delete_nodes(

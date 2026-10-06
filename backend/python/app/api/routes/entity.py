@@ -11,6 +11,7 @@ from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, TokenScopes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
@@ -810,6 +811,8 @@ async def update_user_email(
         if not result:
             raise HTTPException(status_code=404, detail="User not found")
         logger.info("Updated graph email for userId %s", user_id)
+        for connector_id in result.get("connectorIds", []):
+            await notify_connector_sync_completed(connector_id, org_id)
         return JSONResponse(
             status_code=200,
             content={

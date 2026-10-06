@@ -12,7 +12,15 @@ STUB_EDGE_COLLECTIONS = (
     CollectionNames.PERMISSION.value,
     CollectionNames.BELONGS_TO.value,
     CollectionNames.USER_APP_RELATION.value,
+    CollectionNames.USER_DRIVE_RELATION.value,
+    CollectionNames.AUTHENTICATED_AS.value,
 )
+
+# One AUTHENTICATED_AS edge exists per connector, so connectorId is part of the
+# edge's identity: two connectors linking the same two users must both survive.
+STUB_EDGE_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
+    CollectionNames.AUTHENTICATED_AS.value: ("connectorId",),
+}
 
 VERIFIED_EMAIL_WRITE_COLLECTIONS = (
     CollectionNames.USERS.value,
@@ -33,6 +41,26 @@ def graph_user_key(user: dict) -> str | None:
     return str(key) if key else None
 
 
+async def connector_ids_of_users(provider, user_keys: list[str]) -> list[str]:
+    """Connectors the given graph users belong to, read before they are merged away.
+
+    Best-effort: the result only drives cache invalidation, so a lookup failure
+    must not fail the email change.
+    """
+    connector_ids: set[str] = set()
+    for user_key in user_keys:
+        try:
+            apps = await provider.get_user_apps(user_key)
+        except Exception as e:
+            provider.logger.warning("Could not list connectors of graph user %s: %s", user_key, e)
+            continue
+        for app in apps or []:
+            connector_id = app.get("id") or app.get("_key")
+            if connector_id:
+                connector_ids.add(str(connector_id))
+    return sorted(connector_ids)
+
+
 def classify_email_peer(keep_user_id: str, keep_key: str, peer: dict) -> str:
     """Return 'self', 'stub', or 'login' for a graph user that shares an email."""
     peer_key = graph_user_key(peer)
@@ -41,6 +69,9 @@ def classify_email_peer(keep_user_id: str, keep_key: str, peer: dict) -> str:
     peer_uid = str(peer.get("userId") or "").strip()
     if peer_uid and peer_uid == keep_user_id:
         return "self"
-    if peer_uid and _MONGO_OBJECT_ID.fullmatch(peer_uid):
+    # Connector stubs are created inactive and carry the source account id as
+    # userId, which for older Atlassian accounts is also 24 hex characters.
+    # Real logins are always written active, so only an explicit False clears it.
+    if peer_uid and _MONGO_OBJECT_ID.fullmatch(peer_uid) and peer.get("isActive") is not False:
         return "login"
     return "stub"

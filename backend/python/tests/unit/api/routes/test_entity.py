@@ -1363,6 +1363,44 @@ class TestUpdateUserEmail:
 
         asyncio.run(_run())
 
+    def test_clears_accessible_records_cache_of_merged_connectors(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.return_value = {
+                "email": "new@example.com",
+                "mergedStubKeys": ["stub-1"],
+                "connectorIds": ["conn-1", "conn-2"],
+            }
+            with patch(
+                "app.api.routes.entity.notify_connector_sync_completed", new_callable=AsyncMock
+            ) as notify:
+                resp = await update_user_email(req, UserEmailUpdateRequest(email="new@example.com"))
+
+            assert resp.status_code == 200
+            assert [c.args for c in notify.await_args_list] == [
+                ("conn-1", "org-1"),
+                ("conn-2", "org-1"),
+            ]
+
+        asyncio.run(_run())
+
+    def test_does_not_clear_cache_when_the_graph_update_fails(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = RuntimeError("boom")
+            with patch(
+                "app.api.routes.entity.notify_connector_sync_completed", new_callable=AsyncMock
+            ) as notify:
+                with pytest.raises(HTTPException) as exc:
+                    await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 500
+            notify.assert_not_awaited()
+
+        asyncio.run(_run())
+
     def test_404_when_graph_user_missing(self):
         async def _run() -> None:
             req = _make_request()
@@ -1389,6 +1427,62 @@ class TestUpdateUserEmail:
             with pytest.raises(HTTPException) as exc:
                 await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
             assert exc.value.status_code == 409
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize(
+        "user",
+        [
+            {"orgId": "org-1"},
+            {"userId": "user-1"},
+            {"userId": "", "orgId": "org-1"},
+            {},
+        ],
+    )
+    def test_400_when_token_has_no_user_or_org(self, user):
+        async def _run() -> None:
+            req = _make_request()
+            req.state.user = user
+            gp = _graph_provider(req)
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 400
+            gp.apply_verified_user_email.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_500_hides_the_graph_error_text(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = RuntimeError("neo4j://secret-host down")
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 500
+            assert "secret-host" not in str(exc.value.detail)
+
+        asyncio.run(_run())
+
+    def test_409_does_not_leak_the_other_users_id(self):
+        async def _run() -> None:
+            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = GraphUserEmailConflictError(
+                "Email already belongs to another login user in the graph",
+                conflicting_user_id="507f1f77bcf86cd799439011",
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 409
+            assert "507f1f77bcf86cd799439011" not in str(exc.value.detail)
 
         asyncio.run(_run())
 

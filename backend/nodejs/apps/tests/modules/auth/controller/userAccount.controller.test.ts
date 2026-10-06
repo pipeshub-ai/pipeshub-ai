@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import {
   UserAccountController,
   SALT_ROUNDS,
@@ -4462,6 +4463,97 @@ describe('UserAccountController', () => {
       expect(activityArg.orgId).to.equal('org1')
       expect(activityArg.userId).to.equal('u1')
       expect(activityArg.ipAddress).to.equal('10.0.0.1')
+    })
+  });
+
+  describe('syncVerifiedEmailToGraph', () => {
+    const sync = () => (controller as any).syncVerifiedEmailToGraph('u1', 'org1', 'new@email.com') as Promise<void>
+
+    it('PATCHes the connectors service with only the email, signed as an entity:user:write token', async () => {
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200 } as any)
+
+      await sync()
+
+      const [uri, method, headers, body] = execute.firstCall.args
+      expect(uri).to.equal('http://connectors:8088/api/v1/entity/user/email')
+      expect(method).to.equal('PATCH')
+      expect(body).to.deep.equal({ email: 'new@email.com' })
+      const claims = jwt.verify(headers.Authorization.replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
+      expect(claims).to.include({ userId: 'u1', orgId: 'org1' })
+      expect(claims.scopes).to.deep.equal(['entity:user:write'])
+    })
+
+    it('warns and carries on when the graph has no login node for the user', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 404 } as any)
+
+      await sync()
+
+      expect(mockLogger.warn.calledWith('Graph user not found while syncing verified email')).to.be.true
+    })
+
+    for (const statusCode of [409, 500]) {
+      it(`fails the request when the graph answers ${statusCode}`, async () => {
+        sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+          statusCode,
+          data: { detail: 'graph refused' },
+        } as any)
+
+        let error: Error | undefined
+        try {
+          await sync()
+        } catch (e) {
+          error = e as Error
+        }
+
+        expect(error).to.be.instanceOf(Error)
+      })
+    }
+
+    it('fails the request when the connectors service gives no answer', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves(undefined as any)
+
+      let error: Error | undefined
+      try {
+        await sync()
+      } catch (e) {
+        error = e as Error
+      }
+
+      expect(error).to.be.instanceOf(Error)
+    })
+
+    it('verify returns the graph error to the caller and Mongo keeps the new email', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      const update = sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 409,
+        data: { detail: 'Email already belongs to another login user in the graph' },
+      } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'New@Email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(update.calledOnce).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(res.status.called).to.be.false
+    })
+
+    it('verify skips the graph call when the token has no orgId', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200 } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(execute.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
   });
 });
