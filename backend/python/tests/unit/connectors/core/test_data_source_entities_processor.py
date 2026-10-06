@@ -1161,6 +1161,23 @@ class TestOnNewAppRoles:
         proc.logger.error.assert_called()
 
 
+class TestGetUserGroupByExternalId:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raise_on_error", [False, True])
+    async def test_the_caller_chooses_whether_a_failed_read_is_raised(self, raise_on_error: bool) -> None:
+        """A caller that acts on "no such group" has to be able to tell it from a read that failed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        found = await proc.get_user_group_by_external_id("conn-1", "ext-grp", raise_on_error=raise_on_error)
+
+        assert found is tx_store.get_user_group_by_external_id.return_value
+        tx_store.get_user_group_by_external_id.assert_awaited_once_with(
+            "conn-1", "ext-grp", raise_on_error=raise_on_error
+        )
+
+
 # ===========================================================================
 # on_user_group_member_removed (lines 1425-1436)
 # ===========================================================================

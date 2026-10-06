@@ -2,9 +2,9 @@
 
 Only Dropbox's HTTP API and our own databases are faked. The connector,
 ``DropboxDataSource`` and the Dropbox SDK are real: ``DropboxApiStub`` answers
-the SDK's requests with event pages the SDK's own serializer wrote, so the
-connector reads real ``TeamEvent`` objects. Group members and sync points live
-in memory so a second sync sees what the first one wrote.
+the SDK's requests with pages the SDK's own serializer wrote, so the connector
+reads real ``TeamEvent`` and ``GroupMemberInfo`` objects. Group members and
+sync points live in memory so a second sync sees what the first one wrote.
 """
 
 from __future__ import annotations
@@ -12,16 +12,19 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import requests
-from dropbox import stone_serializers, team_log
+from dropbox import stone_serializers, team, team_log, users
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-EVENTS_PATH = "/2/team_log/get_events/continue"
+EVENTS = "/2/team_log/get_events/continue"
+MEMBERS = "/2/team/groups/members/list"
+MORE_MEMBERS = "/2/team/groups/members/list/continue"
 _WHEN = datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc)
 
 
@@ -71,35 +74,73 @@ def group_renamed(group: tuple[str, str], previous_name: str) -> team_log.TeamEv
     )
 
 
+def _member(email: str) -> team.GroupMemberInfo:
+    name = users.Name(given_name=email, surname="", familiar_name=email, display_name=email, abbreviated_name=email[:2])
+    profile = team.MemberProfile(
+        team_member_id=f"dbmid:{email}", email=email, email_verified=True, status=team.TeamMemberStatus.active,
+        name=name, membership_type=team.TeamMembershipType.full,
+    )
+    return team.GroupMemberInfo(profile=profile, access_type=team.GroupAccessType.member)
+
+
 class DropboxApiStub(requests.adapters.BaseAdapter):
-    """Answers the SDK's HTTP calls. ``pages`` maps a cursor to the event page it returns."""
+    """Answers the SDK's HTTP calls.
+
+    ``pages`` maps an event cursor to the page it returns, ``members`` a group
+    id to the emails Dropbox lists for it, and a path in ``failing`` answers 503.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.pages: dict[str, tuple[list[team_log.TeamEvent], str, bool]] = {}
-        self.cursors_read: list[str] = []
-        self.unavailable = False
+        self.members: dict[str, list[str]] = {}
+        self.member_page_size = 100
+        self.failing: set[str] = set()
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def page(self, cursor: str, events: list[team_log.TeamEvent], *, next_cursor: str, has_more: bool = False) -> None:
         self.pages[cursor] = (events, next_cursor, has_more)
 
+    def cursors_read(self) -> list[str]:
+        return [body["cursor"] for path, body in self.calls if path == EVENTS]
+
+    def member_reads(self) -> int:
+        return sum(1 for path, _ in self.calls if path == MEMBERS)
+
+    def _members_page(self, group_id: str, start: int) -> str:
+        emails = self.members[group_id]
+        end = start + self.member_page_size
+        result = team.GroupsMembersListResult(
+            members=[_member(email) for email in emails[start:end]], cursor=f"{group_id}|{end}", has_more=end < len(emails),
+        )
+        return stone_serializers.json_encode(team.GroupsMembersListResult_validator, result)
+
     def send(self, request: requests.PreparedRequest, **_: object) -> requests.Response:
         path = urlparse(request.url).path
-        assert path == EVENTS_PATH, f"unexpected Dropbox call: {request.method} {request.url}"
+        body = json.loads(request.body)
+        self.calls.append((path, body))
         response = requests.Response()
         response.request = request
         response.url = request.url
-        if self.unavailable:
+        if path in self.failing:
             response.status_code = 503
             response._content = b"Service Unavailable"
             return response
-        cursor = json.loads(request.body)["cursor"]
-        self.cursors_read.append(cursor)
-        events, next_cursor, has_more = self.pages[cursor]
-        result = team_log.GetTeamEventsResult(events=events, cursor=next_cursor, has_more=has_more)
+        if path == EVENTS:
+            # A cursor with no page set is the end of the log: nothing new, same cursor.
+            events, next_cursor, has_more = self.pages.get(body["cursor"], ([], body["cursor"], False))
+            result = team_log.GetTeamEventsResult(events=events, cursor=next_cursor, has_more=has_more)
+            payload = stone_serializers.json_encode(team_log.GetTeamEventsResult_validator, result)
+        elif path == MEMBERS:
+            payload = self._members_page(body["group"]["group_id"], 0)
+        elif path == MORE_MEMBERS:
+            group_id, start = body["cursor"].split("|")
+            payload = self._members_page(group_id, int(start))
+        else:
+            raise AssertionError(f"unexpected Dropbox call: {request.method} {request.url}")
         response.status_code = 200
         response.headers["Content-Type"] = "application/json"
-        response._content = stone_serializers.json_encode(team_log.GetTeamEventsResult_validator, result).encode()
+        response._content = payload.encode()
         return response
 
     def close(self) -> None:
@@ -107,7 +148,7 @@ class DropboxApiStub(requests.adapters.BaseAdapter):
 
 
 class FakeCheckpointStore:
-    """In-memory sync points with ArangoDB ``UPDATE`` (merge) semantics."""
+    """In-memory sync points with the merge semantics of both graph stores."""
 
     def __init__(self) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
@@ -135,6 +176,7 @@ class FakeGroupsDb:
         self.groups: dict[str, dict[str, Any]] = {}
         self.fail_member_removal: set[tuple[str, str]] = set()
         self.fail_group_delete: set[str] = set()
+        self.fail_group_write: set[str] = set()
         self.fail_rename: set[str] = set()
 
     def add_group(self, group: tuple[str, str], *members: str) -> None:
@@ -168,6 +210,19 @@ class FakeGroupsDb:
             raise RuntimeError(f"database unavailable deleting group {external_group_id}")
         self.groups.pop(external_group_id, None)
         return True
+
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *,
+                                            raise_on_error: bool = False) -> SimpleNamespace | None:
+        group = self.groups.get(external_id)
+        return SimpleNamespace(name=group["name"]) if group else None
+
+    async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        """Saves each group with the given members in place of the stored ones, as the real processor does."""
+        for group, _ in groups:
+            if group.source_user_group_id in self.fail_group_write:
+                raise RuntimeError(f"database unavailable saving group {group.source_user_group_id}")
+        for group, members in groups:
+            self.groups[group.source_user_group_id] = {"name": group.name, "members": [m.email for m in members]}
 
     async def update_user_group_name(self, external_group_id: str, new_name: str, connector_id: str) -> bool:
         if external_group_id in self.fail_rename:

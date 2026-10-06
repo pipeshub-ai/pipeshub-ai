@@ -3549,11 +3549,11 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_user_by_email(email)
 
     async def get_user_group_by_external_id(
-        self, connector_id: str, external_id: str
+        self, connector_id: str, external_id: str, *, raise_on_error: bool = False
     ) -> AppUserGroup | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_user_group_by_external_id(
-                connector_id, external_id
+                connector_id, external_id, raise_on_error=raise_on_error
             )
 
     async def get_app_user_by_email(self, email: str, connector_id: str) -> AppUser | None:

@@ -3,6 +3,11 @@
 The connector, ``DropboxDataSource`` and the Dropbox SDK are real. The SDK's
 HTTP requests are answered by an in-memory stub, and our databases are
 in-memory fakes.
+
+Dropbox lists an event once. A member removal or a group deletion that cannot
+be saved must therefore not be lost when the cursor moves on: the group is
+queued next to the cursor, and every later run tries again until the access
+the event took away is gone.
 """
 
 import logging
@@ -11,6 +16,9 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 from dropbox_behaviour_fakes import (
+    EVENTS,
+    MEMBERS,
+    MORE_MEMBERS,
     DropboxApiStub,
     FakeCheckpointStore,
     FakeGroupsDb,
@@ -72,129 +80,149 @@ async def saved_cursor(connector: DropboxConnector) -> str:
     return (await connector.dropbox_cursor_sync_point.read_sync_point(GROUP_EVENTS))["cursor"]
 
 
-async def failed_runs(connector: DropboxConnector) -> int:
-    return (await connector.dropbox_cursor_sync_point.read_sync_point(GROUP_EVENTS))["heldAttempts"]
+async def owed(connector: DropboxConnector) -> tuple[list[str], list[str]]:
+    """The groups whose members must be read again, and the groups that must still be deleted."""
+    saved = await connector.dropbox_cursor_sync_point.read_sync_point(GROUP_EVENTS)
+    return saved.get("pendingGroupMemberReads", []), saved.get("pendingGroupDeletes", [])
+
+
+async def sync(connector: DropboxConnector) -> None:
+    await connector._sync_group_changes_with_cursor()
+
+
+async def refused_removal_of_ben(connector: DropboxConnector, api: DropboxApiStub, db: FakeGroupsDb) -> None:
+    """One run in which Ben's removal from Engineering could not be saved; Dropbox no longer lists him."""
+    api.page("c1", [member_removed(ENG, BEN)], next_cursor="c2")
+    api.members[ENG[0]] = [ANA]
+    db.fail_member_removal.add((ENG[0], BEN))
+    await sync(connector)
+    db.fail_member_removal.clear()
+    assert db.members(ENG) == [ANA, BEN]
+    assert await owed(connector) == ([ENG[0]], [])
 
 
 class TestGroupEvents:
     async def test_a_removed_member_loses_group_membership_and_the_cursor_moves_on(self, connector, api, db) -> None:
         api.page("c1", [member_removed(ENG, BEN), group_deleted(OLD)], next_cursor="c2")
 
-        await connector._sync_group_changes_with_cursor()
+        await sync(connector)
 
         assert db.members(ENG) == [ANA]
         assert OLD[0] not in db.groups
         assert await saved_cursor(connector) == "c2"
+        assert await owed(connector) == ([], [])
+        assert api.member_reads() == 0
 
-    async def test_a_member_removal_the_database_refuses_is_read_again_on_the_next_run(self, connector, api, db) -> None:
+    async def test_a_member_removal_the_database_refuses_is_made_good_on_the_next_run(self, connector, api, db) -> None:
         api.page("c1", [member_added(ENG, CAL), member_removed(ENG, BEN), group_deleted(OLD)], next_cursor="c2")
+        api.members[ENG[0]] = [ANA, CAL]
         db.fail_member_removal.add((ENG[0], BEN))
 
-        await connector._sync_group_changes_with_cursor()
+        await sync(connector)
 
         assert db.members(ENG) == [ANA, BEN, CAL], "Ben is still a member"
-        assert await saved_cursor(connector) == "c1", "Dropbox lists the removal once, so the cursor must not pass it"
-        assert await failed_runs(connector) == 1
+        assert OLD[0] not in db.groups, "the event after the failed one is still applied"
+        assert await saved_cursor(connector) == "c2"
+        assert await owed(connector) == ([ENG[0]], []), "Dropbox lists the removal once, so it must stay owed"
 
         db.fail_member_removal.clear()
-        await connector._sync_group_changes_with_cursor()
+        await sync(connector)
 
-        assert db.members(ENG) == [ANA, CAL], "Ben is out, and reading Cal's addition twice added her once"
-        assert OLD[0] not in db.groups
-        assert await saved_cursor(connector) == "c2"
-        assert await failed_runs(connector) == 0
+        assert db.members(ENG) == [ANA, CAL], "the group's members were read again, which takes Ben out"
+        assert await owed(connector) == ([], [])
 
-    async def test_a_refused_removal_on_a_later_page_keeps_the_pages_before_it(self, connector, api, db) -> None:
-        api.page("c1", [member_added(ENG, CAL)], next_cursor="c2", has_more=True)
-        api.page("c2", [member_removed(ENG, BEN)], next_cursor="c3")
-        db.fail_member_removal.add((ENG[0], BEN))
+    @pytest.mark.parametrize("broken", ["dropbox", "database"])
+    async def test_members_that_cannot_be_read_or_saved_stay_owed(self, connector, api, db, broken: str) -> None:
+        await refused_removal_of_ben(connector, api, db)
+        if broken == "dropbox":
+            api.failing.add(MEMBERS)
+        else:
+            db.fail_group_write.add(ENG[0])
 
-        await connector._sync_group_changes_with_cursor()
+        await sync(connector)
 
-        assert db.members(ENG) == [ANA, BEN, CAL]
-        assert await saved_cursor(connector) == "c2"
+        assert db.members(ENG) == [ANA, BEN]
+        assert await owed(connector) == ([ENG[0]], [])
 
-        db.fail_member_removal.clear()
-        await connector._sync_group_changes_with_cursor()
+        api.failing.clear()
+        db.fail_group_write.clear()
+        await sync(connector)
 
-        assert api.cursors_read == ["c1", "c2", "c2"], "only the page with the removal is read again"
-        assert db.members(ENG) == [ANA, CAL]
-        assert await saved_cursor(connector) == "c3"
+        assert db.members(ENG) == [ANA]
+        assert await owed(connector) == ([], [])
 
-    async def test_a_group_deletion_the_database_refuses_is_read_again_on_the_next_run(self, connector, api, db) -> None:
-        api.page("c1", [group_deleted(OLD)], next_cursor="c2")
+    async def test_part_of_a_member_list_is_not_saved_in_place_of_the_stored_members(self, connector, api, db) -> None:
+        await refused_removal_of_ben(connector, api, db)
+        api.members[ENG[0]] = [ANA, CAL]
+        api.member_page_size = 1
+        api.failing.add(MORE_MEMBERS)
+
+        await sync(connector)
+
+        assert db.members(ENG) == [ANA, BEN], "saving the first page alone would have dropped Cal"
+        assert await owed(connector) == ([ENG[0]], [])
+
+    async def test_a_group_deletion_the_database_refuses_is_made_good_on_the_next_run(self, connector, api, db) -> None:
+        api.page("c1", [group_deleted(OLD), member_removed(ENG, BEN)], next_cursor="c2")
         db.fail_group_delete.add(OLD[0])
 
-        await connector._sync_group_changes_with_cursor()
+        await sync(connector)
 
         assert db.members(OLD) == [CAL], "the group still gives Cal its access"
-        assert await saved_cursor(connector) == "c1"
+        assert db.members(ENG) == [ANA]
+        assert await saved_cursor(connector) == "c2"
+        assert await owed(connector) == ([], [OLD[0]])
+
+        await sync(connector)
+
+        assert await owed(connector) == ([], [OLD[0]]), "still owed for as long as it fails"
 
         db.fail_group_delete.clear()
-        await connector._sync_group_changes_with_cursor()
+        await sync(connector)
 
         assert OLD[0] not in db.groups
+        assert await owed(connector) == ([], [])
+
+    async def test_a_group_deleted_while_its_members_are_owed_a_read_needs_none(self, connector, api, db) -> None:
+        await refused_removal_of_ben(connector, api, db)
+        api.page("c2", [group_deleted(ENG)], next_cursor="c3")
+        api.failing.add(MEMBERS)
+        await sync(connector)
+        assert ENG[0] not in db.groups
+        reads = api.member_reads()
+
+        await sync(connector)
+
+        assert await owed(connector) == ([], [])
+        assert api.member_reads() == reads, "there is no stored group left to correct"
+
+    async def test_what_is_owed_survives_a_run_that_cannot_fetch_the_events(self, connector, api, db) -> None:
+        await refused_removal_of_ben(connector, api, db)
+        api.failing.update({EVENTS, MEMBERS})
+
+        await sync(connector)
+
         assert await saved_cursor(connector) == "c2"
+        assert await owed(connector) == ([ENG[0]], [])
 
-    async def test_a_removal_the_database_keeps_refusing_is_skipped_after_five_runs(self, connector, api, db) -> None:
-        api.page("c1", [member_removed(ENG, BEN), group_deleted(OLD)], next_cursor="c2")
-        api.page("c2", [member_removed(ENG, ANA)], next_cursor="c3")
-        db.fail_member_removal.add((ENG[0], BEN))
-
-        for run in range(1, 5):
-            await connector._sync_group_changes_with_cursor()
-            assert (await saved_cursor(connector), await failed_runs(connector)) == ("c1", run)
-        assert OLD[0] in db.groups
-        await connector._sync_group_changes_with_cursor()
-
-        assert await saved_cursor(connector) == "c2", "one removal that can't be saved must not stop group sync for good"
-        assert await failed_runs(connector) == 0
-        assert db.members(ENG) == [ANA, BEN]
-        assert OLD[0] not in db.groups
-
-        # The next page starts its own count: one failed run there holds it again.
-        db.fail_member_removal.add((ENG[0], ANA))
-        await connector._sync_group_changes_with_cursor()
-
-        assert (await saved_cursor(connector), await failed_runs(connector)) == ("c2", 1)
-
-    async def test_giving_up_on_one_removal_does_not_give_up_on_the_one_after_it(self, connector, api, db) -> None:
-        api.page("c1", [member_removed(ENG, BEN), member_removed(ENG, ANA)], next_cursor="c2")
-        db.fail_member_removal.add((ENG[0], BEN))
-        for _ in range(4):
-            await connector._sync_group_changes_with_cursor()
-
-        # The run that gives up on Ben's removal is the first to reach Ana's, which fails this once.
-        db.fail_member_removal.add((ENG[0], ANA))
-        await connector._sync_group_changes_with_cursor()
-
-        assert db.members(ENG) == [ANA, BEN]
-        assert (await saved_cursor(connector), await failed_runs(connector)) == ("c1", 1), "Ana's removal has its own count"
-
-        db.fail_member_removal.discard((ENG[0], ANA))
-        await connector._sync_group_changes_with_cursor()
-
-        assert db.members(ENG) == [BEN], "Ana is out; Ben's removal stays skipped without being counted again"
-        assert await saved_cursor(connector) == "c2"
-
-    async def test_a_page_that_cannot_be_fetched_keeps_the_count_of_failed_runs(self, connector, api, db) -> None:
-        api.page("c1", [member_removed(ENG, BEN)], next_cursor="c2")
-        db.fail_member_removal.add((ENG[0], BEN))
-        await connector._sync_group_changes_with_cursor()
-        assert await failed_runs(connector) == 1
-
-        api.unavailable = True
-        await connector._sync_group_changes_with_cursor()
-
-        assert (await saved_cursor(connector), await failed_runs(connector)) == ("c1", 1)
-
-    async def test_an_event_that_takes_no_access_away_still_does_not_hold_the_cursor(self, connector, api, db) -> None:
+    async def test_an_event_that_takes_no_access_away_is_not_owed_anything(self, connector, api, db) -> None:
         renamed = (ENG[0], "Platform")
         api.page("c1", [group_renamed(renamed, ENG[1]), member_removed(ENG, BEN)], next_cursor="c2")
         db.fail_rename.add(ENG[0])
 
-        await connector._sync_group_changes_with_cursor()
+        await sync(connector)
 
         assert db.groups[ENG[0]]["name"] == ENG[1]
         assert db.members(ENG) == [ANA]
         assert await saved_cursor(connector) == "c2"
+        assert await owed(connector) == ([], [])
+
+    async def test_every_page_of_events_is_read_once_and_the_last_cursor_is_saved(self, connector, api, db) -> None:
+        api.page("c1", [member_added(ENG, CAL)], next_cursor="c2", has_more=True)
+        api.page("c2", [member_removed(ENG, BEN)], next_cursor="c3")
+
+        await sync(connector)
+
+        assert api.cursors_read() == ["c1", "c2"]
+        assert db.members(ENG) == [ANA, CAL]
+        assert await saved_cursor(connector) == "c3"
