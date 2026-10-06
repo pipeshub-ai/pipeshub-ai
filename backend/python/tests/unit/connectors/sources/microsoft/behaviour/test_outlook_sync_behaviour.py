@@ -43,6 +43,7 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.outlook_individual.connector import (
     OutlookIndividualConnector,
 )
+from app.config.constants.arangodb import PermissionModel
 from app.models.entities import RecordGroupType, RecordType
 from app.models.permission import EntityType, PermissionType
 
@@ -221,10 +222,15 @@ class TestMailDelta:
         mails = stored_by_type(db, RecordType.MAIL)
         assert {m.record_name for m in mails.values()} == {"Plan", "Budget"}
         assert await folder_link(connector) == delta_url("D1")
-        grants = {(p.email, p.type) for p in db.record_permissions["m1"]}
-        assert grants == {(ANA, PermissionType.OWNER), (BO, PermissionType.READ)}
-        assert db.record_groups[INBOX].group_type == RecordGroupType.MAILBOX
-        assert [(p.email, p.type) for p in db.record_group_permissions[INBOX]] == [(ANA, PermissionType.OWNER)]
+        assert db.record_permissions["m1"] == []
+        assert db.records["m1"].inherit_permissions is True
+        mailbox_id = "mailbox:u-ana"
+        assert db.record_groups[mailbox_id].permission_model == PermissionModel.RECORD_GROUP_LEVEL
+        assert db.record_groups[mailbox_id].inherit_permissions is False
+        assert [(p.email, p.type) for p in db.record_group_permissions[mailbox_id]] == [(ANA, PermissionType.OWNER)]
+        assert db.record_groups[INBOX].parent_external_group_id == mailbox_id
+        assert db.record_groups[INBOX].inherit_permissions is True
+        assert db.record_group_permissions[INBOX] == []
         assert api.calls("GET", "/v1.0/users/u-bo/mailFolders") == [], "only users active in PipesHub are synced"
 
     async def test_next_sync_uses_the_saved_link_and_applies_deletes_edits_and_moves(
@@ -296,7 +302,9 @@ class TestMailDelta:
 
         files = [r for r in db.records.values() if r.record_type == RecordType.FILE]
         assert [f.record_name for f in files] == ["plan.pdf"]
-        assert {p.email for p in db.record_permissions[files[0].external_record_id]} == {ANA, BO}
+        assert files[0].inherit_permissions is True
+        assert files[0].parent_external_record_id == "m1"
+        assert db.record_permissions[files[0].external_record_id] == []
 
     @pytest.mark.xfail(strict=True, reason=(
         "A mail change that fails to save (here, a delete hitting a database error) is only logged, and the "
@@ -365,7 +373,8 @@ class TestGroups:
 
         (record,) = stored_by_type(db, RecordType.GROUP_MAIL).values()
         assert (record.external_record_id, record.record_name, record.external_record_group_id) == ("p1", "Launch", GROUP)
-        assert [(p.entity_type, p.external_id) for p in db.record_permissions["p1"]] == [(EntityType.GROUP, GROUP)]
+        assert record.inherit_permissions is True
+        assert db.record_permissions["p1"] == []
 
     @pytest.mark.xfail(strict=True, reason=(
         "When a group's member list can't be read, the group is saved with no members, so everyone loses the "

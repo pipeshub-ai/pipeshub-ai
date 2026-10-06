@@ -274,9 +274,7 @@ class TestConfluencePersonalSpaceSync:
         assert len(call_args) == 1
         record_group, permissions = call_args[0]
         assert record_group.external_group_id == "space-1"
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.GROUP
-        assert permissions[0].external_id == "internal-conn-conf-personal-1"
+        assert permissions == []
 
     @pytest.mark.asyncio
     async def test_sync_spaces_respects_space_key_filters(self):

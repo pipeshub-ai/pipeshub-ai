@@ -3185,8 +3185,8 @@ class TestAddUsersToWorkspacePermissions:
         conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = conn.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert len(perms) == 1
-        assert perms[0].email == "alice@ex.com"
+        assert perms == []
+        assert rg.inherit_permissions is True
 
     @pytest.mark.asyncio
     async def test_uses_existing_record_group(self):

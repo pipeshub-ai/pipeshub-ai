@@ -278,7 +278,7 @@ class ProjectsSync:
 
             group_permissions: list[Permission] = []
             members_res = await c.runtime.ds_call(
-                c.data_source.list_group_members_all, group_id=group_path, get_all=True,
+                c.data_source.list_group_members, group_id=group_path, get_all=True,
             )
             if not members_res.success:
                 self.logger.warning(
@@ -293,8 +293,9 @@ class ProjectsSync:
                     if permission:
                         group_permissions.append(permission)
 
-            # Tier 1 fallback: union members from child projects
-            if not group_permissions and candidate_projects:
+            # A successful empty list is a group with no direct members. Copying
+            # child-project members onto it would let one project see its siblings.
+            if not members_res.success and not group_permissions and candidate_projects:
                 group_permissions = await self._group_permissions_from_child_projects(
                     group_path=group_path, candidate_projects=candidate_projects,
                 )
@@ -312,6 +313,7 @@ class ProjectsSync:
                     )
                 group_permissions.append(creator_permission)
 
+            parent_path = full_path.rsplit("/", 1)[0] if "/" in str(full_path) else None
             group_rg = RecordGroup(
                 org_id=c.data_entities_processor.org_id,
                 name=getattr(group, "name", full_path) or full_path,
@@ -319,7 +321,9 @@ class ProjectsSync:
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=full_path,
+                parent_external_group_id=parent_path,
                 web_url=getattr(group, "web_url", None),
+                inherit_permissions=parent_path is not None,
             )
             await c.data_entities_processor.on_new_record_groups([(group_rg, group_permissions)])
 
@@ -446,7 +450,16 @@ class ProjectsSync:
                 dict_member[member.id] = member
 
         # Inject creator so Admin/Auditor personas (no membership row) get access
+        member_ids_before_creator = set(dict_member)
         c.users._inject_creator_member_into(dict_member)
+        injected_creator_ids = set(dict_member) - member_ids_before_creator
+        direct_res = await c.runtime.ds_call(
+            c.data_source.list_project_members, project_id=project_id, get_all=True,
+        )
+        direct_member_ids = (
+            {member.id for member in (direct_res.data or []) if getattr(member, "id", None) is not None}
+            if direct_res.success else None
+        )
 
         permission_project_level: list[Permission] = []
         permission_work_items_level: list[Permission] = []
@@ -458,17 +471,21 @@ class ProjectsSync:
             permission = await self._transform_restrictions_to_permissions(member)
             if not permission:
                 continue
-            permission_project_level.append(permission)
+            if direct_member_ids is None or member.id in direct_member_ids or member.id in injected_creator_ids:
+                permission_project_level.append(permission)
             level: int = getattr(member, "access_level", 0)
             if level == 0:
                 self.logger.info("Member %s has no access level, skipping", member.name)
             elif level == 10:
                 permission_work_items_level.append(permission)
-            elif level >= 15:
+            elif level >= 20:
                 permission_work_items_level.append(permission)
                 permission_confidential_level.append(permission)
                 permission_merge_requests_level.append(permission)
                 permission_code_repo_level.append(permission)
+            elif level >= 15:
+                permission_work_items_level.append(permission)
+                permission_confidential_level.append(permission)
             else:
                 self.logger.warning(
                     "Member %s has unrecognized access level %s, skipping", member.name, level
@@ -523,6 +540,7 @@ class ProjectsSync:
                 connector_id=c.connector_id,
                 external_group_id=str(project.id),
                 parent_external_group_id=parent_for_project_rg,
+                inherit_permissions=parent_for_project_rg is not None,
             ),
             RecordGroup(
                 org_id=c.data_entities_processor.org_id,
@@ -533,6 +551,7 @@ class ProjectsSync:
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-work-items",
                 parent_external_group_id=str(project.id),
+                inherit_permissions=True,
             ),
             RecordGroup(
                 org_id=c.data_entities_processor.org_id,

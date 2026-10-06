@@ -93,7 +93,7 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.sources.client.notion.notion import NotionClient, NotionRESTClientViaOAuth
 from app.sources.external.notion.notion import NotionDataSource
@@ -1412,6 +1412,7 @@ class NotionConnector(BaseConnector):
             cursor = None
             total_synced = 0
             total_skipped = 0
+            user_details_complete = True
             workspace_emails: List[str] = []
 
             # Paginate through all users
@@ -1439,6 +1440,7 @@ class NotionConnector(BaseConnector):
                         next_cursor,
                         has_more,
                     )
+                    user_details_complete = False
 
                 if not users_data:
                     self.logger.info("No more users to process")
@@ -1501,6 +1503,7 @@ class NotionConnector(BaseConnector):
                         if isinstance(result, Exception):
                             self.logger.error(f"❌ Failed to process user {user_id}: {result}", exc_info=False)
                             total_skipped += 1
+                            user_details_complete = False
                             continue
 
                         if not result or not result.success:
@@ -1509,6 +1512,7 @@ class NotionConnector(BaseConnector):
                                 f"{result.error if result else 'No response'}"
                             )
                             total_skipped += 1
+                            user_details_complete = False
                             continue
 
                         user_detail = result.data.json() if result.data else {}
@@ -1532,11 +1536,14 @@ class NotionConnector(BaseConnector):
                     break
                 if next_cursor == cursor:
                     self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
+                    user_details_complete = False
                     break
                 cursor = next_cursor
 
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
+            if user_details_complete:
+                await self._remove_departed_workspace_users(workspace_emails)
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped: {total_skipped}")
 
@@ -1544,27 +1551,48 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
-    async def _add_users_to_workspace_permissions(self, user_emails: List[str]) -> None:
+    async def _remove_departed_workspace_users(self, keep_emails: List[str]) -> None:
+        """Drop workspace membership for people Notion no longer returns.
+
+        Search reaches a workspace through the user-app edge. Leaving a leaver's
+        edge in place keeps that workspace visible to them.
         """
-        Add READ permissions for users to the workspace record group.
+        keep = {email.lower() for email in keep_emails if email}
+        removed = 0
+        async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+            existing = await tx_store.get_app_users(self.data_entities_processor.org_id, self.connector_id)
+            for user in existing:
+                email = (user.email or "").lower()
+                if not email or email in keep:
+                    continue
+                await tx_store.delete_edge(
+                    user.id,
+                    CollectionNames.USERS.value,
+                    self.connector_id,
+                    CollectionNames.APPS.value,
+                    CollectionNames.USER_APP_RELATION.value,
+                )
+                removed += 1
+        if removed:
+            self.logger.info("Removed %s Notion user(s) who are no longer in the workspace", removed)
 
-        Uses on_new_record_groups to create/update the record group along with permission edges,
-        following the same pattern as other connectors (e.g., Confluence).
+    async def _add_users_to_workspace_permissions(self, user_emails: List[str]) -> None:
+        """Point the workspace at the app and drop per-user grants.
 
-        Args:
-            user_emails: List of user email addresses to grant permissions
+        The user sync is the gate. An inherit edge from the workspace to the app
+        reaches those people. A read grant on the workspace would only repeat it.
+        ``user_emails`` is still required so a run that synced nobody does not
+        rewrite the workspace.
         """
         try:
             if not self.workspace_id or not user_emails:
                 return
 
-            # Get the existing record group by external_id (if it exists)
             record_group = await self.data_entities_processor.get_record_group_by_external_id(
                 connector_id=self.connector_id,
                 external_id=self.workspace_id
             )
 
-            # Create record group if it doesn't exist
             if not record_group:
                 record_group = RecordGroup(
                     org_id=self.data_entities_processor.org_id,
@@ -1574,24 +1602,21 @@ class NotionConnector(BaseConnector):
                     connector_id=self.connector_id,
                     group_type=RecordGroupType.NOTION_WORKSPACE,
                     permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                    inherit_permissions=True,
                     created_at=get_epoch_timestamp_in_ms(),
                     updated_at=get_epoch_timestamp_in_ms(),
                 )
+            else:
+                record_group.inherit_permissions = True
 
-            # Create READ permissions for all users
-            permissions = [
-                Permission(
-                    email=email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                )
-                for email in user_emails
-            ]
+            # [] clears a per-user grant written before the workspace inherited.
+            await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
-            # Use on_new_record_groups to handle record group upsert and permission edges
-            await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
-
-            self.logger.info(f"✅ Added permissions for {len(user_emails)} users to workspace record group")
+            self.logger.info(
+                "Workspace %s inherits from the app (%d synced users)",
+                self.workspace_id,
+                len(user_emails),
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Failed to add workspace permissions: {e}", exc_info=True)
@@ -3654,12 +3679,11 @@ class NotionConnector(BaseConnector):
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.NOTION_WORKSPACE,
                 permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                inherit_permissions=True,
                 created_at=get_epoch_timestamp_in_ms(),
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Create record group with empty permissions initially
-            # Permissions will be added as users are synced
             await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
             self.logger.info(

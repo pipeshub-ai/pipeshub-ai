@@ -1405,6 +1405,33 @@ class TestHandleParentRecord:
         tx_store.create_record_relation.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_inherit_from_group_keeps_parent_but_not_its_audience(self):
+        """A story under an epic stays linked to the epic and inherits the project."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        parent = _make_record(external_record_id="epic")
+        parent.id = "epic-id"
+        parent.record_group_id = "group-1"
+        tx_store.get_record_by_external_id.return_value = parent
+
+        record = _make_record()
+        record.id = "story-id"
+        record.record_group_id = "group-1"
+        record.external_record_group_id = "proj"
+        record.parent_external_record_id = "epic"
+        record.parent_record_type = RecordType.TICKET
+        record.inherit_permissions = True
+        record.inherit_permissions_from_group = True
+
+        permissions_from_group = await proc._handle_parent_record(record, tx_store)
+
+        assert permissions_from_group.permissions_from_group is True
+        assert permissions_from_group.parent_outside_group is False
+        tx_store.create_record_relation.assert_awaited()
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_creates_attachment_relation_for_file_with_container_parent(self):
         """Creates ATTACHMENT relation when file record has attachment container parent."""
         from app.config.constants.arangodb import RecordRelations

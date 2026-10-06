@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -192,6 +192,18 @@ class _BatchLookups:
             return value
 
         return lookup
+
+class ParentPlacement(NamedTuple):
+    """Where a record takes its audience, and whether browse hangs off the group.
+
+    A Jira story keeps its epic as the browse parent and still takes permissions
+    from the project. Treating that like a parent in another group listed the
+    story at the project root and left the epic empty.
+    """
+
+    permissions_from_group: bool
+    parent_outside_group: bool
+
 
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
@@ -552,7 +564,9 @@ class DataSourceEntitiesProcessor:
             and parent.record_group_id != record_group_id
         )
 
-    async def _handle_parent_record(self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> bool:
+    async def _handle_parent_record(
+        self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None
+    ) -> ParentPlacement:
         """Returns whether the parent is a record of another record group."""
 
         # Delete the old parent-child edge if it exists and the parent external record id has changed
@@ -629,7 +643,10 @@ class DataSourceEntitiesProcessor:
                 in_other_group = self._parent_in_other_group(
                     parent_record, record.record_group_id if record.external_record_group_id else None
                 )
-                if record.inherit_permissions and not in_other_group:
+                # A parent in this group is the permission parent. The flag is for a
+                # caller that must take the audience from the group anyway.
+                permissions_from_group = in_other_group or bool(record.inherit_permissions_from_group)
+                if record.inherit_permissions and not permissions_from_group:
                     await tx_store.create_inherit_permissions_relation_record(
                         record.id, parent_record.id
                     )
@@ -638,9 +655,9 @@ class DataSourceEntitiesProcessor:
                     await tx_store.delete_inherit_permissions_relation_record(
                         record.id, parent_record.id
                     )
-                return in_other_group
+                return ParentPlacement(permissions_from_group, in_other_group)
 
-        return False
+        return ParentPlacement(False, False)
 
     async def _handle_related_external_records(
         self,
@@ -1007,7 +1024,7 @@ class DataSourceEntitiesProcessor:
 
     async def _link_record_to_group(
         self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None,
-        *, parent_in_other_group: bool = False, stored_under_its_id: bool = False,
+        *, parent_in_other_group: bool = False, parent_outside_group: bool = False, stored_under_its_id: bool = False,
     ) -> bool:
         """
         Create edges between record and record group.
@@ -1047,13 +1064,16 @@ class DataSourceEntitiesProcessor:
             # Create a edge between the record and the record group if it doesn't exist
             await tx_store.create_record_group_relation(record.id, record_group_id)
 
-            group_root = not record.parent_external_record_id or parent_in_other_group
+            permissions_root = not record.parent_external_record_id or parent_in_other_group
+            # Browse follows the parent record when it lives in this group, even if
+            # permissions are taken from the group (a story under its epic).
+            browse_root = not record.parent_external_record_id or parent_outside_group
 
             # Only for a record with no parent record in this group: a nested one
             # inherits from the record above it, and _handle_parent_record owns
             # that edge. on_updated_record_permissions applies the same rule, or
             # the stored state would depend on which ran last.
-            if record.inherit_permissions and group_root:
+            if record.inherit_permissions and permissions_root:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
             elif existing_record is not None or stored_under_its_id:
                 # A record created moments ago cannot carry an inherit-permissions
@@ -1064,7 +1084,7 @@ class DataSourceEntitiesProcessor:
             # A record with no parent record in this group hangs directly off it. A
             # nested one must not also get this edge, or the traversal would reach
             # it from the group while skipping every restriction in between.
-            if group_root:
+            if browse_root:
                 await self._create_hierarchy_edge(
                     tx_store, record_group_id, CollectionNames.RECORD_GROUPS.value,
                     record.id, CollectionNames.RECORDS.value,
@@ -1110,6 +1130,16 @@ class DataSourceEntitiesProcessor:
                     await tx_store.create_record_group_relation(
                         record.id, shared_with_me_record_group.id
                     )
+                    if (
+                        record.inherit_permissions
+                        and record.connector_name in (
+                            Connectors.SLACK_WORKSPACE,
+                            Connectors.LINEAR,
+                        )
+                    ):
+                        await tx_store.create_inherit_permissions_relation_record_group(
+                            record.id, shared_with_me_record_group.id
+                        )
                     # "Shared with Me" is a real second hierarchy parent, so the
                     # record is reachable both here and from its drive location.
                     await self._create_hierarchy_edge(
@@ -1714,6 +1744,16 @@ class DataSourceEntitiesProcessor:
                         )
                         if shared_with_me_rg:
                             await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
+                            if (
+                                record.inherit_permissions
+                                and record.connector_name in (
+                                    Connectors.SLACK_WORKSPACE,
+                                    Connectors.LINEAR,
+                                )
+                            ):
+                                await tx_store.create_inherit_permissions_relation_record_group(
+                                    record.id, shared_with_me_rg.id
+                                )
                             # The second hierarchy parent too, as
                             # _link_record_to_group writes it.
                             await self._create_hierarchy_edge(
@@ -1772,9 +1812,10 @@ class DataSourceEntitiesProcessor:
                         connector_id=record.connector_id,
                         external_id=record.parent_external_record_id,
                     )
-                parent_in_other_group = self._parent_in_other_group(
+                parent_outside_group = self._parent_in_other_group(
                     parent_record, record_group.id if record_group else None
                 )
+                parent_in_other_group = parent_outside_group or bool(record.inherit_permissions_from_group)
                 if record_group:
                     if record.inherit_permissions and (
                         not record.parent_external_record_id or parent_in_other_group
@@ -1789,6 +1830,14 @@ class DataSourceEntitiesProcessor:
                             to_id=record_group.id,
                             to_collection=CollectionNames.RECORD_GROUPS.value,
                             collection=CollectionNames.INHERIT_PERMISSIONS.value
+                        )
+                    # Permissions may come from the group while browse stays on the
+                    # parent record. A group hierarchy edge would list the record twice.
+                    if record.parent_external_record_id and not parent_outside_group:
+                        await tx_store.delete_edge(
+                            record_group.id, CollectionNames.RECORD_GROUPS.value,
+                            record.id, CollectionNames.RECORDS.value,
+                            CollectionNames.NODE_RELATIONS.value,
                         )
                 # An item that stops inheriting must stop reaching its parent
                 # record's grants.
@@ -1826,6 +1875,7 @@ class DataSourceEntitiesProcessor:
         *,
         publishes_event: bool = True,
         pre_old_path: object = _NO_OLD_PATH,
+        replace_permissions: bool = False,
     ) -> tuple[Record | None, list[PendingMove]]:
         """Upsert a record and its edges.
 
@@ -2017,14 +2067,19 @@ class DataSourceEntitiesProcessor:
                 self._stamp_queued_at(record)
 
         parent_in_other_group = False
+        parent_outside_group = False
         if record.origin != OriginTypes.UPLOAD:
-            parent_in_other_group = await self._handle_parent_record(record, tx_store, existing_record)
+            placement = await self._handle_parent_record(record, tx_store, existing_record)
+            parent_in_other_group = placement.permissions_from_group
+            parent_outside_group = placement.parent_outside_group
 
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.shared_with_me_record_group_ids:
             moved = await self._link_record_to_group(
                 record, record_group_id, tx_store, existing_record,
-                parent_in_other_group=parent_in_other_group, stored_under_its_id=stored_under_its_id,
+                parent_in_other_group=parent_in_other_group,
+                parent_outside_group=parent_outside_group,
+                stored_under_its_id=stored_under_its_id,
             )
             # Only an *existing* record has points to refresh, and only its
             # stored VRID identifies them — a connector-supplied record carries
@@ -2096,6 +2151,15 @@ class DataSourceEntitiesProcessor:
             await self._handle_message_entity_edges(record, tx_store)
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
+        # An empty list on this path means "leave stored grants alone" (a content
+        # update passes []). replace_permissions is the caller's full list, including
+        # none, so a record that only inherits can drop grants an earlier sync wrote.
+        if replace_permissions:
+            await tx_store.delete_edges_to(
+                to_id=record.id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.PERMISSION.value,
+            )
         await self._handle_record_permissions(record, permissions, tx_store)
         #Todo: Check if record is updated, permissions are updated or content is updated
         #if existing_record:
@@ -2271,7 +2335,12 @@ class DataSourceEntitiesProcessor:
         await self._publish_membership_sync(moved_virtual_record_ids)
 
     @retry_on_deadlock()
-    async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
+    async def on_new_records(
+        self,
+        records_with_permissions: list[tuple[Record, list[Permission]]],
+        *,
+        replace_permissions: bool = False,
+    ) -> None:
         try:
             if not records_with_permissions:
                 self.logger.warning("on_new_records received an empty list; skipping processing.")
@@ -2297,9 +2366,11 @@ class DataSourceEntitiesProcessor:
                         pre_old_path = old_path_map.get(
                             record.external_record_id, _NO_OLD_PATH,
                         )
+                        replace = replace_permissions or bool(record.rewrite_permissions)
                         processed_record, moves = await self._process_record(
                             record, permissions, tx_store, moved_virtual_record_ids,
                             pre_old_path=pre_old_path,
+                            replace_permissions=replace,
                         )
                         pending_moves.extend(moves)
 
@@ -2317,14 +2388,23 @@ class DataSourceEntitiesProcessor:
 
 
     @retry_on_deadlock()
-    async def on_record_content_update(self, record: Record) -> None:
+    async def on_record_content_update(
+        self,
+        record: Record,
+        permissions: list[Permission] | None = None,
+    ) -> None:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         pending_moves: list[PendingMove] = []
         should_publish = False
         processed_record: Record | None = None
+        replace = bool(record.rewrite_permissions)
         async with self.data_store_provider.transaction() as tx_store:
             processed_record, pending_moves = await self._process_record(
-                record, [], tx_store, moved_virtual_record_ids
+                record,
+                list(permissions or []) if replace else [],
+                tx_store,
+                moved_virtual_record_ids,
+                replace_permissions=replace,
             )
 
             if processed_record is not None and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
@@ -2697,13 +2777,14 @@ class DataSourceEntitiesProcessor:
                             )
                         await self._link_kb_record_to_app(new_record, tx_store)
                     else:
-                        parent_in_other_group = await self._handle_parent_record(
+                        placement = await self._handle_parent_record(
                             new_record, tx_store, existing_record=None
                         )
                         if record_group_id:
                             await self._link_record_to_group(
                                 new_record, record_group_id, tx_store, old_record,
-                                parent_in_other_group=parent_in_other_group,
+                                parent_in_other_group=placement.permissions_from_group,
+                                parent_outside_group=placement.parent_outside_group,
                             )
                     await self._handle_record_permissions(new_record, permissions, tx_store)
 
@@ -3902,6 +3983,20 @@ class DataSourceEntitiesProcessor:
             await self._flush_pending_blob_moves([(self.org_id, old_prefix, new_prefix, None)])
 
     @retry_on_deadlock()
+    async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
+        """Whether a stored node has an inherit edge. A new node, or one that has none, does not.
+
+        ``inherit_permissions`` is not stored on the record. A value loaded back
+        from the graph is the model default, so a failed read must look at the edge.
+        """
+        if not stored_id:
+            return False
+        async with self.data_store_provider.transaction() as tx_store:
+            edges = await tx_store.get_edges_from_node(
+                f"{collection}/{stored_id}", CollectionNames.INHERIT_PERMISSIONS.value
+            )
+        return bool(edges)
+
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         try:
             if not users:

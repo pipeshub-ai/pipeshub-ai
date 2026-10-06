@@ -75,6 +75,12 @@ from app.connectors.sources.google.common.impersonation import (
     is_delegation_error,
     resolve_explicit_user,
 )
+from app.connectors.sources.google.drive.team.drive_access import (
+    DrivePermissionBatch,
+    grants_to_store,
+    item_inherits_parent,
+    permission_is_direct,
+)
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
     HELD_FILTER_FOLDERS,
@@ -939,7 +945,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         resource_id: str,
         is_drive: bool = False,
         user_email: Optional[str] = None,
-        drive_data_source: Optional[GoogleDriveDataSource] = None
+        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        inherited_permissions_disabled: bool = False,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -956,6 +963,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             populated for items inside a Shared Drive, since Google omits `permissionDetails` elsewhere)
         """
         permissions: List[Permission] = []
+        direct_permissions: List[Permission] = []
+        saw_permission_details = False
         individually_shared_emails: set[str] = set()
         page_token: Optional[str] = None
         anyone_with_link_permission_type: Optional[PermissionType] = None
@@ -1018,6 +1027,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                             entity_type=entity_type
                         )
                         permissions.append(permission)
+                        directness = permission_is_direct(perm_data)
+                        if directness is not None:
+                            saw_permission_details = True
+                        if directness is not False:
+                            direct_permissions.append(permission)
 
                         self._track_external_collaborator(entity_type, email)
 
@@ -1079,12 +1093,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                             f"Error fetching permissions for file {resource_id}: {http_error}",
                             exc_info=True
                         )
-                        # Return empty list if no fallback available
-                        return (permissions, False, [])
+                        # A failed read is not an empty ACL. is_fallback keeps stored grants.
+                        return ([], True, [])
                 else:
                     # For other HttpErrors, log and return empty list
                     self.logger.error(f"Error fetching permissions for file {resource_id}: {http_error}", exc_info=True)
-                    return (permissions, False, [])
+                    return ([], True, [])
             except Exception as e:
                 resource_type = "drive" if is_drive else "file"
                 if is_drive:
@@ -1094,7 +1108,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 else:
                     # For files, return empty list on error instead of raising, to allow processing to continue
                     self.logger.error(f"Error fetching permissions for {resource_type} {resource_id}: {e}", exc_info=True)
-                    return (permissions, False, [])
+                    return ([], True, [])
 
         # If we found an "anyone with link" permission and have a user_email, create a fallback permission
         if anyone_with_link_permission_type is not None and user_email:
@@ -1128,7 +1142,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                 list(individually_shared_emails),
             )
 
-        return (permissions, False, list(individually_shared_emails))
+        stored = grants_to_store(
+            permissions,
+            direct_permissions,
+            saw_permission_details=saw_permission_details,
+            inherited_permissions_disabled=inherited_permissions_disabled,
+            is_drive=is_drive,
+        )
+        return (
+            DrivePermissionBatch(stored, saw_permission_details=bool(saw_permission_details and not is_drive)),
+            False,
+            list(individually_shared_emails),
+        )
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
         """
@@ -2434,20 +2459,29 @@ class GoogleDriveTeamConnector(BaseConnector):
             try:
                 # Fetch permissions for this file using the provided drive_data_source
                 # If drive_data_source is provided, use it; otherwise fall back to service account
+                limited_access = bool(metadata.get("inheritedPermissionsDisabled"))
                 new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
                     file_id,
                     is_drive=False,
                     user_email=user_email,
-                    drive_data_source=drive_data_source
+                    drive_data_source=drive_data_source,
+                    inherited_permissions_disabled=limited_access,
                 )
 
                 if is_fallback_permissions:
                     permissions_changed = False
-
-                    if existing_record:
+                    file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
+                        CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                    )
+                    if existing_record is not None and new_permissions:
                         await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
                 else:
                     permissions_changed = True
+                    file_record.inherit_permissions = item_inherits_parent(
+                        saw_permission_details=bool(getattr(new_permissions, "saw_permission_details", False)),
+                        inherited_permissions_disabled=limited_access,
+                        is_fallback=False,
+                    )
                     if existing_record:
                         is_updated = True
 

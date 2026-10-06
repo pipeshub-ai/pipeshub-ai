@@ -71,6 +71,7 @@ from app.connectors.core.constants import (
     IconPaths,
 )
 # App-specific Dropbox client imports
+from app.connectors.sources.dropbox.access import DropboxGrants, member_is_direct
 from app.connectors.sources.dropbox.common.apps import DropboxApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
@@ -591,6 +592,8 @@ class DropboxConnector(BaseConnector):
                     team_member_id=user_id,
                     shared_folder_id=shared_folder_id
                 )
+                covered_emails = getattr(new_permissions, "covered_emails", set())
+                user_is_covered = bool(user_email and user_email in covered_emails)
 
                 is_shared = False
                 if new_permissions:
@@ -610,8 +613,9 @@ class DropboxConnector(BaseConnector):
 
                 # If no explicit permissions were found (e.g., personal file),
                 # add the owner's permission
-                if not new_permissions:
-                    #in case of personal file/folder, add owner permission
+                if not new_permissions and not user_is_covered:
+                    # A private item has no member list. An item whose members are all
+                    # inherited keeps an empty list and follows its parent.
                     new_permissions = [
                         Permission(
                             external_id=user_id,
@@ -620,8 +624,7 @@ class DropboxConnector(BaseConnector):
                             entity_type=EntityType.USER
                         )
                     ]
-                else:
-                    #in all other cases atleast add user permission
+                elif new_permissions and not user_is_covered:
                     user_already_has_permission = any(
                         perm.email == user_email
                         for perm in new_permissions
@@ -655,11 +658,11 @@ class DropboxConnector(BaseConnector):
                 # we'll leave this empty. When you implement it, you can fetch them here:
                 # old_permissions = await tx_store.get_permissions_for_record(existing_record.id) or []
 
-                # For now, if there's an existing record and we have new permissions,
-                # we'll assume permissions might have changed
-                if new_permissions:
-                    permissions_changed = True
-                    is_updated = True
+                # An empty direct list is a real ACL. Leaving permissions_changed
+                # false would keep members the file no longer names.
+                file_record.rewrite_permissions = True
+                permissions_changed = True
+                is_updated = True
 
             return RecordUpdate(
                 record=file_record,
@@ -897,6 +900,7 @@ class DropboxConnector(BaseConnector):
             List of Permission objects
         """
         permissions = []
+        covered_emails: set[str] = set()
 
         try:
             # Fetch members based on type
@@ -942,6 +946,10 @@ class DropboxConnector(BaseConnector):
                         self.logger.debug(f"Skipping user {user_info.account_id} with invalid email: {email}")
                         continue
 
+                    covered_emails.add(email)
+                    if is_file and not member_is_direct(getattr(user_membership, "is_inherited", None)):
+                        continue
+
                     permissions.append(Permission(
                         external_id=user_info.account_id,
                         email=email,
@@ -952,6 +960,8 @@ class DropboxConnector(BaseConnector):
             # Process group permissions
             if hasattr(members_result.data, 'groups') and members_result.data.groups:
                 for group_membership in members_result.data.groups:
+                    if is_file and not member_is_direct(getattr(group_membership, "is_inherited", None)):
+                        continue
                     access_type_tag = group_membership.access_type._tag
                     permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
 
@@ -963,10 +973,27 @@ class DropboxConnector(BaseConnector):
                         entity_type=EntityType.GROUP
                     ))
 
+            if is_file and hasattr(members_result.data, "invitees"):
+                for invitee_membership in members_result.data.invitees or []:
+                    if not member_is_direct(getattr(invitee_membership, "is_inherited", None)):
+                        continue
+                    invitee = getattr(invitee_membership, "invitee", None)
+                    email = getattr(invitee, "email", None)
+                    if not email or str(email).endswith("#"):
+                        continue
+                    access_type = getattr(invitee_membership, "access_type", None)
+                    access_type_tag = getattr(access_type, "_tag", "viewer")
+                    permissions.append(Permission(
+                        external_id=email,
+                        email=email,
+                        type=access_level_map.get(access_type_tag, PermissionType.READ),
+                        entity_type=EntityType.USER,
+                    ))
+
         except Exception as e:
             self.logger.debug(f"Error converting Dropbox permissions for {file_or_folder_id}: {e}")
 
-        return permissions
+        return DropboxGrants(permissions, covered_emails=covered_emails)
 
 
     # Update the _permissions_equal method (fix the comparison logic)

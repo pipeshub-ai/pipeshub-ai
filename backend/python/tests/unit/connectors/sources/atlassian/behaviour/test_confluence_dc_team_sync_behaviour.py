@@ -613,7 +613,7 @@ class TestPageRestrictions:
             assert (record.inherit_permissions, record.parent_external_record_id) == (True, "p1"), (
                 f"{dependent} inherits from its page, never straight from the space"
             )
-            assert [p.email for p in db.record_permissions[dependent]] == ["alice@example.com"]
+            assert db.record_permissions[dependent] == []
 
     async def test_page_restricted_to_a_group_named_only_by_name_stays_restricted(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -719,7 +719,7 @@ class TestContentSync:
         c2file = db.records["c2file"]
         assert (c2file.parent_external_record_id, c2file.parent_record_type) == ("c2", RecordType.COMMENT)
         for rid in ("c1", "c2", "c2file", "img1"):
-            assert [p.email for p in db.record_permissions[rid]] == ["alice@example.com"], rid
+            assert db.record_permissions[rid] == [], rid
 
 
 class TestAuditLogRestrictionChanges:
@@ -790,10 +790,10 @@ class TestAuditLogRestrictionChanges:
             for r, perms in db.permission_updates
         }
         assert updated == {
-            "att1": (True, "p1", ["alice@example.com"]),
-            "c1": (True, "p1", ["alice@example.com"]),
-            "c1file": (True, "c1", ["alice@example.com"]),
-        }, "the page's files and comments keep inheriting from the page, now restricted, and get its grants"
+            "att1": (True, "p1", []),
+            "c1": (True, "p1", []),
+            "c1file": (True, "c1", []),
+        }, "the page's files and comments keep inheriting from the page and carry no grant of their own"
 
     async def test_a_failed_page_lookup_keeps_the_audit_clock_so_the_change_is_retried(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -855,7 +855,9 @@ class TestReindex:
         assert (updated["c2"].parent_external_record_id, updated["c2"].parent_record_type) == ("c1", RecordType.COMMENT)
         assert (updated["c2file"].parent_external_record_id, updated["c2file"].parent_record_type) == ("c2", RecordType.COMMENT)
         restricted = {r.external_record_id for r, perms in db.permission_updates if [p.email for p in perms] == ["alice@example.com"]}
-        assert restricted == {"p1", "c2", "att1", "c2file"}
+        assert restricted == {"p1"}
+        inherited = {r.external_record_id for r, perms in db.permission_updates if perms == []}
+        assert {"c2", "att1", "c2file"} <= inherited
         assert {k: (updated[k].inherit_permissions, updated[k].parent_external_record_id) for k in ("c2", "att1", "c2file")} == {
             "c2": (True, "c1"), "att1": (True, "p1"), "c2file": (True, "c2"),
         }, "a restricted page's files and comments inherit from the record above them, not from the space, on reindex"
@@ -872,7 +874,7 @@ class TestReindex:
         (updated,) = db.content_updates
         assert updated.parent_node_id == db.records["c2"].id
         ((_, perms),) = db.permission_updates
-        assert [p.email for p in perms] == ["alice@example.com"]
+        assert perms == []
         assert atlassian_api.calls("GET", f"{API}/content/p1/restriction/relevantViewRestrictions")
 
     async def test_reindex_without_init_is_refused(self, db, store) -> None:

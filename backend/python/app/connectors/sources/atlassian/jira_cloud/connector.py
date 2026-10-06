@@ -5,8 +5,8 @@ import random
 import re
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from html import escape as html_escape
 from datetime import datetime, timezone, tzinfo
+from html import escape as html_escape
 from logging import Logger
 from typing import (
     Any,
@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     AppGroups,
     Connectors,
     ProgressStatus,
@@ -30,7 +31,10 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -76,13 +80,25 @@ from app.connectors.sources.atlassian.core.html_utils import (
     extract_attachment_ids,
     inline_images_as_base64,
 )
+from app.connectors.sources.atlassian.core.jira_issue_security import (
+    IssueSecurityContext,
+    SchemeKnowledge,
+    apply_attachment_access,
+    apply_issue_access,
+    classify_project_mapping,
+    classify_scheme_response,
+    collect_paged_values,
+    custom_field_ids_from_members,
+    http_status_is_transient,
+    index_members,
+    resolve_scheme_knowledge,
+)
 from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
     AtlassianScope,
 )
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
-    Block,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,
@@ -201,7 +217,7 @@ METADATA_FETCH_CONCURRENCY: int = 5
 ISSUE_SEARCH_FIELDS: list[str] = [
     "summary", "description", "status", "priority",
     "creator", "reporter", "assignee", "created", "updated",
-    "issuetype", "project", "parent", "attachment",
+    "issuetype", "project", "parent", "attachment", "security",
     "issuelinks", "comment"
 ]
 
@@ -551,6 +567,8 @@ class JiraConnector(BaseConnector):
             await self.register_authenticated_source_user(
                 self._authenticated_jira_email, self._authenticated_jira_account_id
             )
+            # A failed scheme read must not be reused for the rest of the sync.
+            self._issue_security_by_project = {}
 
             # 2. Load latest sync/indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1009,8 +1027,9 @@ class JiraConnector(BaseConnector):
     async def _update_project_sync_checkpoint(
         self,
         project_key: str,
-        last_sync_time: Optional[int] = None,
-        last_issue_updated: Optional[int] = None
+        last_sync_time: int | None = None,
+        last_issue_updated: int | None = None,
+        issue_security_fingerprint: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1023,12 +1042,19 @@ class JiraConnector(BaseConnector):
         sync_point_key = f"project_{project_key}"
 
         # Read existing to preserve values not being updated
-        existing = await self._get_project_sync_checkpoint(project_key)
+        existing = await self._get_project_sync_checkpoint(project_key) or {}
 
         sync_point_data = {
             "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
-            "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated")
+            "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated"),
         }
+        fingerprint = (
+            issue_security_fingerprint
+            if issue_security_fingerprint is not None
+            else existing.get("issue_security_fingerprint")
+        )
+        if fingerprint is not None:
+            sync_point_data["issue_security_fingerprint"] = fingerprint
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
@@ -1316,7 +1342,7 @@ class JiraConnector(BaseConnector):
     # ============================================================================
 
     async def _fetch_users(
-        self, active_pipeshub_users: Optional[list[AppUser]] = None
+        self, active_pipeshub_users: list[AppUser] | None = None
     ) -> list[AppUser]:
         """
         Fetch and resolve all active Jira users using a two-pass strategy:
@@ -1526,7 +1552,7 @@ class JiraConnector(BaseConnector):
         semaphore = asyncio.Semaphore(10)
         datasource = await self._get_fresh_datasource()
 
-        async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
+        async def try_resolve_email(email: str) -> tuple[str, str, str] | None:
             """Returns (accountId, email, displayName) if found, else None."""
             async with semaphore:
                 try:
@@ -1653,7 +1679,7 @@ class JiraConnector(BaseConnector):
         project_key: str,
         status: int,
         stage: str,
-    ) -> Optional[list[Permission]]:
+    ) -> list[Permission] | None:
         """Build a single-user BROWSE permission for the authenticated Jira account
         when the permission-scheme endpoints return 403 for this project (the
         account isn't a project admin). 401/transient failures return None from
@@ -1707,7 +1733,7 @@ class JiraConnector(BaseConnector):
         project_key: str,
         app_roles_mapping: dict[str, list[dict[str, str]]] = None,
         user_by_account_id: dict[str, "AppUser"] = None
-    ) -> Optional[list[Permission]]:
+    ) -> list[Permission] | None:
         """
         Fetch permission holders for a project from its Permission Scheme.
 
@@ -1812,6 +1838,156 @@ class JiraConnector(BaseConnector):
             # keeps the project's stored access.
             self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return None
+
+    async def _issue_security_call(self, call: Callable[[JiraDataSource], Awaitable[Any]], ctx: str) -> tuple[int, Any]:
+        try:
+            response = await self._call_with_retry(call, ctx=ctx)
+        except Exception as exc:
+            self.logger.warning("Issue security request failed (%s): %s", ctx, exc)
+            return 0, None
+        parsed = self._safe_json_parse(response, ctx) if response.status in (
+            HttpStatusCode.OK.value,
+            HttpStatusCode.NOT_FOUND.value,
+        ) else None
+        if response.status != HttpStatusCode.OK.value:
+            return response.status, parsed
+        return response.status, parsed
+
+    async def _load_issue_security_context(
+        self,
+        project_key: str,
+        project_id: str,
+        project_style: str | None = None,
+    ) -> IssueSecurityContext:
+        """One scheme read and one member read per project. A failed read does not mean "no scheme"."""
+        if getattr(self, "scope", None) == ConnectorScope.PERSONAL.value:
+            context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False)
+            self._issue_security_context = context
+            return context
+        cache: dict[str, IssueSecurityContext] = getattr(self, "_issue_security_by_project", None) or {}
+        self._issue_security_by_project = cache
+        cache_key = str(project_id)
+        if cache_key in cache:
+            self._issue_security_context = cache[cache_key]
+            return cache[cache_key]
+
+        if getattr(self, "_app_roles_mapping", None) is None:
+            self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+
+        scheme_status, scheme_body = await self._issue_security_call(
+            lambda ds: ds.get_project_issue_security_scheme(projectKeyOrId=project_key),
+            f"issue security scheme for {project_key}",
+        )
+        direct = classify_scheme_response(scheme_status, scheme_body, project_style=project_style)
+        forbidden = scheme_status == HttpStatusCode.FORBIDDEN.value
+        map_status = HttpStatusCode.OK.value
+        member_status = HttpStatusCode.OK.value
+        if direct[0] == SchemeKnowledge.PRESENT:
+            mapped = (SchemeKnowledge.UNKNOWN, None)
+        else:
+            async def mapping_page(start_at: int) -> tuple[int, Any]:
+                return await self._issue_security_call(
+                    lambda ds, start=start_at: ds.search_projects_using_security_schemes(
+                        startAt=str(start),
+                        maxResults="50",
+                        projectId=[str(project_id)],
+                    ),
+                    f"issue security mapping for {project_key}",
+                )
+
+            map_status, map_values = await collect_paged_values(mapping_page)
+            if map_status == HttpStatusCode.FORBIDDEN.value:
+                forbidden = True
+            mapped = classify_project_mapping(
+                str(project_id),
+                map_values,
+                complete=map_status == HttpStatusCode.OK.value and map_values is not None,
+                http_status=map_status,
+                project_style=project_style,
+            )
+        knowledge, scheme_id = resolve_scheme_knowledge(direct, mapped)
+
+        members_by_level: dict[str, list[dict[str, Any]]] = {}
+        members_readable = False
+        if knowledge == SchemeKnowledge.PRESENT and scheme_id and str(scheme_id).isdigit():
+
+            async def member_page(start_at: int) -> tuple[int, Any]:
+                return await self._issue_security_call(
+                    lambda ds, start=start_at: ds.get_issue_security_level_members(
+                        issueSecuritySchemeId=int(scheme_id),
+                        startAt=start,
+                        maxResults=100,
+                        expand="user,group,projectRole,field",
+                    ),
+                    f"issue security members for {project_key}",
+                )
+
+            member_status, member_rows = await collect_paged_values(member_page)
+            if member_status == HttpStatusCode.OK.value and member_rows is not None:
+                members_by_level = index_members(member_rows)
+                members_readable = True
+            elif member_status == HttpStatusCode.FORBIDDEN.value:
+                forbidden = True
+
+        # A 429 on the project scheme call must not be turned into "no scheme"
+        # by a mapping answer that arrived while Jira was failing.
+        if http_status_is_transient(scheme_status) and direct[0] == SchemeKnowledge.UNKNOWN:
+            knowledge, scheme_id = SchemeKnowledge.UNKNOWN, None
+        hold_cursor = http_status_is_transient(scheme_status) or (
+            knowledge == SchemeKnowledge.UNKNOWN and http_status_is_transient(map_status)
+        ) or (
+            knowledge == SchemeKnowledge.PRESENT
+            and not members_readable
+            and http_status_is_transient(member_status)
+        )
+        context = IssueSecurityContext(
+            knowledge=knowledge,
+            scheme_id=scheme_id,
+            members_by_level=members_by_level,
+            members_readable=members_readable,
+            custom_field_ids=custom_field_ids_from_members(members_by_level),
+            scheme_forbidden=forbidden and knowledge != SchemeKnowledge.PRESENT,
+            defer_checkpoint=hold_cursor,
+        )
+        if context.knowledge == SchemeKnowledge.UNKNOWN and context.scheme_forbidden:
+            await self._notify_issue_security_unreadable(project_key)
+        elif context.knowledge == SchemeKnowledge.PRESENT and not context.members_readable:
+            await self._notify_issue_security_unreadable(project_key)
+        if context.knowledge != SchemeKnowledge.UNKNOWN:
+            cache[cache_key] = context
+        self._issue_security_context = context
+        return context
+
+    async def _notify_issue_security_unreadable(self, project_key: str) -> None:
+        notified: set[str] = getattr(self, "_issue_security_notified", None) or set()
+        self._issue_security_notified = notified
+        if project_key in notified:
+            return
+        notified.add(project_key)
+        self.logger.warning(
+            "Cannot read issue security for %s. Issues with a security level stay hidden "
+            "and stored grants are left in place.",
+            project_key,
+        )
+        await self.notify(
+            type=NotificationType.CONNECTOR_WARNING,
+            severity=NotificationSeverity.WARNING,
+            title=self._notification_title(f"couldn't read issue security for {project_key}"),
+            message=(
+                f"The connector's Jira account can't read issue security for {project_key}. "
+                "Grant it permission to read issue security schemes. Until then, issues that "
+                "have a security level are not opened to the project's audience."
+            ),
+        )
+
+    def _issue_search_fields(self) -> list[str]:
+        fields = list(ISSUE_SEARCH_FIELDS)
+        context = getattr(self, "_issue_security_context", None)
+        if context is not None:
+            for field_id in context.custom_field_ids:
+                if field_id not in fields:
+                    fields.append(field_id)
+        return fields
 
     def _permissions_for_browse_grant(
         self,
@@ -2004,7 +2180,7 @@ class JiraConnector(BaseConnector):
         self,
         group: dict[str, Any],
         user_by_account_id: dict[str, "AppUser"],
-    ) -> Optional[tuple[str, str, Optional[AppUserGroup], Optional[list["AppUser"]]]]:
+    ) -> tuple[str, str, AppUserGroup | None, list["AppUser"] | None] | None:
         """Build an AppUserGroup and resolve its members.
 
         Returns ``(group_id, group_name, user_group, app_users)`` or ``None``
@@ -2071,7 +2247,7 @@ class JiraConnector(BaseConnector):
             # Unknown members, not no members: roles that include this group keep what is stored.
             return (group.get("groupId"), group.get("name"), None, None)
 
-    async def _sync_user_groups(self, jira_users: list[AppUser]) -> Optional[dict[str, Optional[list[AppUser]]]]:
+    async def _sync_user_groups(self, jira_users: list[AppUser]) -> dict[str, list[AppUser] | None] | None:
         """
         Sync user groups and return a mapping of group_id/name -> list of AppUser members.
         This mapping is used to resolve group members for project roles. A group whose
@@ -2104,7 +2280,7 @@ class JiraConnector(BaseConnector):
 
             user_groups_batch = []
             # Mapping: group_id -> members, group_name -> members (for role actor lookup)
-            groups_members_map: dict[str, Optional[list[AppUser]]] = {}
+            groups_members_map: dict[str, list[AppUser] | None] = {}
 
             for res in results:
                 if res is None:
@@ -2266,7 +2442,7 @@ class JiraConnector(BaseConnector):
         project_key: str,
         user_by_email: dict[str, "AppUser"],
         user_by_account_id: dict[str, "AppUser"],
-        groups_members_map: dict[str, Optional[list["AppUser"]]],
+        groups_members_map: dict[str, list["AppUser"] | None],
     ) -> tuple[str, list[tuple[AppRole, list["AppUser"]]], bool]:
         """Fetch a project's roles + actors and build ``(AppRole, members)`` tuples.
 
@@ -2355,7 +2531,7 @@ class JiraConnector(BaseConnector):
                             group_name = actor.get("name") or actor.get("displayName")
                             group_id = actor.get("groupId")
 
-                            group_members: Optional[list[AppUser]] = []
+                            group_members: list[AppUser] | None = []
                             if group_id and group_id in groups_members_map:
                                 group_members = groups_members_map[group_id]
                             elif group_name and group_name in groups_members_map:
@@ -2403,7 +2579,7 @@ class JiraConnector(BaseConnector):
         self,
         project_keys: list[str],
         jira_users: list[AppUser],
-        groups_members_map: dict[str, Optional[list[AppUser]]] = None
+        groups_members_map: dict[str, list[AppUser] | None] = None
     ) -> None:
         """
         Sync project roles as AppRole entities.
@@ -2559,8 +2735,8 @@ class JiraConnector(BaseConnector):
 
     async def _list_projects_with_filter(
         self,
-        project_keys: Optional[list[str]] = None,
-        project_keys_operator: Optional[FilterOperatorType] = None,
+        project_keys: list[str] | None = None,
+        project_keys_operator: FilterOperatorType | None = None,
     ) -> list[dict[str, Any]]:
         """Paginate through ``search_projects`` and apply the project-key filter.
 
@@ -2608,7 +2784,7 @@ class JiraConnector(BaseConnector):
         return await self._paginate_project_search()
 
     async def _paginate_project_search(
-        self, keys: Optional[list[str]] = None
+        self, keys: list[str] | None = None
     ) -> list[dict[str, Any]]:
         """Page through ``search_projects``, returning every project (optionally
         server-side filtered to ``keys``). Single loop shared by all filter modes.
@@ -2655,7 +2831,7 @@ class JiraConnector(BaseConnector):
         project: dict[str, Any],
         app_roles_mapping: dict[str, Any],
         perm_user_by_account_id: dict[str, "AppUser"],
-    ) -> Optional[tuple[RecordGroup, Optional[list[Permission]]]]:
+    ) -> tuple[RecordGroup, list[Permission] | None] | None:
         """Build a project's RecordGroup and fetch its BROWSE permissions (None when unreadable)."""
         try:
             project_id = project.get("id")
@@ -2695,7 +2871,7 @@ class JiraConnector(BaseConnector):
     async def _fetch_filtered_projects(
         self,
         jira_users: list["AppUser"],
-    ) -> tuple[list[tuple[RecordGroup, Optional[list[Permission]]]], list[dict[str, Any]]]:
+    ) -> tuple[list[tuple[RecordGroup, list[Permission] | None]], list[dict[str, Any]]]:
         """Resolve the project-keys sync filter, then fetch matching projects."""
         allowed_keys = None
         project_keys_operator = None
@@ -2718,10 +2894,10 @@ class JiraConnector(BaseConnector):
 
     async def _fetch_projects(
         self,
-        project_keys: Optional[list[str]] = None,
-        project_keys_operator: Optional[FilterOperatorType] = None,
-        jira_users: Optional[list["AppUser"]] = None
-    ) -> tuple[list[tuple[RecordGroup, Optional[list[Permission]]]], list[dict[str, Any]]]:
+        project_keys: list[str] | None = None,
+        project_keys_operator: FilterOperatorType | None = None,
+        jira_users: list["AppUser"] | None = None
+    ) -> tuple[list[tuple[RecordGroup, list[Permission] | None]], list[dict[str, Any]]]:
         """
         Fetch projects using DataSource. Returns (record_groups, raw_projects); a project's
         permissions are None when its permission scheme could not be read.
@@ -2736,6 +2912,12 @@ class JiraConnector(BaseConnector):
 
         # Fetch application roles → groups mapping once (cached)
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+        self._app_roles_mapping = app_roles_mapping
+        self._project_style_by_id = {
+            str(project.get("id")): project.get("style")
+            for project in projects
+            if project.get("id") is not None
+        }
 
         # Build accountId -> AppUser lookup for permission scheme resolution
         perm_user_by_account_id: dict[str, AppUser] = {}
@@ -2750,7 +2932,7 @@ class JiraConnector(BaseConnector):
             projects,
             lambda p: self._build_project_record_group(p, app_roles_mapping, perm_user_by_account_id),
         )
-        record_groups: list[tuple[RecordGroup, Optional[list[Permission]]]] = [r for r in rg_results if r is not None]
+        record_groups: list[tuple[RecordGroup, list[Permission] | None]] = [r for r in rg_results if r is not None]
 
         # Surface any project skipped this sync (transient scheme failure or a bad RecordGroup) so
         # a persistently-failing project isn't silently and indefinitely excluded. Its existing
@@ -2784,7 +2966,7 @@ class JiraConnector(BaseConnector):
 
     async def _sync_all_project_issues(
         self,
-        projects: list[tuple[RecordGroup, Optional[list[Permission]]]],
+        projects: list[tuple[RecordGroup, list[Permission] | None]],
         jira_users: list[AppUser],
         last_sync_time: Optional[int]
     ) -> dict[str, Any]:
@@ -2855,6 +3037,24 @@ class JiraConnector(BaseConnector):
         # Set project_last_sync_time for fallback in _fetch_issues_batched
         project_last_sync_time = project_sync_data.get("last_sync_time") or global_last_sync_time if not is_new_project else None
 
+        project_style = (getattr(self, "_project_style_by_id", {}) or {}).get(str(project_id))
+        security_context = await self._load_issue_security_context(project_key, project_id, project_style)
+        # An unreadable scheme must not throw away the issue checkpoint. The
+        # rewrite runs once the scheme is actually known and its fingerprint moves.
+        stored_fingerprint = (project_sync_data or {}).get("issue_security_fingerprint")
+        self._rewrite_issue_access = (
+            security_context.knowledge != SchemeKnowledge.UNKNOWN
+            and stored_fingerprint != security_context.fingerprint()
+        )
+        if self._rewrite_issue_access:
+            # Membership of a level can change without any issue's updated time moving.
+            resume_from_timestamp = None
+            project_last_sync_time = None
+            self.logger.info(
+                "Rewriting issue access for %s (security scheme %s)",
+                project_key, security_context.fingerprint(),
+            )
+
         if is_new_project:
             self.logger.info(f"🆕 New project detected: {project_key}. Fetching ALL issues (no timestamp filter).")
         elif resume_from_timestamp:
@@ -2885,7 +3085,7 @@ class JiraConnector(BaseConnector):
             if not issues_batch:
                 # Update checkpoint for skipped batch to advance timestamp and prevent re-fetch
                 # Safe because these issues were already in DB (just unchanged)
-                if last_issue_updated_in_batch:
+                if last_issue_updated_in_batch and not security_context.defer_checkpoint:
                     current_time = get_epoch_timestamp_in_ms()
                     await self._update_project_sync_checkpoint(
                         project_key,
@@ -2900,13 +3100,14 @@ class JiraConnector(BaseConnector):
             await self._process_new_records(issues_batch, project_key, stats)
             total_issues_processed += batch_size
 
-            # Update checkpoint AFTER successful processing
+            # Update checkpoint AFTER successful processing. An unreadable level
+            # keeps the previous cursor so the next run retries those issues.
             if last_issue_updated_in_batch:
                 current_time = get_epoch_timestamp_in_ms()
                 await self._update_project_sync_checkpoint(
                     project_key,
                     last_sync_time=current_time,
-                    last_issue_updated=last_issue_updated_in_batch
+                    last_issue_updated=None if security_context.defer_checkpoint else last_issue_updated_in_batch,
                 )
 
         # Final checkpoint update if we processed any issues (ensures last_sync_time stays close to last_issue_updated)
@@ -2915,7 +3116,13 @@ class JiraConnector(BaseConnector):
             await self._update_project_sync_checkpoint(
                 project_key,
                 last_sync_time=current_time,
-                last_issue_updated=last_issue_updated_in_batch
+                last_issue_updated=None if security_context.defer_checkpoint else last_issue_updated_in_batch,
+            )
+
+        if security_context.knowledge != SchemeKnowledge.UNKNOWN and not security_context.defer_checkpoint:
+            await self._update_project_sync_checkpoint(
+                project_key,
+                issue_security_fingerprint=security_context.fingerprint(),
             )
 
         if total_issues_processed == 0:
@@ -3015,7 +3222,7 @@ class JiraConnector(BaseConnector):
                     jql=jql,
                     next_page_token=next_page_token,
                     max_results=ISSUE_PAGE_SIZE,
-                    fields=ISSUE_SEARCH_FIELDS,
+                    fields=self._issue_search_fields(),
                     expand="changelog",
                 )
 
@@ -3109,7 +3316,7 @@ class JiraConnector(BaseConnector):
             # Single pass so the parent-before-child sort above survives into the batch
             # handed to on_new_records.
             to_upsert: list[tuple[Record, list[Permission]]] = []
-            changed_records: list[Record] = []
+            changed_records: list[tuple[Record, list[Permission]]] = []
             new_count = 0
             edge_rebuild_count = 0
             for record, record_permissions, content_changed in batch:
@@ -3117,7 +3324,7 @@ class JiraConnector(BaseConnector):
                     to_upsert.append((record, record_permissions))
                     new_count += 1
                 elif content_changed:
-                    changed_records.append(record)
+                    changed_records.append((record, record_permissions))
                 else:
                     to_upsert.append((record, record_permissions))
                     edge_rebuild_count += 1
@@ -3125,8 +3332,8 @@ class JiraConnector(BaseConnector):
             if to_upsert:
                 await self.data_entities_processor.on_new_records(to_upsert)
 
-            for record in changed_records:
-                await self.data_entities_processor.on_record_content_update(record)
+            for record, record_permissions in changed_records:
+                await self.data_entities_processor.on_record_content_update(record, record_permissions)
 
             stats["new_count"] += new_count
             stats["updated_count"] += len(changed_records)
@@ -3402,11 +3609,9 @@ class JiraConnector(BaseConnector):
         created_at = issue_data["created_at"]
         updated_at = issue_data["updated_at"]
 
-        # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
-        permissions = []
-
         # Get fields for attachments (needed by _fetch_issue_attachments)
         fields = issue.get("fields", {})
+        permissions: list[Permission] = []
 
         # Collect attachments removed at source (via changelog) for deletion
         delete_ids.extend(
@@ -3443,7 +3648,9 @@ class JiraConnector(BaseConnector):
         # Skip processing if issue is unchanged, unless this is a full sync
         # (is_new_project=True means sync points were wiped, so edges need to be
         # recreated even for unchanged issues; _process_record is idempotent).
-        if not is_issue_changed and not is_new_project:
+        # A security-scheme change also rewrites every issue: level membership
+        # does not move the issue's updated time.
+        if not is_issue_changed and not is_new_project and not getattr(self, "_rewrite_issue_access", False):
             return records, delete_ids, True
 
         # Record group is always the project. Parent ticket link follows Jira's
@@ -3489,6 +3696,26 @@ class JiraConnector(BaseConnector):
             is_dependent_node=False,  # Tickets are not dependent
             parent_node_id=None,  # Tickets have no parent node
         )
+
+        project_key = (fields.get("project") or {}).get("key") or ""
+        security_context = getattr(self, "_issue_security_context", None) or IssueSecurityContext(
+            knowledge=SchemeKnowledge.UNKNOWN,
+        )
+        permissions, skipped_holders = apply_issue_access(
+            issue_record,
+            fields,
+            is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
+            project_key=project_key,
+            context=security_context,
+            user_by_account_id=user_by_account_id,
+            app_roles_mapping=getattr(self, "_app_roles_mapping", None),
+            reporter_email=reporter_email,
+            assignee_email=assignee_email,
+        )
+        if skipped_holders:
+            self.logger.debug(
+                "Issue %s security level skipped holders %s", issue_key, skipped_holders,
+            )
 
         # Set indexing status based on filters
         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
@@ -3711,8 +3938,9 @@ class JiraConnector(BaseConnector):
                         version=version,
                     )
 
-                    # Attachments inherit permissions from parent issue
-                    attachment_permissions = parent_permissions.copy()
+                    # Level grants stay on the issue. Copying them here would put a
+                    # direct grant on the attachment.
+                    attachment_permissions = []
 
                     attachment_records.append(
                         (attachment_record, attachment_permissions, content_changed)
@@ -4056,7 +4284,7 @@ class JiraConnector(BaseConnector):
         weburl: Optional[str],
         rendered_fields: dict[str, Any],
         comments_data: list[dict[str, Any]],
-        attachment_children_map: Optional[dict[str, ChildRecord]] = None,
+        attachment_children_map: dict[str, ChildRecord] | None = None,
     ) -> BlocksContainer:
         """Parse a Jira issue into a BlocksContainer from Jira's *rendered* HTML.
 
@@ -4164,8 +4392,8 @@ class JiraConnector(BaseConnector):
         issue_id: str,
         issue_node_id: str,
         project_id: str,
-        issue_weburl: Optional[str],
-        issue_fields: Optional[dict[str, Any]] = None,
+        issue_weburl: str | None,
+        issue_fields: dict[str, Any] | None = None,
     ) -> dict[str, ChildRecord]:
         """
         Process issue attachments and create ChildRecords for TableRowMetadata.
@@ -4604,6 +4832,7 @@ class JiraConnector(BaseConnector):
             source_updated_at=created_at,
             weburl=weburl,
             inherit_permissions=True,
+            access_rule=AccessRule.STRICT,
             is_file=True,
             is_dependent_node=True,
             parent_node_id=parent_node_id,
@@ -4614,6 +4843,13 @@ class JiraConnector(BaseConnector):
         if not skip_filter_check and self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
+        if getattr(self, "scope", None) == ConnectorScope.PERSONAL.value:
+            file_record.inherit_permissions = True
+            file_record.inherit_permissions_from_group = False
+            file_record.access_rule = AccessRule.OPEN
+            file_record.rewrite_permissions = True
+        else:
+            apply_attachment_access(file_record)
         return file_record
 
     # ============================================================================
@@ -4655,7 +4891,7 @@ class JiraConnector(BaseConnector):
         self.logger.warning(f"⚠️ Failed to parse timestamp '{timestamp_str}'")
         return 0
 
-    def _safe_json_parse(self, response, context: str = "API response") -> Optional[dict[str, Any]]:
+    def _safe_json_parse(self, response, context: str = "API response") -> dict[str, Any] | None:
         """
         Safely parse JSON response with error handling.
 
@@ -4941,8 +5177,8 @@ class JiraConnector(BaseConnector):
             raise
 
     async def _check_and_fetch_updated_record(
-        self, record: Record, synced_user_by_account_id: Optional[dict[str, "AppUser"]] = None
-    ) -> Optional[tuple[Record, list[Permission]]]:
+        self, record: Record, synced_user_by_account_id: dict[str, "AppUser"] | None = None
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from source and return data for reindexing.
 
         Note: Comments are no longer separate records - they are processed as Blocks
@@ -4962,8 +5198,8 @@ class JiraConnector(BaseConnector):
             return None
 
     async def _check_and_fetch_updated_issue(
-        self, record: Record, synced_user_by_account_id: Optional[dict[str, "AppUser"]] = None
-    ) -> Optional[tuple[Record, list[Permission]]]:
+        self, record: Record, synced_user_by_account_id: dict[str, "AppUser"] | None = None
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch issue from source for reindexing."""
         try:
             # Load indexing filters if not already loaded (needed for reindexing context)
@@ -5077,8 +5313,28 @@ class JiraConnector(BaseConnector):
             # related_external_records, so omitting this on reindex wipes the ticket's links.
             issue_record.related_external_records = self._parse_issue_links(issue)
 
-            # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
-            permissions = []
+            project = fields.get("project") or {}
+            project_key = project.get("key") or ""
+            project_id = project.get("id") or issue_record.external_record_group_id or ""
+            style = (getattr(self, "_project_style_by_id", {}) or {}).get(str(project_id))
+            if style is None and project.get("simplified") is True:
+                style = "next-gen"
+            security_context = await self._load_issue_security_context(project_key, str(project_id), style)
+            permissions, skipped_holders = apply_issue_access(
+                issue_record,
+                fields,
+                is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
+                project_key=project_key,
+                context=security_context,
+                user_by_account_id=user_by_account_id,
+                app_roles_mapping=getattr(self, "_app_roles_mapping", None),
+                reporter_email=issue_data["reporter_email"],
+                assignee_email=issue_data["assignee_email"],
+            )
+            if skipped_holders:
+                self.logger.debug(
+                    "Issue %s security level skipped holders %s", issue_id, skipped_holders,
+                )
 
             return (issue_record, permissions)
 
@@ -5088,7 +5344,7 @@ class JiraConnector(BaseConnector):
 
     async def _check_and_fetch_updated_attachment(
         self, record: Record
-    ) -> Optional[tuple[Record, list[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch attachment from source for reindexing."""
         try:
             # Load indexing filters if not already loaded (needed for reindexing context)

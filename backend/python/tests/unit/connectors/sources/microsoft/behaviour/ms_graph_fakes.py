@@ -341,7 +341,13 @@ class FakeRecordsDb:
             return None
         return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_records(
+        self,
+        records_with_permissions: list[tuple[Any, list[Any]]],
+        *,
+        replace_permissions: bool = False,
+    ) -> None:
+        del replace_permissions
         self.record_batches.append([rec for rec, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record

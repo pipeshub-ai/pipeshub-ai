@@ -86,7 +86,7 @@ from app.models.entities import (
     RecordType,
     USER_EMAIL_PLACEHOLDER,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
@@ -535,6 +535,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -544,30 +545,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 internet_message_id=internet_message_id,
             )
 
-            # Extract sender email from "from" header (may contain name)
-            sender_email = self._extract_email_from_header(from_email)
-
-            # Create permission based on whether user_email is the sender
-            permissions = []
-            if user_email:
-                # Normalize emails for comparison (case-insensitive)
-                user_email_lower = user_email.lower()
-                sender_email_lower = sender_email.lower() if sender_email else ""
-
-                if sender_email_lower and user_email_lower == sender_email_lower:
-                    # User is the sender - create owner permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    ))
-                else:
-                    # User is not the sender - create read permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.USER
-                    ))
+            # App-level: the creator passes the gate. A message inherits from its
+            # label, and the label inherits from the app.
+            permissions: list[Permission] = []
 
             self.logger.debug(
                 f"Processed message {message_id} in thread {thread_id}: "
@@ -901,6 +881,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -911,8 +892,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-            # Inherit parent mail permissions
-            attachment_permissions = parent_mail_permissions
+            del parent_mail_permissions
+            attachment_permissions: list[Permission] = []
 
             attachment_identifier = drive_file_id if is_drive_file else attachment_id
             self.logger.debug(
@@ -1645,18 +1626,13 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         connector_name=self.connector_name,
                         connector_id=self.connector_id,
                         group_type=RecordGroupType.MAILBOX,
+                        inherit_permissions=True,
                     )
 
-                    # Create owner permission from user to record group
-                    owner_permission = Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
-
-                    # Submit to processor
+                    # The creator passes the app gate. An empty list clears an
+                    # owner grant an older sync stored on the label.
                     await self.data_entities_processor.on_new_record_groups(
-                        [(record_group, [owner_permission])]
+                        [(record_group, [])]
                     )
 
                     total_record_groups_processed += 1
@@ -1817,7 +1793,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                                     # Process batch when it reaches the size limit
                                     if batch_count >= self.batch_size:
-                                        await self.data_entities_processor.on_new_records(batch_records)
+                                        await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                                         self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                                         batch_records = []
                                         batch_count = 0
@@ -1856,7 +1832,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Process remaining records in batch
             if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                 self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
 
             # Update sync point with final state (clear pageToken, keep historyId)
@@ -2309,7 +2285,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                         # Process batch when it reaches the size limit
                         if batch_count >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
+                            await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                             self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                             batch_records = []
                             batch_count = 0
@@ -2328,7 +2304,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             # Process remaining records in batch
             if batch_records:
                 try:
-                    await self.data_entities_processor.on_new_records(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                     self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
                 except Exception as batch_error:
                     self.logger.error(f"Error processing final batch: {batch_error}")
@@ -2469,7 +2445,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                await self.data_entities_processor.on_new_records(updated_records, replace_permissions=True)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non updated records

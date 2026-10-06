@@ -1340,7 +1340,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                         # Attachments follow the page's access through inheritance.
                                         attachment_record.inherit_permissions = True
-                                        records_with_permissions.append((attachment_record, permissions))
+                                        attachment_record.rewrite_permissions = True
+                                        records_with_permissions.append((attachment_record, []))
                                         total_attachments_synced += 1
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
 
@@ -1997,6 +1998,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     if any(p.type == PermissionType.READ for p in permissions)
                     else AccessRule.STRICT
                 )
+                webpage_record.rewrite_permissions = True
 
                 # Update in database
                 await self.data_entities_processor.on_new_records([(webpage_record, permissions)])
@@ -2025,17 +2027,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
     async def _fetch_page_permissions(self, page_id: str) -> Optional[list[Permission]]:
         """
-        Fetch read (view) permissions for a Confluence page using DC v1 API.
+        Fetch read restrictions defined on this page.
 
-        Uses ``/restriction/relevantViewRestrictions`` which returns effective
-        view restrictions only (no edit/update restrictions).
-
-        Args:
-            page_id: The page ID
-
-        Returns:
-            List of Permission objects with READ type only, or None when the
-            restrictions could not be read (callers must not treat that as unrestricted).
+        ``relevantViewRestrictions`` also lists ancestor restrictions. Those stay
+        on the ancestor; this page inherits them. A result that names another
+        content id is skipped. Edit restrictions are ignored.
         """
         permissions = []
 
@@ -2060,6 +2056,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
             for restriction_data in restrictions:
                 if restriction_data.get("operation") != "read":
+                    continue
+                defined_on = (restriction_data.get("content") or {}).get("id")
+                if defined_on and str(defined_on) != str(page_id):
                     continue
                 operation_permissions = await self._transform_page_restriction_to_permissions(
                     restriction_data
@@ -2180,8 +2179,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     # Apply indexing filter
                     if not attachments_indexing_enabled:
                         file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                    # Inherit page permissions
-                    records_with_permissions.append((file_record, permissions))
+                    file_record.inherit_permissions = True
+                    file_record.rewrite_permissions = True
+                    records_with_permissions.append((file_record, []))
 
             return records_with_permissions
 
@@ -2285,7 +2285,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         )
 
                         if comment_record:
-                            all_comments.append((comment_record, page_permissions))
+                            comment_record.inherit_permissions = True
+                            comment_record.rewrite_permissions = True
+                            all_comments.append((comment_record, []))
 
                             # Sync comment attachments (explicit child attachments)
                             comment_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
@@ -2352,7 +2354,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                                     if file_record:
                                                         if not attachments_indexing_enabled:
                                                             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                                        all_comments.append((file_record, page_permissions))
+                                                        file_record.inherit_permissions = True
+                                                        file_record.rewrite_permissions = True
+                                                        all_comments.append((file_record, []))
                                                         synced_attachment_ids.add(attachment_id)
 
                         children = await self._fetch_comment_children_recursive(
@@ -2468,7 +2472,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         )
 
                         if child_record:
-                            all_children.append((child_record, page_permissions))
+                            child_record.inherit_permissions = True
+                            child_record.rewrite_permissions = True
+                            all_children.append((child_record, []))
 
                             # Sync comment attachments (explicit child attachments)
                             child_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
@@ -2535,7 +2541,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                                     if file_record:
                                                         if not attachments_indexing_enabled:
                                                             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                                        all_children.append((file_record, page_permissions))
+                                                        file_record.inherit_permissions = True
+                                                        file_record.rewrite_permissions = True
+                                                        all_children.append((file_record, []))
                                                         synced_attachment_ids.add(attachment_id)
 
                         grandchildren = await self._fetch_comment_children_recursive(
@@ -3583,7 +3591,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         try:
             operation = restriction_data.get("operation")
-            if not operation:
+            if operation != "read":
                 return permissions
 
             # Map operation to PermissionType
@@ -3632,6 +3640,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform page restriction: {e}")
+            raise
 
         return permissions
 
@@ -4042,6 +4051,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         webpage_record = self._transform_to_webpage_record(
             data, record_type, existing_record, api_base_url
         )
+        if webpage_record:
+            webpage_record.rewrite_permissions = True
 
         if not webpage_record:
             return RecordUpdate(
@@ -4751,8 +4762,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     await self.data_entities_processor.on_record_content_update(updated_record)
 
                     # Update permissions if they exist
-                    if permissions:
-                        await self.data_entities_processor.on_updated_record_permissions(updated_record, permissions)
+                    if permissions or updated_record.rewrite_permissions:
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            updated_record, list(permissions or [])
+                        )
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
@@ -4848,6 +4861,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 if any(p.type == PermissionType.READ for p in permissions)
                 else AccessRule.STRICT
             )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -4909,6 +4923,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 if any(p.type == PermissionType.READ for p in permissions)
                 else AccessRule.STRICT
             )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -5007,8 +5022,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 return None
             # Comments follow the page's access through inheritance.
             comment_record.inherit_permissions = True
-
-            return (comment_record, permissions)
+            comment_record.rewrite_permissions = True
+            return (comment_record, [])
 
         except Exception as e:
             self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")
@@ -5082,8 +5097,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 return None
             # Attachments follow the page's access through inheritance.
             attachment_record.inherit_permissions = True
-
-            return (attachment_record, permissions)
+            attachment_record.rewrite_permissions = True
+            return (attachment_record, [])
 
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")

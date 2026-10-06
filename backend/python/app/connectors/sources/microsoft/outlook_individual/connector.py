@@ -843,11 +843,30 @@ class OutlookIndividualConnector(BaseConnector):
             self.logger.error(f"Error getting folders for authenticated user: {e}")
             return [], set()
 
+    def _mailbox_external_id(self, user: AppUser) -> str:
+        return f"mailbox:{user.source_user_id}"
+
+    def _transform_to_mailbox_record_group(self, user: AppUser) -> RecordGroup:
+        """One mailbox root. It inherits the app and holds the owner grant thread lookup walks to."""
+        label = user.email or user.full_name or "Mailbox"
+        return RecordGroup(
+            org_id=self.data_entities_processor.org_id,
+            name=label,
+            short_name=label,
+            description=f"Mailbox for {label}",
+            external_group_id=self._mailbox_external_id(user),
+            connector_name=Connectors.OUTLOOK_INDIVIDUAL,
+            connector_id=self.connector_id,
+            group_type=RecordGroupType.MAILBOX,
+            inherit_permissions=True,
+        )
+
     def _transform_folder_to_record_group(
         self,
         folder: MailFolder,
         user: AppUser,
-        is_top_level: bool = False
+        is_top_level: bool = False,
+        mailbox_external_id: str | None = None,
     ) -> RecordGroup | None:
         """
         Transform Outlook mail folder to RecordGroup entity.
@@ -867,9 +886,9 @@ class OutlookIndividualConnector(BaseConnector):
             if not folder_id:
                 return None
 
-            # Get parent folder ID for hierarchy
-            # Top-level folders should not store parent_external_group_id even if API returns it
-            parent_folder_id = None if is_top_level else folder.parent_folder_id
+            # A top-level folder hangs under the mailbox. Graph's parent id for
+            # those is the message root, which is not a folder this sync stores.
+            parent_folder_id = mailbox_external_id if is_top_level else folder.parent_folder_id
 
             # Create simple description
             description = f"{folder_name} folder for {user.email}"
@@ -884,6 +903,9 @@ class OutlookIndividualConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK_INDIVIDUAL,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.MAILBOX,
+                # App-level: the creator is the only user through the gate, so a
+                # folder inherits that instead of carrying its own grant.
+                inherit_permissions=True,
                 web_url=None,
                 source_created_at=None,
                 source_updated_at=None,
@@ -926,32 +948,29 @@ class OutlookIndividualConnector(BaseConnector):
                 self.logger.debug(f"No folders to sync for user {user.email} after filtering")
                 return []
 
-            # Transform folders to RecordGroups
+            mailbox_external_id = self._mailbox_external_id(user)
             record_groups = []
             for folder in folders:
                 is_top_level = folder.id in top_level_folder_ids
-                record_group = self._transform_folder_to_record_group(folder, user, is_top_level)
+                record_group = self._transform_folder_to_record_group(
+                    folder, user, is_top_level, mailbox_external_id
+                )
                 if record_group:
                     record_groups.append(record_group)
 
             self.logger.info(f"Syncing {len(record_groups)} folders for user {user.email}")
 
-            # Sync to database with owner permission for mailbox owner
+            owner_permission = Permission(
+                email=user.email,
+                external_id=user.source_user_id,
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER,
+            )
             if record_groups:
-                self.logger.info(f"Syncing record groups: {record_groups}")
-                # Create owner permission for the mailbox owner
-                owner_permission = Permission(
-                    email=user.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER
+                await self.data_entities_processor.on_new_record_groups(
+                    [(self._transform_to_mailbox_record_group(user), [owner_permission])]
+                    + [(rg, []) for rg in record_groups]
                 )
-
-                # Apply owner permission to all folders for this user
-                record_groups_with_permissions = [
-                    (rg, [owner_permission]) for rg in record_groups
-                ]
-
-                await self.data_entities_processor.on_new_record_groups(record_groups_with_permissions)
 
             # Return raw folder data for email processing
             return folders
@@ -1009,13 +1028,17 @@ class OutlookIndividualConnector(BaseConnector):
                         mail_records.append(update.record)
 
                 if len(batch_records) >= batch_size:
-                    await self.data_entities_processor.on_new_records(batch_records)
+                    await self.data_entities_processor.on_new_records(
+                    batch_records, replace_permissions=True
+                )
                     processed_count += len(batch_records)
                     batch_records = []
 
             # Process remaining records
             if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(
+                    batch_records, replace_permissions=True
+                )
                 processed_count += len(batch_records)
 
             # Update folder-specific sync point only if all messages were processed successfully
@@ -1260,6 +1283,7 @@ class OutlookIndividualConnector(BaseConnector):
                 parent_external_record_id=None,
                 external_record_group_id=folder_id,
                 record_group_type=RecordGroupType.MAILBOX,
+                inherit_permissions=True,
                 subject=message.subject or OutlookDefaults.SUBJECT,
                 from_email=self._extract_email_from_recipient(message.from_),
                 to_emails=[self._extract_email_from_recipient(r) for r in (message.to_recipients or [])],
@@ -1294,22 +1318,13 @@ class OutlookIndividualConnector(BaseConnector):
             return None
 
     async def _extract_email_permissions(self, message: Message, record_id: str | None, inbox_owner_email: str) -> list[Permission]:
-        """Extract permission for inbox owner only (personal mailbox).
+        """Mails inherit from their folder, which inherits from the app.
 
-        For personal connector, only the mailbox owner gets OWNER permission.
-        All emails in personal mailbox are owned by the creator.
+        The connector is app-level and only the creator passes the gate, so a
+        grant on the mail would name the same person a second time.
         """
-        try:
-            # Personal connector: only creator has access to their mailbox
-            return [Permission(
-                email=inbox_owner_email,
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER,
-            )]
-
-        except Exception as e:
-            self.logger.error(f"Error extracting permission: {e}")
-            return []
+        del message, record_id, inbox_owner_email
+        return []
 
     async def _create_attachment_record(
         self,
@@ -1374,6 +1389,7 @@ class OutlookIndividualConnector(BaseConnector):
             parent_record_type=RecordType.MAIL,
             external_record_group_id=folder_id,
             record_group_type=RecordGroupType.MAILBOX,
+            inherit_permissions=True,
             weburl=parent_weburl,
             is_file=True,
             size_in_bytes=attachment.size or 0,
@@ -1744,7 +1760,9 @@ class OutlookIndividualConnector(BaseConnector):
 
             # Update DB and publish events for updated records
             if updated_records_with_permissions:
-                await self.data_entities_processor.on_new_records(updated_records_with_permissions)
+                await self.data_entities_processor.on_new_records(
+                    updated_records_with_permissions, replace_permissions=True
+                )
                 self.logger.info(f"Updated {len(updated_records_with_permissions)} records in DB that changed at source")
 
             # Publish reindex events for non-updated records

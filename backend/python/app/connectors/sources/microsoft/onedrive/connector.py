@@ -20,7 +20,13 @@ from msgraph.generated.models.subscription import Subscription
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -129,6 +135,21 @@ class GraphReadFailedError(Exception):
     def __init__(self, message: str, *, permanent: bool) -> None:
         super().__init__(message)
         self.permanent = permanent
+
+
+def permission_identity(permission: Permission) -> tuple:
+    return (
+        permission.entity_type.value,
+        (permission.email or permission.external_id or "").lower(),
+        permission.type.value,
+    )
+
+
+def grants_match(left: list[Permission], right: list[Permission]) -> bool:
+    """True when two Graph permission lists name the same principals at the same roles."""
+    return {permission_identity(permission) for permission in left} == {
+        permission_identity(permission) for permission in right
+    }
 
 
 def _read_failure(what: str, error: Exception) -> GraphReadFailedError:
@@ -498,11 +519,20 @@ class OneDriveConnector(BaseConnector):
 
             new_permissions = await self._convert_to_permissions(permission_result)
 
-            if existing_record:
-                # compare permissions with existing permissions (To be implemented)
-                if new_permissions:
-                    permissions_changed = True
+            if permission_failure is None:
+                drive_id = item.parent_reference.drive_id if item.parent_reference else None
+                self._remember_item_grants(drive_id, item.id, new_permissions)
+                # OneDrive does not say which grants were inherited. Matching the
+                # parent is not inheritance: a later parent share would leak in.
+                file_record.inherit_permissions = False
+                file_record.rewrite_permissions = True
+                permissions_changed = True
+                if existing_record:
                     is_updated = True
+            else:
+                file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
+                    CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                )
 
             if existing_record and existing_record.is_shared != is_shared_folder:
                 metadata_changed = True
@@ -549,6 +579,36 @@ class OneDriveConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error processing delta item {item.id}: {ex}", exc_info=True)
             return None
+
+    def _known_item_grants(self, drive_id: str | None, item_id: str | None) -> list[Permission] | None:
+        """Grants already read for an item in this run. Does not call Graph."""
+        if not drive_id or not item_id:
+            return None
+        cache: dict[tuple[str, str], list[Permission]] = getattr(self, "_item_grant_cache", None) or {}
+        return cache.get((drive_id, item_id))
+
+    def _remember_item_grants(self, drive_id: str | None, item_id: str, grants: list[Permission]) -> None:
+        if not drive_id:
+            return
+        cache: dict[tuple[str, str], list[Permission]] = getattr(self, "_item_grant_cache", None) or {}
+        self._item_grant_cache = cache
+        cache[(drive_id, item_id)] = list(grants)
+
+    async def _cached_item_grants(self, drive_id: str, item_id: str) -> list[Permission] | None:
+        """Grants already read for this item, or a fresh read. None when the read fails."""
+        cache: dict[tuple[str, str], list[Permission]] = getattr(self, "_item_grant_cache", None) or {}
+        self._item_grant_cache = cache
+        key = (drive_id, item_id)
+        if key in cache:
+            return cache[key]
+        try:
+            raw = await self.msgraph_client.get_file_permission(drive_id, item_id, raise_on_error=True)
+        except Exception as read_error:
+            self.logger.warning(str(_read_failure(f"permissions of item {item_id}", read_error)))
+            return None
+        grants = await self._convert_to_permissions(raw)
+        cache[key] = grants
+        return grants
 
     async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
         """
@@ -828,6 +888,8 @@ class OneDriveConnector(BaseConnector):
 
                 if child_permissions is not None and existing_child_record:
                     converted_permissions = await self._convert_to_permissions(child_permissions)
+                    existing_child_record.inherit_permissions = False
+                    existing_child_record.rewrite_permissions = True
                     await self.data_entities_processor.on_updated_record_permissions(
                         record=existing_child_record,
                         permissions=converted_permissions
@@ -873,6 +935,8 @@ class OneDriveConnector(BaseConnector):
             records.extend(await self._stored_descendants(unlisted_folder))
 
         for record in records:
+            record.inherit_permissions = False
+            record.rewrite_permissions = True
             await self.data_entities_processor.on_updated_record_permissions(record, list(folder_permissions))
         self.logger.error(
             f"❌ Folder {folder_id} was unshared, but the access of {[r.external_record_id for r in records]} could not be "
@@ -1606,12 +1670,14 @@ class OneDriveConnector(BaseConnector):
             if not record:
                 continue
             try:
-                grants = await self.msgraph_client.get_file_permission(
-                    record.external_record_group_id, item_id, raise_on_error=True
+                grants = await self._convert_to_permissions(
+                    await self.msgraph_client.get_file_permission(
+                        record.external_record_group_id, item_id, raise_on_error=True
+                    )
                 )
-                await self.data_entities_processor.on_updated_record_permissions(
-                    record, await self._convert_to_permissions(grants)
-                )
+                record.inherit_permissions = False
+                record.rewrite_permissions = True
+                await self.data_entities_processor.on_updated_record_permissions(record, grants)
             except Exception as ex:
                 self.logger.warning(f"Access of item {item_id} still could not be read or saved: {ex}")
                 remaining.append(item_id)

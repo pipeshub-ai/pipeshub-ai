@@ -345,7 +345,7 @@ class TestPageSync:
         }
         assert [g.source_user_group_id for g, _ in db.user_groups] == ["acc-no-email"], "a stand-in group keeps the grant for a user without email"
         assert edit_only.access_rule == AccessRule.STRICT, "an edit-only restriction does not hide the page from space members"
-        assert {p.type for p in db.record_permissions["11"]} == {PermissionType.WRITE}
+        assert db.record_permissions["11"] == []
 
     async def test_a_failed_restriction_lookup_never_opens_a_page_to_the_whole_space(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")])
@@ -638,7 +638,7 @@ class TestRestrictedPageFiles:
         assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10"), (
             "the file inherits from its page, never straight from the space"
         )
-        assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
+        assert db.record_permissions["att2"] == []
 
     async def test_a_reindexed_file_of_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -656,7 +656,7 @@ class TestRestrictedPageFiles:
             "it still hangs under its restricted page and inherits from nothing else"
         )
         (update,) = db.permission_updates
-        assert [p.email for p in update[1]] == ["ana@acme.com"]
+        assert update[1] == []
 
     async def test_a_reindexed_reply_on_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -683,7 +683,7 @@ class TestRestrictedPageFiles:
         assert updated.inherit_permissions is True
         assert (updated.parent_external_record_id, updated.parent_record_type) == ("201", RecordType.COMMENT)
         (update,) = db.permission_updates
-        assert [p.email for p in update[1]] == ["ana@acme.com"], "a reply gets its page's restriction, not its parent comment's"
+        assert [p.email for p in update[1]] == []
 
     async def test_a_file_first_seen_while_opening_a_restricted_page_stays_restricted(self, api, db, checkpoints) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -694,7 +694,7 @@ class TestRestrictedPageFiles:
 
         file = db.records["att2"]
         assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10")
-        assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
+        assert db.record_permissions["att2"] == []
 
 
 class TestAuditLog:
@@ -807,7 +807,7 @@ class TestAuditLog:
         assert (file_update[0].inherit_permissions, file_update[0].parent_external_record_id) == (True, "10"), (
             "the file keeps inheriting from its page, which is now restricted"
         )
-        assert [p.email for p in file_update[1]] == ["ana@acme.com"]
+        assert file_update[1] == []
 
     async def test_a_folder_under_a_page_keeps_its_own_access_when_the_page_is_restricted(
         self, api, db, checkpoints, search

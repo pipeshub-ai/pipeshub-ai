@@ -178,10 +178,10 @@ class TestSharingAndPermissions:
         perms = {p.external_id: p for p in db.permissions["file-1"].values()}
         assert perms[BOB].type == PermissionType.WRITE
         assert perms["g-eng"].entity_type == EntityType.GROUP
-        assert perms["ORG_org-1"].entity_type == EntityType.GROUP
+        assert perms["org-1"].entity_type == EntityType.ORG
         assert db.records["file-1"].is_shared is True
-        assert db.access("file-2") == {"PUBLIC"}
-        assert {"PUBLIC", "ORG_org-1", "g-eng"} <= set(db.user_groups)
+        assert "PUBLIC" not in db.access("file-2")
+        assert "g-eng" in db.user_groups
 
     async def test_a_shared_folder_keeps_its_owner_and_place_in_the_owners_tree(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -804,7 +804,7 @@ class TestDatabaseFailuresDuringAFullSync:
         db.fail_group_write_for.clear()
         await connector.run_sync()
 
-        assert "ORG_org-1" in db.access("file-a")
+        assert "org-1" in db.access("file-a")
 
     async def test_a_share_whose_collaborator_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

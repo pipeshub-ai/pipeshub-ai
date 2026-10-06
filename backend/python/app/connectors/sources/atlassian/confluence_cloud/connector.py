@@ -837,6 +837,7 @@ class ConfluenceConnector(BaseConnector):
             if any(p.type == PermissionType.READ for p in permissions)
             else AccessRule.STRICT
         )
+        folder_record.rewrite_permissions = True
         return (folder_record, permissions)
 
     async def _sync_users(self) -> None:
@@ -1517,6 +1518,7 @@ class ConfluenceConnector(BaseConnector):
                             if any(p.type == PermissionType.READ for p in permissions)
                             else AccessRule.STRICT
                         )
+                        folder_record.rewrite_permissions = True
 
                         # Add folder to batch
                         records_with_permissions.append((folder_record, permissions))
@@ -1959,7 +1961,8 @@ class ConfluenceConnector(BaseConnector):
                                             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                         # Attachments follow the page's access through inheritance.
                                         attachment_record.inherit_permissions = True
-                                        records_with_permissions.append((attachment_record, permissions))
+                                        attachment_record.rewrite_permissions = True
+                                        records_with_permissions.append((attachment_record, []))
                                         total_attachments_synced += 1
 
                                 except Exception as att_error:
@@ -2702,6 +2705,7 @@ class ConfluenceConnector(BaseConnector):
                                 if any(p.type == PermissionType.READ for p in permissions)
                                 else AccessRule.STRICT
                             )
+                            webpage_record.rewrite_permissions = True
 
                             # Add to batch for update
                             records_with_permissions.append((webpage_record, permissions))
@@ -3305,7 +3309,7 @@ class ConfluenceConnector(BaseConnector):
 
         try:
             operation = restriction_data.get("operation")
-            if not operation:
+            if operation != "read":
                 return permissions
 
             # Map operation to PermissionType
@@ -3346,6 +3350,7 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform page restriction: {e}")
+            raise
 
         return permissions
 
@@ -3918,6 +3923,8 @@ class ConfluenceConnector(BaseConnector):
         webpage_record = self._transform_to_webpage_record(
             data, record_type, existing_record
         )
+        if webpage_record:
+            webpage_record.rewrite_permissions = True
 
         if not webpage_record:
             return RecordUpdate(
@@ -5564,7 +5571,8 @@ class ConfluenceConnector(BaseConnector):
                         )
                     else:
                         file_record.inherit_permissions = True
-                        new_file_records.append((file_record, page_permissions))
+                        file_record.rewrite_permissions = True
+                        new_file_records.append((file_record, []))
                         existing_record = file_record
 
             if existing_record:
@@ -5674,8 +5682,10 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_content_update(updated_record)
 
                     # Update permissions if they exist
-                    if permissions:
-                        await self.data_entities_processor.on_updated_record_permissions(updated_record, permissions)
+                    if permissions or updated_record.rewrite_permissions:
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            updated_record, list(permissions or [])
+                        )
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
@@ -5782,6 +5792,7 @@ class ConfluenceConnector(BaseConnector):
                 if any(p.type == PermissionType.READ for p in permissions)
                 else AccessRule.STRICT
             )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -5842,6 +5853,7 @@ class ConfluenceConnector(BaseConnector):
                 if any(p.type == PermissionType.READ for p in permissions)
                 else AccessRule.STRICT
             )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -5920,8 +5932,8 @@ class ConfluenceConnector(BaseConnector):
                 return None
             # Attachments follow the page's access through inheritance.
             attachment_record.inherit_permissions = True
-
-            return (attachment_record, permissions)
+            attachment_record.rewrite_permissions = True
+            return (attachment_record, [])
 
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
@@ -6438,8 +6450,8 @@ class ConfluenceConnector(BaseConnector):
                 return None
             # Comments follow the page's access through inheritance.
             comment_record.inherit_permissions = True
-
-            return (comment_record, permissions)
+            comment_record.rewrite_permissions = True
+            return (comment_record, [])
             
         except Exception as e:
             self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")

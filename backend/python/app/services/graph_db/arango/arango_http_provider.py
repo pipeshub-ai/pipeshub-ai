@@ -5083,15 +5083,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER mail._key == record._key
                         AND mail.conversationIndex == @conversation_index
                         AND mail.threadId == @thread_id
-                    FOR edge IN {CollectionNames.PERMISSION.value}
-                        FILTER edge._to == record._id
-                            AND edge.role == 'OWNER'
-                            AND edge.type == 'USER'
-                        LET user_key = SPLIT(edge._from, '/')[1]
-                        LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
-                        FILTER user.userId == @user_id
-                        LIMIT 1
-                    RETURN record
+                    FOR vertex IN 0..8 OUTBOUND record {CollectionNames.INHERIT_PERMISSIONS.value}
+                        FOR edge IN {CollectionNames.PERMISSION.value}
+                            FILTER edge._to == vertex._id
+                                AND edge.role == 'OWNER'
+                                AND edge.type == 'USER'
+                            LET user_key = SPLIT(edge._from, '/')[1]
+                            LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                            FILTER user.userId == @user_id
+                            LIMIT 1
+                        RETURN record
             """
 
             bind_vars = {
@@ -7533,14 +7534,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             node_key = f"{node_collection}/{node_id}"
 
             query = """
-            FOR edge IN @@edge_collection
-                FILTER edge._to == @node_key
-                FOR user IN @@user_collection
-                    FILTER user._id == edge._from
-                    LIMIT 1
-                    RETURN user
+            FOR vertex IN 0..8 OUTBOUND @node_key @@inherit_collection
+                FOR edge IN @@edge_collection
+                    FILTER edge._to == vertex._id
+                    FOR user IN @@user_collection
+                        FILTER user._id == edge._from
+                        LIMIT 1
+                        RETURN user
             """
             bind_vars = {
+                "@inherit_collection": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@edge_collection": CollectionNames.PERMISSION.value,
                 "@user_collection": CollectionNames.USERS.value,
                 "node_key": node_key
@@ -7580,13 +7583,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             node_key = f"{node_collection}/{node_id}"
 
             query = """
-            FOR edge IN @@edge_collection
-                FILTER edge._to == @node_key
-                FOR user IN @@user_collection
-                    FILTER user._id == edge._from
-                    RETURN user
+            FOR vertex IN 0..8 OUTBOUND @node_key @@inherit_collection
+                FOR edge IN @@edge_collection
+                    FILTER edge._to == vertex._id
+                    FOR user IN @@user_collection
+                        FILTER user._id == edge._from
+                        RETURN DISTINCT user
             """
             bind_vars = {
+                "@inherit_collection": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@edge_collection": CollectionNames.PERMISSION.value,
                 "@user_collection": CollectionNames.USERS.value,
                 "node_key": node_key
@@ -7646,14 +7651,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Get record owner source user email"""
         try:
             query = f"""
-            FOR edge IN {CollectionNames.PERMISSION.value}
-                FILTER edge._to == CONCAT('{CollectionNames.RECORDS.value}/', @record_id)
-                FILTER edge.role == 'OWNER'
-                FILTER edge.type == 'USER'
-                LET user_key = SPLIT(edge._from, '/')[1]
-                LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
-                LIMIT 1
-                RETURN user.email
+            FOR vertex IN 0..8 OUTBOUND CONCAT('{CollectionNames.RECORDS.value}/', @record_id) {CollectionNames.INHERIT_PERMISSIONS.value}
+                FOR edge IN {CollectionNames.PERMISSION.value}
+                    FILTER edge._to == vertex._id
+                    FILTER edge.role == 'OWNER'
+                    FILTER edge.type == 'USER'
+                    LET user_key = SPLIT(edge._from, '/')[1]
+                    LET user = DOCUMENT('{CollectionNames.USERS.value}', user_key)
+                    LIMIT 1
+                    RETURN user.email
             """
             bind_vars = {
                 "record_id": record_id

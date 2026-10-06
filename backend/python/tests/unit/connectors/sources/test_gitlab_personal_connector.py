@@ -362,11 +362,17 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
     async def test_noop_when_group_permission_unresolved(self) -> None:
         connector = _make_connector(creator_email=None)
         connector.data_source = MagicMock()
-        # No ensure_connector_group_permission call — cache stays None.
+        connector.runtime = MagicMock()
+        connector.runtime.ds_call = AsyncMock(return_value=_fail("no group"))
 
         await connector.projects._ensure_gitlab_group_record_groups(["org/eng"])
 
-        connector.data_entities_processor.on_new_record_groups.assert_not_called()
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        rg, perms = args[0][0]
+        assert rg.external_group_id == "org/eng"
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_emits_group_permission_not_user_permission(self) -> None:
@@ -393,11 +399,8 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         assert rg.external_group_id == "org/eng"
         assert rg.group_type == RecordGroupType.PROJECT.value
         assert rg.web_url == "https://gitlab.example.com/org/eng"
-        # The whole point of this PR: one GROUP edge per record group, no
-        # per-member fan-out and no direct USER edge to the creator.
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.GROUP
-        assert perms[0].external_id == "internal-gl-personal-1"
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_falls_back_to_path_when_get_group_fails(self) -> None:
@@ -421,7 +424,8 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         assert rg.name == "missing/grp"
         assert rg.external_group_id == "missing/grp"
         assert rg.web_url is None
-        assert perms[0].entity_type == EntityType.GROUP
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_processes_every_group_in_input(self) -> None:
@@ -499,10 +503,9 @@ class TestPersonalCreatorFallback:
             "99-merge-requests",
             "99-code-repository",
         }
-        for _rg, perms in record_groups_payload:
-            assert len(perms) == 1
-            assert perms[0].entity_type == EntityType.GROUP
-            assert perms[0].external_id == "internal-gl-personal-1"
+        for rg, perms in record_groups_payload:
+            assert rg.inherit_permissions is True
+            assert perms == []
 
     @pytest.mark.asyncio
     async def test_skips_when_permission_unresolved(self) -> None:
@@ -515,10 +518,11 @@ class TestPersonalCreatorFallback:
 
         await connector.projects._apply_creator_fallback_for_project(project)
 
-        # Without a resolved permission we must not create the record
-        # groups with empty principals — they would be invisible to
-        # every user, which is worse than skipping this sync run.
-        connector.data_entities_processor.on_new_record_groups.assert_not_called()
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        for rg, perms in args[0]:
+            assert rg.inherit_permissions is True
+            assert perms == []
 
 
 # ---------------------------------------------------------------------------

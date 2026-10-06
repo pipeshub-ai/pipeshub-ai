@@ -1120,15 +1120,9 @@ class SlackIndividualConnector(BaseConnector):
         """
         if not self.authenticated_user_email:
             self.logger.warning(
-                "⚠️  authenticated_user_email not set — cannot create permission"
+                "authenticated_user_email not set — channel will inherit the app with no grant"
             )
-            return []
-
-        return [Permission(
-            email=self.authenticated_user_email,
-            entity_type=EntityType.USER,
-            type=PermissionType.READ,
-        )]
+        return []
 
     async def _fetch_channel_members(self, channel_id: str) -> list[str]:
         """

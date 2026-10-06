@@ -423,7 +423,13 @@ class FakeEntitiesProcessor:
         return [group for key, (group, _) in self.user_groups.items() if key in granted]
 
     # writes
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_records(
+        self,
+        records_with_permissions: list[tuple[Any, list[Any]]],
+        *,
+        replace_permissions: bool = False,
+    ) -> None:
+        del replace_permissions
         for record, _ in records_with_permissions:
             self._check_write(record.external_record_id)
         self.new_record_batches.append([r.external_record_id for r, _ in records_with_permissions])

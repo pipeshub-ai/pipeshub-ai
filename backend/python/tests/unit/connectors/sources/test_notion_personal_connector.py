@@ -201,8 +201,6 @@ class TestNotionPersonalPermissions:
         connector = _make_connector()
         connector.workspace_id = "ws-1"
         connector.workspace_name = "My Workspace"
-        group_permission = MagicMock()
-        connector._connector_group_permission = group_permission
 
         await connector._apply_creator_workspace_permission()
 
@@ -210,7 +208,8 @@ class TestNotionPersonalPermissions:
         record_group, perms = (
             connector.data_entities_processor.on_new_record_groups.call_args[0][0][0]
         )
-        assert perms == [group_permission]
+        assert perms == []
+        assert record_group.inherit_permissions is True
         assert record_group.connector_name == Connectors.NOTION_PERSONAL
 
     @pytest.mark.asyncio

@@ -202,7 +202,7 @@ class FakeRecordsDb:
             if record.id == record_id:
                 del self.records[external_id]
 
-    async def on_record_content_update(self, record: Record) -> None:
+    async def on_record_content_update(self, record: Record, permissions: list[Any] | None = None) -> None:
         self.content_updates.append(record)
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:

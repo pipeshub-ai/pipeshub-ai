@@ -181,13 +181,9 @@ def make_walker(
     async def flush_moves(batch: list[tuple[str, FileRecord, list[Permission]]]) -> None:
         await processor.on_records_moved(batch)
 
-    def permissions_for(_record: FileRecord) -> list[Permission]:
-        return app_level_permissions(
-            scope=scope,
-            org_id=processor.org_id,
-            creator_email=creator_email,
-            created_by=created_by,
-        )
+    def permissions_for(record: FileRecord) -> list[Permission]:
+        record.rewrite_permissions = True
+        return []
 
     return ShareWalker(
         data_source=data_source,
@@ -405,13 +401,8 @@ async def reindex_records(
             )
             if existing:
                 built.id = existing.id
-            perms = app_level_permissions(
-                scope=scope,
-                org_id=processor.org_id,
-                creator_email=creator_email,
-                created_by=created_by,
-            )
-            updated.append((built, perms))
+            built.rewrite_permissions = True
+            updated.append((built, []))
         except Exception:
             logger.exception("Error checking record %s at source", record.id)
     if updated:

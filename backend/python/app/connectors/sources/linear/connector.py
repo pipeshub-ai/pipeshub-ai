@@ -909,25 +909,21 @@ class LinearConnector(BaseConnector):
                 parent_external_group_id=parent_external_group_id,
             )
 
-            # 3. Handle permissions based on team privacy
+            visibility = (team.get("visibility") or ("private" if is_private else "public")).lower()
             permissions: List[Permission] = []
 
-            if is_private:
-                # For private teams: Grant access via UserGroup
-                permissions.append(Permission(
-                    entity_type=EntityType.GROUP,
-                    external_id=team_id,
-                    type=PermissionType.READ,
-                ))
-                self.logger.info(f"Team {team_key} is private - added UserGroup permission (external_id={team_id})")
-            else:
-                # For public teams: All org members can access
+            if visibility == "public":
                 permissions.append(Permission(
                     entity_type=EntityType.ORG,
                     type=PermissionType.READ,
                     external_id=None
                 ))
-                self.logger.info(f"Team {team_key} is public - added org-level permission for all org members")
+            else:
+                permissions.append(Permission(
+                    entity_type=EntityType.GROUP,
+                    external_id=team_id,
+                    type=PermissionType.READ,
+                ))
 
             record_groups.append((record_group, permissions))
 
@@ -3001,6 +2997,7 @@ class LinearConnector(BaseConnector):
             creator_email=creator_email,
             creator_name=creator_name,
             inherit_permissions=True,
+            inherit_permissions_from_group=bool(parent_external_record_id),
         )
 
         # Extract and map issue relationships
@@ -3134,6 +3131,14 @@ class LinearConnector(BaseConnector):
             is_dependent_node=False,
             parent_node_id=None,
         )
+        team_nodes = (project_data.get("teams") or {}).get("nodes") or []
+        other_teams = [
+            str(node.get("id"))
+            for node in team_nodes
+            if isinstance(node, dict) and node.get("id") and str(node.get("id")) != str(team_id)
+        ]
+        if other_teams:
+            project.shared_with_me_record_group_ids = other_teams
 
 
         return project
