@@ -91,6 +91,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    SourcePerson,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -129,6 +130,13 @@ _OAUTH_REQUIRED_SCOPES = (
     ("read_content", "Read content"),
     ("read_comment", "Read comments"),
 )
+
+
+def notion_person(user: dict[str, Any] | None) -> SourcePerson | None:
+    """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson."""
+    if not isinstance(user, dict) or not user.get("id"):
+        return None
+    return SourcePerson(source_id=user["id"], is_service_account=user.get("type") == "bot")
 
 
 class _RecordGone:
@@ -4021,6 +4029,8 @@ class NotionConnector(BaseConnector):
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
+                authored_by=notion_person(obj_data.get("created_by")),
+                last_modified_by=notion_person(obj_data.get("last_edited_by")),
             )
 
         except _DatabaseUnavailable:
