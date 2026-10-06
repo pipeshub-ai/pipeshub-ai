@@ -107,6 +107,9 @@ export function TagInput({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
+      // Keys that confirm an IME candidate (CJK input) belong to the IME; Safari
+      // reports the confirming Enter with isComposing false but keyCode 229.
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       const endsTag = freeText
         ? e.key === 'Enter' || e.key === 'Tab'
         : e.key === 'Enter' || e.key === ',' || e.key === 'Tab' || e.key === ' ';

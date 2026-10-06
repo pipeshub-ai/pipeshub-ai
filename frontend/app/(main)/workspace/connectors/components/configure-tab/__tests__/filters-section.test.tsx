@@ -373,6 +373,20 @@ describe('FiltersSection — single choice, free text, booleans, numbers', () =>
     expect(syncValue('folder_paths')).toEqual({ operator: 'in', value: ['Finance Reports/Smith, John'], type: 'list' });
   });
 
+  it('does not save a folder on the Enter that confirms an IME candidate', () => {
+    setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '財務' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect((syncValue('folder_paths') as { value: string[] }).value).toEqual([]);
+
+    fireEvent.change(input, { target: { value: '財務 報告' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(syncValue('folder_paths')).toEqual({ operator: 'in', value: ['財務 報告'], type: 'list' });
+  });
+
   it('splits pasted folder paths on new lines only, keeping paths that differ by case', () => {
     setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: ['Reports'] } } });
 
