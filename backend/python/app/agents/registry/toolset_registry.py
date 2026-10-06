@@ -369,6 +369,7 @@ class ToolsetRegistry:
             'app.agents.actions.database_sandbox.database_sandbox',
             'app.agents.actions.image_generator.image_generator',
             'app.agents.actions.artifacts.artifacts',
+            'app.agents.actions.agent_builder.agent_builder',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',

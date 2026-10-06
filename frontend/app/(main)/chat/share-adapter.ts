@@ -10,11 +10,15 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import i18next from 'i18next';
 import type { SharedWithEntry } from './types';
 import { ProjectApi } from './project-api';
+import { conversationApiPath } from './collaboration-api';
+import { createCollabChatShareAdapter } from './collab-share-adapter';
 import type { ProjectDetail, ProjectMemberRole } from './project-types';
 
 export interface CreateChatShareAdapterOptions {
   /** When set, uses GET/POST agent conversation share routes instead of global chat. */
   agentId?: string;
+  /** `ENABLE_COLLABORATIVE_CHATS` is on: users, teams and levels over the collaborators routes. */
+  collaborative?: boolean;
 }
 
 /**
@@ -26,10 +30,15 @@ export function createChatShareAdapter(
   options?: CreateChatShareAdapterOptions
 ): ShareAdapter {
   const agentId = options?.agentId;
+  if (options?.collaborative) {
+    return createCollabChatShareAdapter(conversationId, { agentId });
+  }
 
-  const conversationBasePath = agentId
-    ? `/api/v1/agents/${agentId}/conversations/${conversationId}`
-    : `/api/v1/conversations/${conversationId}`;
+  const conversationBasePath = conversationApiPath(
+    agentId
+      ? { kind: 'agent', agentKey: agentId, id: conversationId }
+      : { kind: 'chat', id: conversationId },
+  );
 
   return {
     entityType: 'conversation',

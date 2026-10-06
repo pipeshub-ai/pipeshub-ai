@@ -98,6 +98,41 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     expect(event.payload.orgId).to.equal('507f1f77bcf86cd799439012');
   });
 
+  it('PH02-17: publishes the exact mail.deliveryFailed broker value', async () => {
+    mockSender.send.resolves({ status: 'permanent', error: '550 no such user' });
+
+    await deliver(payload());
+
+    const event = mockNotificationProducer.publishEvent.firstCall.args[0];
+    expect(event.eventType).to.equal('newNotification');
+    expect(event.payload).to.deep.equal({
+      orgId: '507f1f77bcf86cd799439012',
+      type: 'mail.deliveryFailed',
+      recipientRoles: ['admin'],
+      title: 'Email delivery failed',
+      message: event.payload.message,
+      severity: 'error',
+      status: 'unread',
+      payload: {
+        emailTemplateType: 'appuserInvite',
+        recipients: ['user@example.com'],
+        error: '550 no such user',
+        suppressedFailures: 0,
+      },
+    });
+    expect(event.payload).to.not.have.property('id');
+    expect(event.payload).to.not.have.property('messageKey');
+  });
+
+  it('PH02-17: swallows a notification publish failure', async () => {
+    mockSender.send.resolves({ status: 'permanent', error: '550 no such user' });
+    mockNotificationProducer.publishEvent.rejects(new Error('broker down'));
+
+    await deliver(payload());
+
+    expect(mockLogger.error.called).to.be.true;
+  });
+
   it('does not retry an indeterminate deadline, so a late SMTP success cannot duplicate', async () => {
     mockSender.send.resolves({
       status: 'indeterminate',

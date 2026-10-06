@@ -4,10 +4,11 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.service import OAuthScopes
+from app.config.constants.service import OAuthScopes, TokenScopes
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
@@ -132,6 +133,11 @@ async def _validate_and_filter_owner_updates(
     return filtered_updates, total_owner_count
 
 
+def _require_org_id(user_info: dict) -> None:
+    if not user_info.get("orgId"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 @router.post("/team", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def create_team(request: Request) -> JSONResponse:
     """Create a team"""
@@ -147,6 +153,7 @@ async def create_team(request: Request) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
+    _require_org_id(user_info)
     user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -244,7 +251,7 @@ async def create_team(request: Request) -> JSONResponse:
         logger.info(f"Team created successfully: {team_body}")
 
         # Fetch the created team with users and permissions
-        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
+        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'], org_id=user_info.get("orgId"))
 
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
@@ -272,12 +279,14 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
+    _require_org_id(user_info)
     user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     try:
         # Use interface method to get team with users
-        result = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+        org_id = user_info["orgId"]
+        result = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'], org_id=org_id)
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -306,6 +315,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
+    _require_org_id(user_info)
     user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -445,7 +455,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'], org_id=user_info.get("orgId"))
 
         return JSONResponse(
             status_code=200,
@@ -525,6 +535,42 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
+
+class UserTeamIdsResponse(BaseModel):
+    teamIds: list[str]
+
+
+@router.get(
+    "/user/team-ids",
+    response_model=UserTeamIdsResponse,
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.TEAM_READ, service_scopes=[TokenScopes.TEAM_IDS_READ]))
+    ],
+)
+async def get_user_team_ids(request: Request) -> JSONResponse:
+    """Ids of the caller's teams in the caller's org (ids only, for access checks).
+
+    A token without orgId is a malformed identity: 401, no provider call.
+    """
+    services = await get_services(request)
+    graph_provider = services["graph_provider"]
+    logger = services["logger"]
+
+    _require_org_id(request.state.user)
+    org_id = request.state.user["orgId"]
+    user = await graph_provider.get_user_by_user_id(request.state.user.get("userId"))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        team_ids = await graph_provider.get_user_team_ids(
+            user_key=user["_key"], org_id=org_id
+        )
+        return JSONResponse(status_code=200, content={"teamIds": team_ids})
+    except Exception as e:
+        logger.error(f"Error in get_user_team_ids: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch user team ids") from e
+
 
 @router.get("/user/teams", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_teams(

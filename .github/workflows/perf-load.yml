@@ -15,6 +15,12 @@ on:
     - cron: '30 2 * * 3'
   workflow_dispatch:
     inputs:
+      suite:
+        description: 'load: the sustained search and chat load test. collab: the collaborative-chats feed poll (200 viewers, no AI models or secrets needed)'
+        required: true
+        type: choice
+        options: [load, collab]
+        default: load
       stages:
         description: 'seconds:users per stage, comma-separated, no spaces; users move linearly between stages (change only when you also refresh the baseline)'
         required: true
@@ -44,6 +50,8 @@ env:
 jobs:
   load-test:
     name: Sustained load (neo4j)
+    # A schedule has no suite input, so it runs this one.
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.suite != 'collab' }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     # About 15 minutes to build and start, up to 30 to seed, 19 of load.
     timeout-minutes: 120
@@ -284,3 +292,83 @@ jobs:
         if: always()
         working-directory: deployment/docker-compose
         run: docker compose -f "$COMPOSE_FILE_NEO4J" down -v
+
+  # PH-12 PR-12.4. Boots its own Mongo, Redis and Node API (integration-tests/helper/collab_stack), so it
+  # needs no secrets and no deployment environment. Dispatch only: never on pull requests.
+  collab-poll:
+    name: Collaborative-chats feed poll
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.suite == 'collab' }}
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    timeout-minutes: 45
+    env:
+      PERF_LABEL: ci-collab-neo4j-4cpu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Node API dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install integration-test dependencies
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      - name: Run explain checks
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports/perf
+          python perf/collab_explain.py --sessions 200000 --output reports/perf/collab-explain.json
+
+      - name: Run feed poll
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python perf/bench_collab_poll.py --viewers 200 --duration 300 --label "$PERF_LABEL" \
+            --output reports/perf/collab-poll.json --summary reports/perf/summary.md
+
+      - name: Compare with baseline
+        if: ${{ !cancelled() }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python perf/compare.py \
+            --baseline "perf/baselines/$PERF_LABEL.json" \
+            --current reports/perf/collab-poll.json \
+            --summary reports/perf/summary.md
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/summary.md') != '' }}
+        run: cat integration-tests/reports/perf/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-collab-${{ github.run_id }}
+          path: integration-tests/reports/perf/
+          if-no-files-found: ignore
+
+      - name: Remove leftover containers
+        if: always()
+        run: |
+          docker ps -aq --filter "name=pcc-e2e-" | xargs -r docker rm -fv

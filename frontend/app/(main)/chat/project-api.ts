@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import type { ApiAccess } from './collaboration-types';
 import type {
   CreateProjectInput,
   ListProjectsParams,
@@ -25,6 +26,10 @@ export interface ProjectConversationRow {
   status: string;
   lastActivityAt: number;
   projectVisibility?: 'private' | 'project';
+  /** Server-computed with the flag on; the client-side owner guess is only the legacy fallback. */
+  access?: ApiAccess;
+  unreadCount?: number;
+  collaboratorCount?: number;
   createdAt: string;
   updatedAt: string;
 }

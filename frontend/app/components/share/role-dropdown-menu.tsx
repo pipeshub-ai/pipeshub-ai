@@ -14,6 +14,7 @@ interface RoleDropdownMenuProps {
   onRemove?: () => void;
   /**
    * When true, suppresses role options and shows "Team" / "Teams do not have roles".
+   * Only for entities whose team grants carry no role; KB team rows pass roles instead.
    */
   isTeam?: boolean;
   /**
@@ -35,15 +36,42 @@ interface RoleDropdownMenuProps {
    * Override the label + description for each role. Defaults to
    * {@link getShareRoleLabels}. Pass team-specific labels for team contexts.
    */
-  labels?: Record<ShareRole, { label: string; description: string }>;
+  labels?: Partial<Record<ShareRole, { label: string; description: string }>>;
+  /** Roles offered in the menu. Defaults to the user roles. */
+  roles?: readonly ShareRole[];
+  /** Adds a "Make owner" item above Remove (ownership transfer). */
+  onMakeOwner?: () => void;
 }
 
-const SELECTABLE_ROLES: ShareRole[] = ['OWNER', 'WRITER', 'READER'];
+const SELECTABLE_ROLES: readonly ShareRole[] = ['OWNER', 'WRITER', 'READER'];
 const MENU_WIDTH = 292;
+
+function onActivateKey(action: () => void) {
+  return (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      action();
+    }
+  };
+}
 const MIN_HORIZONTAL_MARGIN = 8;
 const MIN_VERTICAL_MARGIN = 8;
 
-export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef, onOpenChange, labels }: RoleDropdownMenuProps) {
+/**
+ * Where the menu mounts: inside the enclosing modal dialog when there is one. A modal dialog traps focus and
+ * hides everything outside it from assistive tech, so a menu portaled to `body` could not be reached by keyboard.
+ */
+function portalHostOf(trigger: HTMLElement | null): HTMLElement | null {
+  const dialog = trigger?.closest<HTMLElement>('[role="dialog"]');
+  if (dialog && getComputedStyle(dialog).position !== 'static') return dialog;
+  return null;
+}
+
+function menuItemsOf(menu: HTMLElement | null): HTMLElement[] {
+  return Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]') ?? []);
+}
+
+export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, anchorRef, onOpenChange, labels, roles = SELECTABLE_ROLES, onMakeOwner }: RoleDropdownMenuProps) {
   const { t } = useTranslation();
   const effectiveLabels = labels ?? getShareRoleLabels(t);
   const roleLabel =
@@ -56,6 +84,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [anchorRect, setAnchorRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
 
   const setOpen = useCallback((next: boolean | ((prev: boolean) => boolean)) => {
     setOpenState((prev) =>
@@ -79,10 +108,38 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
     }
   }, [setOpen]);
 
-  // Close on Escape
+  // Close on Escape and give focus back to the trigger.
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') setOpen(false);
+    if (e.key === 'Escape') {
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
   }, [setOpen]);
+
+  const handleMenuKeyDown = (e: React.KeyboardEvent) => {
+    const items = menuItemsOf(menuRef.current);
+    if (items.length === 0) return;
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    let next: number | null = null;
+    if (e.key === 'ArrowDown') next = at < 0 ? 0 : (at + 1) % items.length;
+    else if (e.key === 'ArrowUp') next = at <= 0 ? items.length - 1 : at - 1;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = items.length - 1;
+    else if (e.key === 'Tab') {
+      setOpen(false);
+      return;
+    }
+    if (next === null) return;
+    e.preventDefault();
+    items[next].focus();
+  };
+
+  const placed = anchorRect !== null;
+  useEffect(() => {
+    if (!open || !placed) return;
+    const items = menuItemsOf(menuRef.current);
+    (items.find((i) => i.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
+  }, [open, placed]);
 
   useEffect(() => {
     if (open) {
@@ -104,6 +161,8 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
     }
     const el = anchorRef?.current ?? triggerRef.current;
     if (!el) return;
+    const host = portalHostOf(triggerRef.current);
+    setPortalHost(host);
 
     const update = () => {
       const rect = el.getBoundingClientRect();
@@ -127,9 +186,13 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
             ? upwardTop
             : Math.max(MIN_VERTICAL_MARGIN, maxTop);
       }
+      // Inside a dialog the menu is absolutely positioned against the dialog box.
+      const hostRect = host?.getBoundingClientRect();
+      const offsetTop = host && hostRect ? hostRect.top + host.clientTop : 0;
+      const offsetLeft = host && hostRect ? hostRect.left + host.clientLeft : 0;
       setAnchorRect({
-        top,
-        left,
+        top: top - offsetTop,
+        left: left - offsetLeft,
         width: dropdownWidth,
       });
     };
@@ -155,6 +218,8 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
       <button
         ref={triggerRef}
         type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         style={{
           display: 'inline-flex',
@@ -176,16 +241,18 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
           userSelect: 'none',
         }}
       >
-        {isNoRoles ? noRolesTitle : effectiveLabels[role].label}
+        {isNoRoles ? noRolesTitle : (effectiveLabels[role]?.label ?? roleLabel)}
         <MaterialIcon name="expand_more" size={16} color="var(--slate-11)" />
       </button>
 
-      {/* Dropdown popover — portaled to body to escape Dialog overflow clipping */}
+      {/* Dropdown popover — portaled out of the row (overflow clipping), into the enclosing dialog if any */}
       {open && anchorRect && createPortal(
         <Box
           ref={menuRef}
+          role="menu"
+          onKeyDown={handleMenuKeyDown}
           style={{
-            position: 'fixed',
+            position: portalHost ? 'absolute' : 'fixed',
             top: anchorRect.top,
             left: anchorRect.left,
             width: anchorRect.width,
@@ -216,9 +283,16 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
               </Text>
             </Flex>
           ) : (
-            SELECTABLE_ROLES.map((r, index) => (
+            roles.map((r, index) => (
             <Flex
               key={r}
+              role="menuitemradio"
+              aria-checked={r === role}
+              tabIndex={0}
+              onKeyDown={onActivateKey(() => {
+                onRoleChange?.(r);
+                setOpen(false);
+              })}
               align="center"
               justify="between"
               onClick={() => {
@@ -229,7 +303,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                 padding: '6px 12px',
                 paddingTop: index === 0 ? 8 : 6,
                 paddingBottom:
-                  index === SELECTABLE_ROLES.length - 1 && !onRemove ? 8 : 6,
+                  index === roles.length - 1 && !onRemove ? 8 : 6,
                 cursor: 'pointer',
               }}
               onMouseEnter={(e) => {
@@ -281,6 +355,30 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
             ))
           )}
 
+          {onMakeOwner && !isNoRoles && (
+            <>
+              <Box style={{ height: 1, backgroundColor: 'var(--olive-3)' }} />
+              <Flex
+                role="menuitem"
+                tabIndex={0}
+                align="center"
+                onKeyDown={onActivateKey(() => {
+                  onMakeOwner();
+                  setOpen(false);
+                })}
+                onClick={() => {
+                  onMakeOwner();
+                  setOpen(false);
+                }}
+                style={{ padding: '10px 12px', cursor: 'pointer' }}
+              >
+                <Text size="1" style={{ color: 'var(--slate-12)', fontSize: 13, lineHeight: '16px' }}>
+                  {t('chat.collab.share.makeOwner')}
+                </Text>
+              </Flex>
+            </>
+          )}
+
           {/* Remove access option */}
           {onRemove && (
             <>
@@ -291,6 +389,12 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
                 }}
               />
               <Flex
+                role="menuitem"
+                tabIndex={0}
+                onKeyDown={onActivateKey(() => {
+                  onRemove();
+                  setOpen(false);
+                })}
                 align="center"
                 onClick={() => {
                   onRemove();
@@ -314,7 +418,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
             </>
           )}
         </Box>,
-        document.body
+        portalHost ?? document.body
       )}
     </Box>
   );

@@ -11,11 +11,18 @@ import { useChatStore, isConversationStreamingInScope } from '@/chat/store';
 import { ChatApi } from '@/chat/api';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ProjectApi } from '@/chat/project-api';
-import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import { CollaborationApi } from '@/chat/collaboration-api';
+import type { AccessChange, ConversationRef } from '@/chat/collaboration-types';
+import { AccessChangeDialog } from '@/chat/components/collaboration/access-change-dialog';
+import { describeConversationError } from '@/chat/utils/conversation-errors';
+import { useToastStore } from '@/lib/store/toast-store';
+import { useFeatureFlagsStore, selectProjectsEnabled, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
 import { ICON_SIZE_DEFAULT, CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
-import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dialogs';
+import { SharedChatItemMenu } from './shared-chat-item-menu';
+import { ChatRowBadges } from './chat-row-badges';
+import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog, LeaveChatDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
@@ -80,6 +87,10 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+  const [pendingProjectChange, setPendingProjectChange] = useState<AccessChange | null>(null);
+  const collabEnabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
@@ -230,7 +241,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
     }
   };
 
-  const handleConfirmMoveToProject = async (projectId: string | null) => {
+  const moveToProject = async (projectId: string | null) => {
     if (convStreamingBlocksSidebarMutation()) {
       throw new Error('Cannot move a conversation while it is streaming.');
     }
@@ -241,14 +252,88 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
     bumpConversationsVersion();
   };
 
+  // With collaboration on, a link or unlink changes who can open the chat, so it is previewed first.
+  const requestProjectChange = (projectId: string | null) => {
+    setPendingProjectChange(projectId === null ? { type: 'unlink' } : { type: 'link', projectId });
+  };
+
+  const handleConfirmMoveToProject = async (projectId: string | null) => {
+    if (collabEnabled) {
+      requestProjectChange(projectId);
+      return;
+    }
+    await moveToProject(projectId);
+  };
+
   const handleRemoveFromProject = async () => {
     if (convStreamingBlocksSidebarMutation()) return;
+    if (collabEnabled) {
+      requestProjectChange(null);
+      return;
+    }
     try {
-      await ProjectApi.setConversationProject(conversation.id, null, { agentKey: agentId });
-      moveConversationToProject(conversation.id, null);
-      bumpConversationsVersion();
+      await moveToProject(null);
     } catch {
       // Non-fatal — row simply stays linked; user can retry from the menu.
+    }
+  };
+
+  const isSharedWithMe = collabEnabled && (conversation.access?.isOwner ?? conversation.isOwner) === false;
+  const conversationRef: ConversationRef = agentId
+    ? { kind: 'agent', agentKey: agentId, id: conversation.id }
+    : { kind: 'chat', id: conversation.id };
+
+  const leaveActiveConversation = () => {
+    if (urlConversationId !== conversation.id) return;
+    const store = useChatStore.getState();
+    const found = store.getSlotByConvId(conversation.id, { forAgentId: agentId ?? null });
+    if (found) store.evictSlot(found.slotId);
+    else store.clearActiveSlot();
+    router.replace(agentId ? buildChatHref({ agentId }) : '/chat/');
+  };
+
+  const showCollabError = (error: unknown) => {
+    useToastStore.getState().addToast({
+      variant: 'error',
+      title: t(describeConversationError(error).i18nKey),
+    });
+  };
+
+  const handleConfirmLeave = async () => {
+    if (convStreamingBlocksSidebarMutation()) return;
+    setIsLeaving(true);
+    try {
+      await CollaborationApi.leave(conversationRef);
+      removeConversation(conversation.id);
+      bumpConversationsVersion();
+      setLeaveDialogOpen(false);
+      leaveActiveConversation();
+    } catch (error) {
+      setLeaveDialogOpen(false);
+      showCollabError(error);
+    } finally {
+      setIsLeaving(false);
+    }
+  };
+
+  const handleArchiveSelf = async () => {
+    try {
+      await CollaborationApi.archiveSelf(conversationRef);
+      removeConversation(conversation.id);
+      bumpConversationsVersion();
+      leaveActiveConversation();
+    } catch (error) {
+      showCollabError(error);
+    }
+  };
+
+  const handleUnarchiveSelf = async () => {
+    try {
+      await CollaborationApi.unarchiveSelf(conversationRef);
+      removeConversation(conversation.id);
+      bumpConversationsVersion();
+    } catch (error) {
+      showCollabError(error);
     }
   };
 
@@ -297,6 +382,42 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
     );
   }
 
+  const ownerMenu =
+    conversation.isOwner === true ? (
+      <ChatItemMenu
+        isParentHovered={isHovered}
+        onOpenChange={setMenuOpen}
+        onRename={handleStartRename}
+        onArchive={() => setArchiveDialogOpen(true)}
+        onDelete={() => setDeleteDialogOpen(true)}
+        showRename={true}
+        showArchive={true}
+        onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
+        onRemoveFromProject={
+          projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
+        }
+      />
+    ) : undefined;
+  const sharedMenu = isSharedWithMe ? (
+    <SharedChatItemMenu
+      isParentHovered={isHovered}
+      onOpenChange={setMenuOpen}
+      isArchived={conversation.archivedForMe === true}
+      onArchive={() => void handleArchiveSelf()}
+      onUnarchive={() => void handleUnarchiveSelf()}
+      onLeave={() => setLeaveDialogOpen(true)}
+    />
+  ) : undefined;
+  // Flag off keeps the legacy slot (owner menu or nothing); the badges and shared menu exist only with it on.
+  const rightSlot = collabEnabled ? (
+    <>
+      <ChatRowBadges conversation={conversation} />
+      {ownerMenu ?? sharedMenu}
+    </>
+  ) : (
+    ownerMenu
+  );
+
   const conversationHref = buildChatHref({ agentId, projectId, conversationId: conversation.id });
 
   return (
@@ -319,23 +440,14 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
         subtitle={sharedBySubtitle}
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
-        rightSlot={
-          conversation.isOwner === true ? (
-            <ChatItemMenu
-              isParentHovered={isHovered}
-              onOpenChange={setMenuOpen}
-              onRename={handleStartRename}
-              onArchive={() => setArchiveDialogOpen(true)}
-              onDelete={() => setDeleteDialogOpen(true)}
-              showRename={true}
-              showArchive={true}
-              onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
-              onRemoveFromProject={
-                projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
-              }
-            />
-          ) : undefined
-        }
+        rightSlot={rightSlot}
+      />
+
+      <LeaveChatDialog
+        open={leaveDialogOpen}
+        onOpenChange={setLeaveDialogOpen}
+        onConfirm={handleConfirmLeave}
+        isLeaving={isLeaving}
       />
 
       {/* Delete confirmation dialog */}
@@ -361,6 +473,15 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
         currentProjectId={conversation.projectId ?? null}
         onConfirm={handleConfirmMoveToProject}
       />
+
+      {collabEnabled && (
+        <AccessChangeDialog
+          change={pendingProjectChange}
+          conversationRef={conversationRef}
+          onApply={() => moveToProject(pendingProjectChange?.type === 'link' ? pendingProjectChange.projectId : null)}
+          onClose={() => setPendingProjectChange(null)}
+        />
+      )}
     </>
   );
 }

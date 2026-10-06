@@ -1,6 +1,14 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import { IChatSessionDocument } from '../types/conversation.interfaces';
-import { REASONING_EFFORT_VALUES } from '../constants/constants';
+import { RESPOND_MODES } from '../services/collaboration/mentions/mention.types';
+import {
+  CHAT_SCHEMA_VERSION,
+  COLLABORATOR_ACCESS_LEVELS,
+  COLLABORATOR_PRINCIPAL_TYPES,
+  OWNERSHIP_HISTORY_MAX,
+  REASONING_EFFORT_VALUES,
+  SHARED_WITH_MAX,
+} from '../constants/constants';
 
 /**
  * Single collection backing both plain chat and agent chat threads
@@ -14,6 +22,48 @@ import { REASONING_EFFORT_VALUES } from '../constants/constants';
  * the structural guard against leaking them into a response even from a
  * `.lean()` query that forgets to project them out explicitly.
  */
+// `principalType` and `addedBy` are deliberately not `required`: the existing
+// share writer persists `{userId, accessLevel}` under `runValidators`, and
+// legacy rows have neither. Readers must key on `userId`/`teamId` presence,
+// never on `principalType` (74 §1: defaults are invisible to the query engine).
+const collaboratorSchema = new Schema(
+  {
+    principalType: { type: String, enum: COLLABORATOR_PRINCIPAL_TYPES },
+    userId: { type: Schema.Types.ObjectId },
+    teamId: { type: String },
+    accessLevel: {
+      type: String,
+      enum: COLLABORATOR_ACCESS_LEVELS,
+      required: true,
+      default: 'read',
+    },
+    addedBy: { type: Schema.Types.ObjectId },
+    addedAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date },
+  },
+  { _id: false },
+);
+
+const activeRunSchema = new Schema(
+  {
+    runId: { type: String, required: true },
+    userId: { type: Schema.Types.ObjectId, required: true },
+    instanceId: { type: String },
+    startedAt: { type: Date, required: true },
+    leaseExpiresAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
+const ownershipTransferSchema = new Schema(
+  {
+    fromUserId: { type: Schema.Types.ObjectId, required: true },
+    toUserId: { type: Schema.Types.ObjectId, required: true },
+    at: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
 const chatSessionSchema = new Schema<IChatSessionDocument>(
   {
     sessionType: {
@@ -33,17 +83,40 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     initiator: { type: Schema.Types.ObjectId, required: true, index: true },
     isShared: { type: Boolean, default: false },
     shareLink: { type: String },
-    sharedWith: [
-      {
-        userId: { type: Schema.Types.ObjectId },
-        accessLevel: {
-          type: String,
-          enum: ['read', 'write'],
-          default: 'read',
-        },
+    sharedWith: {
+      type: [collaboratorSchema],
+      default: [],
+      validate: {
+        validator: (rows: unknown[]) => rows.length <= SHARED_WITH_MAX,
+        message: `sharedWith exceeds ${String(SHARED_WITH_MAX)} entries`,
       },
-      { _id: false },
-    ],
+    },
+    settings: {
+      editorsCanInvite: { type: Boolean, default: false },
+      ownerContentShared: { type: Boolean, default: false },
+      // No default: absent reads as `smart`, and a new key on every row would change flag-off documents.
+      respondMode: { type: String, enum: RESPOND_MODES },
+    },
+    // Per-user archive and Leave state; kept off every read (74 §1, §4).
+    archivedFor: { type: [Schema.Types.ObjectId], default: [], select: false },
+    hiddenFor: { type: [Schema.Types.ObjectId], default: [], select: false },
+    activeRun: { type: activeRunSchema, default: null },
+    rev: { type: Number, default: 0 },
+    aclVersion: { type: Number, default: 0 },
+    creationKey: { type: String, select: false },
+    ownershipHistory: {
+      type: [ownershipTransferSchema],
+      default: [],
+      validate: {
+        validator: (rows: unknown[]) => rows.length <= OWNERSHIP_HISTORY_MAX,
+        message: `ownershipHistory exceeds ${String(OWNERSHIP_HISTORY_MAX)} entries`,
+      },
+    },
+    schemaVersion: {
+      type: Number,
+      default: CHAT_SCHEMA_VERSION,
+      select: false,
+    },
     isDeleted: { type: Boolean, default: false },
     deletedBy: { type: Schema.Types.ObjectId },
     isArchived: { type: Boolean, default: false },
@@ -119,6 +192,28 @@ chatSessionSchema.index({ sessionType: 1, orgId: 1, initiator: 1 });
 chatSessionSchema.index({ agentKey: 1, orgId: 1 });
 chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
+// One array path per index (multikey rule); equality fields before the sort key.
+chatSessionSchema.index({
+  orgId: 1,
+  'sharedWith.userId': 1,
+  sessionType: 1,
+  isDeleted: 1,
+  lastActivityAt: -1,
+});
+chatSessionSchema.index({
+  orgId: 1,
+  'sharedWith.teamId': 1,
+  sessionType: 1,
+  isDeleted: 1,
+  lastActivityAt: -1,
+});
+chatSessionSchema.index(
+  { orgId: 1, initiator: 1, creationKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { creationKey: { $type: 'string' } },
+  },
+);
 chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
 chatSessionSchema.index({ lastActivityAt: -1 });
 

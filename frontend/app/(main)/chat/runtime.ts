@@ -14,14 +14,17 @@ import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
+import { queueSend, shouldQueueSend } from './utils/queued-send';
 import { showNoModelToast } from './utils/no-model-toast';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
+import type { MentionRef } from './components/composer/composer-input.types';
 import {
   buildAssistantApiFilters,
   buildStreamRequestModeFields,
   type AppliedFilterNode,
   type AppliedFilters,
   type AttachmentRef,
+  type AgentDraftPayload,
   type AskUserQuestionAnswer,
   type AskUserQuestionPayload,
   type ChatCollectionAttachment,
@@ -44,9 +47,14 @@ import {
   parseAnswerMessage,
 } from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
+import { collabSendFields } from './utils/collab-send-fields';
+import { collabRowCustom } from './utils/collab-row-custom';
+import { withRequestedByViews } from './utils/collab-attribution';
+import { useFeatureFlagsStore, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
+import type { MessageAuthor } from './collaboration-types';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
-const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
+export const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
 
 /** Prefer the `isFinal` text part from the transcript over `msg.content`.
  * Handles pre-fix conversations where `content` had narration mixed in,
@@ -295,6 +303,19 @@ export function buildStreamChatRequestForSlot(
       ? { apps: [], kb: [] }
       : undefined;
 
+  // Consent and concurrency fields ride only on a composer send in a chat with other people in it,
+  // so a solo chat or a flag-off build posts the same body as before.
+  const collabFields = outgoingMessage
+    ? collabSendFields({
+        active:
+          selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState()) &&
+          currentSlot.access?.isCollaborative === true,
+        hasAttachments: (readAttachmentsFromMessage(outgoingMessage)?.length ?? 0) > 0,
+        isAgent,
+        shareToolResults: outgoingMessage.metadata?.custom?.shareToolResults === true,
+      })
+    : {};
+
   const request: StreamChatRequest = {
     query,
     ...effectiveModel,
@@ -310,6 +331,7 @@ export function buildStreamChatRequestForSlot(
     ...(!currentSlot.convId && currentSlot.projectId
       ? { projectId: currentSlot.projectId }
       : {}),
+    ...collabFields,
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
@@ -339,6 +361,25 @@ export function buildStreamChatRequestForSlot(
 export interface LoadHistoricalResult {
   messages: ThreadMessageLike[];
   unansweredAskUserQuestion: PendingAskUserQuestion | null;
+}
+
+interface AskCardRef {
+  /** Absent when the card is only known from a transcript part, which the server does not bind to. */
+  id?: string;
+  requestedBy?: MessageAuthor | null;
+}
+
+/** Who asked a card the server did not stamp: the author of the question before it (legacy rows). */
+function questionerBefore(
+  messages: ConversationMessage[],
+  index: number,
+): MessageAuthor | null | undefined {
+  for (let j = index - 1; j >= 0; j -= 1) {
+    const prev = messages[j];
+    if (prev.messageType !== 'user_query' || isAskUserQuestionResumeQuery(prev.content)) continue;
+    return prev.author;
+  }
+  return undefined;
 }
 
 function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
@@ -455,6 +496,42 @@ function askPayloadFromToolCall(msg: ConversationMessage): AskUserQuestionPayloa
   return askPayloadFromUnknown(askTool?.toolResult);
 }
 
+interface StoredDraft {
+  payload: AgentDraftPayload;
+  /** The stored row's id: what the create call names as its draft. */
+  messageId?: string;
+  /** Display name of whoever drafted it, for the placeholder other viewers see. */
+  author?: string;
+}
+
+function agentDraftFromToolCall(msg: ConversationMessage): StoredDraft | null {
+  const tool = msg.tools?.find((t) => typeof t.toolName === 'string' && t.toolName.endsWith('draft_agent'));
+  const result = tool?.toolResult as Record<string, unknown> | null | undefined;
+  if (!result || typeof result !== 'object') return null;
+  if (result.redacted !== true && typeof result.draftId !== 'string') return null;
+  const author = msg.author?.displayName;
+  return {
+    payload: result as unknown as AgentDraftPayload,
+    ...(msg._id ? { messageId: msg._id } : {}),
+    ...(author ? { author } : {}),
+  };
+}
+
+function stampAgentDraft(row: ThreadMessageLike, draft: StoredDraft): void {
+  const prev = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+  Object.assign(row, {
+    metadata: {
+      ...row.metadata,
+      custom: {
+        ...prev,
+        persistedAgentDraft: draft.payload,
+        ...(draft.messageId ? { agentDraftMessageId: draft.messageId } : {}),
+        ...(draft.author ? { agentDraftAuthor: draft.author } : {}),
+      },
+    },
+  });
+}
+
 function askPayloadFromParts(parts: ConversationMessage['parts']): AskUserQuestionPayload | null {
   if (!parts?.length) return null;
   for (const part of parts) {
@@ -498,21 +575,38 @@ function peekFollowingAskPayload(
  *     answer continues in the same turn.
  */
 export function loadHistoricalMessages(
-  messages: ConversationMessage[]
+  rawMessages: ConversationMessage[],
+  options?: { rev?: number },
 ): LoadHistoricalResult {
+  const messages = withRequestedByViews(rawMessages);
   const result: ThreadMessageLike[] = [];
   let toolPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAssistantId: string | null = null;
   let lastUnansweredPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAnswers: Record<string, AskUserQuestionAnswer> = {};
   let mergeNextBotIntoId: string | null = null;
+  let pendingDraft: StoredDraft | null = null;
+  let toolCard: AskCardRef | null = null;
+  let lastUnansweredCard: AskCardRef | null = null;
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
     if (msg.messageType === 'tool_call') {
+      const draft = agentDraftFromToolCall(msg);
+      if (draft) {
+        // Saved before the answer of its turn; a regenerated turn saves it after.
+        const last = result[result.length - 1];
+        if (last?.role === 'assistant') stampAgentDraft(last, draft);
+        else pendingDraft = draft;
+        continue;
+      }
       const payload = askPayloadFromToolCall(msg);
       if (payload) {
+        const card: AskCardRef = {
+          id: msg._id,
+          requestedBy: msg.requestedBy ?? questionerBefore(messages, i),
+        };
         const last = result[result.length - 1];
         if (last?.role === 'assistant' && typeof last.id === 'string') {
           const botIndex = messages.findIndex(
@@ -537,18 +631,23 @@ export function loadHistoricalMessages(
             lastUnansweredAssistantId = last.id;
             lastUnansweredPayload = stamped;
             lastUnansweredAnswers = { ...lastUnansweredAnswers, ...stampedAnswers };
+            lastUnansweredCard = card;
           }
         } else {
           toolPayload = toolPayload
             ? mergeAskUserQuestionPayloads(toolPayload, payload)
             : payload;
+          toolCard = card;
         }
       }
       continue;
     }
 
+    if (msg.messageType === 'user_query') pendingDraft = null;
+
     if (msg.messageType === 'error') {
       toolPayload = null;
+      pendingDraft = null;
       if (isFailedAskUserQuestionResumeError(messages, i)) {
         continue;
       }
@@ -566,9 +665,15 @@ export function loadHistoricalMessages(
     }
 
     if (msg.messageType === 'bot_response') {
+      const cardFromToolRow = toolPayload !== null;
       const capturedPayload =
         toolPayload ?? askPayloadFromParts(msg.parts) ?? askPayloadFromToolCall(msg);
       toolPayload = null;
+      const botCard: AskCardRef = {
+        ...(askPayloadFromToolCall(msg) ? { id: msg._id } : {}),
+        requestedBy: msg.requestedBy ?? questionerBefore(messages, i),
+      };
+      const askCard: AskCardRef = cardFromToolRow && toolCard ? toolCard : botCard;
 
       const isAnswered = capturedPayload
         ? isAskUserQuestionAnswered(messages, i)
@@ -589,6 +694,7 @@ export function loadHistoricalMessages(
         lastUnansweredAssistantId = cardRowId;
         lastUnansweredPayload = capturedPayload;
         lastUnansweredAnswers = {};
+        lastUnansweredCard = askCard;
       }
 
       const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
@@ -634,7 +740,9 @@ export function loadHistoricalMessages(
                 messageId: msg._id,
                 citationMaps: buildCitationMapsFromApi(msg.citations || []),
                 confidence: msg.confidence,
+                ...(msg.answerMatchType ? { answerMatchType: msg.answerMatchType } : {}),
                 modelInfo: msg.modelInfo,
+                ...collabRowCustom(msg, options?.rev),
                 ...(feedbackInfo ? { feedbackInfo } : {}),
                 ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
                 ...(nextParts.length ? { persistedParts: nextParts } : {}),
@@ -654,17 +762,45 @@ export function loadHistoricalMessages(
             messageId: msg._id,
             citationMaps: buildCitationMapsFromApi(msg.citations || []),
             confidence: msg.confidence,
+            ...(msg.answerMatchType ? { answerMatchType: msg.answerMatchType } : {}),
             modelInfo: msg.modelInfo,
+            ...collabRowCustom(msg, options?.rev),
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
             ...(capturedPayload
               ? { persistedAskUserQuestion: capturedPayload }
+              : {}),
+            ...(pendingDraft
+              ? {
+                  persistedAgentDraft: pendingDraft.payload,
+                  ...(pendingDraft.messageId ? { agentDraftMessageId: pendingDraft.messageId } : {}),
+                  ...(pendingDraft.author ? { agentDraftAuthor: pendingDraft.author } : {}),
+                }
               : {}),
             // Agent-activity transcript (`agui` protocol only — see
             // TranscriptCollector/buildAIResponseMessage). Absent for the
             // legacy protocol and every pre-existing conversation; consumers
             // fall back to plain `content` (see AgentActivityTimeline).
             ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
+          },
+        },
+      });
+      pendingDraft = null;
+      continue;
+    }
+
+    if (msg.messageType === 'note') {
+      // A note asks nobody: its own row type, so it never takes the place of the question an answer follows.
+      result.push({
+        id: msg._id,
+        role: 'system' as const,
+        content: [{ type: 'text' as const, text: msg.content }],
+        metadata: {
+          custom: {
+            messageType: 'note' as const,
+            createdAt: msg.createdAt,
+            ...(msg.mentions?.length ? { mentions: msg.mentions } : {}),
+            ...collabRowCustom(msg, options?.rev),
           },
         },
       });
@@ -722,6 +858,7 @@ export function loadHistoricalMessages(
           createdAt: msg.createdAt,
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
+          ...collabRowCustom(msg, options?.rev),
         },
       },
     });
@@ -734,6 +871,10 @@ export function loadHistoricalMessages(
       payload: lastUnansweredPayload,
       answers: lastUnansweredAnswers,
       status: 'pending',
+      ...(lastUnansweredCard?.requestedBy !== undefined
+        ? { requestedBy: lastUnansweredCard.requestedBy }
+        : {}),
+      ...(lastUnansweredCard?.id ? { toolCallMessageId: lastUnansweredCard.id } : {}),
     };
   }
 
@@ -759,6 +900,19 @@ function readAttachmentsFromMessage(
       extension: String((item as { extension?: unknown }).extension ?? ''),
       virtualRecordId,
     });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** Mention refs attached on send (see chat input metadata). */
+function readMentionsFromMessage(message: ThreadMessageLike): MentionRef[] | undefined {
+  const raw = message.metadata?.custom?.mentions;
+  if (!Array.isArray(raw)) return undefined;
+  const out: MentionRef[] = [];
+  for (const item of raw) {
+    const { type, id } = (item ?? {}) as { type?: unknown; id?: unknown };
+    if (typeof id !== 'string' || !id) continue;
+    if (type === 'assistant' || type === 'agent' || type === 'user' || type === 'team') out.push({ type, id });
   }
   return out.length > 0 ? out : undefined;
 }
@@ -807,6 +961,12 @@ export function buildExternalStoreConfig(
 
       const msgAttachments = msgAttachmentsEarly;
 
+      const msgMentions = readMentionsFromMessage(message);
+      if (shouldQueueSend(currentSlot)) {
+        queueSend(targetSlotId, { query: displayQuery, attachments: msgAttachments, mentions: msgMentions });
+        return;
+      }
+
       const apiQuery =
         displayQuery ||
         (msgAttachments && msgAttachments.length > 0
@@ -828,6 +988,9 @@ export function buildExternalStoreConfig(
 
       if (msgAttachments) {
         request.attachments = msgAttachments;
+      }
+      if (msgMentions) {
+        request.mentions = msgMentions;
       }
 
       // Fire-and-forget â€” streaming.ts handles all state updates.

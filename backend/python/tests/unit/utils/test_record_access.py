@@ -1,14 +1,18 @@
 """Unit tests for `caller_can_read_virtual_record`."""
 
+import json
 import logging
+from pathlib import Path
 from unittest.mock import AsyncMock
 
+from app.modules.authz.node_pdp_client import NodePdpClient
 from app.schema.arango.edges import permissions_schema
 from app.utils.record_access import (
     SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE,
     caller_can_read_virtual_record,
     service_account_upload_permission_edges,
 )
+from tests.unit.modules.authz.pdp_fakes import ORG, FakeConfig, FakePdpHttp, allow
 
 LOGGER = logging.getLogger("test")
 
@@ -88,6 +92,105 @@ class TestCallerCanReadVirtualRecord:
             graph, user_id="user-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
         )
         graph.get_edge.assert_not_called()
+
+
+class _Pdp:
+    def __init__(self, result: bool) -> None:
+        self.result = result
+        self.reqs: list = []
+
+    async def can_read_chat_content(self, req) -> bool:
+        self.reqs.append(req)
+        return self.result
+
+
+def _attachment_graph(*, connector: str = "ATTACHMENTS") -> AsyncMock:
+    graph = _graph(allowed=False)
+    graph.get_document.side_effect = lambda key, coll, *a, **k: {
+        ("rec-1", "records"): {"_key": "rec-1", "orgId": "org-1", "connectorName": connector, "recordType": "FILE"},
+        ("ukey-b", "users"): {"_key": "ukey-b", "userId": "user-b"},
+    }.get((key, coll))
+    graph.get_edges_to_node.return_value = [
+        {"from_id": "ukey-b", "from_collection": "users", "to_id": "rec-1", "type": "USER", "role": "OWNER"},
+    ]
+    return graph
+
+
+class TestChatAttachmentViaPdp:
+    """PH07-08."""
+
+    async def test_attachment_without_acl_path_is_decided_by_the_pdp(self) -> None:
+        pdp = _Pdp(True)
+        assert await caller_can_read_virtual_record(
+            _attachment_graph(), user_id="user-c", org_id="org-1", virtual_record_id="vrid-1",
+            logger=LOGGER, conversation_id="conv-1", acl_version=5, pdp=pdp,
+        )
+        (req,) = pdp.reqs
+        assert (req.record_id, req.owner_user_id, req.conversation_id, req.acl_version) == (
+            "rec-1", "user-b", "conv-1", 5,
+        )
+
+    async def test_pdp_deny(self) -> None:
+        assert not await caller_can_read_virtual_record(
+            _attachment_graph(), user_id="user-c", org_id="org-1", virtual_record_id="vrid-1",
+            logger=LOGGER, pdp=_Pdp(False),
+        )
+
+    async def test_non_attachment_record_never_asks_the_pdp(self) -> None:
+        pdp = _Pdp(True)
+        assert not await caller_can_read_virtual_record(
+            _attachment_graph(connector="KNOWLEDGE_BASE"), user_id="user-c", org_id="org-1",
+            virtual_record_id="vrid-1", logger=LOGGER, pdp=pdp,
+        )
+        assert pdp.reqs == []
+
+    async def test_acl_grant_short_circuits_the_pdp(self) -> None:
+        pdp = _Pdp(False)
+        assert await caller_can_read_virtual_record(
+            _graph(), user_id="user-b", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER, pdp=pdp,
+        )
+        assert pdp.reqs == []
+
+    async def test_service_account_without_user_never_asks_the_pdp(self) -> None:
+        pdp = _Pdp(True)
+        graph = _attachment_graph()
+        graph.get_edge.return_value = None
+        assert not await caller_can_read_virtual_record(
+            graph, user_id=None, org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+            is_service_account=True, pdp=pdp,
+        )
+        assert pdp.reqs == []
+
+    async def test_unset_pdp_denies(self) -> None:
+        assert not await caller_can_read_virtual_record(
+            _attachment_graph(), user_id="user-c", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+        )
+
+
+class TestFlagOffRecipientParity:
+    """PR-7.3: with READER grants gone, a shared-chat recipient reads the owner's attachment via the PDP."""
+
+    async def test_recipient_without_reader_edge_sends_the_request_node_allows(self) -> None:
+        golden = json.loads(
+            (
+                Path(__file__).parents[4] / "nodejs/apps/tests/modules/authz/fixtures/flag-off-attachment-check.json"
+            ).read_text()
+        )
+        graph = _attachment_graph()
+        graph.get_document.side_effect = lambda key, coll, *a, **k: {
+            ("rec-1", "records"): {"_key": "rec-1", "orgId": ORG, "connectorName": "ATTACHMENTS", "recordType": "FILE"},
+            ("ukey-b", "users"): {"_key": "ukey-b", "userId": "u-owner-a"},
+        }.get((key, coll))
+        http = FakePdpHttp(allow(4))
+
+        assert await caller_can_read_virtual_record(
+            graph, user_id="u-reader-c", org_id=ORG, virtual_record_id="vrid-1", logger=LOGGER,
+            conversation_id="chat-x", pdp=NodePdpClient(FakeConfig(), http),
+        )
+
+        assert [c["json"] for c in http.calls] == [golden]
+        graph.check_record_access_with_details.assert_awaited_once_with("u-reader-c", ORG, "rec-1")
+        graph.batch_create_edges.assert_not_called()
 
 
 class TestServiceAccountUploadEdges:

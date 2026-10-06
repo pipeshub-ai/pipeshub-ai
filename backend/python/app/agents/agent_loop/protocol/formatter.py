@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
 
 if TYPE_CHECKING:
+    from app.agents.actions.agent_builder.models import AgentDraft
     from app.agents.agent_loop.context import AgentContext
 
 
@@ -87,6 +88,9 @@ class ProtocolFormatter(ABC):
     def artifact(self, context: "AgentContext", *, artifact_data: ArtifactSSEPayload) -> list[dict[str, Any]]: ...
 
     @abstractmethod
+    def agent_draft(self, context: "AgentContext", *, draft: "AgentDraft") -> list[dict[str, Any]]: ...
+
+    @abstractmethod
     def tool_unavailable(
         self, context: "AgentContext", *, tool: str | None, toolset: str | None,
         reason: str | None, message: str | None,
@@ -114,6 +118,9 @@ class LegacyFormatter(ProtocolFormatter):
 
     def artifact(self, context, *, artifact_data):
         return [{"event": "artifact", "data": artifact_data.to_wire_dict()}]
+
+    def agent_draft(self, context: "AgentContext", *, draft: "AgentDraft") -> list[dict[str, Any]]:
+        return [{"event": "agent_draft", "data": draft.model_dump()}]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [{
@@ -175,6 +182,11 @@ class AGUIFormatter(ProtocolFormatter):
             AGUIEventType.STATE_DELTA,
             runId=context.run_id,
             delta=[{"op": "add", "path": "/artifacts/-", "value": artifact_data.to_wire_dict()}],
+        )]
+
+    def agent_draft(self, context: "AgentContext", *, draft: "AgentDraft") -> list[dict[str, Any]]:
+        return [frame(
+            AGUIEventType.CUSTOM, name="agent_draft", value=draft.model_dump(), runId=context.run_id,
         )]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):

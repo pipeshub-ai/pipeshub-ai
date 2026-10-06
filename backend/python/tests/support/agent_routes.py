@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from app.agents.agent_loop.cancellation.in_process import (
     InProcessRunCancellationRegistry,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation
 
 USERS_COLL = "users"
 ORGS_COLL = "organizations"
@@ -144,6 +145,17 @@ class InMemoryGraph:
                 view = {**doc, "id": doc["_key"]}
                 out.append({f: view.get(f) for f in return_fields} if return_fields else view)
         return out
+
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any],
+        return_fields: list[str] | None = None, transaction: str | None = None,
+    ) -> list[dict]:
+        self._enter("get_nodes_by_filters", collection, filters)
+        out = [
+            copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
+            if all(doc.get(k) == v for k, v in filters.items())
+        ]
+        return [{f: d.get(f) for f in return_fields} for d in out] if return_fields else out
 
     async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
         self._enter("check_agent_permission", agent_id, user_id, org_id)
@@ -323,11 +335,56 @@ class InMemoryGraph:
             self.nodes, self.edges = snapshot
         self.rolled_back.append(transaction)
 
+    def _check_handle_unique(self, collection: str, node: dict[str, Any]) -> None:
+        """The (orgId, handle) unique index/constraint of both real providers."""
+        if collection != AGENTS or not node.get("handle") or not node.get("orgId"):
+            return
+        for key, other in self.nodes.get(AGENTS, {}).items():
+            if key != node["_key"] and (other.get("orgId"), other.get("handle")) == (node["orgId"], node["handle"]):
+                raise UniqueConstraintViolation(f"unique constraint violated: {node['orgId']}/{node['handle']}")
+
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._enter("batch_upsert_nodes", nodes, collection)
         for node in nodes:
+            self._check_handle_unique(collection, node)
             self.add_node(collection, node)
         return True
+
+    async def update_node(self, key: str, collection: str, updates: dict, transaction: str | None = None) -> bool:
+        self._enter("update_node", key, collection, updates)
+        current = self.nodes.get(collection, {}).get(key)
+        if current is None:
+            return False
+        self._check_handle_unique(collection, {**current, **updates})
+        current.update(copy.deepcopy(updates))
+        return True
+
+    async def list_agents_missing_handle(self, batch: int = 500) -> list[dict[str, Any]]:
+        self._enter("list_agents_missing_handle", batch)
+        found = []
+        for key, agent in self.nodes.get(AGENTS, {}).items():
+            if agent.get("handle"):
+                continue
+            creator = USERS_BY_KEY.get(agent.get("createdBy"), {})
+            org = agent.get("orgId") or creator.get("orgId")
+            if org:
+                found.append((agent.get("createdAtTimestamp", 0), key, {"id": key, "name": agent.get("name"), "orgId": org}))
+        return [row for _, _, row in sorted(found, key=lambda t: t[:2])][:batch]
+
+    async def get_agent_by_handle(self, org_id: str, handle: str, transaction: str | None = None) -> dict | None:
+        self._enter("get_agent_by_handle", org_id, handle)
+        for agent in self.nodes.get(AGENTS, {}).values():
+            if (agent.get("orgId"), agent.get("handle")) == (org_id, handle):
+                return copy.deepcopy(agent)
+        return None
+
+    async def search_agent_handles(self, org_id: str, prefix: str, limit: int = 20, transaction: str | None = None) -> list[str]:
+        self._enter("search_agent_handles", org_id, prefix, limit)
+        found = sorted(
+            a["handle"] for a in self.nodes.get(AGENTS, {}).values()
+            if a.get("orgId") == org_id and (a.get("handle") or "").startswith(prefix)
+        )
+        return found[:limit]
 
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._enter("batch_create_edges", edges, collection)

@@ -1,3 +1,4 @@
+import type { ApiAccess } from '@/app/(main)/chat/collaboration-types';
 import type {
   Conversation,
   ConversationMessage,
@@ -179,6 +180,8 @@ export interface AgentDetail {
   /** MongoDB user ID of the agent creator */
   createdBy: string;
   name: string;
+  /** Unique per-org @mention handle; absent on agents created before handles existed. */
+  handle?: string;
   id: string;
   isServiceAccount?: boolean;
   _key: string;
@@ -373,7 +376,9 @@ export interface AgentConversationDetailApi {
   status: string;
   messages: ConversationMessage[];
   modelInfo: ModelInfo;
-  access: { isOwner: boolean; accessLevel: string };
+  access: ApiAccess;
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
   /** Optional: present when the API returns paginated messages. */
   pagination?: ConversationPagination;
 }

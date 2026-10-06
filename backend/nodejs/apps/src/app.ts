@@ -9,6 +9,9 @@ import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
+import { useRateLimitCache } from './libs/middlewares/shared-rate-limit-store';
+import { ICacheService } from './libs/services/cache/cacheService.interface';
+import { useTeamIdsCache } from './modules/user_management/services/cached-team-directory';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -21,6 +24,10 @@ import {
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import {
+  startProjectKbDriftRepair,
+  ProjectKbDriftRepairHandle,
+} from './modules/projects/services/project-kb-drift.service';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
@@ -67,6 +74,7 @@ import { NotificationConsumer } from './modules/notification/service/notificatio
 import { MailConsumer } from './modules/mail/services/mail.consumer';
 import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
+import { IChatNotificationContext } from './modules/enterprise_search/services/collaboration/notify/chat-notification-context';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import {
   loadAppConfig,
@@ -106,8 +114,14 @@ import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import { COLLAB_TYPES } from './modules/enterprise_search/services/collaboration/collab.types';
+import { ConversationGuards } from './modules/enterprise_search/services/collaboration/http/conversation-guards';
+import { IFeatureFlags } from './modules/configuration_manager/services/platform-feature-flags.service';
+import { IAuditWriter } from './libs/audit/audit.writer';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
+import { createAuthzRouter } from './modules/authz/routes/authz.routes';
+import { createAuthzInternalRouter } from './modules/authz/routes/authz.internal.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 // Side-effect import: registers edition-specific Redis providers for this process.
@@ -139,6 +153,7 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private projectKbDriftRepair: ProjectKbDriftRepairHandle | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -203,6 +218,11 @@ export class Application {
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,
       );
+      if (this.tokenManagerContainer.isBound('RedisService')) {
+        const cache = this.tokenManagerContainer.get<ICacheService>('RedisService');
+        useTeamIdsCache(cache);
+        useRateLimitCache(cache);
+      }
 
       this.configurationManagerContainer =
         await ConfigurationManagerContainer.initialize(
@@ -271,6 +291,56 @@ export class Application {
         configurationManagerConfig,
         appConfig,
       );
+      // The project conversation list authorizes with the same guards (and decision cache) as the chat routes.
+      this.projectsContainer
+        .bind<ConversationGuards>(COLLAB_TYPES.ConversationGuards)
+        .toConstantValue(
+          this.esAgentContainer.get<ConversationGuards>(
+            COLLAB_TYPES.ConversationGuards,
+          ),
+        );
+
+      // Project settings honour `projectChatAccess` only with the flag on, and audit the change.
+      this.projectsContainer
+        .bind<IFeatureFlags>(COLLAB_TYPES.FeatureFlags)
+        .toConstantValue(
+          this.esAgentContainer.get<IFeatureFlags>(COLLAB_TYPES.FeatureFlags),
+        );
+      this.projectsContainer
+        .bind<IAuditWriter>(COLLAB_TYPES.AuditWriter)
+        .toConstantValue(
+          this.esAgentContainer.get<IAuditWriter>(COLLAB_TYPES.AuditWriter),
+        );
+
+      // The artifacts gallery joins conversation titles through the same list filter.
+      this.knowledgeBaseContainer
+        .bind<ConversationGuards>(COLLAB_TYPES.ConversationGuards)
+        .toConstantValue(
+          this.esAgentContainer.get<ConversationGuards>(
+            COLLAB_TYPES.ConversationGuards,
+          ),
+        );
+
+      // Muting a conversation authorizes with the same guards as the chat routes.
+      this.entityManagerContainer
+        .bind<ConversationGuards>(COLLAB_TYPES.ConversationGuards)
+        .toConstantValue(
+          this.esAgentContainer.get<ConversationGuards>(
+            COLLAB_TYPES.ConversationGuards,
+          ),
+        );
+      this.entityManagerContainer
+        .bind<IChatNotificationContext>(COLLAB_TYPES.ChatNotificationContext)
+        .toConstantValue(
+          this.esAgentContainer.get<IChatNotificationContext>(
+            COLLAB_TYPES.ChatNotificationContext,
+          ),
+        );
+      this.entityManagerContainer
+        .bind<IFeatureFlags>(COLLAB_TYPES.FeatureFlags)
+        .toConstantValue(
+          this.esAgentContainer.get<IFeatureFlags>(COLLAB_TYPES.FeatureFlags),
+        );
 
       await this.addOAuthServicesToAuthMiddleware();
 
@@ -306,6 +376,7 @@ export class Application {
         this.logger,
       );
       this.outboxDispatcher.start();
+      this.projectKbDriftRepair = startProjectKbDriftRepair(this.logger);
 
       this.notificationContainer
         .get<NotificationService>(NotificationService)
@@ -676,6 +747,16 @@ export class Application {
       createProjectsRouter(this.projectsContainer),
     );
 
+    // User-facing authorization routes (explain, access-change preview); flag-gated.
+    this.app.use('/api/v1/authz', createAuthzRouter(this.esAgentContainer));
+
+    // authz: service-to-service chat-content checks. Routers sharing a base path
+    // mount side by side; this one only answers `/internal/*`.
+    this.app.use(
+      '/api/v1/authz',
+      createAuthzInternalRouter(this.esAgentContainer),
+    );
+
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
@@ -857,6 +938,8 @@ export class Application {
       // producer one of them owns.
       // Awaited: a pass in flight is publishing through a producer the
       // containers below are about to disconnect.
+      this.projectKbDriftRepair?.stop();
+      this.projectKbDriftRepair = null;
       await this.outboxDispatcher?.stop();
       this.outboxDispatcher = null;
 

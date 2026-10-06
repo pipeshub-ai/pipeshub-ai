@@ -1,5 +1,6 @@
 'use client';
 
+import { DRAWER_TOAST_INSET_PX, useToastDrawerInset } from '@/lib/toast-safe-area';
 import React, {
   createContext,
   startTransition,
@@ -180,6 +181,7 @@ export function WorkspaceRightPanel({
   secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
   const { t } = useTranslation();
+  useToastDrawerInset(open, DRAWER_TOAST_INSET_PX);
   const primaryButtonTooltipText =
     primaryTooltip ??
     (primaryLoading

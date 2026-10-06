@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export interface SettingsRowProps {
   label: string;
@@ -10,10 +11,17 @@ export interface SettingsRowProps {
 }
 
 export function SettingsRow({ label, description, children }: SettingsRowProps) {
+  const isMobile = useIsMobile();
   return (
-    <Flex align="center" justify="between" style={{ width: '100%' }}>
+    <Flex
+      direction={isMobile ? 'column' : 'row'}
+      align={isMobile ? 'stretch' : 'center'}
+      justify="between"
+      gap={isMobile ? '2' : '0'}
+      style={{ width: '100%' }}
+    >
       {/* Left: label + description */}
-      <Box style={{ flex: 1 }}>
+      <Box style={{ flex: isMobile ? undefined : 1, minWidth: 0 }}>
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
           {label}
         </Text>
@@ -33,7 +41,7 @@ export function SettingsRow({ label, description, children }: SettingsRowProps) 
         )}
       </Box>
       {/* Right: input — proportional width matching Figma */}
-      <Box style={{ flex: '0 0 38%', minWidth: 200 }}>{children}</Box>
+      <Box style={isMobile ? { minWidth: 0 } : { flex: '0 0 38%', minWidth: 200 }}>{children}</Box>
     </Flex>
   );
 }

@@ -18,6 +18,7 @@ function makeCallbacks(): {
     onComplete: vi.fn(),
     onArtifact: vi.fn(),
     onAskUserQuestion: vi.fn(),
+    onAgentDraft: vi.fn(),
     onAnswerFinal: vi.fn(),
     onReasoning: vi.fn(),
     onParts: vi.fn(),
@@ -381,6 +382,16 @@ describe('createAGUIEventHandler', () => {
     handle(frame('CUSTOM', { name: 'ask_user_question', value: { status: 'success', toolData } }));
 
     expect(spies.onAskUserQuestion).toHaveBeenCalledWith({ status: 'success', toolData });
+  });
+
+  it('routes CUSTOM agent_draft to onAgentDraft', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const draft = { draftId: 'd1', name: 'Offer drafter', toolsets: [] };
+
+    handle(frame('CUSTOM', { name: 'agent_draft', value: draft }));
+
+    expect(spies.onAgentDraft).toHaveBeenCalledWith(draft);
   });
 
   it('routes CUSTOM artifact to onArtifact', () => {

@@ -8,13 +8,16 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+import { useFeatureFlagsStore, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
+import { collabSessionId, describeCollabNotification } from './collab-notifications';
 
 export type NotificationRowAction =
   | 'markRead'
   | 'markUnread'
   | 'archive'
   | 'unarchive'
-  | 'dismiss';
+  | 'dismiss'
+  | 'mute';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
 function notificationHref(redirectLink: string): string | null {
@@ -193,6 +196,10 @@ export function NotificationRow({
   dismissLabel,
   compactTime = false,
   pendingAction = null,
+  muted = false,
+  onToggleMute,
+  muteLabel = '',
+  unmuteLabel = '',
 }: {
   notification: NotificationListItem;
   onMarkRead: (n: NotificationListItem) => void;
@@ -207,8 +214,14 @@ export function NotificationRow({
   dismissLabel: string;
   compactTime?: boolean;
   pendingAction?: NotificationRowAction | null;
+  /** Collaboration rows only: the chat is muted for this user. */
+  muted?: boolean;
+  onToggleMute?: (n: NotificationListItem) => void;
+  muteLabel?: string;
+  unmuteLabel?: string;
 }) {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
+  const collabEnabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
   // Hidden unclamped clone used solely for measuring the natural text height.
@@ -220,9 +233,12 @@ export function NotificationRow({
 
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
-  const title = n.title ?? '';
-  const message = n.message ?? '';
-  const href = notificationHref(n.redirectLink ?? '');
+  const collabText = collabEnabled ? describeCollabNotification(n, t) : null;
+  const title = collabText?.title ?? n.title ?? '';
+  const message = collabText?.message ?? n.message ?? '';
+  // A deleted chat has nothing to open.
+  const href = n.type === 'chat.deleted' && collabEnabled ? null : notificationHref(n.redirectLink ?? '');
+  const canMute = collabEnabled && onToggleMute != null && collabSessionId(n) != null;
 
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
@@ -402,6 +418,15 @@ export function NotificationRow({
                   onClick={() => onMarkUnread(n)}
                   disabled={isBusy}
                   loading={pendingAction === 'markUnread'}
+                />
+              ) : null}
+              {canMute ? (
+                <NotificationActionButton
+                  label={muted ? unmuteLabel : muteLabel}
+                  icon={muted ? 'notifications_off' : 'notifications_active'}
+                  onClick={() => onToggleMute(n)}
+                  disabled={isBusy}
+                  loading={pendingAction === 'mute'}
                 />
               ) : null}
               {n.status !== 'archived' ? (

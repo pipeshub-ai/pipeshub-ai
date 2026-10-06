@@ -363,6 +363,8 @@ class QdrantService(IVectorDBService):
                 timeout=cfg.timeout,
             )
             if cfg.prefer_grpc:
+                if cfg.grpc_port is not None:
+                    client_kwargs["grpc_port"] = cfg.grpc_port
                 client_kwargs["grpc_options"] = {
                     "grpc.max_send_message_length": 64 * 1024 * 1024,
                     "grpc.max_receive_message_length": 64 * 1024 * 1024,

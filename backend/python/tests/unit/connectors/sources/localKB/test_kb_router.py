@@ -789,6 +789,38 @@ class TestCreateKbPermissions:
         })
         assert resp.status_code == 200
 
+    def test_principals_forwarded_to_service(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.create_kb_permissions = AsyncMock(return_value={
+            "success": True, "grantedCount": 2, "grantedUsers": [], "grantedTeams": [],
+            "role": "MIXED", "kbId": "kb1", "details": {}
+        })
+        client = TestClient(app)
+        principals = [
+            {"principalType": "user", "principalId": "u1", "role": "OWNER"},
+            {"principalType": "team", "principalId": "t1", "role": "WRITER"},
+        ]
+        resp = client.post("/api/v1/kb/kb1/permissions", json={"principals": principals})
+        assert resp.status_code == 200
+        assert kb_svc.create_kb_permissions.call_args.kwargs["principals"] == principals
+
+    def test_principals_mixed_with_legacy_fields_is_400(self):
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/kb1/permissions", json={
+            "principals": [{"principalType": "team", "principalId": "t1", "role": "READER"}],
+            "teamIds": ["t2"],
+        })
+        assert resp.status_code == 400
+
+    def test_principals_invalid_entry_is_400(self):
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/kb1/permissions", json={
+            "principals": [{"principalType": "group", "principalId": "g", "role": "READER"}],
+        })
+        assert resp.status_code == 400
+
     def test_users_without_role(self):
         app, kb_svc, _ = _make_app()
         client = TestClient(app)
@@ -837,13 +869,28 @@ class TestUpdateKbPermission:
         resp = client.put("/api/v1/kb/kb1/permissions", json={"userIds": ["u1"]})
         assert resp.status_code == 400
 
-    def test_teams_rejected(self):
+    def test_team_owner_role_rejected(self):
         app, kb_svc, _ = _make_app()
+        kb_svc.update_kb_permission = AsyncMock()
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1/permissions", json={
-            "userIds": [], "teamIds": ["t1"], "role": "READER"
+            "userIds": [], "teamIds": ["t1"], "role": "OWNER"
         })
         assert resp.status_code == 400
+        kb_svc.update_kb_permission.assert_not_awaited()
+
+    def test_team_role_update_forwarded(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.update_kb_permission = AsyncMock(return_value={
+            "success": True, "userIds": [], "teamIds": ["t1"], "newRole": "COMMENTER", "kbId": "kb1"
+        })
+        client = TestClient(app)
+        resp = client.put("/api/v1/kb/kb1/permissions", json={
+            "userIds": [], "teamIds": ["t1"], "role": "COMMENTER"
+        })
+        assert resp.status_code == 200
+        kwargs = kb_svc.update_kb_permission.call_args.kwargs
+        assert kwargs["team_ids"] == ["t1"] and kwargs["new_role"] == "COMMENTER"
 
     def test_invalid_body(self):
         app, kb_svc, _ = _make_app()
@@ -1903,13 +1950,28 @@ class TestUpdateKbPermissionFullCoverage:
         resp = client.put("/api/v1/kb/kb1/permissions", json={"userIds": ["u1"]})
         assert resp.status_code == 400
 
-    def test_teams_rejected(self):
+    def test_team_owner_role_rejected(self):
         app, kb_svc, _ = _make_app()
+        kb_svc.update_kb_permission = AsyncMock()
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1/permissions", json={
-            "userIds": [], "teamIds": ["t1"], "role": "READER"
+            "userIds": [], "teamIds": ["t1"], "role": "OWNER"
         })
         assert resp.status_code == 400
+        kb_svc.update_kb_permission.assert_not_awaited()
+
+    def test_team_role_update_forwarded(self):
+        app, kb_svc, _ = _make_app()
+        kb_svc.update_kb_permission = AsyncMock(return_value={
+            "success": True, "userIds": [], "teamIds": ["t1"], "newRole": "COMMENTER", "kbId": "kb1"
+        })
+        client = TestClient(app)
+        resp = client.put("/api/v1/kb/kb1/permissions", json={
+            "userIds": [], "teamIds": ["t1"], "role": "COMMENTER"
+        })
+        assert resp.status_code == 200
+        kwargs = kb_svc.update_kb_permission.call_args.kwargs
+        assert kwargs["team_ids"] == ["t1"] and kwargs["new_role"] == "COMMENTER"
 
     def test_invalid_body(self):
         app, kb_svc, _ = _make_app()

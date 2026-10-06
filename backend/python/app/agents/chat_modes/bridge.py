@@ -406,6 +406,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
                     is_service_account=bool(user_info.get("isServiceAccount")),
+                    conversation_id=query_info.get("conversationId"),
+                    acl_version=query_info.get("aclVersion"),
                 ),
                 # Pre-fetch user-visible connectors so the catalog
                 # (ConnectorCatalog.build) and capability_summary can use them
@@ -467,10 +469,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    chat_state["run_id"] = run_id
     context = AgentContext.from_chat_state(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
         run_id=run_id, cancellation_token=cancellation_token,
+        invocation="assistant",
     )
 
     async def _produce() -> None:

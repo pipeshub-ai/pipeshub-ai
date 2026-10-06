@@ -104,8 +104,12 @@ vi.mock('@/app/components/file-preview', () => ({
 }));
 
 const getSharedMembers = vi.fn();
+const createChatShareAdapter = vi.fn();
 vi.mock('../share-adapter', () => ({
-  createChatShareAdapter: () => ({ getSharedMembers: () => getSharedMembers() }),
+  createChatShareAdapter: (...args: unknown[]) => {
+    createChatShareAdapter(...args);
+    return { getSharedMembers: () => getSharedMembers() };
+  },
 }));
 vi.mock('@/app/components/share', () => ({
   ShareSidebar: ({ open }: { open: boolean }) => (open ? <div role="dialog" aria-label="Share conversation" /> : null),
@@ -185,7 +189,30 @@ function apiMessage(overrides: Partial<ConversationMessage>): ConversationMessag
   } as ConversationMessage;
 }
 
-function conversationDetail({ isOwner = true, messages }: { isOwner?: boolean; messages?: ConversationMessage[] } = {}) {
+const COLLAB_FLAG = { flags: { ENABLE_COLLABORATIVE_CHATS: true } } as Partial<
+  ReturnType<typeof useFeatureFlagsStore.getState>
+>;
+
+/** A full server `access` view for a collaborator with the given role. */
+function accessView(role: 'owner' | 'write' | 'read', overrides: Record<string, unknown> = {}) {
+  return {
+    role,
+    isOwner: role === 'owner',
+    accessLevel: role,
+    canSend: role !== 'read',
+    canManage: role === 'owner',
+    canInvite: role === 'owner',
+    isCollaborative: true,
+    ...overrides,
+  };
+}
+
+/** `isOwner` is the legacy shim; pass `access` for the collaboration view. */
+function conversationDetail({
+  isOwner = true,
+  messages,
+  access,
+}: { isOwner?: boolean; messages?: ConversationMessage[]; access?: Record<string, unknown> } = {}) {
   const msgs = messages ?? [
     apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
     apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
@@ -200,7 +227,7 @@ function conversationDetail({ isOwner = true, messages }: { isOwner?: boolean; m
       modelInfo: undefined,
       isShared: false,
       sharedWith: [],
-      access: { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
+      access: access ?? { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
     },
     messages: msgs,
     pagination: PAGINATION,
@@ -330,7 +357,7 @@ describe('Chat page — opening a conversation', () => {
     renderPage('conversationId=conv-1');
 
     expect(screen.getByRole('status').textContent).toBe('Loading');
-    await waitFor(() => expect(fetchConversation).toHaveBeenCalledWith('conv-1'));
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalledWith('conv-1', undefined, undefined, { quietWhenGone: expect.any(Boolean) }));
 
     await act(async () => resolve(conversationDetail()));
 
@@ -375,6 +402,187 @@ describe('Chat page — opening a conversation', () => {
     await screen.findByText('You get 25 days a year.');
     expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+  });
+
+  describe('with collaborative chats on', () => {
+    beforeEach(() => {
+      useFeatureFlagsStore.setState(COLLAB_FLAG);
+    });
+
+    it('FE-01: an editor gets the composer, no Share and no banner', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('write') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+    });
+
+    it('PH09f: the Access button shows for an owner, an editor and a viewer, but not before access is known', async () => {
+      for (const role of ['owner', 'write', 'read'] as const) {
+        fetchConversation.mockResolvedValue(conversationDetail({ access: accessView(role) }));
+        renderPage('conversationId=conv-1');
+        await screen.findByText('You get 25 days a year.');
+        expect(await screen.findByRole('button', { name: 'Who can access this chat' })).toBeTruthy();
+        cleanup();
+      }
+    });
+
+    it('FE-02: a viewer sees the read-only banner and no composer', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('read') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.getByTestId('read-only-banner').textContent).toContain('read this chat');
+      expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    });
+
+    it('keeps the project link from the detail response, which the sidebar rows do not carry', async () => {
+      const detail = conversationDetail({ access: accessView('owner') });
+      fetchConversation.mockResolvedValue({
+        ...detail,
+        conversation: { ...detail.conversation, projectId: 'proj-1', projectVisibility: 'project' },
+      });
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      const slot = Object.values(useChatStore.getState().slots).find((s) => s.convId === 'conv-1');
+      expect(slot?.linkedProject).toEqual({ projectId: 'proj-1', visibility: 'project' });
+    });
+
+    it('shows Share to an editor the owner allowed to invite', async () => {
+      fetchConversation.mockResolvedValue(
+        conversationDetail({ access: accessView('write', { canInvite: true }) }),
+      );
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+    });
+
+    it('FE-10: an agent chat is shareable by its owner, through an agent-scoped adapter', async () => {
+      getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+      fetchAgentConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('agentId=agent-7&conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+      expect(createChatShareAdapter).toHaveBeenCalledWith('conv-1', { agentId: 'agent-7', collaborative: true });
+    });
+
+    it('FE-10: an agent chat editor with canInvite sees Share', async () => {
+      getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+      fetchAgentConversation.mockResolvedValue(
+        conversationDetail({ access: accessView('write', { canInvite: true }) }),
+      );
+      renderPage('agentId=agent-7&conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+    });
+
+    it('keeps history but hides the composer once access is lost', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('write') }));
+      renderPage('conversationId=conv-1');
+      await screen.findByText('You get 25 days a year.');
+
+      act(() => {
+        const { activeSlotId } = useChatStore.getState();
+        useChatStore.getState().updateSlot(activeSlotId as string, { accessLost: true });
+      });
+
+      expect(screen.getByTestId('read-only-banner').textContent).toContain('no longer have access');
+      expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+      expect(screen.getByText('You get 25 days a year.')).toBeTruthy();
+    });
+
+    it('shows no composer on an empty thread when the server refuses to open the chat (404)', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      fetchConversation.mockImplementation(async () => {
+        const failure = new AxiosError('Request failed with status code 404');
+        failure.response = { status: 404, statusText: '', data: { error: { code: 'CONVERSATION_NOT_FOUND' } }, headers: new AxiosHeaders(), config: { headers: new AxiosHeaders() } } as never;
+        throw processError(failure as AxiosError<never>);
+      });
+      renderPage('conversationId=conv-1');
+
+      expect((await screen.findByTestId('read-only-banner')).textContent).toContain("This chat isn't available to you");
+      expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+      // An expected 404 is not logged as a failure (Next's dev overlay counts every console.error as an issue).
+      expect(consoleError.mock.calls.some(([first]) => String(first).includes('Failed to load conversation history'))).toBe(false);
+    });
+
+    it('still logs a history load that fails for another reason (500)', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      fetchConversation.mockImplementation(async () => {
+        const failure = new AxiosError('Request failed with status code 500');
+        failure.response = { status: 500, statusText: '', data: {}, headers: new AxiosHeaders(), config: { headers: new AxiosHeaders() } } as never;
+        throw processError(failure as AxiosError<never>);
+      });
+      renderPage('conversationId=conv-1');
+
+      await waitFor(() =>
+        expect(consoleError.mock.calls.some(([first]) => String(first).includes('Failed to load conversation history'))).toBe(true),
+      );
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+    });
+  });
+
+  describe('with collaborative chats off (flag parity)', () => {
+    it('PH09-01: a write-role access view still gets no composer when the user is not the owner', async () => {
+      fetchConversation.mockResolvedValue(
+        conversationDetail({ access: accessView('write', { isOwner: false }) }),
+      );
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    });
+
+    it('PH09f: no Access button for anyone, owner included', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Who can access this chat' })).toBeNull();
+    });
+
+    it('PH09-01: a viewer view never shows the banner, and an owner keeps the composer and Share', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+      expect(createChatShareAdapter).toHaveBeenCalledWith('conv-1', undefined);
+    });
+
+    it('PH09-01: an agent chat is still not shareable, even by its owner', async () => {
+      getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+      fetchAgentConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('agentId=agent-7&conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    });
+
+    it('PH09-01: a lost-access slot does not hide the composer', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
+      renderPage('conversationId=conv-1');
+      await screen.findByText('You get 25 days a year.');
+
+      act(() => {
+        const { activeSlotId } = useChatStore.getState();
+        useChatStore.getState().updateSlot(activeSlotId as string, { accessLost: true });
+      });
+
+      expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+    });
   });
 
   it('lets the owner see who it is shared with and open sharing', async () => {
@@ -551,7 +759,7 @@ describe('Chat page — agent chats', () => {
     renderPage('agentId=agent-7&conversationId=conv-1');
 
     expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
-    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1');
+    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1', { quietWhenGone: expect.any(Boolean) });
     expect(fetchConversation).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
   });

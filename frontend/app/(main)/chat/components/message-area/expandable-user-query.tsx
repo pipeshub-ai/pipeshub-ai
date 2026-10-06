@@ -4,6 +4,9 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Box, Flex, Heading, Text, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { selectChatMentionsEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { useParticipantsStore } from '../../mentions/participants-store';
+import { MentionText, mentionsToPlainText, truncateKeepingTokens } from './mention-text';
 
 export const QUESTION_CHAR_LIMIT = 250;
 export const EXPANDED_MAX_HEIGHT_PX = 360;
@@ -102,7 +105,10 @@ function QueryActions({
   }, [copied]);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(question).then(() => {
+    const plain = selectChatMentionsEnabled(useFeatureFlagsStore.getState())
+      ? mentionsToPlainText(question, useParticipantsStore.getState().labels)
+      : question;
+    void navigator.clipboard.writeText(plain).then(() => {
       setCopied(true);
     }).catch(() => {});
   }, [question]);
@@ -151,7 +157,7 @@ export function ExpandableUserQuery({
   if (!isLong || !expanded) {
     const displayed =
       isLong && !expanded
-        ? question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…'
+        ? truncateKeepingTokens(question, QUESTION_CHAR_LIMIT).trimEnd() + '…'
         : question;
 
     return (
@@ -171,7 +177,7 @@ export function ExpandableUserQuery({
             wordBreak: 'break-word',
           }}
         >
-          {displayed}
+          <MentionText text={displayed} />
           <span
             data-testid="user-query-inline-actions"
             style={{ marginLeft: 'var(--space-2)', verticalAlign: 'middle', display: 'inline-flex' }}
@@ -218,7 +224,7 @@ export function ExpandableUserQuery({
             overflowY: 'auto',
           }}
         >
-          {question}
+          <MentionText text={question} />
         </Text>
         <Flex
           data-testid="user-query-actions"

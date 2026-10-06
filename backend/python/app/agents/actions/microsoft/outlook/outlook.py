@@ -1316,7 +1316,7 @@ class Outlook:
                 from app.services.artifact_registry.models import Actor
                 from app.services.artifact_registry.registry import ArtifactRegistryService
 
-                actor = Actor(org_id=org_id, user_id=user_id)
+                actor = Actor(org_id=org_id, user_id=user_id, run_id=state.get("run_id"))
                 registry = ArtifactRegistryService(graph_provider, blob_store)
                 artifact = await registry.register(
                     actor=actor,

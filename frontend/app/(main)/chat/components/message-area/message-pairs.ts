@@ -1,6 +1,7 @@
-import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
+import type { AgentDraftPayload, AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
+import type { MessageAuthor } from '../../collaboration-types';
 
 export interface MessagePair {
   key: string;
@@ -10,6 +11,7 @@ export interface MessagePair {
   answer: string;
   citationMaps: CitationMaps;
   confidence?: ConfidenceLevel;
+  answerMatchType?: 'Capability Card';
   isStreaming: boolean;
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
@@ -25,10 +27,20 @@ export interface MessagePair {
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
   persistedParts?: MessagePart[];
+  /** The agent the assistant drafted in this turn, or its placeholder for everyone but the requester. */
+  persistedAgentDraft?: AgentDraftPayload;
+  agentDraftAuthor?: string;
+  agentDraftMessageId?: string;
   /** Set when this response was cut short by a user-initiated Stop. */
   status?: 'stopped';
   /** No assistant row follows this question — render the question alone, no answer area. */
   unanswered?: boolean;
+  /** Who sent the question (collaborative chats); `null` is a former member. */
+  author?: MessageAuthor | null;
+  /** Who the answer was run for (collaborative chats); `null` is a former member. */
+  requestedBy?: MessageAuthor | null;
+  /** Set for a note: `question` holds its text, there is no answer, and nobody asked the AI. */
+  note?: boolean;
 }
 
 type MessageContent = readonly { type: string; text?: string }[];
@@ -44,12 +56,17 @@ type AssistantCustom = {
   messageId?: string;
   citationMaps?: CitationMaps;
   confidence?: ConfidenceLevel;
+  answerMatchType?: 'Capability Card';
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   persistedParts?: MessagePart[];
+  persistedAgentDraft?: AgentDraftPayload;
+  agentDraftAuthor?: string;
+  agentDraftMessageId?: string;
   status?: 'stopped';
+  requestedBy?: MessageAuthor | null;
 };
 
 type UserCustom = {
@@ -57,6 +74,8 @@ type UserCustom = {
   appliedFilters?: AppliedFilters;
   createdAt?: string;
   attachments?: AttachmentRef[];
+  author?: MessageAuthor | null;
+  messageType?: 'note';
 };
 
 export interface BuildMessagePairsOptions {
@@ -76,6 +95,17 @@ export function extractTextContent(content: MessageContent): string {
     .filter((part) => part.type === 'text' && part.text)
     .map((part) => part.text)
     .join('');
+}
+
+const isNote = (msg: PairMessage | null | undefined): boolean =>
+  msg?.role === 'system' && (msg.metadata?.custom as UserCustom | undefined)?.messageType === 'note';
+
+/** The nearest row before/after `index` that is not a note: a note sitting between a question and its answer does not break the pair. */
+function neighbour(messages: readonly PairMessage[], index: number, step: 1 | -1): PairMessage | null {
+  for (let j = index + step; j >= 0 && j < messages.length; j += step) {
+    if (!isNote(messages[j])) return messages[j];
+  }
+  return null;
 }
 
 /** Build message pairs (user question + assistant answer) in chronological order. */
@@ -104,7 +134,21 @@ export function buildMessagePairs(
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (msg.role === 'user' && messages[i + 1]?.role !== 'assistant') {
+    if (isNote(msg)) {
+      const noteCustom = msg.metadata?.custom as UserCustom | undefined;
+      pairs.push({
+        key: msg.id ?? `note-${i}`,
+        question: extractTextContent(msg.content as MessageContent),
+        answer: '',
+        citationMaps: emptyCitationMaps,
+        isStreaming: false,
+        createdAt: noteCustom?.createdAt,
+        ...(noteCustom?.author !== undefined ? { author: noteCustom.author } : {}),
+        note: true,
+      });
+      continue;
+    }
+    if (msg.role === 'user' && neighbour(messages, i, 1)?.role !== 'assistant') {
       // A question with no assistant message after it. A row is otherwise
       // only emitted per assistant message, so this question would not be
       // drawn at all: Stop before the first token drops the empty assistant
@@ -124,6 +168,7 @@ export function buildMessagePairs(
         appliedFilters: userCustom?.appliedFilters,
         createdAt: userCustom?.createdAt,
         attachments: userCustom?.attachments,
+        ...(userCustom?.author !== undefined ? { author: userCustom.author } : {}),
         unanswered: true,
       });
       continue;
@@ -134,7 +179,7 @@ export function buildMessagePairs(
       const metadata = msg.metadata?.custom as AssistantCustom | undefined;
 
       // Find preceding user message
-      const prevMsg = i > 0 ? messages[i - 1] : null;
+      const prevMsg = neighbour(messages, i, -1);
       const question = prevMsg?.role === 'user'
         ? extractTextContent(prevMsg.content as MessageContent)
         : 'Question';
@@ -149,9 +194,9 @@ export function buildMessagePairs(
       // older card row when a later turn (e.g. "hiii") is now last — then the
       // last pair's question is not `streamingQuestion`.
       const isLastAssistant = i === lastAssistantIndex;
-      const lastQuestion = lastAssistantIndex > 0
-        && messages[lastAssistantIndex - 1]?.role === 'user'
-        ? extractTextContent(messages[lastAssistantIndex - 1].content as MessageContent)
+      const beforeLast = lastAssistantIndex > 0 ? neighbour(messages, lastAssistantIndex, -1) : null;
+      const lastQuestion = beforeLast?.role === 'user'
+        ? extractTextContent(beforeLast.content as MessageContent)
         : '';
       const isCurrentlyStreaming =
         isStreaming &&
@@ -170,6 +215,7 @@ export function buildMessagePairs(
           ? emptyCitationMaps
           : (metadata?.citationMaps || emptyCitationMaps),
         confidence: metadata?.confidence,
+        answerMatchType: metadata?.answerMatchType,
         isStreaming: isCurrentlyStreaming || isBeingRegenerated,
         modelInfo: metadata?.modelInfo,
         feedbackInfo: metadata?.feedbackInfo,
@@ -182,7 +228,16 @@ export function buildMessagePairs(
         persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
         persistedAskUserQuestionAnswers: metadata?.persistedAskUserQuestionAnswers,
         persistedParts: metadata?.persistedParts,
+        ...(metadata?.persistedAgentDraft
+          ? {
+              persistedAgentDraft: metadata.persistedAgentDraft,
+              agentDraftAuthor: metadata.agentDraftAuthor,
+              agentDraftMessageId: metadata.agentDraftMessageId,
+            }
+          : {}),
         status: metadata?.status,
+        ...(userMsgCustom?.author !== undefined ? { author: userMsgCustom.author } : {}),
+        ...(metadata?.requestedBy !== undefined ? { requestedBy: metadata.requestedBy } : {}),
       });
     }
   }

@@ -6,6 +6,7 @@ import { TokenScopes } from '../enums/token-scopes.enum';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
+import { SharedRateLimitStore } from './shared-rate-limit-store';
 
 /**
  * Never read X-Forwarded-For / X-Real-IP directly: the client controls them.
@@ -155,19 +156,22 @@ export interface KeyedRateLimiterOptions {
   prefix: string;
   maxRequestsPerMinute: number;
   message: string;
+  /** Error code sent on a 429, with `retryAfter` under `details`. Without it the historical body is kept. */
+  code?: string;
+  /** Count in the shared cache so the limit holds across replicas; falls back to in-process on error. */
+  shared?: boolean;
 }
 
 /**
- * Per-user (fallback: per-IP) limiter used by the OAuth-client and skills-import
- * surfaces. The store is in-process, matching `createOAuthClientRateLimiter`'s
- * historical behaviour — N replicas therefore admit N×max/min until a shared
- * store is wired.
+ * Per-user (fallback: per-IP) limiter. The store is in-process unless `shared`
+ * is set — N replicas then admit N×max/min. `prefix` is the bucket identity, so
+ * two limiters that must not share a count need different prefixes.
  */
 export function createKeyedRateLimiter(
   logger: Logger,
   options: KeyedRateLimiterOptions,
 ): RequestHandler {
-  const { prefix, maxRequestsPerMinute, message } = options;
+  const { prefix, maxRequestsPerMinute, message, code, shared } = options;
 
   const keyFor = (req: Request): string => {
     const authenticatedUserReq = req as AuthenticatedUserRequest;
@@ -183,6 +187,7 @@ export function createKeyedRateLimiter(
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: keyFor,
+    ...(shared ? { store: new SharedRateLimitStore(prefix, logger) } : {}),
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
       logger.warn('Rate limit exceeded', {
@@ -193,12 +198,22 @@ export function createKeyedRateLimiter(
         retryAfter,
       });
       const error = new TooManyRequestsError(message);
+      const retryAfterSeconds = retryAfter
+        ? parseInt(retryAfter as string, 10)
+        : null;
       res.status(429).json({
-        error: {
-          code: error.code,
-          message: error.message,
-          retryAfter: retryAfter ? parseInt(retryAfter as string, 10) : null,
-        },
+        error:
+          code === undefined
+            ? {
+                code: error.code,
+                message: error.message,
+                retryAfter: retryAfterSeconds,
+              }
+            : {
+                code,
+                message: error.message,
+                details: { retryAfter: retryAfterSeconds },
+              },
       });
     },
   };
@@ -206,19 +221,29 @@ export function createKeyedRateLimiter(
   return rateLimit(config);
 }
 
+export type OAuthClientRateLimitSurface =
+  | 'token'
+  | 'pat'
+  | 'service-token'
+  | 'clients'
+  | 'service-accounts';
+
 /**
- * Rate limiter for OAuth client management endpoints
- * Stricter limits: 10 requests per minute per user/IP
- * Used for creating, updating, and deleting OAuth applications
+ * Rate limiter for OAuth client, PAT, service-token and service-account endpoints.
+ * Stricter limits: 10 requests per minute per user/IP. Each router passes its own
+ * `surface`, so the shared Redis key (`oauth-client:<surface>:user:<id>`) keeps the
+ * per-router buckets that the in-process stores gave before.
  */
 export function createOAuthClientRateLimiter(
   logger: Logger,
   maxRequestsPerMinute: number,
+  surface: OAuthClientRateLimitSurface,
 ): RequestHandler {
   return createKeyedRateLimiter(logger, {
-    prefix: 'oauth-client',
+    prefix: `oauth-client:${surface}`,
     maxRequestsPerMinute,
     message: 'Too many OAuth client requests. Please try again later.',
+    shared: true,
   });
 }
 
@@ -235,14 +260,15 @@ export function createSkillsImportRateLimiter(
     prefix: 'skills-import',
     maxRequestsPerMinute,
     message: 'Too many skill import requests. Please try again later.',
+    shared: true,
   });
 }
 
 /**
  * Login/OTP/password endpoints. The global limiter is sized for general API
  * traffic and is too loose to stop password spraying or OTP/email bombing.
- * The limit is per replica (in-process store), so N pods admit up to
- * N × maxRequestsPerMinute per client until a shared store is wired.
+ * Unauthenticated, so counted per IP in the shared store: the limit holds across
+ * replicas (it falls back to per-replica counting if the cache is unavailable).
  */
 export function createAuthRateLimiter(
   logger: Logger,
@@ -252,5 +278,6 @@ export function createAuthRateLimiter(
     prefix: 'auth',
     maxRequestsPerMinute,
     message: 'Too many authentication requests. Please try again later.',
+    shared: true,
   });
 }

@@ -2,9 +2,7 @@ import { Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
@@ -16,6 +14,21 @@ import {
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
 import { IProject, IProjectDocument, ProjectRole } from '../types/project.interfaces';
 import { resolveCallerTeamIds } from '../utils/team-membership';
+import { OBJECT_ID_REGEX } from '../../../libs/validators/zod-primitives';
+import { callerIdentityOf } from '../../../libs/types/caller-identity';
+import {
+  conversationContextOf,
+  listFilterOf,
+} from '../../enterprise_search/services/collaboration/http/conversation-context';
+import { redactRecipients } from '../../enterprise_search/services/collaboration/http/list-access';
+import {
+  listSelect,
+  sharedListDecorator,
+} from '../../enterprise_search/services/collaboration/http/list-fields';
+import { teamDirectoryFor } from '../../user_management/services/team-directory.service';
+import { IAuditWriter } from '../../../libs/audit/audit.writer';
+import { COLLAB_FLAG_KEYS } from '../../configuration_manager/constants/constants';
+import { IFeatureFlags } from '../../configuration_manager/services/platform-feature-flags.service';
 
 /** Enrich a Mongoose project document with the caller's computed role for JSON responses. */
 function projectWithRole(
@@ -109,21 +122,48 @@ export const getProjectById =
     }
   };
 
+/** What `PATCH /:projectId` needs to honour `projectChatAccess`; without it the field is ignored. */
+export interface ProjectChatAccessDeps {
+  flags: IFeatureFlags;
+  audit: IAuditWriter;
+}
+
 export const updateProject =
-  (appConfig: AppConfig): ProjectRouteHandler =>
+  (
+    appConfig: AppConfig,
+    chatAccess?: ProjectChatAccessDeps,
+  ): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
     try {
       const userId = req.user?.userId as string;
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
-      const patch = req.body as UpdateProjectInput;
+      const { projectChatAccess, ...rest } = req.body as UpdateProjectInput;
+      const honourChatAccess =
+        chatAccess !== undefined &&
+        (await chatAccess.flags.isEnabled(COLLAB_FLAG_KEYS.collaborativeChats));
+      const patch: UpdateProjectInput = honourChatAccess
+        ? { ...rest, projectChatAccess }
+        : rest;
       const project = await ProjectService.update(
         orgId,
         userId,
         projectId,
         patch,
         callerTeamIds,
+        async (change, saved) =>
+          chatAccess?.audit.record({
+            orgId: new mongoose.Types.ObjectId(orgId),
+            actorUserId: new mongoose.Types.ObjectId(userId),
+            action: 'project.chatAccessChanged',
+            targetType: 'project',
+            targetId: projectId,
+            before: { projectChatAccess: change.before },
+            after: { projectChatAccess: change.after },
+            aclVersion: saved.aclVersion,
+            requestId: req.context?.requestId,
+          }),
       );
       const role = ProjectService.computeRole(
         project,
@@ -131,25 +171,8 @@ export const updateProject =
         orgId,
         callerTeamIds,
       );
-      // Idempotent either way, so a plain resync (rather than diffing
-      // against the pre-update value) is enough: grant is a no-op if the
-      // `all_{orgId}` team already has the edge, revoke is a no-op
-      // (upstream 404) if it never did.
-      if (patch.visibility !== undefined && project.linkedKnowledgeBaseId) {
-        const headers = req.headers as Record<string, string>;
-        if (project.visibility === 'org') {
-          await ProjectKnowledgeBaseService.syncMemberPermissions(
-            appConfig,
-            headers,
-            project,
-          );
-        } else {
-          await ProjectKnowledgeBaseService.revokeOrgVisibility(
-            appConfig,
-            headers,
-            project,
-          );
-        }
+      if (patch.visibility !== undefined) {
+        await ProjectKnowledgeBaseService.enqueueSync(project);
       }
       res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
@@ -278,7 +301,8 @@ export const unpinProject =
 /**
  * GET /:projectId/conversations — chat + agent sessions in this project that
  * the caller may see: rows they own, plus rows with `projectVisibility:
- * 'project'` if they have at least viewer access to the project itself.
+ * 'project'` if they have at least viewer access to the project itself, plus
+ * (collaborative chats on) rows shared to them directly or through a team.
  * Access to the project has already been asserted, so a private chat that
  * belongs to a *different* project member never leaks here.
  */
@@ -305,12 +329,9 @@ export const getProjectConversations =
       const skip = (page - 1) * limit;
 
       const filter = {
-        orgId: new mongoose.Types.ObjectId(orgId),
-        projectId: new mongoose.Types.ObjectId(projectId),
-        isDeleted: false,
-        $or: [
-          { userId: new mongoose.Types.ObjectId(userId) },
-          { projectVisibility: 'project' },
+        $and: [
+          listFilterOf(req),
+          { projectId: new mongoose.Types.ObjectId(projectId) },
         ],
       };
 
@@ -319,14 +340,18 @@ export const getProjectConversations =
           .sort({ lastActivityAt: -1, _id: -1 })
           .skip(skip)
           .limit(limit)
-          .select('-__v')
+          .select(listSelect(conversationContextOf(req)))
           .lean()
           .exec(),
         ChatSession.countDocuments(filter),
       ]);
 
+      const ctx = conversationContextOf(req);
+      const decorate = await sharedListDecorator(ctx, conversations);
       res.status(200).json({
-        conversations,
+        conversations: conversations.map((row) =>
+          decorate(redactRecipients(ctx, row)),
+        ),
         pagination: {
           page,
           limit,
@@ -359,25 +384,6 @@ export const listProjectMembers =
     }
   };
 
-/** True when `teamId` names a team that exists in this org's graph (Python `entity/team/{id}`). */
-async function teamExists(
-  appConfig: AppConfig,
-  req: AuthenticatedUserRequest,
-  teamId: string,
-): Promise<boolean> {
-  try {
-    const command = new AIServiceCommand<unknown>({
-      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
-      method: HttpMethod.GET,
-      headers: req.headers as Record<string, string>,
-    });
-    const response = await command.execute();
-    return response.statusCode === HTTP_STATUS.OK;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * PUT /:projectId/members — mirrors `shareConversationById`'s IAM
  * existence check (es_controller.ts) so a `user` member cannot be added
@@ -403,10 +409,9 @@ export const upsertProjectMembers =
       await Promise.all(
         members.map(async (member) => {
           if (member.principalType === 'team') {
-            const exists = await teamExists(
-              appConfig,
-              req,
+            const exists = await teamDirectoryFor(appConfig).exists(
               member.principalId,
+              callerIdentityOf(req),
             );
             if (!exists) {
               throw new BadRequestError(`Team not found: ${member.principalId}`);
@@ -437,13 +442,7 @@ export const upsertProjectMembers =
         projectId,
         members,
       );
-      if (project.linkedKnowledgeBaseId) {
-        await ProjectKnowledgeBaseService.syncMemberPermissions(
-          appConfig,
-          req.headers as Record<string, string>,
-          project,
-        );
-      }
+      await ProjectKnowledgeBaseService.enqueueSync(project);
 
       res.status(200).json({ members: project.members });
     } catch (error) {
@@ -452,7 +451,7 @@ export const upsertProjectMembers =
   };
 
 export const removeProjectMember =
-  (appConfig: AppConfig): ProjectRouteHandler =>
+  (_appConfig: AppConfig): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
     try {
       const userId = req.user?.userId as string;
@@ -465,6 +464,12 @@ export const removeProjectMember =
         principalType?: 'user' | 'team';
       };
       const effectivePrincipalType = principalType ?? 'user';
+      if (
+        effectivePrincipalType === 'user' &&
+        !OBJECT_ID_REGEX.test(memberUserId)
+      ) {
+        throw new BadRequestError('Invalid member ID format');
+      }
       const project = await ProjectService.removeMember(
         orgId,
         userId,
@@ -472,15 +477,7 @@ export const removeProjectMember =
         memberUserId,
         effectivePrincipalType,
       );
-      if (project.linkedKnowledgeBaseId) {
-        await ProjectKnowledgeBaseService.revokePrincipalPermission(
-          appConfig,
-          req.headers as Record<string, string>,
-          project,
-          memberUserId,
-          effectivePrincipalType,
-        );
-      }
+      await ProjectKnowledgeBaseService.enqueueSync(project);
 
       res.status(200).json({ members: project.members });
     } catch (error) {

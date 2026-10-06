@@ -1,0 +1,83 @@
+# Throwaway backing services for the collaborative-chats e2e lane.
+# Always started with an explicit unique `-p pcc-e2e-<id>` project name (see run.sh and
+# helper/collab_stack/infra.py); never the default project. Ports bind to 127.0.0.1 and are
+# picked by Docker, so the lane cannot collide with anything else on the host.
+services:
+  mongo:
+    image: mongo:8.0.17
+    command: ["--replSet", "rs0", "--bind_ip_all", "--setParameter", "enableTestCommands=1"]
+    ports:
+      - "127.0.0.1::27017"
+    tmpfs:
+      - /data/db
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --eval
+          "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]}).ok }"
+          | grep -q 1
+      interval: 2s
+      timeout: 10s
+      retries: 30
+      start_period: 2s
+
+  redis:
+    image: redis:7.4-bookworm
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1::6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Real-Python mode only (PCC_E2E_REAL_PYTHON=1): the graph the Python services write to.
+  # One of the two is started, chosen by the compose profile (neo4j or arango).
+  neo4j:
+    profiles: ["neo4j"]
+    image: neo4j:5.26.0
+    environment:
+      NEO4J_AUTH: neo4j/pcc-e2e-neo4j-pass
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 128m
+    ports:
+      - "127.0.0.1::7687"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p pcc-e2e-neo4j-pass 'RETURN 1' >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 5s
+
+  arango:
+    profiles: ["arango"]
+    image: arangodb:3.12.4
+    environment:
+      ARANGO_ROOT_PASSWORD: pcc-e2e-arango-pass
+    ports:
+      - "127.0.0.1::8529"
+    tmpfs:
+      - /var/lib/arangodb3
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --header='Authorization: Basic cm9vdDpwY2MtZTJlLWFyYW5nby1wYXNz' http://127.0.0.1:8529/_api/version >/dev/null 2>&1 || curl -sf -u root:pcc-e2e-arango-pass http://127.0.0.1:8529/_api/version >/dev/null"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 5s
+
+  # Real-Python mode: the vector store the query service connects to at start-up.
+  qdrant:
+    profiles: ["real-python"]
+    image: qdrant/qdrant:v1.15
+    environment:
+      QDRANT__SERVICE__API_KEY: pcc-e2e-qdrant-key
+    ports:
+      - "127.0.0.1::6333"
+      - "127.0.0.1::6334"
+    tmpfs:
+      - /qdrant/storage

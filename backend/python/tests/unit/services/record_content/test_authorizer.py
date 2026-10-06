@@ -155,6 +155,70 @@ async def test_service_account_denied_by_tier3(graph):
             await authorizer.authorize(actor, record)
 
 
+class _Pdp:
+    def __init__(self, result: bool) -> None:
+        self.result = result
+        self.reqs: list = []
+
+    async def can_read_chat_content(self, req) -> bool:
+        self.reqs.append(req)
+        return self.result
+
+
+def _chat_graph() -> AsyncMock:
+    g = AsyncMock()
+    g.get_edge = AsyncMock(return_value=None)
+    g.check_record_access_with_details = AsyncMock(return_value=None)
+    g.get_document = AsyncMock(side_effect=lambda key, coll, *a, **k: {
+        ("rec1", "records"): {"_key": "rec1", "orgId": "org1", "connectorName": "ATTACHMENTS", "recordType": "FILE"},
+        ("ukey-b", "users"): {"_key": "ukey-b", "userId": "user-b"},
+    }.get((key, coll)))
+    g.get_edges_to_node = AsyncMock(return_value=[
+        {"from_id": "ukey-b", "from_collection": "users", "to_id": "rec1", "type": "USER", "role": "OWNER"},
+    ])
+    return g
+
+
+def _attachment_record() -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id="rec1", org_id="org1", connector_name="ATTACHMENTS", record_type="FILE")
+
+
+@pytest.mark.asyncio
+async def test_tier4_pdp_allow_grants_chat_content() -> None:
+    """PH07-09: tiers 2-3 fail, PDP allows -> no raise."""
+    pdp = _Pdp(True)
+    actor = _make_actor()
+    actor.acl_version = 3
+    await TieredRecordAuthorizer(_chat_graph(), pdp).authorize(
+        actor, _attachment_record(), conversation_id="conv-1",
+    )
+    (req,) = pdp.reqs
+    assert (req.record_id, req.conversation_id, req.acl_version) == ("rec1", "conv-1", 3)
+
+
+@pytest.mark.asyncio
+async def test_tier4_pdp_deny_raises() -> None:
+    with pytest.raises(RecordAccessDeniedError):
+        await TieredRecordAuthorizer(_chat_graph(), _Pdp(False)).authorize(_make_actor(), _attachment_record())
+
+
+@pytest.mark.asyncio
+async def test_tier4_is_not_reached_when_tier3_grants() -> None:
+    graph = _chat_graph()
+    graph.check_record_access_with_details = AsyncMock(return_value={"id": "rec1"})
+    pdp = _Pdp(False)
+    await TieredRecordAuthorizer(graph, pdp).authorize(_make_actor(), _make_record())
+    assert pdp.reqs == []
+
+
+@pytest.mark.asyncio
+async def test_tier4_unset_pdp_denies() -> None:
+    with pytest.raises(RecordAccessDeniedError):
+        await TieredRecordAuthorizer(_chat_graph()).authorize(_make_actor(), _attachment_record())
+
+
 # ---------------------------------------------------------------------------
 # Tier 0: a record in the trash
 # ---------------------------------------------------------------------------

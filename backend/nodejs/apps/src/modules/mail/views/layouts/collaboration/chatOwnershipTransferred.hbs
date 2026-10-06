@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+  {{>head}}
+  <body>
+    <main>
+      <table
+        style="border: 0; border-spacing: 0; font-size: 13px; color: #333; border-collapse: collapse; overflow: hidden; margin: 0 auto; width: 100%; background-color: #ffffff;"
+        border="0"
+        width="100%"
+        cellspacing="0"
+        cellpadding="0"
+        align="center"
+        valign="middle"
+      >
+        <tr>
+          <td>{{> header}}</td>
+        </tr>
+        <tr>
+          <td>
+            <table
+              class="mobile-width"
+              style="border: 0; border-spacing: 0; font-size: 13px; color: #333; border-collapse: collapse; overflow: hidden; margin: 0 auto; width: 560px; max-width: 560px; background-color: #ffffff;"
+              cellspacing="0"
+              cellpadding="0"
+              align="center"
+              valign="middle"
+            >
+              <tr>
+                <td
+                  style="
+                    padding: 40px 30px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                  "
+                >
+                  <div
+                    style="
+                      font-size: 20px;
+                      font-weight: 700;
+                      color: #1d1c1d;
+                      letter-spacing: -0.25px;
+                      line-height: 28px;
+                      margin: 0 0 16px 0;
+                    "
+                  >
+                    A conversation was transferred to you
+                  </div>
+                  <div
+                    style="
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                      margin: 0 0 24px 0;
+                    "
+                  >
+                    <div>Hi,</div>
+                    <div style="height: 22px; line-height: 22px;">&nbsp;</div>
+                    <div><strong>{{actorName}}</strong> transferred ownership of a conversation to you in {{orgName}}. You now manage who can access it and your access level is <strong>{{accessLevel}}</strong>.</div>
+                    <div style="height: 22px; line-height: 22px;">&nbsp;</div>
+                    <div><a href="{{openUrl}}" style="display: inline-block; padding: 10px 20px; background-color: #1d1c1d; color: #ffffff; text-decoration: none; border-radius: 4px; font-weight: 600;">Open conversation</a></div>
+                    <div style="height: 22px; line-height: 22px;">&nbsp;</div>
+                    <div style="font-size: 13px; color: #696969;">You received this because {{actorName}} included you in a conversation in {{orgName}}. You can change which emails you get in your <a href="{{settingsUrl}}">notification settings</a>.</div>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td>{{> footer}}</td>
+        </tr>
+      </table>
+    </main>
+  </body>
+</html>

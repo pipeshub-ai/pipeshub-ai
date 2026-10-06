@@ -48,13 +48,16 @@ export function ArtifactsHeader({
             lineHeight: 'var(--line-height-3)',
             letterSpacing: 'var(--letter-spacing-3)',
             color: 'var(--slate-12)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
           }}
         >
           {t('nav.allArtifacts')}
         </h1>
         <BetaBadge />
       </Flex>
-      <Flex align="center" gap="2">
+      <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
         {isSearchActive ? (
           <IconButton
             variant="ghost"
@@ -64,6 +67,10 @@ export function ArtifactsHeader({
             aria-label={t('action.find')}
           >
             <MaterialIcon name="close" size={18} />
+          </IconButton>
+        ) : isMobile ? (
+          <IconButton variant="ghost" size="2" color="gray" onClick={onFind} aria-label={t('action.find')}>
+            <MaterialIcon name="search" size={18} />
           </IconButton>
         ) : (
           <Button variant="ghost" size="1" color="gray" onClick={onFind}>

@@ -38,7 +38,7 @@ class TestNeo4jListAccessibleArtifactsQueryShape:
             sort_order="desc",
         )
         list_query, count_query = _queries(provider)
-        assert 'MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER"}]->(rec:Record)' in list_query
+        assert 'MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER", role: "OWNER"}]->(rec:Record)' in list_query
         assert 'rec.recordType = "ARTIFACT"' in list_query
         assert "rec.orgId = $org_id" in list_query
         assert "coalesce(rec.isDeleted, false) = false" in list_query
@@ -90,7 +90,7 @@ class TestNeo4jGetArtifactDetailQueryShape:
         assert row["id"] == "art-1"
         query = provider.client.execute_query.await_args.args[0]
         params = provider.client.execute_query.await_args.kwargs["parameters"]
-        assert 'MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER"}]->(rec:Record)' in query
+        assert 'MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER", role: "OWNER"}]->(rec:Record)' in query
         assert "rec.orgId = $org_id" in query
         assert "coalesce(rec.isDeleted, false) = false" in query
         assert "rec.id = $artifact_id" in query

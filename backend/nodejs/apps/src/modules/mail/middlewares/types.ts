@@ -31,4 +31,7 @@ export enum EmailTemplateType {
   DomainLimitReached = 'domainLimitReached',
   JoinRequestNotify = 'joinRequestNotify',
   JoinRequestDecision = 'joinRequestDecision',
+  ChatShared = 'chatShared',
+  ChatOwnershipTransferred = 'chatOwnershipTransferred',
+  ChatMentioned = 'chatMentioned',
 }

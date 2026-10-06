@@ -22,6 +22,9 @@ import {
   useNotificationFilterLabels,
 } from './notification-filter-menu';
 import { useTranslation } from 'react-i18next';
+import { useFeatureFlagsStore, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
+import { describeConversationError } from '@/chat/utils/conversation-errors';
+import { collabSessionId } from './collab-notifications';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -45,6 +48,9 @@ const TRANSITION = '0.25s cubic-bezier(0.4, 0, 0.2, 1)';
 export function NotificationsPanel() {
   const { t } = useTranslation();
   const filterLabels = useNotificationFilterLabels();
+  const collabEnabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
+  const mutedSessionIds = useNotificationStore((s) => s.mutedSessionIds);
+  const setMutedSessionIds = useNotificationStore((s) => s.setMutedSessionIds);
   const isPanelOpen = useNotificationStore((s) => s.isPanelOpen);
   const closePanel = useNotificationStore((s) => s.closePanel);
   const notifications = useNotificationStore((s) => s.notifications);
@@ -332,6 +338,41 @@ export function NotificationsPanel() {
     }
   };
 
+  useEffect(() => {
+    if (!isPanelOpen || !collabEnabled) return;
+    let cancelled = false;
+    NotificationsApi.getPreferences()
+      .then((prefs) => {
+        if (!cancelled) setMutedSessionIds(prefs.mutedSessions);
+      })
+      .catch(() => {
+        // Mute state is optional; the rows fall back to "Mute".
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPanelOpen, collabEnabled, setMutedSessionIds]);
+
+  const isMuted = (n: NotificationListItem) => {
+    const sid = collabSessionId(n);
+    return sid != null && mutedSessionIds.includes(sid);
+  };
+
+  const onToggleMute = async (n: NotificationListItem) => {
+    const sessionId = collabSessionId(n);
+    if (!sessionId || !n._id || !beginRowAction(n._id, 'mute')) return;
+    try {
+      const prefs = mutedSessionIds.includes(sessionId)
+        ? await NotificationsApi.unmuteSession(sessionId)
+        : await NotificationsApi.muteSession(sessionId);
+      setMutedSessionIds(prefs.mutedSessions);
+    } catch (err) {
+      setError(t(describeConversationError(err).i18nKey));
+    } finally {
+      endRowAction(n._id);
+    }
+  };
+
   const onMarkAllRead = async () => {
     if (unreadCount === 0 || markingAllRead) return;
     setMarkingAllRead(true);
@@ -501,6 +542,7 @@ export function NotificationsPanel() {
           left: `${leftOffset}px`,
           bottom: 0,
           width: `${panelWidth}px`,
+          maxWidth: `calc(100vw - ${leftOffset}px)`,
           zIndex: 9100,
           display: 'flex',
           flexDirection: 'column',
@@ -563,10 +605,7 @@ export function NotificationsPanel() {
               <Text
                 size="1"
                 truncate
-                style={{
-                  color: 'var(--gray-11)',
-                  opacity: 0.5,
-                }}
+                style={{ color: 'var(--slate-11)' }}
               >
                 {filterLabels[listFilter]}
               </Text>
@@ -673,6 +712,10 @@ export function NotificationsPanel() {
                   archiveLabel={t('notifications.archive')}
                   unarchiveLabel={t('notifications.unarchive')}
                   dismissLabel={t('notifications.dismiss')}
+                  muted={isMuted(n)}
+                  onToggleMute={(item) => void onToggleMute(item)}
+                  muteLabel={t('notifications.collab.mute')}
+                  unmuteLabel={t('notifications.collab.unmute')}
                 />
               ))}
               {hasMore && (

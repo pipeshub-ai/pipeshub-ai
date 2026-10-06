@@ -9,3 +9,4 @@ In-repo design docs:
 
 - [Indexing service — architecture, data flow, admission control, and the throughput-collapse root cause](./indexing-service.md)
 - [Non-streaming chat endpoints — HLD, LLD, data flow, error contract, and tests](./non-streaming-chat.md)
+- [Collaborative chats — user and admin guide: sharing, hand-over, notes and mentions, agents from a chat, flags, limits and audit](./collaborative-chats.md)

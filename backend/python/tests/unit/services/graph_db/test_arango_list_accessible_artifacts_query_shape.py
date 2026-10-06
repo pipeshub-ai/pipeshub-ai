@@ -37,6 +37,8 @@ class TestArangoListAccessibleArtifactsQueryShape:
         )
         list_query, count_query = _captured_queries(provider)
         assert "permissionEdge._from == @user_from" in list_query
+        assert 'permissionEdge.role == "OWNER"' in list_query
+        assert 'permissionEdge.role == "OWNER"' in count_query
         assert 'record.recordType == "ARTIFACT"' in list_query
         assert "record.orgId == @org_id" in list_query
         assert "record.isDeleted != true" in list_query
@@ -103,6 +105,7 @@ class TestArangoGetArtifactDetailQueryShape:
         bind = provider.execute_query.await_args.kwargs["bind_vars"]
         assert "permissionEdge._from == @user_from" in query
         assert 'permissionEdge.type == "USER"' in query
+        assert 'permissionEdge.role == "OWNER"' in query
         assert "record.orgId == @org_id" in query
         assert 'record.recordType == "ARTIFACT"' in query
         assert "record._key == @artifact_id" in query

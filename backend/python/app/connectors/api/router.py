@@ -125,6 +125,8 @@ from app.connectors.services.vector_store_rebuild import (
 from app.edition_containers import ConnectorAppContainer
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
+from app.modules.authz.chat_content_access import can_read_record, resolve_read_access
+from app.modules.authz.node_pdp_client import get_node_pdp_client
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
@@ -617,21 +619,17 @@ async def get_record_content_internal(
                 "get_record_content_internal: org mismatch record=%s record_org=%r token_org=%s",
                 record_id, record.org_id, org_id,
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Record does not belong to your organization",
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        # Independent ACL check — never trust the caller.
-        access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
-        if not access:
+        # Independent ACL check — never trust the caller. Denied reads look
+        # exactly like a missing record so the route is no existence oracle.
+        if not await can_read_record(
+            graph_provider, get_node_pdp_client(), user_id=user_id, org_id=org_id, record=record,
+        ):
             logger.warning(
                 "get_record_content_internal: access denied user=%s record=%s", user_id, record_id,
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record",
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
 
         return await _resolve_record_content_response(
@@ -1113,14 +1111,13 @@ async def get_signed_url(
             )
 
         mint_user = caller_user or path_user
-        if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                mint_user, caller_org, record_id
+        if not is_scoped and not await can_read_record(
+            graph_provider, get_node_pdp_client(),
+            user_id=mint_user, org_id=caller_org, record=record,
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
-            if not access:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
-                )
 
         additional_claims = {
             "connector": connector,
@@ -1338,14 +1335,13 @@ async def download_file(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
 
-        if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                user_id, record_org, record_id
+        if not is_scoped and not await can_read_record(
+            graph_provider, get_node_pdp_client(),
+            user_id=user_id, org_id=record_org, record=record,
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
-            if not access:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
-                )
 
         connector_id = record.connector_id
         await _refuse_hidden_demo_record(
@@ -1424,13 +1420,11 @@ async def stream_record(
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
 
-        access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
-        if not access_check:
+        if not await can_read_record(
+            graph_provider, get_node_pdp_client(), user_id=user_id, org_id=org_id, record=record,
+        ):
             logger.warning(f"User {user_id} does not have access to record {record_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record"
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
         if isinstance(record, ArtifactRecord):
             from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
@@ -1916,10 +1910,8 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
+        has_access = await resolve_read_access(
+            graph_provider, get_node_pdp_client(), user_id=user_id, org_id=org_id, record=record_id,
         )
         logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
@@ -1957,16 +1949,10 @@ async def get_record_content(
     org_id = request.state.user.get("orgId")
 
     try:
-        access_check = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
-        )
-        if not access_check:
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record",
-            )
+        if not await can_read_record(
+            graph_provider, get_node_pdp_client(), user_id=user_id, org_id=org_id, record=record_id,
+        ):
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
         await _refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")

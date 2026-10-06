@@ -3,8 +3,13 @@ import { EmailTemplateType } from '../middlewares/types';
 import {
   accountCreation,
   appUserInvite,
+  chatOwnershipTransferred,
+  chatShared,
   domainLimitReached,
   emailChangeNotice,
+  chatMentioned,
+  isChatCollaborationEmailData,
+  isChatMentionedEmailData,
   isEmailChangeNoticeData,
   joinRequestDecision,
   joinRequestNotify,
@@ -60,6 +65,25 @@ export function getEmailContent(
 
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
+
+    case EmailTemplateType.ChatShared:
+    case EmailTemplateType.ChatOwnershipTransferred:
+      if (!isChatCollaborationEmailData(templateData)) {
+        throw new BadRequestError(
+          `${emailTemplateType} requires exactly actorName, orgName, accessLevel, openUrl and settingsUrl`,
+        );
+      }
+      return emailTemplateType === EmailTemplateType.ChatShared
+        ? chatShared(templateData)
+        : chatOwnershipTransferred(templateData);
+
+    case EmailTemplateType.ChatMentioned:
+      if (!isChatMentionedEmailData(templateData)) {
+        throw new BadRequestError(
+          `${emailTemplateType} requires exactly actorName, orgName, openUrl and settingsUrl`,
+        );
+      }
+      return chatMentioned(templateData);
 
     default:
       throw 'Unknown Template';

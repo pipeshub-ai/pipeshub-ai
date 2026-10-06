@@ -2508,6 +2508,16 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def create_kb_principal_permissions(
+        self,
+        kb_id: str,
+        grants: list[dict[str, str]],
+    ) -> dict:
+        """Persist every grant ({principalType: user|team, principalId: graph key, role}) as one
+        all-or-nothing write: if any edge fails, none are kept."""
+        pass
+
+    @abstractmethod
     async def count_kb_owners(
         self,
         kb_id: str,
@@ -2620,8 +2630,15 @@ class IGraphDBProvider(ABC):
         self,
         kb_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
-        """List all permissions for a KB with entity details."""
+        """List all permissions for a KB with entity details.
+
+        A database failure returns ``[]`` unless ``raise_on_error`` is set; a caller that
+        diffs against the result (the project KB reconcile) must not read a failure as
+        "no edges".
+        """
         pass
 
     @abstractmethod
@@ -2691,7 +2708,12 @@ class IGraphDBProvider(ABC):
         sort_by: str,
         sort_order: str,
     ) -> tuple[list[dict], int]:
-        """Permission-first listing of user-visible artifacts.
+        """Permission-first listing of the user's own user-visible artifacts.
+
+        Only artifacts the user holds the USER ``OWNER`` edge on (the ones their
+        chat runs created) are listed. Since PH-07 another participant reads a
+        chat artifact through the chat-content PDP, never through a graph edge,
+        so a READER edge (legacy chat grant) must not surface it here.
 
         ``user_id`` is the graph user key (``_key`` / ``id``), not the
         external auth ``userId``. The caller resolves that key first,
@@ -3969,6 +3991,85 @@ class IGraphDBProvider(ABC):
 
         Args:
             org_id: Organization ID
+        """
+        pass
+
+    @abstractmethod
+    async def backfill_team_org_ids(self) -> dict[str, Any]:
+        """
+        Set ``orgId`` on teams that lack it (one-time data repair).
+
+        ``all_<orgId>`` teams take the id suffix; other teams take the org of
+        their ``createdBy`` user. Teams whose org cannot be derived are left
+        untouched.
+
+        Returns:
+            {"updated": int, "unresolved_team_ids": list[str]}
+        """
+        pass
+
+    @abstractmethod
+    async def get_agent_by_handle(
+        self, org_id: str, handle: str, transaction: str | None = None
+    ) -> dict | None:
+        """
+        Return the agent node that owns ``handle`` in ``org_id``, or ``None``.
+
+        Soft-deleted agents are returned too: a handle stays reserved until the
+        agent is hard-deleted.
+        """
+        pass
+
+    @abstractmethod
+    async def search_agent_handles(
+        self, org_id: str, prefix: str, limit: int = 20, transaction: str | None = None
+    ) -> list[str]:
+        """
+        Return up to ``limit`` handles in ``org_id`` that start with ``prefix``,
+        sorted ascending. Soft-deleted agents count (see ``get_agent_by_handle``).
+        """
+        pass
+
+    @abstractmethod
+    async def list_agents_missing_handle(self, batch: int = 500) -> list[dict[str, Any]]:
+        """
+        Return up to ``batch`` agents that have no ``handle`` yet, oldest first
+        (``createdAtTimestamp``, then key), as ``{"id", "name", "orgId"}``.
+
+        ``orgId`` is the agent's own, else its creator's. Agents whose org cannot
+        be derived are not listed, so a caller that drains this to empty always
+        terminates.
+        """
+        pass
+
+    @abstractmethod
+    async def backfill_kb_team_edge_roles(self) -> dict[str, int]:
+        """
+        Stamp ``READER`` on legacy role-less team->KB PERMISSION edges whose active
+        members are all READER.
+
+        An edge role is a grant to the team as a whole, including future members, so
+        every other edge stays role-less and resolves per member at read time (member
+        team role capped at WRITER).
+
+        Idempotent. Returns ``{"stamped": n, "remaining_role_less": m}``; ``m`` is -1
+        if the count query failed.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_chat_content_reader_edges(self, batch_size: int = 1000) -> int:
+        """
+        Delete direct user READER ``PERMISSION`` edges onto chat content.
+
+        Chat content is a record with ``connectorName == 'ATTACHMENTS'`` or one that has an
+        ``artifacts`` document with a non-empty ``conversationId``. Only edges with
+        ``type == 'USER'`` and ``role == 'READER'`` from ``users`` are removed; OWNER,
+        team, organization and edges to any other record are never touched. Access to chat
+        content is decided by the PDP, not by edges.
+
+        Deletes in batches of ``batch_size`` until none remain. Idempotent.
+        Returns the total number of edges deleted.
         """
         pass
 
@@ -5416,6 +5517,7 @@ class IGraphDBProvider(ABC):
         self,
         team_id: str,
         user_key: str,
+        org_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """
@@ -5424,6 +5526,7 @@ class IGraphDBProvider(ABC):
         Args:
             team_id (str): Team ID
             user_key (str): Current user's key (for permission checking)
+            org_id (str): Org the team must belong to; other orgs' teams resolve to None
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -5458,6 +5561,19 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_team_ids(
+        self,
+        user_key: str,
+        org_id: str,
+        limit: int = 1000,
+    ) -> list[str]:
+        """
+        Ids of the teams (within org_id) the user is a member of. Ids only, no
+        member expansion. Logs a warning when the result is truncated at limit.
         """
         pass
 

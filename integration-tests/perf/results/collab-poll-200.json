@@ -1,0 +1,196 @@
+{
+  "benchmark": "collab_poll",
+  "recorded_at": "2026-10-03T13:53:51Z",
+  "environment": {
+    "label": "ci-collab-neo4j-4cpu",
+    "graph_db": "none (the lane's fake of the Python service serves team ids)",
+    "message_broker": "redis",
+    "node_replicas": 1,
+    "host": {
+      "python": "3.12.3",
+      "cpus": 32,
+      "machine": "x86_64"
+    }
+  },
+  "profile": {
+    "viewers": 200,
+    "windows": 450,
+    "active_windows": 275,
+    "duration_seconds": 180.0,
+    "warmup_seconds": 20.0,
+    "cadence": {
+      "active_seconds": 4.0,
+      "idle_seconds": 15.0,
+      "jitter": 0.2,
+      "active_fraction": 0.5
+    },
+    "mix": {
+      "owner_direct": 0.6,
+      "team_only": 0.3,
+      "project": 0.1
+    },
+    "windows_per_viewer": [
+      [
+        1,
+        0.5
+      ],
+      [
+        2,
+        0.25
+      ],
+      [
+        3,
+        0.12
+      ],
+      [
+        5,
+        0.08
+      ],
+      [
+        8,
+        0.05
+      ]
+    ],
+    "change_interval_seconds": 120.0
+  },
+  "corpus": {
+    "sessions": 200000,
+    "teams": 2000,
+    "seed": 1337,
+    "seed_seconds": 23.3
+  },
+  "metrics": {
+    "requests": 14429,
+    "requests_per_second": 80.16062442255836,
+    "status_counts": {
+      "304": 13189,
+      "200": 640,
+      "429": 600
+    },
+    "errors": 0,
+    "client_exceptions": {},
+    "latency_seconds": {
+      "p50": 0.009204606001731008,
+      "p95": 0.023929454816970983,
+      "p99": 0.14090342600364206,
+      "max": 0.9989934070035815
+    },
+    "latency_seconds_200": {
+      "p50": 0.01563131950388197,
+      "p95": 0.031126121748820852,
+      "p99": 0.10462138878967396,
+      "max": 0.49901618898729794
+    },
+    "latency_seconds_304": {
+      "p50": 0.009030918998178095,
+      "p95": 0.02301734240027146,
+      "p99": 0.14206878377823207,
+      "max": 0.9989934070035815
+    },
+    "not_modified_ratio": 0.9537204425482682,
+    "rate_limited": 600,
+    "python_team_id_calls": {
+      "total": 455,
+      "by_population": {
+        "team_only": 455
+      },
+      "users_calling": 76,
+      "max_calls_by_one_user": 6,
+      "max_calls_by_one_user_within_1s": 1
+    },
+    "teamids_cache": {
+      "coalesced": 1,
+      "hit": 543,
+      "miss": 455,
+      "hit_ratio": 0.5445445445445446
+    },
+    "feed_poll_total": {
+      "200": 640,
+      "304": 13189
+    },
+    "writer_turns_added": 737,
+    "by_population": {
+      "owner_direct": {
+        "viewers": 107,
+        "windows": 219,
+        "polls": 7183,
+        "latency_seconds": {
+          "p50": 0.008884988987119868,
+          "p95": 0.02270479619910475,
+          "p99": 0.19507371219689984,
+          "max": 0.9806772880256176
+        },
+        "status_counts": {
+          "304": 6651,
+          "200": 324,
+          "429": 208
+        }
+      },
+      "team_only": {
+        "viewers": 76,
+        "windows": 183,
+        "polls": 5715,
+        "latency_seconds": {
+          "p50": 0.009413638021214865,
+          "p95": 0.024550449459638923,
+          "p99": 0.09881685027154209,
+          "max": 0.9614245879929513
+        },
+        "status_counts": {
+          "304": 5220,
+          "200": 250,
+          "429": 245
+        }
+      },
+      "project": {
+        "viewers": 17,
+        "windows": 48,
+        "polls": 1531,
+        "latency_seconds": {
+          "p50": 0.010116356002981775,
+          "p95": 0.02680060430138835,
+          "p99": 0.12275415962300096,
+          "max": 0.9989934070035815
+        },
+        "status_counts": {
+          "304": 1318,
+          "200": 66,
+          "429": 147
+        }
+      }
+    }
+  },
+  "checks": [
+    {
+      "id": "PERF-02 p95 under 50 ms",
+      "ok": true,
+      "detail": "p95 23.9 ms"
+    },
+    {
+      "id": "PERF-02 no Python team calls for owner and direct viewers",
+      "ok": true,
+      "detail": "0 calls"
+    },
+    {
+      "id": "PERF-02 no 429",
+      "ok": false,
+      "detail": "600 polls refused (per-user collab:feed limit, 60/min/replica; known, PR-12.7)",
+      "informational": true
+    },
+    {
+      "id": "PERF-04 team-id cache hit ratio >= 95%",
+      "ok": false,
+      "detail": "0.545"
+    },
+    {
+      "id": "PERF-04 single-flight: one user never has two Python calls in flight within a second",
+      "ok": true,
+      "detail": "max 1 per user per second"
+    },
+    {
+      "id": "no failed polls",
+      "ok": true,
+      "detail": "0 failed"
+    }
+  ]
+}

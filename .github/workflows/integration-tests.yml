@@ -179,6 +179,10 @@ jobs:
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
+        # collab_chats: the real-HTTP lane boots its own Mongo, Redis and Node (skipped when Node 22 is not on the runner). Its
+        # collab_real_python tests also need PCC_E2E_REAL_PYTHON=1 and skip without it, so no shard runs them today. Run them with
+        # integration-tests/collaborative-chats/stack/run.sh --real-python --graph {neo4j|arangodb}; a CI step would loop over the
+        # graph_db matrix value (neo4j, arango -> arangodb) and run that command in `core`.
         shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request_target' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend

@@ -49,6 +49,10 @@ export interface UpstreamAbortHandle {
    * further `data` events reach handlers once the client is confirmed gone.
    */
   bindStream(stream: Readable): void;
+  /** Stops the upstream on the server's initiative (a lost lease), not the client's. */
+  abort(): void;
+  /** True once `abort()` ran. */
+  isAborted(): boolean;
 }
 
 /**
@@ -75,6 +79,7 @@ export function attachUpstreamAbort(
 ): UpstreamAbortHandle {
   const controller = new AbortController();
   let clientDisconnected = false;
+  let aborted = false;
   let boundStream: Readable | null = null;
 
   res.on('close', () => {
@@ -90,6 +95,12 @@ export function attachUpstreamAbort(
   return {
     signal: controller.signal,
     isClientDisconnected: () => clientDisconnected,
+    abort() {
+      aborted = true;
+      controller.abort();
+      boundStream?.destroy();
+    },
+    isAborted: () => aborted,
     bindStream(stream: Readable) {
       boundStream = stream;
       // The close event may already have fired while we were still waiting
@@ -97,7 +108,7 @@ export function attachUpstreamAbort(
       // in that case `controller.abort()` already ran, but there was no
       // stream yet to destroy. Catch up now instead of waiting for a 'close'
       // event that already happened once.
-      if (clientDisconnected && !stream.destroyed) {
+      if ((clientDisconnected || aborted) && !stream.destroyed) {
         stream.destroy();
       }
     },

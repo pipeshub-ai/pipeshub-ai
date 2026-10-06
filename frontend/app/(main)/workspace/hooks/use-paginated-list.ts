@@ -127,6 +127,14 @@ export function usePaginatedList<T>({
     fetchItems('', 1, false);
   }, [enabled, fetchItems]);
 
+  // A pending debounced search must not fire into an unmounted component.
+  useEffect(
+    () => () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    },
+    []
+  );
+
   const setSearch = useCallback(
     (value: string) => {
       setSearchState(value);

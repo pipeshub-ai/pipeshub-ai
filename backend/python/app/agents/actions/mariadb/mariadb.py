@@ -498,6 +498,7 @@ class MariaDB:
                     rows=raw_rows,
                     file_name=f"query_result_{int(time.time())}.csv",
                     source_tool="mariadb.execute_query",
+                    run_id=self.chat_state.get("run_id"),
                 ))
                 register_task(conversation_id, task)
 

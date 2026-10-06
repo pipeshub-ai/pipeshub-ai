@@ -78,7 +78,7 @@ describe('notification/service/notification.producer', () => {
       const event: any = {
         eventType: EventType.NewNotificationEvent,
         timestamp: 1234567890,
-        payload: { id: 'notif-1', message: 'hello' },
+        payload: { messageKey: 'notif-1', message: 'hello' },
       }
 
       await producer.publishEvent(event)
@@ -124,6 +124,40 @@ describe('notification/service/notification.producer', () => {
 
       await producer.publishEvent(event)
       expect(mockLogger.info.calledOnce).to.be.true
+    })
+  })
+
+  describe('PH02-17 characterization: broker message shape', () => {
+    const payload = {
+      orgId: '507f1f77bcf86cd799439012',
+      type: 'mail.deliveryFailed',
+      recipientRoles: ['admin'],
+      title: 'Email delivery failed',
+      message: 'boom',
+      severity: 'error',
+      status: 'unread',
+      payload: { recipients: ['a@b.c'] },
+    }
+
+    it('publishes the payload as value, with an undefined key', async () => {
+      await producer.publishEvent({
+        eventType: EventType.NewNotificationEvent,
+        timestamp: 1,
+        payload: payload as any,
+      })
+      const [, message] = mockProducer.publish.firstCall.args
+      expect(message.key).to.equal(undefined)
+      expect(message.value).to.deep.equal(payload)
+    })
+
+    it('swallows publish errors', async () => {
+      mockProducer.publish.rejects(new Error('down'))
+      await producer.publishEvent({
+        eventType: EventType.NewNotificationEvent,
+        timestamp: 1,
+        payload: payload as any,
+      })
+      expect(mockLogger.error.calledOnce).to.be.true
     })
   })
 })

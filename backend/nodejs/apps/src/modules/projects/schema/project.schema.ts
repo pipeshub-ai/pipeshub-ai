@@ -1,6 +1,7 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import { IProjectDocument } from '../types/project.interfaces';
 import {
+  PROJECT_CHAT_ACCESS_VALUES,
   PROJECT_CHAT_SHARING_VALUES,
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_INSTRUCTIONS_MAX_LENGTH,
@@ -8,6 +9,7 @@ import {
   PROJECT_NAME_MAX_LENGTH,
   PROJECT_PRINCIPAL_TYPE_VALUES,
   PROJECT_VISIBILITY_VALUES,
+  DEFAULT_PROJECT_CHAT_ACCESS,
   DEFAULT_PROJECT_CHAT_SHARING,
   DEFAULT_PROJECT_VISIBILITY,
 } from '../constants/constants';
@@ -27,7 +29,13 @@ const projectMemberSchema = new Schema(
       default: 'user',
       required: true,
     },
-    principalId: { type: Schema.Types.ObjectId, required: true },
+    principalId: {
+      type: Schema.Types.ObjectId,
+      required: function (this: { principalType?: string; teamId?: string }) {
+        return this.principalType !== 'team' || (this.teamId ?? '') === '';
+      },
+    },
+    teamId: { type: String },
     role: {
       type: String,
       enum: PROJECT_MEMBER_ROLE_VALUES,
@@ -84,6 +92,12 @@ const projectSchema = new Schema<IProjectDocument>(
       enum: PROJECT_CHAT_SHARING_VALUES,
       default: DEFAULT_PROJECT_CHAT_SHARING,
     },
+    projectChatAccess: {
+      type: String,
+      enum: PROJECT_CHAT_ACCESS_VALUES,
+      default: DEFAULT_PROJECT_CHAT_ACCESS,
+    },
+    aclVersion: { type: Number, default: 0 },
     members: { type: [projectMemberSchema], default: [] },
     isPinned: { type: Boolean, default: false },
     isArchived: { type: Boolean, default: false },
@@ -105,6 +119,7 @@ projectSchema.index({
   lastActivityAt: -1,
 });
 projectSchema.index({ orgId: 1, 'members.principalId': 1, isDeleted: 1 });
+projectSchema.index({ orgId: 1, 'members.teamId': 1, isDeleted: 1 });
 projectSchema.index({ orgId: 1, visibility: 1, isDeleted: 1 });
 projectSchema.index({ orgId: 1, userId: 1, name: 1 });
 

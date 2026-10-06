@@ -3,6 +3,7 @@
 import React from 'react';
 import { Flex, Avatar, IconButton, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export interface AvatarUploadWidgetProps {
   /** URL of the current image (null = no image) */
@@ -37,10 +38,11 @@ export function AvatarUploadWidget({
   onDeleteClick,
   triggerAriaLabel,
 }: AvatarUploadWidgetProps) {
+  const isMobile = useIsMobile();
   const showDropdown = !!src && !!onDeleteClick;
 
   return (
-    <Flex align="center" justify="end" gap="2">
+    <Flex align="center" justify={isMobile ? 'start' : 'end'} gap="2">
       <Avatar
         size="2"
         variant="soft"

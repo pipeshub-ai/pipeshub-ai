@@ -8,6 +8,7 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  conversationUnshareParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
@@ -22,6 +23,8 @@ import {
   AGENT_CHAT_MODES,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
+  agentInternalStreamCreateSchema,
+  agentInternalAddMessageParamsSchema,
   updateFeedbackParamsSchema,
   updateAgentFeedbackParamsSchema,
   getAllConversationsQuerySchema,
@@ -335,6 +338,24 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = conversationShareParamsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
+
+    it('SEC-01: keeps accessLevel write and rejects an unknown level', () => {
+      const params = { conversationId: '507f1f77bcf86cd799439011' }
+      const userIds = ['507f1f77bcf86cd799439012']
+      const ok = conversationShareParamsSchema.parse({ params, body: { userIds, accessLevel: 'write' } })
+      expect(ok.body.accessLevel).to.equal('write')
+      expect(conversationShareParamsSchema.safeParse({ params, body: { userIds, accessLevel: 'admin' } }).success).to.be.false
+    })
+  })
+
+  describe('conversationUnshareParamsSchema', () => {
+    it('accepts userIds and strips accessLevel', () => {
+      const parsed = conversationUnshareParamsSchema.parse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: { userIds: ['507f1f77bcf86cd799439012'], accessLevel: 'write' },
+      })
+      expect(parsed.body).to.deep.equal({ userIds: ['507f1f77bcf86cd799439012'] })
+    })
   })
 
   describe('listAgentsQuerySchema', () => {
@@ -512,6 +533,37 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
   })
+
+  describe('mentions on a follow-up message (MN-15)', () => {
+    const params = { conversationId: '507f1f77bcf86cd799439011' }
+    const mentions = (n: number) => Array.from({ length: n }, (_, i) => ({ type: 'user', id: `u${String(i)}` }))
+    const parse = (body: Record<string, unknown>, schema = addMessageStreamParamsSchema) =>
+      schema.safeParse({ params, body: { query: 'hi', chatMode: 'agent', ...body } })
+
+    it('accepts up to 10 id-only mentions and keeps them', () => {
+      const result = parse({ mentions: mentions(10) })
+      expect(result.success).to.equal(true)
+      expect(result.success && result.data.body.mentions).to.have.length(10)
+    })
+
+    it('rejects 11 mentions with a 400-class validation error', () => {
+      expect(parse({ mentions: mentions(11) }).success).to.equal(false)
+      expect(addMessageParamsSchema.safeParse({ params, body: { query: 'hi', mentions: mentions(11) } }).success).to.equal(false)
+    })
+
+    it('rejects an unknown type, a missing id and an over-long id, and strips a label', () => {
+      expect(parse({ mentions: [{ type: 'admin', id: 'x' }] }).success).to.equal(false)
+      expect(parse({ mentions: [{ type: 'user' }] }).success).to.equal(false)
+      expect(parse({ mentions: [{ type: 'user', id: 'x'.repeat(129) }] }).success).to.equal(false)
+      const labelled = parse({ mentions: [{ type: 'user', id: 'u1', label: 'Bob' }] })
+      expect(labelled.success && labelled.data.body.mentions).to.deep.equal([{ type: 'user', id: 'u1' }])
+    })
+
+    it('is optional, so the body of an old client is unchanged', () => {
+      const result = parse({})
+      expect(result.success && result.data.body).to.not.have.property('mentions')
+      })
+    })
 
   describe('follow-up query length', () => {
     const params = { conversationId: '507f1f77bcf86cd799439011' }
@@ -1552,6 +1604,61 @@ describe('enterprise_search/validators/es_validators', () => {
       isReasoning: true,
     }
 
+    describe('chat provenance (PH11-05)', () => {
+      const draftRef = { conversationId: 'a'.repeat(24), messageId: 'b'.repeat(24) }
+
+      for (const key of ['createdVia', 'sourceConversationId', 'sourceMessageId']) {
+        it(`rejects a client-sent ${key}`, () => {
+          const result = createAgentSchema.safeParse({ body: { name: 'My Agent', [key]: 'chat' } })
+          expect(result.success).to.equal(false)
+        })
+      }
+
+      it('rejects provenance even next to a valid draftRef', () => {
+        const result = createAgentSchema.safeParse({ body: { name: 'My Agent', draftRef, createdVia: 'chat' } })
+        expect(result.success).to.equal(false)
+      })
+
+      it('accepts a draftRef of two object ids and keeps it', () => {
+        const result = createAgentSchema.safeParse({ body: { name: 'My Agent', draftRef } })
+        expect(result.success).to.equal(true)
+        if (result.success) expect(result.data.body.draftRef).to.deep.equal(draftRef)
+      })
+
+      it('rejects a draftRef that is incomplete or not object ids', () => {
+        for (const bad of [{ conversationId: draftRef.conversationId }, { ...draftRef, messageId: 'nope' }, 'x']) {
+          expect(createAgentSchema.safeParse({ body: { name: 'My Agent', draftRef: bad } }).success).to.equal(false)
+        }
+      })
+    })
+
+    it('should pass an optional handle through', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'My Agent', handle: 'my-agent' },
+      })
+      expect(result.success).to.be.true
+      if (result.success) expect(result.data.body.handle).to.equal('my-agent')
+    })
+
+    it('should accept a leading @ and omit the handle when absent', () => {
+      const withAt = createAgentSchema.safeParse({
+        body: { name: 'My Agent', handle: '@my-agent' },
+      })
+      const without = createAgentSchema.safeParse({ body: { name: 'My Agent' } })
+      expect(withAt.success).to.be.true
+      expect(without.success).to.be.true
+      if (without.success) expect(without.data.body).to.not.have.property('handle')
+    })
+
+    for (const handle of ['Bad Handle', 'a', 'UPPER', 'a_b', 'x'.repeat(41), '']) {
+      it(`should reject the malformed handle ${JSON.stringify(handle)}`, () => {
+        const result = createAgentSchema.safeParse({
+          body: { name: 'My Agent', handle },
+        })
+        expect(result.success).to.be.false
+      })
+    }
+
     it('should accept minimal valid body', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'My Agent', models: [validModel] },
@@ -2012,6 +2119,20 @@ describe('enterprise_search/validators/es_validators', () => {
       isReasoning: true,
     }
 
+    it('should accept a handle change and reject a malformed one', () => {
+      const ok = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { handle: 'renamed-agent' },
+      })
+      const bad = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { handle: 'Not Valid' },
+      })
+      expect(ok.success).to.be.true
+      if (ok.success) expect(ok.data.body.handle).to.equal('renamed-agent')
+      expect(bad.success).to.be.false
+    })
+
     it('should accept empty body (no fields required for partial update)', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
@@ -2265,6 +2386,75 @@ describe('enterprise_search/validators/es_validators', () => {
 
     it('should reject when both agentKey and recordId are missing', () => {
       const result = agentAttachmentRecordIdParamsSchema.safeParse({ params: {} })
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('turn-pipeline context fields (PH05-11)', () => {
+    const conv = '507f1f77bcf86cd799439011'
+    const msg = '507f1f77bcf86cd799439012'
+    const chatBody = (extra: Record<string, unknown>) => ({
+      params: { conversationId: conv },
+      body: { query: 'hi', ...extra },
+    })
+    const agentBody = (extra: Record<string, unknown>) => ({
+      params: { agentKey: 'a1', conversationId: conv },
+      body: { query: 'hi', chatMode: 'quick', ...extra },
+    })
+
+    it('keeps the new fields instead of stripping them', () => {
+      const input = {
+        clientMessageId: 'k'.repeat(64),
+        baseSeq: -1,
+        filesShared: true,
+        shareToolResults: false,
+        resume: { toolCallMessageId: msg },
+      }
+      for (const result of [
+        addMessageParamsSchema.safeParse(chatBody(input)),
+        agentAddMessageParamsSchema.safeParse(agentBody(input)),
+      ]) {
+        expect(result.success).to.be.true
+        if (result.success) expect(result.data.body).to.deep.include(input)
+      }
+    })
+
+    it('rejects clientMessageId of 65 chars or empty', () => {
+      expect(addMessageParamsSchema.safeParse(chatBody({ clientMessageId: 'k'.repeat(65) })).success).to.be.false
+      expect(addMessageParamsSchema.safeParse(chatBody({ clientMessageId: '' })).success).to.be.false
+    })
+
+    it('rejects baseSeq below -1 and non-integers', () => {
+      expect(addMessageParamsSchema.safeParse(chatBody({ baseSeq: -2 })).success).to.be.false
+      expect(addMessageParamsSchema.safeParse(chatBody({ baseSeq: 1.5 })).success).to.be.false
+      expect(addMessageParamsSchema.safeParse(chatBody({ baseSeq: 0 })).success).to.be.true
+    })
+
+    it('rejects a resume.toolCallMessageId that is not an ObjectId', () => {
+      expect(addMessageParamsSchema.safeParse(chatBody({ resume: { toolCallMessageId: 'nope' } })).success).to.be.false
+      expect(addMessageParamsSchema.safeParse(chatBody({ resume: {} })).success).to.be.false
+    })
+
+    it('internal agent schemas keep Slack caller context, public ones strip it', () => {
+      const body = { query: 'hi', chatMode: 'quick', clientMessageId: 'k', callerEmail: 'a@b.c', callerDisplayName: 'A' }
+      const internalCreate = agentInternalStreamCreateSchema.safeParse({ params: { agentKey: 'a1' }, body })
+      const internalAdd = agentInternalAddMessageParamsSchema.safeParse({
+        params: { agentKey: 'a1', conversationId: conv },
+        body,
+      })
+      for (const result of [internalCreate, internalAdd]) {
+        expect(result.success).to.be.true
+        if (result.success) {
+          expect(result.data.body).to.deep.include({ clientMessageId: 'k', callerEmail: 'a@b.c', callerDisplayName: 'A' })
+        }
+      }
+      const publicCreate = agentStreamCreateSchema.safeParse({ params: { agentKey: 'a1' }, body })
+      expect(publicCreate.success).to.be.true
+      if (publicCreate.success) expect(publicCreate.data.body).to.not.have.property('callerEmail')
+    })
+
+    it('internal agent schemas reject a bad clientMessageId (PH05-05)', () => {
+      const result = agentInternalAddMessageParamsSchema.safeParse(agentBody({ clientMessageId: 'k'.repeat(65) }))
       expect(result.success).to.be.false
     })
   })

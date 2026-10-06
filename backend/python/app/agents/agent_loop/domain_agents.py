@@ -420,6 +420,11 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
 )
 
 
+# Sub-agents share the parent's `AgentContext`, so `invocation` cannot tell them
+# apart; these tools stay with the top-level assistant by never being claimed.
+_TOP_LEVEL_ONLY_PREFIXES = ("agent_builder__",)
+
+
 @dataclass(frozen=True)
 class DomainAgentPlan:
     """The pure OUTCOME of claiming tools off a `ToolRegistry`: which
@@ -471,7 +476,7 @@ def plan_domain_agents(
     for definition in definitions:
         names: list[str] = []
         for name in registered:
-            if name in claimed:
+            if name in claimed or name.startswith(_TOP_LEVEL_ONLY_PREFIXES):
                 continue
             tool = tool_registry.resolve_by_name(name)
             app_name = getattr(tool, "app_name", None)

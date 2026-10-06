@@ -144,6 +144,7 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.common.kb_team_role import BACKFILL_STAMP_ROLE, aql_team_kb_role
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     aql_live_record,
@@ -156,7 +157,6 @@ from app.services.graph_db.common.utils import (
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     KB_MAX_FOLDER_DEPTH,
-    KB_ROLE_PRIORITY,
     MAX_DIRECT_GRANT_RECORDS,
     PATH_MAX_CANDIDATES,
     ROOT_SCOPED_CONNECTOR_TYPES,
@@ -178,6 +178,7 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_aql,
     entity_index_source,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
@@ -932,6 +933,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORD_GROUPS.value,
             ["groupType"],
+        )
+
+        # ==================== AGENT INDEXES ====================
+
+        # UNIQUE SPARSE: orgId + handle — the @mention handle is unique per org;
+        # sparse so agents not yet backfilled (no handle) are not indexed.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_INSTANCES.value,
+            ["orgId", "handle"],
+            unique=True,
+            sparse=True,
         )
 
         # ==================== AGENT SKILLS INDEXES ====================
@@ -2404,6 +2416,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def _upsert_record_nodes_releasing_trash(
@@ -2497,6 +2511,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return result is not None
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def update_node_if_match(
@@ -7781,6 +7797,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
             raise
 
+    async def _count_team_permission_edges(self, team_key: str) -> int:
+        result = await self.execute_query(
+            f"RETURN LENGTH(FOR e IN {CollectionNames.PERMISSION.value} FILTER e._to == @team RETURN 1)",
+            {"team": f"{CollectionNames.TEAMS.value}/{team_key}"},
+        )
+        return int(result[0]) if result else 0
+
     async def ensure_all_team_with_users(self, org_id: str) -> None:
         """
         Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
@@ -7808,6 +7831,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
                 self.logger.debug(f"Created 'All' team for org {org_id}")
+            elif not existing_team.get("orgId"):
+                await self.update_node(team_key, CollectionNames.TEAMS.value, {"orgId": org_id})
 
             # 2. Get all active users sorted by createdAtTimestamp ascending
             users = await self.get_users(org_id, active=True)
@@ -7819,19 +7844,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
-            existing_member_count = len((team_with_users or {}).get("members", []))
+            existing_member_count = await self._count_team_permission_edges(team_key)
             owner_assigned = existing_member_count > 0
 
             self.logger.debug(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
-            if team_with_users and team_with_users.get("members"):
-                self.logger.debug(
-                    "📊 Existing members: %s",
-                    [
-                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
-                        for m in team_with_users.get("members", [])
-                    ],
-                )
 
             # 4. Add each user without a PERMISSION edge
             for user in users_sorted:
@@ -7883,6 +7899,183 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
             raise
 
+    async def backfill_team_org_ids(self) -> dict[str, Any]:
+        teams = CollectionNames.TEAMS.value
+        users = CollectionNames.USERS.value
+        try:
+            updated = await self.execute_query(
+                f"""
+                FOR t IN {teams}
+                    FILTER t.orgId == null OR t.orgId == ""
+                    LET derived = (STARTS_WITH(t._key, "all_") AND LENGTH(t._key) > 4)
+                        ? SUBSTRING(t._key, 4)
+                        : FIRST(
+                            FOR u IN {users}
+                                FILTER u._key == t.createdBy AND u.orgId != null AND u.orgId != ""
+                                RETURN u.orgId
+                        )
+                    FILTER derived != null
+                    UPDATE t WITH {{ orgId: derived }} IN {teams}
+                    RETURN 1
+                """
+            )
+            left = await self.execute_query(
+                f"""
+                FOR t IN {teams} FILTER t.orgId == null OR t.orgId == "" RETURN t._key
+                """
+            )
+            return {"updated": len(updated or []), "unresolved_team_ids": list(left or [])}
+        except Exception as e:
+            self.logger.error(f"backfill_team_org_ids failed: {e}", exc_info=True)
+            raise
+
+    async def get_agent_by_handle(
+        self, org_id: str, handle: str, transaction: str | None = None
+    ) -> dict | None:
+        rows = await self.execute_query(
+            f"""
+            FOR a IN {CollectionNames.AGENT_INSTANCES.value}
+                FILTER a.orgId == @org_id AND a.handle == @handle
+                LIMIT 1
+                RETURN a
+            """,
+            bind_vars={"org_id": org_id, "handle": handle},
+            transaction=transaction,
+        )
+        return rows[0] if rows else None
+
+    async def search_agent_handles(
+        self, org_id: str, prefix: str, limit: int = 20, transaction: str | None = None
+    ) -> list[str]:
+        rows = await self.execute_query(
+            f"""
+            FOR a IN {CollectionNames.AGENT_INSTANCES.value}
+                FILTER a.orgId == @org_id AND a.handle != null AND STARTS_WITH(a.handle, @prefix)
+                SORT a.handle
+                LIMIT @limit
+                RETURN a.handle
+            """,
+            bind_vars={"org_id": org_id, "prefix": prefix, "limit": limit},
+            transaction=transaction,
+        )
+        return list(rows or [])
+
+    async def list_agents_missing_handle(self, batch: int = 500) -> list[dict[str, Any]]:
+        rows = await self.execute_query(
+            f"""
+            FOR a IN {CollectionNames.AGENT_INSTANCES.value}
+                FILTER a.handle == null OR a.handle == ""
+                LET org = (a.orgId != null AND a.orgId != "") ? a.orgId : FIRST(
+                    FOR u IN {CollectionNames.USERS.value}
+                        FILTER u._key == a.createdBy
+                        RETURN u.orgId
+                )
+                FILTER org != null AND org != ""
+                SORT a.createdAtTimestamp, a._key
+                LIMIT @batch
+                RETURN {{ id: a._key, name: a.name, orgId: org }}
+            """,
+            bind_vars={"batch": batch},
+        )
+        return list(rows or [])
+
+    async def backfill_kb_team_edge_roles(self) -> dict[str, int]:
+        """Stamp READER on role-less team->KB edges whose active members are all READER.
+
+        A stamped role is a grant to the team as a whole, including future members, so
+        only READER (the floor) is safe to stamp; every other edge stays role-less and
+        resolves per member at read time.
+        """
+        stamp_query = """
+        FOR t IN @@teams_collection
+            FOR tb IN @@permissions_collection
+                FILTER tb._from == t._id AND tb.type == "TEAM" AND STARTS_WITH(tb._to, "apps/")
+                FILTER tb.role == null OR tb.role == ""
+                LET kb = DOCUMENT(tb._to)
+                FILTER kb != null AND kb.type == @kb_type
+                LET roles = UNIQUE(
+                    FOR ut IN @@permissions_collection
+                        FILTER ut._to == t._id AND ut.type == "USER"
+                        LET member = DOCUMENT(ut._from)
+                        FILTER member != null AND member.isActive == true
+                        RETURN (ut.role == null OR ut.role == "") ? "" : ut.role
+                )
+                FILTER LENGTH(roles) == 1 AND roles[0] == @stamp_role
+                UPDATE tb WITH { role: @stamp_role } IN @@permissions_collection
+                RETURN 1
+        """
+        remaining_query = """
+        FOR t IN @@teams_collection
+            FOR tb IN @@permissions_collection
+                FILTER tb._from == t._id AND tb.type == "TEAM" AND STARTS_WITH(tb._to, "apps/")
+                FILTER tb.role == null OR tb.role == ""
+                LET kb = DOCUMENT(tb._to)
+                FILTER kb != null AND kb.type == @kb_type
+                COLLECT WITH COUNT INTO remaining
+                RETURN remaining
+        """
+        bind_vars = {
+            "@teams_collection": CollectionNames.TEAMS.value,
+            "@permissions_collection": CollectionNames.PERMISSION.value,
+            "kb_type": Connectors.KNOWLEDGE_BASE.value,
+        }
+        stamped = await self.http_client.execute_aql(
+            stamp_query, bind_vars={**bind_vars, "stamp_role": BACKFILL_STAMP_ROLE}
+        )
+        try:
+            remaining_rows = await self.http_client.execute_aql(remaining_query, bind_vars=bind_vars)
+            remaining = int(remaining_rows[0]) if remaining_rows else 0
+        except Exception as e:
+            self.logger.warning(f"Could not count role-less KB team edges: {e}")
+            remaining = -1
+        return {"stamped": len(stamped or []), "remaining_role_less": remaining}
+
+    async def delete_chat_content_reader_edges(self, batch_size: int = 1000) -> int:
+        """Delete user READER edges onto chat attachments and artifacts, in batches."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        # One pass in `_key` order: a plain FILTER ... LIMIT rescans every non-matching edge
+        # on each batch, which is quadratic on a large tenant and this runs at connector boot.
+        query = """
+        LET page = (
+            FOR p IN @@permissions_collection
+                FILTER p._key > @after
+                SORT p._key
+                LIMIT @batch_size
+                RETURN KEEP(p, "_key", "_from", "_to", "type", "role")
+        )
+        LET hits = (
+            FOR p IN page
+                FILTER p.type == "USER" AND p.role == "READER"
+                FILTER STARTS_WITH(p._from, @users_prefix) AND STARTS_WITH(p._to, @records_prefix)
+                LET r = DOCUMENT(p._to)
+                FILTER r != null
+                LET a = DOCUMENT(@@artifacts_collection, r._key)
+                FILTER r.connectorName == @attachments_connector
+                    OR (a != null AND a.conversationId != null AND a.conversationId != "")
+                RETURN p._key
+        )
+        LET removed = (FOR k IN hits REMOVE k IN @@permissions_collection RETURN 1)
+        RETURN {last: LENGTH(page) > 0 ? LAST(page)._key : null, removed: LENGTH(removed)}
+        """
+        bind_vars = {
+            "@permissions_collection": CollectionNames.PERMISSION.value,
+            "@artifacts_collection": CollectionNames.ARTIFACTS.value,
+            "users_prefix": f"{CollectionNames.USERS.value}/",
+            "records_prefix": f"{CollectionNames.RECORDS.value}/",
+            "attachments_connector": Connectors.ATTACHMENTS.value,
+            "batch_size": batch_size,
+            "after": "",
+        }
+        total = 0
+        while True:
+            rows = await self.http_client.execute_aql(query, bind_vars=bind_vars) or []
+            page = rows[0] if rows else {}
+            total += int(page.get("removed") or 0)
+            if not page.get("last"):
+                return total
+            bind_vars["after"] = page["last"]
+
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
         """
         Add a specific user to the org's 'All' team with a PERMISSION edge.
@@ -7910,6 +8103,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
                 self.logger.debug(f"Created 'All' team for org {org_id}")
+            elif not existing_team.get("orgId"):
+                await self.update_node(team_key, CollectionNames.TEAMS.value, {"orgId": org_id})
 
             # 2. Check if this user already has a PERMISSION edge
             existing_edge = await self.get_edge(
@@ -7924,8 +8119,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return
 
             # 3. Check if team has any existing members to determine role
-            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
-            existing_member_count = len((team_with_users or {}).get("members", []))
+            existing_member_count = await self._count_team_permission_edges(team_key)
             role = "OWNER" if existing_member_count == 0 else "READER"
 
             self.logger.debug(f"Assigning role {role} to user {user_key} (existing members: {existing_member_count})")
@@ -11756,7 +11950,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
                         FILTER kb_team_perm._to == kb_to
                         FILTER kb_team_perm.type == "TEAM"
-                        RETURN { role: team_info.role, priority: team_info.priority }
+                        LET eff_role = """ + aql_team_kb_role("kb_team_perm", "team_info") + """
+                        RETURN { role: eff_role, priority: @role_priority[eff_role] || 0 }
             )
 
             // Combine direct + team roles and return highest permission
@@ -11884,11 +12079,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb.type == @kb_type
                         FILTER kb.isHidden != true
                         {additional_filters}
+                        LET eff_role = {aql_team_kb_role("kb_team_perm", "team_info")}
                         RETURN {{
                             kb_id: kb._key,
                             kb_doc: kb,
-                            role: team_info.role,
-                            priority: team_info.priority,
+                            role: eff_role,
+                            priority: @role_priority[eff_role] || 0,
                             is_direct: false
                         }}
             )
@@ -11991,10 +12187,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb.type == @count_kb_type
                         FILTER kb.isHidden != true
                         {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
+                        LET eff_role = {aql_team_kb_role("kb_team_perm", "team_info")}
                         RETURN {{
                             kb_id: kb._key,
-                            role: team_info.role,
-                            priority: team_info.priority,
+                            role: eff_role,
+                            priority: @count_role_priority[eff_role] || 0,
                             is_direct: false
                         }}
             )
@@ -12061,11 +12258,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER kb.orgId == @filters_org_id
                         FILTER kb.type == @filters_kb_type
                         FILTER kb.isHidden != true
+                        LET eff_role = """ + aql_team_kb_role("kb_team_perm", "team_info") + """
                         RETURN {
                             kb_id: kb._key,
-                            permission: team_info.role,
+                            permission: eff_role,
                             kb_name: kb.name,
-                            priority: team_info.priority,
+                            priority: @filters_role_priority[eff_role] || 0,
                             is_direct: false
                         }
             )
@@ -14068,6 +14266,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "to_collection": CollectionNames.APPS.value,
                     "externalPermissionId": "",
                     "type": "TEAM",
+                    "role": role,
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                     "lastUpdatedTimestampAtSource": timestamp,
@@ -14113,6 +14312,56 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to create KB permissions: {str(e)}")
             return {"success": False, "reason": str(e), "code": 500}
+
+    async def create_kb_principal_permissions(
+        self,
+        kb_id: str,
+        grants: list[dict[str, str]],
+    ) -> dict:
+        """Write every grant inside one stream transaction; any failure rolls all of them back."""
+        timestamp = get_epoch_timestamp_in_ms()
+        edges = [
+            {
+                "from_id": g["principalId"],
+                "from_collection": (
+                    CollectionNames.USERS.value if g["principalType"] == "user" else CollectionNames.TEAMS.value
+                ),
+                "to_id": kb_id,
+                "to_collection": CollectionNames.APPS.value,
+                "externalPermissionId": "",
+                "type": g["principalType"].upper(),
+                "role": g["role"],
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+                "lastUpdatedTimestampAtSource": timestamp,
+            }
+            for g in grants
+        ]
+        txn: str | None = None
+        try:
+            kb = await self.get_document(kb_id, CollectionNames.APPS.value)
+            if not kb or kb.get("type") != Connectors.KNOWLEDGE_BASE.value:
+                return {"success": False, "reason": "Knowledge base not found", "code": 404}
+            txn = await self.begin_transaction(read=[], write=[CollectionNames.PERMISSION.value])
+            for edge in edges:
+                await self.batch_create_edges([edge], CollectionNames.PERMISSION.value, transaction=txn)
+            await self.commit_transaction(txn)
+            return {
+                "success": True,
+                "grantedCount": len(edges),
+                "grantedUsers": [g["principalId"] for g in grants if g["principalType"] == "user"],
+                "grantedTeams": [g["principalId"] for g in grants if g["principalType"] == "team"],
+                "kbId": kb_id,
+                "details": {},
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Create KB principal permissions failed: {str(e)}")
+            if txn is not None:
+                try:
+                    await self.rollback_transaction(txn)
+                except Exception as rollback_err:
+                    self.logger.error(f"❌ Rollback failed: {str(rollback_err)}")
+            return {"success": False, "reason": "Failed to create permissions", "code": 500}
 
     async def count_kb_owners(
         self,
@@ -14224,7 +14473,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if perm.get("type") == "USER":
                     result["users"][perm["id"]] = perm.get("role", "")
                 elif perm.get("type") == "TEAM":
-                    result["teams"][perm["id"]] = None
+                    result["teams"][perm["id"]] = perm.get("role") or None
             return result
         except Exception as e:
             self.logger.error(f"❌ Failed to get KB permissions: {str(e)}")
@@ -14271,11 +14520,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
                 bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
 
-            # Teams don't have roles - they just have access or not
-            # So we skip team updates in this method
-            # if team_ids:
-            #     target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
-            #     bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+            if team_ids:
+                target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
 
             # Atomic query that does everything in one go
             atomic_query = f"""
@@ -14351,9 +14598,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             updated_permissions = result["updated_permissions"]
 
-            # Count updates by type (only users can be updated, teams don't have roles)
             updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
-            updated_teams = 0  # Teams don't have roles to update
+            updated_teams = sum(1 for perm in updated_permissions if perm["type"] == "TEAM")
 
             # Build detailed response
             updates_by_type = {"users": {}, "teams": {}}
@@ -14363,7 +14609,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "old_role": perm["old_role"],
                         "new_role": perm["new_role"]
                     }
-                # Teams don't have roles, so we don't update them
+                elif perm["type"] == "TEAM":
+                    updates_by_type["teams"][perm["id"]] = {
+                        "old_role": perm["old_role"],
+                        "new_role": perm["new_role"]
+                    }
 
             self.logger.debug(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
 
@@ -14390,6 +14640,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """List all permissions for a KB with entity details."""
         try:
@@ -14427,7 +14679,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: entity.fullName || entity.name || entity.userName,
                     userId: entity.userId,
                     email: entity.email,
-                    role: perm.type == "TEAM" ? null : perm.role,
+                    role: perm.role,
                     type: perm.type,
                     createdAtTimestamp: perm.createdAtTimestamp,
                     updatedAtTimestamp: perm.updatedAtTimestamp
@@ -14445,7 +14697,45 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
+            if raise_on_error:
+                raise
             return []
+
+    # Accessible KBs for list_all_records, one entry per KB. The effective role is the highest-ranked
+    # across the direct edge and every team (same ranks as the Neo4j provider); direct wins only a tie.
+    # The permissions filter applies to that effective role, not to individual edges.
+    _ACCESSIBLE_KBS_AQL = f"""
+            LET user_from = @user_from
+            LET org_id = @org_id
+            LET role_rank = {{ OWNER: 6, ORGANIZER: 5, FILEORGANIZER: 4, WRITER: 3, COMMENTER: 2, READER: 1 }}
+            LET directKbAccess = (
+                FOR kbEdge IN @@permission
+                    FILTER kbEdge._from == user_from
+                    FILTER kbEdge.type == "USER"
+                    LET kb = DOCUMENT(kbEdge._to)
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
+                    RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role, rank: role_rank[kbEdge.role] || 0, direct: 1 }}
+            )
+            LET teamKbAccess = (
+                FOR teamKbPerm IN @@permission
+                    FILTER teamKbPerm.type == "TEAM"
+                    FILTER STARTS_WITH(teamKbPerm._to, "apps/")
+                    LET kb = DOCUMENT(teamKbPerm._to)
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
+                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
+                    LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN userTeamPerm)
+                    FILTER user_team_perm != null
+                    LET team_role = {aql_team_kb_role("teamKbPerm", "user_team_perm")}
+                    RETURN {{ kb_id: kb._key, kb_doc: kb, role: team_role, rank: role_rank[team_role] || 0, direct: 0 }}
+            )
+            LET allKbAccess = (
+                FOR a IN APPEND(directKbAccess, teamKbAccess)
+                    COLLECT kb_id = a.kb_id INTO grouped = a
+                    LET best = FIRST(FOR g IN grouped SORT g.rank DESC, g.direct DESC RETURN g)
+                    FILTER best.role IN @kb_permissions
+                    RETURN {{ kb_id: kb_id, kb_doc: best.kb_doc, role: best.role }}
+            )
+    """
 
     async def list_all_records(
         self,
@@ -14504,42 +14794,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus") else "recordName"
             sort_direction = "DESC" if (sort_order or "").lower() == "desc" else "ASC"
             main_query = f"""
-            LET user_from = @user_from
-            LET org_id = @org_id
-            LET directKbAccess = (
-                FOR kbEdge IN @@permission
-                    FILTER kbEdge._from == user_from
-                    FILTER kbEdge.type == "USER"
-                    LET kb = DOCUMENT(kbEdge._to)
-                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
-                    RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role }}
-            )
-            LET teamKbAccess = (
-                FOR teamKbPerm IN @@permission
-                    FILTER teamKbPerm.type == "TEAM"
-                    FILTER STARTS_WITH(teamKbPerm._to, "apps/")
-                    LET kb = DOCUMENT(teamKbPerm._to)
-                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" AND kb.isHidden != true
-                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
-                    LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN userTeamPerm.role)
-                    FILTER user_team_perm != null
-                    RETURN {{ kb_id: kb._key, kb_doc: kb, role: user_team_perm }}
-            )
-            LET allKbAccess = (
-                FOR access IN APPEND(directKbAccess, teamKbAccess)
-                    COLLECT kb_id = access.kb_id INTO grants = access
-                    LET strongest = FIRST(FOR g IN grants SORT @kb_role_priority[g.role] || 0 DESC RETURN g)
-                    // The permissions filter applies to the role the user ends up with.
-                    FILTER strongest.role IN @kb_permissions
-                    RETURN strongest
-            )
+            {self._ACCESSIBLE_KBS_AQL}
             LET kbRecords = {'(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" FILTER record.recordType != "ARTIFACT" FILTER record.mimeType != "application/vnd.folder" ' + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
             LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
             LET allRecords = APPEND(kbRecords, connectorRecords)
             LET page = (
             FOR item IN allRecords
                 LET record = item.record
-                SORT record.{sort_field} {sort_direction}
+                SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
@@ -14554,7 +14816,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "skip": skip,
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
-                "kb_role_priority": KB_ROLE_PRIORITY,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind,
@@ -14658,6 +14919,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR permissionEdge IN @@permission
                 FILTER permissionEdge._from == @user_from
                 FILTER permissionEdge.type == "USER"
+                FILTER permissionEdge.role == "OWNER"
                 LET record = DOCUMENT(permissionEdge._to)
                 FILTER record != null
                 FILTER record.isDeleted != true
@@ -19230,9 +19492,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER user_team_perm._from == userDoc._id
                             FILTER user_team_perm._to == CONCAT('teams/', team_id)
                             FILTER user_team_perm.type == "USER"
+                            LET eff_role = {aql_team_kb_role("kb_team_perm", "user_team_perm")}
                             RETURN {{
-                                role: user_team_perm.role,
-                                priority: role_priority[user_team_perm.role]
+                                role: eff_role,
+                                priority: role_priority[eff_role]
                             }}
                 )
                 LET highest_role = LENGTH(team_roles) > 0 ? FIRST(
@@ -20869,7 +21132,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 : role_target_perm.role
             )
 
-            // Path 7: User -> Team -> target (uses user->team role only)
+            // Path 7: User -> Team -> target (user->team role; for the KB App the team->KB edge role wins, see kb_team_role)
             LET path7_roles = (
                 FOR target_id IN permission_targets
                     FOR user_team_perm IN permission
@@ -20882,7 +21145,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER team_target_perm._from == user_team_perm._to
                             AND team_target_perm._to == target_id
                             AND team_target_perm.type == "TEAM"
-                            RETURN user_team_perm.role
+                            RETURN (STARTS_WITH(target_id, "apps/") AND DOCUMENT(target_id).type == "KB")
+                                ? {aql_team_kb_role("team_target_perm", "user_team_perm")}
+                                : user_team_perm.role
             )
 
             // Path 9: User -> Org -> target (direct org permission)
@@ -21092,8 +21357,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         - Direct PERMISSION edge (explicit role, e.g. OWNER set on KB creation
           or via sharing) wins outright, regardless of admin/creator/scope.
-        - Team KB sharing: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
-          returns the user's team membership role.
+        - Team KB sharing: user→team (USER, role) + team→app (PERMISSION TEAM, role).
+          Returns the share edge's role; legacy role-less edges fall back to the
+          member's team role capped at WRITER.
         - Otherwise: USER_APP_RELATION existence gates access; admin gets
           EDITOR (team apps) or OWNER (personal apps); the creator gets OWNER
           regardless of scope; team-only access (no USER_APP_RELATION) gets
@@ -21158,7 +21424,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER team_app_perm._from == user_team_perm._to
                         AND team_app_perm._to == {node_var}._id
                         AND team_app_perm.type == "TEAM"
-                        RETURN user_team_perm.role
+                        RETURN {aql_team_kb_role("team_app_perm", "user_team_perm")}
             )
             LET team_kb_role = FIRST(
                 FOR r IN team_kb_roles
@@ -23421,15 +23687,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         team_id: str,
         user_key: str,
+        org_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """
-        Get a single team with its members and permissions.
+        Get a single team with its members and permissions, scoped to org_id.
         """
         try:
             team_query = f"""
             FOR team IN {CollectionNames.TEAMS.value}
-            FILTER team._key == @teamId
+            FILTER team._key == @teamId AND team.orgId == @orgId
             LET current_user_permission = (
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._from == @currentUserId AND permission._to == team._id
@@ -23471,6 +23738,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 team_query,
                 bind_vars={
                     "teamId": team_id,
+                    "orgId": org_id,
                     "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
                 },
                 transaction=transaction
@@ -23609,6 +23877,50 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
             return [], 0
+
+    async def get_user_team_ids(
+        self,
+        user_key: str,
+        org_id: str,
+        limit: int = 1000,
+    ) -> list[str]:
+        """
+        Ids of the teams (within org_id) the user is a member of.
+        """
+        if not org_id:
+            return []
+        try:
+            query = """
+            FOR permission IN @@permission_collection
+            FILTER permission._from == @userId
+            FILTER STARTS_WITH(permission._to, @teams_collection_prefix)
+            LET team = DOCUMENT(permission._to)
+            FILTER team != null AND team.orgId == @orgId
+            COLLECT id = team._key
+            SORT id
+            LIMIT @limit
+            RETURN id
+            """
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                    "@permission_collection": CollectionNames.PERMISSION.value,
+                    "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                    "orgId": org_id,
+                    "limit": limit + 1,
+                },
+            )
+            ids = [r for r in rows or [] if r]
+            if len(ids) > limit:
+                self.logger.warning(
+                    "get_user_team_ids truncated at %d teams for org %s", limit, org_id
+                )
+                ids = ids[:limit]
+            return ids
+        except Exception as e:
+            self.logger.error(f"Error in get_user_team_ids: {str(e)}", exc_info=True)
+            raise
 
     async def get_team_users(
         self,

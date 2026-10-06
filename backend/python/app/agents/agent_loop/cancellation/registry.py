@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import CancellationToken
+    from app.agents.agent_loop.cancellation.policy import CancelRequester
 
 __all__ = ["CancelOutcome", "RunCancellationRegistry", "RunOwner"]
 
@@ -65,7 +66,7 @@ class RunCancellationRegistry(Protocol):
         cancellable — see `stream_bridge.py`/`bridge.py`."""
         ...
 
-    async def cancel(self, run_id: str, requester: RunOwner) -> CancelOutcome:
+    async def cancel(self, run_id: str, requester: "CancelRequester") -> CancelOutcome:
         """Request cancellation of `run_id` on behalf of `requester`."""
         ...
 

@@ -4,6 +4,8 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
+import { COLLAB_TYPES } from '../../enterprise_search/services/collaboration/collab.types';
+import { ConversationGuards } from '../../enterprise_search/services/collaboration/http/conversation-guards';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   createProjectSchema,
@@ -14,7 +16,10 @@ import {
   updateProjectSchema,
   upsertProjectMembersSchema,
 } from '../validators/project.validators';
+import { IAuditWriter } from '../../../libs/audit/audit.writer';
+import { IFeatureFlags } from '../../configuration_manager/services/platform-feature-flags.service';
 import {
+  ProjectChatAccessDeps,
   archiveProject,
   createProject,
   deleteProject,
@@ -35,7 +40,13 @@ export function createProjectsRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
-
+  const guards = container.get<ConversationGuards>(
+    COLLAB_TYPES.ConversationGuards,
+  );
+  const chatAccess: ProjectChatAccessDeps = {
+    flags: container.get<IFeatureFlags>(COLLAB_TYPES.FeatureFlags),
+    audit: container.get<IAuditWriter>(COLLAB_TYPES.AuditWriter),
+  };
   router.post(
     '/',
     authMiddleware.authenticate,
@@ -65,7 +76,7 @@ export function createProjectsRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(updateProjectSchema),
-    updateProject(appConfig),
+    updateProject(appConfig, chatAccess),
   );
 
   router.delete(
@@ -113,6 +124,7 @@ export function createProjectsRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.PROJECT_READ),
     ValidationMiddleware.validate(listProjectConversationsQuerySchema),
+    guards.listScope('any', { shareRows: 'collabOnly', archived: 'exclude' }),
     getProjectConversations(appConfig),
   );
 

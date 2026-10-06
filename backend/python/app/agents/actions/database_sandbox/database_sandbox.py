@@ -87,6 +87,7 @@ class DatabaseSandbox:
         org_id = self.chat_state.get("org_id")
         user_id = self.chat_state.get("user_id")
         graph_provider = self.chat_state.get("graph_provider")
+        run_id = self.chat_state.get("run_id")
 
         if not (conversation_id and org_id and rows):
             return
@@ -113,6 +114,7 @@ class DatabaseSandbox:
                 rows=row_tuples,
                 file_name=f"{label}_{uuid4().hex[:8]}.csv",
                 source_tool=f"database_sandbox.{label.split('_')[0]}",
+                run_id=run_id,
             )
 
         task = asyncio.create_task(_save())

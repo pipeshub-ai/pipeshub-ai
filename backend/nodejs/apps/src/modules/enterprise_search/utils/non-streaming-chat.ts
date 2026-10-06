@@ -5,10 +5,8 @@ import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../libs/errors/backend-error'
 import {
   HttpError,
   InternalServerError,
-  NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
-import { CONVERSATION_STATUS } from '../constants/constants';
 import { ChatSession } from '../schema/chat.session.schema';
 import {
   AIServiceResponse,
@@ -16,8 +14,15 @@ import {
   IAIResponse,
   IChatSession,
   IChatSessionDocument,
+  IChatSessionMessageDocument,
   IMessage,
 } from '../types/conversation.interfaces';
+import { RunLostError } from '../services/collaboration/domain/errors';
+import { LeaseLostError } from '../services/collaboration/leases/lease.types';
+import {
+  inShortTransaction,
+  TurnRun,
+} from '../services/collaboration/turn/turn-run';
 import { AiChatRequest, ChatTarget } from './ai-chat-payload';
 import {
   CHAT_ERROR_MESSAGES,
@@ -26,8 +31,6 @@ import {
 } from './chat-error-messages';
 import {
   appendMessages,
-  formatPreviousConversations,
-  getMessages,
   markAgentConversationFailed,
   markConversationFailed,
   saveCompleteConversation,
@@ -49,26 +52,6 @@ const logger = Logger.getInstance({ service: 'Non-streaming chat' });
 /** Set on success and failure so a caller can find the conversation a failed turn left behind. */
 export const CONVERSATION_ID_HEADER = 'X-Conversation-Id';
 
-// Read per call: tests and the replica-set suite toggle it without reloading this module.
-const isReplicaSet = (): boolean =>
-  process.env.REPLICA_SET_AVAILABLE === 'true';
-
-const inShortTransaction = async <T>(
-  work: (session: ClientSession | null) => Promise<T>,
-): Promise<T> => {
-  if (!isReplicaSet()) return work(null);
-  const session = await mongoose.startSession();
-  try {
-    let result: T | undefined;
-    await session.withTransaction(async () => {
-      result = await work(session);
-    });
-    return result as T;
-  } finally {
-    await session.endSession();
-  }
-};
-
 const withSession = (
   session: ClientSession | null,
 ): { session: ClientSession } | undefined =>
@@ -77,58 +60,21 @@ const withSession = (
 export const openConversation = (
   fields: Partial<IChatSession>,
   userMessage: IMessage,
-): Promise<IChatSessionDocument> =>
+): Promise<{
+  conversation: IChatSessionDocument;
+  userRow: IChatSessionMessageDocument;
+}> =>
   inShortTransaction(async (session) => {
     const conversation = (await new ChatSession(fields).save(
       withSession(session),
     )) as IChatSessionDocument;
-    await appendMessages(
+    const [userRow] = await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,
       [userMessage],
       session,
     );
-    return conversation;
-  });
-
-export interface ContinuedConversation {
-  conversation: IChatSessionDocument;
-  /** History before this turn, in the shape the AI backend expects. */
-  previousConversations: ReturnType<typeof formatPreviousConversations>;
-}
-
-export const continueConversation = (
-  filter: Record<string, unknown>,
-  userMessage: IMessage,
-): Promise<ContinuedConversation> =>
-  inShortTransaction(async (session) => {
-    const conversation = await ChatSession.findOne(
-      filter,
-      null,
-      withSession(session),
-    );
-    if (!conversation) {
-      throw new NotFoundError('Conversation not found');
-    }
-    const history = await getMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      {},
-      session,
-    );
-    await appendMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      conversation.orgId,
-      [userMessage],
-      session,
-    );
-    conversation.status = CONVERSATION_STATUS.INPROGRESS;
-    conversation.failReason = undefined;
-    conversation.lastActivityAt = Date.now();
-    await conversation.save(withSession(session));
-    return {
-      conversation,
-      previousConversations: formatPreviousConversations(history as IMessage[]),
-    };
+    return { conversation, userRow: userRow as IChatSessionMessageDocument };
   });
 
 const STATUS_CODE_NAMES: Record<number, string> = {
@@ -191,6 +137,8 @@ export interface CompleteTurnOptions {
   headers: Record<string, string>;
   modelInfo: IAIModel;
   requestId?: string;
+  /** Present for a follow-up turn: stamps the answer and fences its write on the lease. */
+  run?: TurnRun;
 }
 
 export interface CompletedTurn {
@@ -214,7 +162,15 @@ export const completeTurn = async (
         ? markAgentConversationFailed
         : markConversationFailed;
     try {
-      await markFailed(conversation, failReason, null, errorType, stack);
+      await markFailed(
+        conversation,
+        failReason,
+        null,
+        errorType,
+        stack,
+        undefined,
+        options.run,
+      );
     } catch (markError: unknown) {
       logger.error('Failed to record a failed non-streaming turn', {
         requestId,
@@ -275,6 +231,7 @@ export const completeTurn = async (
       String(conversation.orgId),
       null,
       options.modelInfo,
+      options.run,
     )) as Record<string, unknown>;
     return {
       conversation: saved,
@@ -284,6 +241,9 @@ export const completeTurn = async (
         : 0,
     };
   } catch (error: unknown) {
+    if (error instanceof LeaseLostError) {
+      throw new RunLostError();
+    }
     return fail(
       CHAT_ERROR_MESSAGES.saveFailed,
       'save_error',

@@ -1,0 +1,26 @@
+/** Container identifiers for the collaborative-chats services. */
+export const COLLAB_TYPES = {
+  ConversationGuards: Symbol.for('collab.ConversationGuards'),
+  RunLeaseManager: Symbol.for('collab.RunLeaseManager'),
+  AgentReadinessPort: Symbol.for('collab.AgentReadinessPort'),
+  MessageFeed: Symbol.for('collab.MessageFeed'),
+  CollaboratorRepository: Symbol.for('collab.CollaboratorRepository'),
+  AuditWriter: Symbol.for('collab.AuditWriter'),
+  ReadStateRepository: Symbol.for('collab.ReadStateRepository'),
+  NotificationPreferencesRepository: Symbol.for(
+    'collab.NotificationPreferencesRepository',
+  ),
+  ConversationTurnDeps: Symbol.for('collab.ConversationTurnDeps'),
+  FeatureFlags: Symbol.for('collab.FeatureFlags'),
+  PrincipalResolver: Symbol.for('collab.PrincipalResolver'),
+  CollaborationNotifier: Symbol.for('collab.CollaborationNotifier'),
+  ConversationEventProducers: Symbol.for('collab.ConversationEventProducers'),
+  CollaborationService: Symbol.for('collab.CollaborationService'),
+  FeedService: Symbol.for('collab.FeedService'),
+  ReadinessService: Symbol.for('collab.ReadinessService'),
+  CollaboratorsController: Symbol.for('collab.CollaboratorsController'),
+  MentionsController: Symbol.for('collab.MentionsController'),
+  AuthzController: Symbol.for('collab.AuthzController'),
+  ChatNotificationContext: Symbol.for('collab.ChatNotificationContext'),
+  ChatContentCheckService: Symbol.for('collab.ChatContentCheckService'),
+} as const;

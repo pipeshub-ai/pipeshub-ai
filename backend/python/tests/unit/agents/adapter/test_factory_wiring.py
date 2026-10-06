@@ -121,6 +121,23 @@ class TestCreate:
         assert len(runtime.hooks.on(HookEvent.POST_TOOL_USE)._stack) >= 4
         assert len(runtime.hooks.on(HookEvent.PRE_TURN)._stack) >= 1
 
+    async def test_write_guard_registered_only_when_collaborative(self) -> None:
+        from app.modules.agents.collaboration import CollaborationContext
+
+        collab = CollaborationContext(
+            participants=[
+                {"ref": "participant_1", "displayName": "A", "isCurrentSender": True},
+                {"ref": "participant_2", "displayName": "B", "isCurrentSender": False},
+            ],
+            currentSenderRef="participant_1",
+        )
+        counts = []
+        for collaboration in (None, collab):
+            context = make_context(llm=FakeChatModel(), collaboration=collaboration)
+            _a, runtime, _g, _c = await PipesHubAgentFactory().create(context, context.llm, "react", query="hello")
+            counts.append(len(runtime.hooks.on(HookEvent.PRE_TOOL_USE)._stack))
+        assert counts[1] == counts[0] + 1
+
     async def test_pre_model_call_wrapper_registered_for_llm_retry(self) -> None:
         """A 429/5xx from the LLM must be retried — see `retry_with_status.py`
         and its docstring for why this adapter path can't rely on

@@ -973,3 +973,86 @@ describe('loading older messages', () => {
     expect(slot(slotId).messagePagination).toEqual({ currentPage: 1, hasOlderMessages: true, isLoadingOlder: false });
   });
 });
+
+describe('answering a card in a collaborative chat (SEC-07)', () => {
+  const payload = {
+    name: 'ask_user_question',
+    questions: [{ uuid: 'q1', question: 'Which region?', options: [{ id: 'eu', label: 'EU' }] }],
+  };
+  const answers = { q1: { questionUuid: 'q1', selectedOptionIds: ['eu'], userInputs: {} } };
+  const RESUME = 'User selections:\n1. "Which region?" → EU';
+  const bodyOf = (call: number) => JSON.parse(String(fetchMock.mock.calls[call][1]?.body));
+
+  function slotWithOpenCard() {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'u1', role: 'user', content: [{ type: 'text', text: Q }] },
+        { id: 'tc1', role: 'assistant', content: [{ type: 'text', text: '' }] },
+      ],
+      pendingAskUserQuestion: {
+        assistantMessageId: 'tc1',
+        payload: payload as never,
+        answers,
+        status: 'submitted',
+        requestedBy: { userId: 'b', displayName: 'Bob' },
+        toolCallMessageId: 'tc1',
+      },
+    });
+    return slotId;
+  }
+
+  it('posts resume.toolCallMessageId in the body, to the chat endpoint', async () => {
+    const slotId = slotWithOpenCard();
+    respondWith([frame('RUN_FINISHED', { result: { conversation: finishedConversation('Done') } })]);
+
+    await streamMessageForSlot(
+      slotId,
+      RESUME,
+      request({ query: RESUME, conversationId: 'conv-1', resume: { toolCallMessageId: 'tc1' } }),
+      { resumeAskUserQuestion: true },
+    );
+
+    expect(bodyOf(0)).toMatchObject({ query: RESUME, resume: { toolCallMessageId: 'tc1' } });
+  });
+
+  it('posts the same fields in an agent chat body', async () => {
+    const slotId = slotWithOpenCard();
+    respondWith([frame('RUN_FINISHED', { result: { conversation: finishedConversation('Done') } })]);
+
+    await streamMessageForSlot(
+      slotId,
+      Q,
+      request({
+        agentId: 'agent-1',
+        conversationId: 'conv-1',
+        clientMessageId: 'c-1',
+        baseSeq: 4,
+        filesShared: true,
+        shareToolResults: true,
+      }),
+    );
+
+    expect(bodyOf(0)).toMatchObject({ clientMessageId: 'c-1', baseSeq: 4, filesShared: true, shareToolResults: true });
+  });
+
+  it('on 403 RESUME_NOT_ALLOWED, resets the card to pending and says why', async () => {
+    const slotId = slotWithOpenCard();
+    respondWith(
+      jsonResponse(403, { error: { code: 'RESUME_NOT_ALLOWED', message: 'Not yours to answer.' } }),
+    );
+
+    await streamMessageForSlot(
+      slotId,
+      RESUME,
+      request({ query: RESUME, conversationId: 'conv-1', resume: { toolCallMessageId: 'tc1' } }),
+      { resumeAskUserQuestion: true },
+    );
+
+    expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ status: 'pending', answers });
+    expect(slot(slotId).isStreaming).toBe(false);
+    expect(useToastStore.getState().toasts.map((t) => ({ variant: t.variant, title: t.title, description: t.description }))).toEqual([
+      { variant: 'error', title: 'Only the person who was asked can answer this question.', description: undefined },
+    ]);
+  });
+});

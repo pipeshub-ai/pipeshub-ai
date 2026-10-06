@@ -7,6 +7,8 @@ import {
   isValidScope,
   OAuthScopes,
   ScopeCategories,
+  DefaultMcpScopes,
+  AgentMcpScopes,
 } from '../../../../src/modules/oauth_provider/config/scopes.config'
 import { OAuthScopeNames } from '../../../../src/libs/enums/oauth-scopes.enum'
 
@@ -50,5 +52,11 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
       .filter((scope) => !ScopeCategories.includes(scope.category))
       .map((scope) => scope.name)
     expect(unlisted).to.deep.equal([])
+  })
+
+  it('PH06-03: conversation:share asks for consent and is in no default scope set', () => {
+    expect(getScopeDefinition('conversation:share')?.requiresUserConsent).to.be.true
+    expect(DefaultMcpScopes).to.not.include('conversation:share')
+    expect(AgentMcpScopes).to.not.include('conversation:share')
   })
 })

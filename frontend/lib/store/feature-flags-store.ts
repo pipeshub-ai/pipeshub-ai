@@ -93,6 +93,18 @@ export const selectVectorStoreRebuildEnabled = (s: FeatureFlagsStore) =>
 /** Projects defaults to disabled; admins opt in from Labs. */
 export const selectProjectsEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_PROJECTS === true;
+/** Collaborative chats default to disabled; unloaded reads as off so gated UI never flashes on then off. */
+export const selectCollaborativeChatsEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_COLLABORATIVE_CHATS === true;
+/**
+ * @mentions default to disabled and need collaborative chats too (the server mounts their routes only then);
+ * unloaded reads as off so the textarea never swaps for the rich editor mid-typing.
+ */
+export const selectChatMentionsEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_COLLABORATIVE_CHATS === true && s.flags?.ENABLE_CHAT_MENTIONS === true;
+/** Drafting an agent from a chat defaults to disabled; unloaded reads as off. */
+export const selectChatAgentBuilderEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_CHAT_AGENT_BUILDER === true;
 /** Skills default to enabled (Beta); admins opt out from Labs. */
 export const selectSkillsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_SKILLS !== false;
 /** User/org prompt context defaults to enabled; admins opt out from Labs. */

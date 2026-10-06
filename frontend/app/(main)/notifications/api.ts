@@ -23,6 +23,8 @@ export interface NotificationListItem {
   originService?: NotificationOriginService;
   assignedTo?: string;
   payload?: Record<string, unknown>;
+  /** Resolved by the list endpoint after a read check; absent on websocket rows and when unresolved. */
+  context?: { chatTitle?: string; actorName?: string };
   isDeleted?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -38,6 +40,26 @@ export interface NotificationStatsResponse {
   unreadCount: number;
   readCount: number;
   archivedCount: number;
+}
+
+export const TIP_IDS = [
+  'mentions.firstSharedSend',
+  'mentions.firstNote',
+  'mentions.firstAgentMention',
+  'mentions.popoverIntro',
+] as const;
+export type TipId = (typeof TIP_IDS)[number];
+
+export interface NotificationPreferences {
+  email: { chatShared: boolean; ownershipTransferred: boolean; chatMentioned?: boolean };
+  inApp: { chatActivity: boolean; chatMentioned?: boolean };
+  mutedSessions: string[];
+  tipsSeen?: string[];
+}
+
+export interface NotificationPreferencesPatch {
+  email?: Partial<NotificationPreferences['email']>;
+  inApp?: Partial<NotificationPreferences['inApp']>;
 }
 
 export type NotificationListFilter = 'all' | 'unread' | 'archived';
@@ -124,5 +146,43 @@ export const NotificationsApi = {
       readCount: data.readCount ?? 0,
       archivedCount: data.archivedCount ?? 0,
     };
+  },
+
+  async getPreferences(options: { quiet?: boolean } = {}): Promise<NotificationPreferences> {
+    const { data } = await apiClient.get<NotificationPreferences>(
+      '/api/v1/notifications/preferences',
+      options.quiet ? { suppressErrorToast: true } : undefined,
+    );
+    return data;
+  },
+
+  async updatePreferences(patch: NotificationPreferencesPatch): Promise<NotificationPreferences> {
+    const { data } = await apiClient.patch<NotificationPreferences>(
+      '/api/v1/notifications/preferences',
+      patch,
+    );
+    return data;
+  },
+
+  async markTipSeen(tipId: TipId): Promise<NotificationPreferences> {
+    const { data } = await apiClient.patch<NotificationPreferences>(
+      '/api/v1/notifications/preferences/tips',
+      { tipId },
+    );
+    return data;
+  },
+
+  async muteSession(sessionId: string): Promise<NotificationPreferences> {
+    const { data } = await apiClient.put<NotificationPreferences>(
+      `/api/v1/notifications/preferences/muted-sessions/${encodeURIComponent(sessionId)}`,
+    );
+    return data;
+  },
+
+  async unmuteSession(sessionId: string): Promise<NotificationPreferences> {
+    const { data } = await apiClient.delete<NotificationPreferences>(
+      `/api/v1/notifications/preferences/muted-sessions/${encodeURIComponent(sessionId)}`,
+    );
+    return data;
   },
 };

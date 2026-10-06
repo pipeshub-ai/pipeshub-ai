@@ -28,6 +28,9 @@ class TestAcceptedServiceScopes:
                 "conversation:create",
                 "conversation:permissions",
                 "fetch:config",
+                "agent:create:chat",
+                "team:ids:read",
+                "conversation:cancel",
                 "document:parse",
                 "document:classify",
             }

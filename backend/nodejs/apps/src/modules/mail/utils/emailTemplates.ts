@@ -14,6 +14,9 @@ const domainLimitReachedTemplate = loadTemplate('src/modules/mail/views/layouts/
 const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
 const joinRequestNotifyTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestNotify.hbs');
 const joinRequestDecisionTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestDecision.hbs');
+const chatSharedTemplate = loadTemplate('src/modules/mail/views/layouts/collaboration/chatShared.hbs');
+const chatOwnershipTransferredTemplate = loadTemplate('src/modules/mail/views/layouts/collaboration/chatOwnershipTransferred.hbs');
+const chatMentionedTemplate = loadTemplate('src/modules/mail/views/layouts/collaboration/chatMentioned.hbs');
 const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
@@ -92,4 +95,65 @@ export const domainLimitReached = (templateData: Record<string,any>): string => 
 export const joinRequestNotify = (templateData: Record<string,any>): string => compileTemplate(joinRequestNotifyTemplate, templateData);
 export const joinRequestDecision = (templateData: Record<string,any>): string => compileTemplate(joinRequestDecisionTemplate, templateData);
 
+export interface ChatCollaborationEmailData {
+  actorName: string;
+  orgName: string;
+  accessLevel: 'read' | 'write';
+  openUrl: string;
+  settingsUrl: string;
+}
+const CHAT_COLLABORATION_EMAIL_KEYS: ReadonlySet<string> = new Set([
+  'actorName',
+  'orgName',
+  'accessLevel',
+  'openUrl',
+  'settingsUrl',
+]);
+/** Exact-shape guard: the chat title, content and notes must never reach these templates. */
+export const isChatCollaborationEmailData = (
+  data: unknown,
+): data is ChatCollaborationEmailData => {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+  const record = data as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return (
+    keys.length === CHAT_COLLABORATION_EMAIL_KEYS.size &&
+    keys.every((key) => CHAT_COLLABORATION_EMAIL_KEYS.has(key)) &&
+    typeof record.actorName === 'string' &&
+    typeof record.orgName === 'string' &&
+    (record.accessLevel === 'read' || record.accessLevel === 'write') &&
+    typeof record.openUrl === 'string' &&
+    typeof record.settingsUrl === 'string'
+  );
+};
+export const chatShared = (templateData: ChatCollaborationEmailData): string => compileTemplate(chatSharedTemplate, templateData);
+export const chatOwnershipTransferred = (templateData: ChatCollaborationEmailData): string => compileTemplate(chatOwnershipTransferredTemplate, templateData);
 
+export type ChatMentionedEmailData = Omit<ChatCollaborationEmailData, 'accessLevel'>;
+const CHAT_MENTIONED_EMAIL_KEYS: ReadonlySet<string> = new Set([
+  'actorName',
+  'orgName',
+  'openUrl',
+  'settingsUrl',
+]);
+/** Exact-shape guard: neither the chat title nor any message text may reach this template. */
+export const isChatMentionedEmailData = (
+  data: unknown,
+): data is ChatMentionedEmailData => {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+  const record = data as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return (
+    keys.length === CHAT_MENTIONED_EMAIL_KEYS.size &&
+    keys.every((key) => CHAT_MENTIONED_EMAIL_KEYS.has(key)) &&
+    typeof record.actorName === 'string' &&
+    typeof record.orgName === 'string' &&
+    typeof record.openUrl === 'string' &&
+    typeof record.settingsUrl === 'string'
+  );
+};
+export const chatMentioned = (templateData: ChatMentionedEmailData): string => compileTemplate(chatMentionedTemplate, templateData);

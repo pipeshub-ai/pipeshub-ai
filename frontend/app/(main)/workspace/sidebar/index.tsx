@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex } from '@radix-ui/themes';
+import { Box, Flex } from '@radix-ui/themes';
 import { SidebarBase } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
@@ -11,6 +11,8 @@ import { WorkspaceSidebarItem } from './sidebar-item';
 import { SectionHeader } from './section-header';
 import { CollapsibleSection } from './collapsible-section';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
@@ -104,11 +106,19 @@ export default function WorkspaceSidebar() {
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  const isMobile = useIsMobile();
+  const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
   // Normalize trailing slash (trailingSlash: true in next.config)
   const pathname = rawPathname.endsWith('/') && rawPathname !== '/'
     ? rawPathname.slice(0, -1)
     : rawPathname;
+
+  // The drawer covers the page on a phone; picking an item should reveal it.
+  useEffect(() => {
+    closeMobileSidebar();
+  }, [rawPathname, closeMobileSidebar]);
 
   const [isPeopleExpanded, setIsPeopleExpanded] = useState(
     PEOPLE_ROUTES.some((route) => pathname.startsWith(route))
@@ -152,7 +162,13 @@ export default function WorkspaceSidebar() {
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
   return (
-    <SidebarBase>
+    <SidebarBase
+      // An empty header gives the drawer its close button; desktop has no header.
+      header={isMobile ? <Box /> : undefined}
+      isMobile={isMobile}
+      mobileOpen={isMobileOpen}
+      onMobileClose={closeMobileSidebar}
+    >
       <Flex direction="column" gap="4">
         {/* ── Back to app ── */}
         <WorkspaceSidebarItem

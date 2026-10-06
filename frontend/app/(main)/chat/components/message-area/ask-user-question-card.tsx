@@ -345,6 +345,11 @@ export interface AskUserQuestionCardProps {
   status: 'pending' | 'submitted' | 'persisted';
   onAnswersChange?: (answers: Record<string, AskUserQuestionAnswer>) => void;
   onSubmit?: (message: string, answers: Record<string, AskUserQuestionAnswer>) => void;
+  /**
+   * Collaborative chats: the question was put to someone else (F-1). The card shows who it waits for and
+   * every input is disabled. `name: null` is a former member.
+   */
+  readOnlyFor?: { name: string | null };
 }
 
 export function AskUserQuestionCard({
@@ -353,8 +358,10 @@ export function AskUserQuestionCard({
   status,
   onAnswersChange,
   onSubmit,
+  readOnlyFor,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
+  const locked = Boolean(readOnlyFor);
   const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
   const questions = normalized.questions;
   const [answers, setAnswers] = useState<Record<string, AskUserQuestionAnswer>>(() => ({
@@ -494,13 +501,13 @@ export function AskUserQuestionCard({
   }, []);
 
   const handleSubmit = useCallback(() => {
-    if (!stepValid || status !== 'pending') return;
+    if (locked || !stepValid || status !== 'pending') return;
     const msg = buildAnswerMessage(normalized, answers);
     onSubmit?.(msg, answers);
-  }, [stepValid, status, normalized, answers, onSubmit]);
+  }, [locked, stepValid, status, normalized, answers, onSubmit]);
 
   const handleSkip = useCallback(() => {
-    if (!currentQ || status !== 'pending') return;
+    if (locked || !currentQ || status !== 'pending') return;
     const next = {
       ...answers,
       [currentQ.uuid]: {
@@ -516,7 +523,7 @@ export function AskUserQuestionCard({
     } else {
       setStep((s) => Math.min(s + 1, total - 1));
     }
-  }, [currentQ, status, answers, syncAnswers, isLast, normalized, onSubmit, total]);
+  }, [locked, currentQ, status, answers, syncAnswers, isLast, normalized, onSubmit, total]);
 
   if (status === 'submitted' || status === 'persisted') {
     const heading =
@@ -662,6 +669,19 @@ export function AskUserQuestionCard({
 
         </Flex>
 
+        {readOnlyFor ? (
+          <Flex align="center" gap="2" role="status" data-testid="ask-card-waiting">
+            <span aria-hidden style={{ display: 'inline-flex' }}>
+              <MaterialIcon name="hourglass_top" size={16} color="var(--slate-11)" />
+            </span>
+            <Text size="2" color="gray">
+              {t('chat.collab.attribution.waitingFor', {
+                name: readOnlyFor.name || t('chat.collab.attribution.formerMember'),
+              })}
+            </Text>
+          </Flex>
+        ) : null}
+
         <Flex direction="column" gap="1">
           <Heading as="h3" size="3" style={{ margin: 0 }}>
             {step + 1}. {currentQ.question}
@@ -684,7 +704,7 @@ export function AskUserQuestionCard({
             {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-              const isDisabled = false;
+              const isDisabled = locked;
               return (
                 <Flex key={`${opt.id}-${idx}`} direction="column" gap="2">
                   <label
@@ -716,6 +736,7 @@ export function AskUserQuestionCard({
                         setUserInput(currentQ, opt.id, e.target.value)
                       }
                       rows={3}
+                      disabled={locked}
                       style={{ marginLeft: '28px' }}
                     />
                   ) : null}
@@ -733,7 +754,7 @@ export function AskUserQuestionCard({
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-                const isDisabled = isSomethingElseSelected && !isSynthetic;
+                const isDisabled = locked || (isSomethingElseSelected && !isSynthetic);
                 const radioValue = String(idx);
                 const isSelected = singleValue === radioValue;
                 return (
@@ -769,6 +790,7 @@ export function AskUserQuestionCard({
                           setUserInput(currentQ, opt.id, e.target.value)
                         }
                         rows={3}
+                        disabled={locked}
                         style={{ marginLeft: '28px' }}
                       />
                     ) : null}
@@ -790,6 +812,7 @@ export function AskUserQuestionCard({
               variant="outline"
               color="gray"
               onClick={handleSkip}
+              disabled={locked}
             >
               {t('askUserQuestion.skip')}
             </Button>
@@ -797,7 +820,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleContinue}
-                disabled={!stepValid}
+                disabled={locked || !stepValid}
               >
                 {t('askUserQuestion.next')}
               </Button>
@@ -805,7 +828,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleSubmit}
-                disabled={!stepValid}
+                disabled={locked || !stepValid}
               >
                 {t('askUserQuestion.submit')}
               </Button>

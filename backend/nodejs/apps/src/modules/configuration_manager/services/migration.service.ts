@@ -15,6 +15,8 @@ import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
 import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
+import { ChatCollaboratorsMigration } from './migrations/chat_collaborators.migration';
+import { AclVersionMigration } from './migrations/acl_version.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
@@ -46,6 +48,8 @@ export class MigrationService {
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
     await this.chatSessionsMigration();
+    await this.aclVersionMigration();
+    await this.chatCollaboratorsMigration();
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
     await this.documentOrgIdMigration();
@@ -132,6 +136,50 @@ export class MigrationService {
       }
     } catch (error) {
       this.logger.error('Chat sessions migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async aclVersionMigration(): Promise<void> {
+    this.logger.info('Stamping aclVersion on chat sessions and projects');
+    try {
+      const result = await new AclVersionMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  aclVersion migration finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ aclVersion migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('aclVersion migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async chatCollaboratorsMigration(): Promise<void> {
+    this.logger.info('Normalizing chat collaborators');
+    try {
+      const result = await new ChatCollaboratorsMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+      if (result.errored > 0 || result.raced > 0) {
+        this.logger.warn(
+          '⚠️  Chat collaborators migration incomplete — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Chat collaborators migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('Chat collaborators migration failed', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

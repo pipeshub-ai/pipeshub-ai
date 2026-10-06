@@ -349,6 +349,8 @@ async def run_agent_loop_stream(
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    # The generated id when the client sent none; artifacts are stamped with it.
+    chat_state["run_id"] = run_id
     # Picked up by PipesHubAgentFactory.create() for its own sub-stage marks.
     chat_state["_stage_timer"] = stage_timer
     # Model profile fields from etcd llm_config go in at construction, not
@@ -360,6 +362,7 @@ async def run_agent_loop_stream(
         llm_provider=llm_provider, context_length=context_length,
         is_reasoning_model=is_reasoning_model,
         run_id=run_id, cancellation_token=cancellation_token,
+        invocation="assistant" if chat_state.get("is_placeholder_agent") else "saved_agent",
     )
 
     async def _produce() -> None:

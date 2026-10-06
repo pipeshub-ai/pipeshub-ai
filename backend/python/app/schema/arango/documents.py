@@ -406,6 +406,7 @@ artifact_record_schema = {
             "artifactType": {"type": ["string", "null"]},
             "sourceTool": {"type": ["string", "null"]},
             "conversationId": {"type": ["string", "null"]},
+            "runId": {"type": ["string", "null"]},
             "isTemporary": {"type": ["boolean", "null"]},
             "expiresAt": {"type": ["number", "null"]},
             "visibility": {"type": ["string", "null"]},
@@ -940,7 +941,13 @@ agent_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "deletedAtTimestamp": {"type": "number"},
             "deletedByUserId": {"type": ["string", "null"]},
-            "isDeleted": {"type": "boolean", "default": False}
+            "isDeleted": {"type": "boolean", "default": False},
+            "orgId": {"type": "string"},
+            # Unique per org (unique sparse index / constraint); a soft-deleted agent keeps its handle.
+            "handle": {"type": "string", "pattern": "^[a-z0-9-]{2,40}$"},
+            "createdVia": {"type": "string", "enum": ["ui", "chat"]},
+            "sourceConversationId": {"type": "string"},
+            "sourceMessageId": {"type": "string"},
         },
         "required": ["name", "description", "startMessage", "systemPrompt", "models", "createdBy", "createdAtTimestamp"],
         "additionalProperties": False,

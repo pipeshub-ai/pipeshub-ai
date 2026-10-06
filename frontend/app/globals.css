@@ -112,7 +112,7 @@
   --emerald-7: #1e6d58;
   --emerald-8: #268169;
   --emerald-9: #047857;
-  --emerald-10: #17906c;
+  --emerald-10: #10674C;
   --emerald-11: #3dd9a0;
   --emerald-12: #EEEEEE;
 
@@ -171,6 +171,21 @@
   --accent-surface: var(--emerald-surface);
   --accent-indicator: var(--emerald-indicator);
   --accent-track: var(--emerald-track);
+}
+
+/* Portaled overlays render their own <Theme accentColor="jade"> whose stock
+   --accent-9 (#29a383) is only 3.15:1 against white text (WCAG AA needs 4.5:1).
+   Point the solid steps at the brand emerald so every solid accent surface
+   matches the root theme. White on solid / hover:
+     light  --accent-9 #047857 5.48:1   --accent-10 #10674C 6.85:1
+     dark   --accent-9 #047857 5.48:1   --accent-10 #10674C 6.85:1
+   (dark hover was #17906c, 4.01:1). Other steps stay Radix jade.
+   Asserted in app/__tests__/accent-contrast.test.ts. */
+.radix-themes[data-accent-color="jade"] {
+  --accent-9: var(--emerald-9);
+  --accent-10: var(--emerald-10);
+  --accent-a9: var(--emerald-a9);
+  --accent-contrast: var(--emerald-contrast);
 }
 
 /* ========================
@@ -1260,4 +1275,70 @@ th code {
   border: none;
   border-top: 1px solid var(--olive-4);
   margin: 1em 0;
+}
+
+/* ─── Chat composer (Tiptap, @mentions) ────────────────────────────── */
+
+.ph-composer-editor {
+  width: 100%;
+  overflow-y: auto;
+  font-size: var(--font-size-2);
+  line-height: 1.5;
+  font-family: Manrope, sans-serif;
+  color: var(--slate-12);
+}
+
+.ph-composer-editor[data-muted='true'] {
+  color: var(--slate-11);
+}
+
+.ph-composer-editor[data-readonly='true'] {
+  color: var(--slate-a8);
+}
+
+.ph-composer-editor .tiptap {
+  outline: none;
+  min-height: 24px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ph-composer-editor .tiptap p {
+  margin: 0;
+}
+
+.ph-composer-editor .tiptap p.is-editor-empty:first-child {
+  position: relative;
+}
+
+/* Absolute, one line, ellipsis: a wrapped placeholder would spill out of the one-line empty editor (375 px). */
+.ph-composer-editor .tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--slate-a9);
+  pointer-events: none;
+  position: absolute;
+  inset: 0 0 auto 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ph-composer-editor .ph-composer-interim {
+  color: var(--slate-a9);
+}
+
+.ph-mention-chip {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: var(--radius-2);
+  background-color: var(--accent-a3);
+  color: var(--accent-11);
+  font-weight: 500;
+  user-select: all;
+}
+
+.ph-mention-chip--self {
+  background-color: var(--accent-9);
+  color: var(--accent-contrast);
+  font-weight: 600;
 }

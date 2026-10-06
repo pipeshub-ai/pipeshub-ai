@@ -4,6 +4,8 @@ import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useSta
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { requestComposerMention } from './utils/composer-commands';
+import { SharedChatEmptyState } from './components/shared-chat-empty-state';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
@@ -38,6 +40,7 @@ import { Flex, Box, Text, Avatar, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
+import { AccessPanel } from '@/chat/components/collaboration/access-panel';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createChatShareAdapter } from './share-adapter';
 import { ChatSearch } from './components/search';
@@ -46,14 +49,26 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useConversationAccess } from '@/chat/hooks/use-conversation-access';
+import { normalizeAccessView, withCollaboratorCount } from '@/chat/utils/conversation-access';
+import { useOwnerInactiveCheck } from '@/chat/hooks/use-owner-inactive-check';
+import { BusyBanner, ReadOnlyBanner, type ReadOnlyBannerReason } from '@/chat/components/collaboration';
+import { useConversationSync } from '@/chat/hooks/use-conversation-sync';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { useToastElementInset } from '@/lib/toast-safe-area';
 import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { chatContentColumnStyle } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
-import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectProjectsEnabled,
+  selectCollaborativeChatsEnabled,
+  selectChatMentionsEnabled,
+} from '@/lib/store/feature-flags-store';
+import { isAccessLostError } from '@/chat/utils/conversation-errors';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
@@ -212,9 +227,10 @@ function ChatContent() {
   const activeSlotThreadAgentId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
   );
-  const activeSlotIsOwner = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
-  );
+  const conversationAccess = useConversationAccess(activeSlotId);
+  const activeLinkedProject = useChatStore((s) => (activeSlotId ? s.slots[activeSlotId]?.linkedProject ?? null : null));
+  useConversationSync(activeSlotId);
+  useOwnerInactiveCheck(activeSlotId);
   const activeSlotConversationModelInfo = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
   );
@@ -670,13 +686,15 @@ function ChatContent() {
 
     const loadHistory = async () => {
       try {
+        // With the flag on, a 404/403 shows the access-lost banner instead of the API client's toast.
+        const quietWhenGone = selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState());
         const detail = historyAndShareAgentId
-          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
-          : await ChatApi.fetchConversation(convId);
+          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId, { quietWhenGone })
+          : await ChatApi.fetchConversation(convId, undefined, undefined, { quietWhenGone });
         if (cancelled) return;
 
         const messages = detail.messages;
-        const isOwner = detail.conversation.access?.isOwner ?? false;
+        const access = normalizeAccessView(detail.conversation.access) ?? normalizeAccessView({ isOwner: false });
         const apiPagination = detail.pagination;
         const modelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
@@ -734,7 +752,12 @@ function ChatContent() {
           messages: formattedMessages,
           isInitialized: true,
           hasLoaded: true,
-          isOwner,
+          access,
+          accessLost: false,
+          ownerInactive: false,
+          linkedProject: detail.conversation.projectId
+            ? { projectId: detail.conversation.projectId, visibility: detail.conversation.projectVisibility ?? 'private' }
+            : null,
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
@@ -744,13 +767,16 @@ function ChatContent() {
           pendingAskUserQuestion: unansweredAskUserQuestion,
         });
       } catch (error) {
-        console.error('Failed to load conversation history:', error);
+        // A 404/403 with the flag on is a chat the user cannot open: the banner says so, no composer on an empty thread.
+        const lost = isAccessLostError(error) && selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState());
+        if (!lost) console.error('Failed to load conversation history:', error);
         if (!cancelled) {
-          // Mark as initialized to avoid infinite retries, but leave isOwner
+          // Mark as initialized to avoid infinite retries, but leave access
           // untouched: a transient fetch failure shouldn't flip the share
           // button off for an actual owner.
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
+            ...(lost ? { accessLost: true } : {}),
           });
           // The API client already explains HTTP failures in its own toast.
           if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
@@ -999,22 +1025,24 @@ function ChatContent() {
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
   const [sharedMembers, setSharedMembers] = useState<SharedAvatarMember[]>([]);
 
+  const collabEnabledForShare = conversationAccess.collabEnabled;
   const chatShareAdapter = useMemo(() => {
     if (!conversationId) return null;
+    const agentOptions = historyAndShareAgentId ? { agentId: historyAndShareAgentId } : undefined;
     return createChatShareAdapter(
       conversationId,
-      historyAndShareAgentId ? { agentId: historyAndShareAgentId } : undefined
+      collabEnabledForShare ? { ...agentOptions, collaborative: true } : agentOptions
     );
-  }, [conversationId, historyAndShareAgentId]);
+  }, [conversationId, historyAndShareAgentId, collabEnabledForShare]);
 
-  // Agent threads are not shareable by anyone (including the owner), so gate on
+  // Flag off: agent threads are not shareable by anyone (including the owner), so gate on
   // historyAndShareAgentId (slot-scoped, set for both URL and restored agent threads).
   const showConversationShare =
     Boolean(
       conversationId &&
         chatShareAdapter &&
-        activeSlotIsOwner === true &&
-        !historyAndShareAgentId
+        conversationAccess.canShare &&
+        (conversationAccess.collabEnabled || !historyAndShareAgentId)
     );
 
   useEffect(() => {
@@ -1061,10 +1089,39 @@ function ChatContent() {
     };
   }, [conversationId, chatShareAdapter, showConversationShare]);
 
-  // Hide chat input when viewing a shared conversation the user does not own.
-  // `null` means "not yet known" (loading) — keep input visible to avoid flash.
-  const showChatInput = activeSlotIsOwner !== false;
-
+  // Hide chat input when the server says the user cannot send. Before the detail response
+  // arrives access is unknown — keep input visible to avoid a flash.
+  const showChatInput = conversationAccess.showComposer;
+  const mentionsEnabled = useFeatureFlagsStore(selectChatMentionsEnabled);
+  const activeSlotLoaded = useChatStore((s) =>
+    s.activeSlotId ? (s.slots[s.activeSlotId]?.isInitialized ?? false) : false,
+  );
+  const showSharedEmptyState =
+    mentionsEnabled &&
+    conversationAccess.collabEnabled &&
+    conversationAccess.isCollaborative &&
+    showChatInput &&
+    activeSlotLoaded &&
+    activeSlotMsgCount === 0 &&
+    !activeSlotIsStreaming;
+  const showAccessButton = Boolean(
+    conversationId && conversationAccess.collabEnabled && conversationAccess.role !== null && !conversationAccess.accessLost,
+  );
+  const conversationProject = useMemo(() => {
+    if (!conversationId) return null;
+    if (activeLinkedProject) return activeLinkedProject;
+    const row =
+      conversations.find((c) => c.id === conversationId) ??
+      sharedConversations.find((c) => c.id === conversationId);
+    return row?.projectId ? { projectId: row.projectId, visibility: row.projectVisibility ?? 'private' } : null;
+  }, [conversationId, activeLinkedProject, conversations, sharedConversations]);
+  const readOnlyBannerReason: ReadOnlyBannerReason | null = conversationAccess.accessLost
+    ? 'accessLost'
+    : conversationAccess.ownerInactive
+      ? 'ownerInactive'
+      : conversationAccess.showReadOnlyBanner
+        ? 'readOnly'
+        : null;
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
     hasActiveSlot &&
@@ -1076,6 +1133,9 @@ function ChatContent() {
   /** New-chat landing (main or `?agentId=`): input sits in the centered hero with the greeting;
    * after the first message it renders in the fixed bottom slot (`showNewChatView` false). */
   const isInputCentered = showNewChatView;
+  // The banners and prompts stacked above the docked composer sit outside its own measured box.
+  const [composerColumn, setComposerColumn] = useState<HTMLDivElement | null>(null);
+  useToastElementInset(isInputCentered ? null : composerColumn);
 
   // Show loading state when slot exists but hasn't loaded history yet
   const showLoading = hasActiveSlot && !activeSlotIsInitialized;
@@ -1256,10 +1316,31 @@ function ChatContent() {
         </Box>
       )}
 
-      {/* Share header group — owners only */}
-      {showConversationShare && (
+      {/* Access + Share header group. Access shows for anyone with a known server view (flag on). */}
+      {(showConversationShare || showAccessButton) && (
         <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
-          <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+          <Flex align="center" gap="4">
+            {showAccessButton && conversationId && (
+              <AccessPanel
+                conversationRef={
+                  historyAndShareAgentId
+                    ? { kind: 'agent', agentKey: historyAndShareAgentId, id: conversationId }
+                    : { kind: 'chat', id: conversationId }
+                }
+                isOwner={conversationAccess.isOwner === true}
+                project={conversationProject}
+                onVisibilityChanged={(visibility) => {
+                  const store = useChatStore.getState();
+                  const linked = activeSlotId ? store.slots[activeSlotId]?.linkedProject : null;
+                  if (activeSlotId && linked) store.updateSlot(activeSlotId, { linkedProject: { ...linked, visibility } });
+                  store.bumpConversationsVersion();
+                }}
+              />
+            )}
+            {showConversationShare && (
+              <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+            )}
+          </Flex>
         </Box>
       )}
 
@@ -1384,7 +1465,14 @@ function ChatContent() {
           </Flex>
         ) : (
           <Box style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden', display: 'flex' }}>
-            <MessageList />
+            {showSharedEmptyState ? (
+              <SharedChatEmptyState
+                onPick={(text) => handleSuggestionClick({ id: 'shared-empty', text, icons: [] })}
+                onStartNote={requestComposerMention}
+              />
+            ) : (
+              <MessageList />
+            )}
           </Box>
         )}
 
@@ -1399,12 +1487,15 @@ function ChatContent() {
           }}
         >
           <Box
+            ref={setComposerColumn}
             style={{
               ...chatContentColumnStyle(isMobile),
               paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
               paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
             }}
           >
+            {readOnlyBannerReason && <ReadOnlyBanner reason={readOnlyBannerReason} hasMessages={activeSlotMsgCount > 0} />}
+            {activeSlotId && <BusyBanner slotId={activeSlotId} />}
             {!isInputCentered && showChatInput && <ChatInputWrapper />}
             <ChatFooterLinks />
           </Box>
@@ -1568,6 +1659,11 @@ function ChatContent() {
           adapter={chatShareAdapter}
           onShareSuccess={() => {
             chatShareAdapter.getSharedMembers().then((members) => {
+              const store = useChatStore.getState();
+              const sid = store.activeSlotId;
+              const slotAccess = sid ? store.slots[sid]?.access : null;
+              const next = withCollaboratorCount(slotAccess, members.filter((m) => !m.isOwner).length);
+              if (sid && next !== slotAccess) store.updateSlot(sid, { access: next ?? null });
               setSharedMembers(
                 members
                   .filter((m) => !m.isOwner)

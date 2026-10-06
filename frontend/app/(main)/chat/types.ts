@@ -1,6 +1,8 @@
 import type { CitationOrigin } from './components/message-area/response-tabs/citations';
 import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import type { ThreadMessageLike } from '@assistant-ui/react';
+import type { AccessView, ActiveRunDto, ApiAccess, MessageAuthor } from './collaboration-types';
+import type { MentionRef } from './components/composer/composer-input.types';
 import { ACCEPTED_MIME_TYPES, SUPPORTED_FILE_TYPES } from './utils/attachment-file-types';
 
 // Chat types following project conventions
@@ -143,6 +145,12 @@ export interface ConversationApiResponse {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  /** Collaboration view of the caller's access; the legacy pair when the flag is off. */
+  access?: ApiAccess;
+  /** Messages after the caller's read position (collaborative rows only). */
+  unreadCount?: number;
+  /** Owner only. */
+  collaboratorCount?: number;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -175,6 +183,15 @@ export interface Conversation {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  access?: AccessView;
+  unreadCount?: number;
+  collaboratorCount?: number;
+  /**
+   * The row came from an archive list, whose membership is "archived by the caller". The list rows
+   * carry no archive flag of their own (`archivedFor` is not selected and `status` is the run
+   * state), and a per-user archive leaves `isArchived` false.
+   */
+  archivedForMe?: boolean;
 }
 
 export interface ChatSuggestion {
@@ -529,6 +546,32 @@ export interface SSEAskUserQuestionEvent {
   toolData: AskUserQuestionPayload;
 }
 
+/** The agent the assistant drafted in a chat (`CUSTOM agent_draft`, or the stored `draft_agent` row). */
+export interface AgentDraft {
+  draftId: string;
+  name: string;
+  handleSuggestion: string;
+  description: string;
+  instructions: string;
+  knowledge: string[];
+  /** Always empty: the requester ticks every tool. */
+  toolsets: string[];
+  suggestedTools: string[];
+  provenance: 'sender' | 'content';
+  requestedBy: string;
+}
+
+/** What every viewer but the requester gets in place of a draft. */
+export interface RedactedAgentDraft {
+  redacted: true;
+  authorId?: string;
+}
+
+export type AgentDraftPayload = AgentDraft | RedactedAgentDraft;
+
+export const isRedactedAgentDraft = (draft: AgentDraftPayload): draft is RedactedAgentDraft =>
+  (draft as RedactedAgentDraft).redacted === true;
+
 /** User's collected answers per question (keyed by question uuid in slot state). */
 export interface AskUserQuestionAnswer {
   questionUuid: string;
@@ -543,6 +586,10 @@ export interface PendingAskUserQuestion {
   payload: AskUserQuestionPayload;
   answers: Record<string, AskUserQuestionAnswer>;
   status: 'pending' | 'submitted' | 'persisted';
+  /** Who the question was put to. `null` is a former member; absent means unknown (solo chat or legacy row). */
+  requestedBy?: MessageAuthor | null;
+  /** Stored row that carries the card; sent as `resume.toolCallMessageId` when answering. */
+  toolCallMessageId?: string;
 }
 
 /** Artifact produced by a sandbox tool (coding/database). */
@@ -595,6 +642,8 @@ export interface SSEConnectedEvent {
    * If the backend later async-refines titles, `complete` still refreshes list/title state.
    */
   title?: string;
+  /** Collaborative chats: the first frame carries the run's id (same value as the `X-Run-Id` header). */
+  runId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -759,13 +808,26 @@ export interface MessagePart {
   settled?: boolean;
 }
 
+/** A user message waiting for `activeRun` to clear. */
+export interface QueuedSend {
+  query: string;
+  attachments?: AttachmentRef[];
+  mentions?: MentionRef[];
+  clientMessageId: string;
+  queuedAt: number;
+}
+
 export interface ConversationMessage {
   _id: string;
-  messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error';
+  messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error' | 'note';
+  /** Ids of the people, teams and assistant a user query or note mentions. */
+  mentions?: MentionRef[];
   content: string;
   contentFormat: 'MARKDOWN';
   citations: CitationApiResponse[];
   confidence?: 'Very High' | 'High' | 'Medium' | 'Low';
+  /** `Capability Card` marks the `@assistant help` answer, which has no confidence or sources. */
+  answerMatchType?: 'Capability Card';
   followUpQuestions: string[];
   referenceData: ReferenceData[];
   modelInfo: ModelInfo;
@@ -782,6 +844,16 @@ export interface ConversationMessage {
   parts?: MessagePart[];
   /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
   status?: 'stopped';
+  /** Position in the conversation (collaborative chats); gaps are possible. */
+  seq?: number;
+  /** Who sent the user turn; `null` for a former member. Present on collaborative chats. */
+  author?: MessageAuthor | null;
+  /** Who asked the question this answer belongs to (differs from `author` for agent turns run for someone else). */
+  requestedBy?: MessageAuthor | null;
+  /** Client-generated id that reconciles an optimistic row with the stored one. */
+  clientMessageId?: string;
+  /** The sender chose to share the files on this turn with the other participants. */
+  filesShared?: boolean;
 }
 
 export interface ConversationCompleteData {
@@ -879,6 +951,8 @@ export interface StreamChatRequest {
   agentCapabilities?: AgentCapabilities;
   /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** @mentions picked in the composer; the server validates each against the sender's rights. */
+  mentions?: MentionRef[];
   /**
    * Only sent when the user has explicitly picked a non-default effort for a
    * reasoning-capable model. Omitted → backend uses the model's own default.
@@ -899,6 +973,16 @@ export interface StreamChatRequest {
    * is ignored").
    */
   projectId?: string;
+  /** Collaborative chats only: idempotency key for this turn. */
+  clientMessageId?: string;
+  /** Collaborative chats only: highest `seq` the sender has seen. */
+  baseSeq?: number;
+  /** Collaborative chats only: the sender consents to sharing the files attached to this turn. */
+  filesShared?: boolean;
+  /** Collaborative agent chats only: the sender consents to sharing this turn's tool results. */
+  shareToolResults?: boolean;
+  /** Answers the `ask_user_question` card stored in this row. */
+  resume?: { toolCallMessageId: string };
 }
 
 /**
@@ -984,6 +1068,11 @@ export const MAX_SLOTS = 15;
  * Each slot represents one open conversation — the single
  * `useExternalStoreRuntime` reads from the active slot.
  */
+export interface LinkedProject {
+  projectId: string;
+  visibility: 'private' | 'project';
+}
+
 export interface ChatSlot {
   /** Server-assigned conversation ID, or null for a brand-new chat. */
   convId: string | null;
@@ -1064,6 +1153,9 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
+  /** Draft from the in-flight run's `agent_draft` event; the stored row replaces it on complete. */
+  liveAgentDraft?: AgentDraft | null;
+
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
 
@@ -1099,10 +1191,27 @@ export interface ChatSlot {
   lastAccessedAt: number;
 
   /**
-   * From GET conversation detail `access.isOwner`.
-   * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
+   * From GET conversation detail `access`.
+   * `null` until the first fetch completes. `access.isOwner === false` for chats opened from
+   * Shared Chats (hide share UI). Read it through `selectSlotIsOwner` / `useConversationAccess`.
    */
-  isOwner: boolean | null;
+  access: AccessView | null;
+  /** Who is running a turn now, from a 409 `CONVERSATION_BUSY` or the feed. */
+  activeRun: ActiveRunDto | null;
+  /** Last `rev` the feed returned; `null` until the first poll. */
+  rev: number | null;
+  /** A poll or load answered 404/403: history stays visible, the composer goes, the slot is evicted on deactivation. */
+  accessLost: boolean;
+  /** The owner is disabled or deleted (`OWNER_INACTIVE`, D11): the chat stays readable, nobody else can continue it. */
+  ownerInactive?: boolean;
+  /** Project link from the detail response; list rows don't carry it, so the Access panel reads it from here. */
+  linkedProject: LinkedProject | null;
+  /** A message held until the active run ends (send when free); `null` when nothing is queued. */
+  queuedSend: QueuedSend | null;
+  /** Count of newer messages found after a rejected send (`CONVERSATION_CHANGED`); cleared on the next send. */
+  /** Text to put back in the composer (a cancelled queued send); the composer takes it and clears it. */
+  composerRestore: string | null;
+  changedNotice: { count: number; pending: QueuedSend | null } | null;
   /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.

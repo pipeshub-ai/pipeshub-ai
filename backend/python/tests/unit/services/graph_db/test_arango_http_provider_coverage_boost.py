@@ -51,7 +51,7 @@ class TestEnsureAllTeamWithUsers:
     @pytest.mark.asyncio
     async def test_no_active_users_returns_early(self, provider):
         """No active users found -> method returns without edge creation."""
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.get_users = AsyncMock(return_value=[])
         provider.batch_upsert_nodes = AsyncMock()
         provider.batch_create_edges = AsyncMock()
@@ -68,7 +68,7 @@ class TestEnsureAllTeamWithUsers:
         provider.get_users = AsyncMock(return_value=[
             {"_key": "u1", "createdAtTimestamp": 100},
         ])
-        provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        provider._count_team_permission_edges = AsyncMock(return_value=0)
         provider.get_edge = AsyncMock(return_value=None)
         provider.update_node = AsyncMock()
         provider.batch_create_edges = AsyncMock()
@@ -89,14 +89,12 @@ class TestEnsureAllTeamWithUsers:
     @pytest.mark.asyncio
     async def test_existing_team_and_members_assigns_reader(self, provider):
         """Existing team with members -> new user gets READER."""
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.batch_upsert_nodes = AsyncMock()
         provider.get_users = AsyncMock(return_value=[
             {"_key": "u2", "createdAtTimestamp": 200},
         ])
-        provider.get_team_with_users = AsyncMock(return_value={
-            "members": [{"userEmail": "old@x", "role": "OWNER"}]
-        })
+        provider._count_team_permission_edges = AsyncMock(return_value=1)
         provider.get_edge = AsyncMock(return_value=None)
         provider.update_node = AsyncMock()
         provider.batch_create_edges = AsyncMock()
@@ -113,12 +111,12 @@ class TestEnsureAllTeamWithUsers:
     @pytest.mark.asyncio
     async def test_user_with_existing_edge_is_skipped(self, provider):
         """User with existing permission edge -> no new edge created for them."""
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.get_users = AsyncMock(return_value=[
             {"_key": "u1", "createdAtTimestamp": 100},
             {"_key": "u2", "createdAtTimestamp": 200},
         ])
-        provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        provider._count_team_permission_edges = AsyncMock(return_value=0)
         # u1 already has an edge; u2 does not
         provider.get_edge = AsyncMock(side_effect=[{"role": "OWNER"}, None])
         provider.update_node = AsyncMock()
@@ -136,9 +134,9 @@ class TestEnsureAllTeamWithUsers:
     @pytest.mark.asyncio
     async def test_user_without_key_is_skipped(self, provider):
         """User dict missing both _key and id is skipped."""
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.get_users = AsyncMock(return_value=[{"createdAtTimestamp": 1}])
-        provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        provider._count_team_permission_edges = AsyncMock(return_value=0)
         provider.get_edge = AsyncMock(return_value=None)
         provider.batch_create_edges = AsyncMock()
 
@@ -149,11 +147,11 @@ class TestEnsureAllTeamWithUsers:
     @pytest.mark.asyncio
     async def test_update_node_failure_is_swallowed(self, provider):
         """Failure in update_node during owner assignment is logged, not raised."""
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.get_users = AsyncMock(return_value=[
             {"_key": "u1", "createdAtTimestamp": 1},
         ])
-        provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        provider._count_team_permission_edges = AsyncMock(return_value=0)
         provider.get_edge = AsyncMock(return_value=None)
         provider.update_node = AsyncMock(side_effect=Exception("update failed"))
         provider.batch_create_edges = AsyncMock()
@@ -170,6 +168,52 @@ class TestEnsureAllTeamWithUsers:
             await provider.ensure_all_team_with_users("org1")
 
 
+class TestAllTeamHealsMissingOrgId:
+    @pytest.mark.asyncio
+    async def test_add_user_heals_org_id_and_counts_edges_directly(self, provider):
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_edge = AsyncMock(return_value=None)
+        provider.get_team_with_users = AsyncMock(return_value=None)
+        provider.execute_query = AsyncMock(return_value=[1])
+        provider.update_node = AsyncMock()
+        provider.batch_create_edges = AsyncMock()
+
+        await provider.add_user_to_all_team("org1", "u2")
+
+        provider.update_node.assert_awaited_once_with("all_org1", "teams", {"orgId": "org1"})
+        assert provider.batch_create_edges.await_args[0][0][0]["role"] == "READER"
+
+    @pytest.mark.asyncio
+    async def test_ensure_heals_org_id_and_no_second_owner(self, provider):
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": ""})
+        provider.get_users = AsyncMock(return_value=[
+            {"_key": "u1", "createdAtTimestamp": 1},
+            {"_key": "u2", "createdAtTimestamp": 2},
+        ])
+        provider.get_team_with_users = AsyncMock(return_value=None)
+        provider.execute_query = AsyncMock(return_value=[1])
+        provider.get_edge = AsyncMock(side_effect=[{"role": "OWNER"}, None])
+        provider.update_node = AsyncMock()
+        provider.batch_create_edges = AsyncMock()
+
+        await provider.ensure_all_team_with_users("org1")
+
+        provider.update_node.assert_awaited_once_with("all_org1", "teams", {"orgId": "org1"})
+        edge = provider.batch_create_edges.await_args[0][0][0]
+        assert (edge["from_id"], edge["role"]) == ("u2", "READER")
+
+
+class TestBackfillTeamOrgIds:
+    @pytest.mark.asyncio
+    async def test_reports_updated_and_unresolved(self, provider):
+        provider.execute_query = AsyncMock(side_effect=[[1, 1], ["t-orphan"]])
+
+        assert await provider.backfill_team_org_ids() == {
+            "updated": 2,
+            "unresolved_team_ids": ["t-orphan"],
+        }
+
+
 # ---------------------------------------------------------------------------
 # add_user_to_all_team
 # ---------------------------------------------------------------------------
@@ -178,7 +222,7 @@ class TestEnsureAllTeamWithUsers:
 class TestAddUserToAllTeam:
     @pytest.mark.asyncio
     async def test_user_already_has_edge_returns_early(self, provider):
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.get_edge = AsyncMock(return_value={"role": "READER"})
         provider.batch_create_edges = AsyncMock()
 
@@ -191,7 +235,7 @@ class TestAddUserToAllTeam:
         provider.get_document = AsyncMock(return_value=None)
         provider.batch_upsert_nodes = AsyncMock()
         provider.get_edge = AsyncMock(return_value=None)
-        provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        provider._count_team_permission_edges = AsyncMock(return_value=0)
         provider.update_node = AsyncMock()
         provider.batch_create_edges = AsyncMock()
 
@@ -205,9 +249,9 @@ class TestAddUserToAllTeam:
 
     @pytest.mark.asyncio
     async def test_reader_when_team_has_members(self, provider):
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.get_edge = AsyncMock(return_value=None)
-        provider.get_team_with_users = AsyncMock(return_value={"members": [{}]})
+        provider._count_team_permission_edges = AsyncMock(return_value=1)
         provider.update_node = AsyncMock()
         provider.batch_create_edges = AsyncMock()
 
@@ -219,9 +263,9 @@ class TestAddUserToAllTeam:
 
     @pytest.mark.asyncio
     async def test_update_node_failure_is_swallowed(self, provider):
-        provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         provider.get_edge = AsyncMock(return_value=None)
-        provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        provider._count_team_permission_edges = AsyncMock(return_value=0)
         provider.update_node = AsyncMock(side_effect=Exception("update failed"))
         provider.batch_create_edges = AsyncMock()
 

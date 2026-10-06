@@ -1,0 +1,11 @@
+{
+  "userId": "u-reader-c",
+  "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+  "action": "read",
+  "resource": {
+    "type": "chatAttachment",
+    "recordId": "rec-1",
+    "ownerUserId": "u-owner-a",
+    "conversationId": "chat-x"
+  }
+}

@@ -5,7 +5,25 @@ import {
   IFollowUpQuestion,
   IMessageCitation,
 } from '../types/conversation.interfaces';
-import { CONFIDENCE_LEVELS, REASONING_EFFORT_VALUES } from '../constants/constants';
+import {
+  CHAT_SCHEMA_VERSION,
+  CLIENT_MESSAGE_ID_MAX_LENGTH,
+  CONFIDENCE_LEVELS,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
+import {
+  MENTION_ID_MAX_LENGTH,
+  MENTION_TYPES,
+  MENTIONS_MAX,
+} from '../services/collaboration/mentions/mention.types';
+
+const mentionSchema = new Schema(
+  {
+    type: { type: String, enum: MENTION_TYPES, required: true },
+    id: { type: String, required: true, maxlength: MENTION_ID_MAX_LENGTH },
+  },
+  { _id: false },
+);
 
 const toolCallItemSchema = new Schema(
   {
@@ -163,6 +181,21 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // Per-session monotonic sort key allocated from the parent session's
     // `nextSeq` counter. Gaps are legal; never treat this as a count or index.
     seq: { type: Number, required: true },
+    schemaVersion: {
+      type: Number,
+      default: CHAT_SCHEMA_VERSION,
+      select: false,
+    },
+
+    // Authorship. Not required and no defaults: legacy rows lack them and read
+    // as authored by `session.userId`.
+    authorUserId: { type: Schema.Types.ObjectId }, // user_query
+    requestedBy: { type: Schema.Types.ObjectId }, // bot_response | error | tool_call
+    inReplyTo: { type: Schema.Types.ObjectId },
+    clientMessageId: { type: String, maxlength: CLIENT_MESSAGE_ID_MAX_LENGTH },
+    filesShared: { type: Boolean },
+    shareToolResults: { type: Boolean },
+    runId: { type: String },
 
     messageType: {
       type: String,
@@ -173,8 +206,18 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
         'feedback',
         'system',
         'tool_call',
+        'note',
       ],
       required: true,
+    },
+    // Ids only (`user_query` and `note` rows); absent, not `[]`, on rows with none.
+    mentions: {
+      type: [mentionSchema],
+      default: undefined,
+      validate: {
+        validator: (rows: unknown[]) => rows.length <= MENTIONS_MAX,
+        message: `mentions exceeds ${String(MENTIONS_MAX)} entries`,
+      },
     },
     content: { type: String, default: '' },
     contentFormat: {
@@ -187,6 +230,7 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     status: { type: String, enum: ['stopped'] },
     citations: [messageCitationSchema],
     confidence: { type: String, enum: CONFIDENCE_LEVELS },
+    answerMatchType: { type: String, enum: ['Capability Card'] },
     followUpQuestions: [followUpQuestionSchema],
     feedback: [feedbackSchema],
     metadata: {
@@ -244,6 +288,37 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
 // Serves both the seq-ordered read path and duplicate-seq protection —
 // the real backstop for allocateSeq's optimistic $inc allocation.
 chatSessionMessageSchema.index({ sessionId: 1, seq: 1 }, { unique: true });
+
+// Scoped by author (51 §1.2, F-17): an unscoped key would let one user's id
+// block another's. `$type`, not `$exists`, so null never collides.
+chatSessionMessageSchema.index(
+  { sessionId: 1, authorUserId: 1, clientMessageId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { clientMessageId: { $type: 'string' } },
+  },
+);
+chatSessionMessageSchema.index(
+  { orgId: 1, authorUserId: 1 },
+  { partialFilterExpression: { authorUserId: { $type: 'objectId' } } },
+);
+
+// Chat-content authz (H4): which turns attached a record. `$type`, not `$exists`, so null never indexes.
+chatSessionMessageSchema.index(
+  { orgId: 1, 'attachments.recordId': 1 },
+  { partialFilterExpression: { 'attachments.recordId': { $type: 'string' } } },
+);
+// Rows that mention anyone, newest first. `$type`, not the design's `'mentions.0': {$exists: true}`, per the rule above.
+// Query it with `mentionedInFilter`: the planner skips a partial index whose filter the query does not state.
+chatSessionMessageSchema.index(
+  { orgId: 1, 'mentions.id': 1, createdAt: -1 },
+  { partialFilterExpression: { 'mentions.id': { $type: 'string' } } },
+);
+// H5: the user turn of a run.
+chatSessionMessageSchema.index(
+  { sessionId: 1, runId: 1 },
+  { partialFilterExpression: { runId: { $type: 'string' } } },
+);
 
 export const ChatSessionMessage: Model<IChatSessionMessageDocument> =
   mongoose.model<IChatSessionMessageDocument>(

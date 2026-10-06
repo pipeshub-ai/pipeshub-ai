@@ -77,3 +77,48 @@ async def test_ensure_all_team_only_adds_users_without_an_edge() -> None:
 
     edges = _edges_created(provider)
     assert [(e["from_id"], e["role"]) for e in edges] == [("newcomer", "READER")]
+
+
+def _org_id_updates(provider: Neo4jProvider) -> list:
+    return [c for c in provider.update_node.await_args_list if "orgId" in c.args[2]]
+
+
+@pytest.mark.asyncio
+async def test_add_user_heals_missing_org_id_and_adds_reader() -> None:
+    provider = _provider_with_members({"owner"})
+    provider.get_document = AsyncMock(return_value={"id": TEAM})
+
+    await provider.add_user_to_all_team(ORG, "newcomer")
+
+    assert [c.args for c in _org_id_updates(provider)] == [(TEAM, "teams", {"orgId": ORG})]
+    assert [(e["from_id"], e["role"]) for e in _edges_created(provider)] == [("newcomer", "READER")]
+
+
+@pytest.mark.asyncio
+async def test_ensure_all_team_heals_missing_org_id_and_never_makes_a_second_owner() -> None:
+    provider = _provider_with_members({"owner"})
+    provider.get_document = AsyncMock(return_value={"id": TEAM, "orgId": ""})
+    provider.get_team_with_users = AsyncMock(return_value=None)
+    provider.get_users = AsyncMock(return_value=[
+        {"id": "owner", "createdAtTimestamp": 1},
+        {"id": "newcomer", "createdAtTimestamp": 2},
+    ])
+
+    await provider.ensure_all_team_with_users(ORG)
+
+    assert len(_org_id_updates(provider)) == 1
+    assert [(e["from_id"], e["role"]) for e in _edges_created(provider)] == [("newcomer", "READER")]
+
+
+@pytest.mark.asyncio
+async def test_backfill_team_org_ids_sums_updates_and_reports_unresolved() -> None:
+    provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+    provider.client = AsyncMock()
+    provider.client.execute_query = AsyncMock(
+        side_effect=[[{"n": 2}], [{"n": 1}], [{"id": "t-orphan"}]]
+    )
+
+    assert await provider.backfill_team_org_ids() == {
+        "updated": 3,
+        "unresolved_team_ids": ["t-orphan"],
+    }

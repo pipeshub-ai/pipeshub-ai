@@ -5,6 +5,9 @@ export const PROJECT_INSTRUCTIONS_MAX_LENGTH = 8000;
 export const PROJECT_VISIBILITY_VALUES = ['private', 'org'] as const;
 export const PROJECT_CHAT_SHARING_VALUES = ['private', 'members'] as const;
 export const PROJECT_MEMBER_ROLE_VALUES = ['viewer', 'editor'] as const;
+/** Ceiling on the chat role a project member inherits from a `projectVisibility:'project'` chat (H2). */
+export const PROJECT_CHAT_ACCESS_VALUES = ['viewer', 'editor'] as const;
+export const DEFAULT_PROJECT_CHAT_ACCESS = 'viewer' as const;
 export const PROJECT_PRINCIPAL_TYPE_VALUES = ['user', 'team'] as const;
 
 /** Max members that can be added/updated in a single PUT /:projectId/members request. */

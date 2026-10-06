@@ -4931,8 +4931,16 @@ class TestTeamQueriesExcludeInactiveUsers:
     @pytest.mark.asyncio
     async def test_get_team_with_users_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        await neo4j_provider.get_team_with_users("t1", "uk1")
+        await neo4j_provider.get_team_with_users("t1", "uk1", "org-1")
         self._assert_guarded(self._member_query(neo4j_provider))
+
+    @pytest.mark.asyncio
+    async def test_get_team_with_users_is_scoped_to_org(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_team_with_users("t1", "uk1", "org-1")
+        call = neo4j_provider.client.execute_query.call_args
+        assert "orgId: $orgId" in call.args[0]
+        assert call.kwargs["parameters"]["orgId"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_get_user_teams_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
@@ -4948,6 +4956,43 @@ class TestTeamQueriesExcludeInactiveUsers:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.get_team_users("t1", "org1", "uk1")
         self._assert_guarded(self._member_query(neo4j_provider))
+
+
+class TestGetUserTeamIdsNeo4j:
+    @pytest.mark.asyncio
+    async def test_org_scoped_query_and_ids_only(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"id": "t1"}, {"id": "t2"}])
+        ids = await neo4j_provider.get_user_team_ids("uk1", "org1", limit=5)
+        assert ids == ["t1", "t2"]
+        call = neo4j_provider.client.execute_query.call_args
+        assert "team.orgId = $org_id" in call.args[0]
+        assert call.kwargs["parameters"] == {"user_key": "uk1", "org_id": "org1", "limit": 6}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, ""])
+    async def test_no_org_id_returns_empty_without_query(
+        self, neo4j_provider: Neo4jProvider, org
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"id": "legacy"}])
+        assert await neo4j_provider.get_user_team_ids("uk1", org) == []
+        neo4j_provider.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_truncation_warns_and_caps(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[{"id": "t1"}, {"id": "t2"}, {"id": "t3"}]
+        )
+        neo4j_provider.logger = MagicMock()
+        ids = await neo4j_provider.get_user_team_ids("uk1", "org1", limit=2)
+        assert ids == ["t1", "t2"]
+        neo4j_provider.logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_error_propagates(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("db"))
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_user_team_ids("uk1", "org1")
+
 
 class TestAppChildrenExternalHoisting:
     """Blocks 3 and 4 of _get_app_children_cypher -- surfacing records shared directly

@@ -1,0 +1,2606 @@
+{
+  "benchmark": "collab_explain",
+  "recorded_at": "2026-10-03T13:47:40Z",
+  "mongo": "8.0.17",
+  "plan": {
+    "plan": {
+      "sessions": 200000,
+      "teams": 2000,
+      "seed": 1337,
+      "messages_per_session": 2,
+      "shared_fraction": 0.1
+    },
+    "org_id": "89d593650154bedaafc9feae",
+    "user": "4f06f4685a5afdc9efc617cd",
+    "user300": "9bb846609db59af75d8c5c90",
+    "seconds": 25.0,
+    "sessions": 200000,
+    "messages": 400000,
+    "shared_sessions": 19823,
+    "share_rows": 35113,
+    "team_rows": 12075,
+    "all_team_rows": 1912,
+    "user_rows": 21126,
+    "memberships": {
+      "4f06f4685a5afdc9efc617cd": 21,
+      "9bb846609db59af75d8c5c90": 301
+    }
+  },
+  "collection_stats": {
+    "data_size_bytes": 208256256.0,
+    "index_size_bytes": 13180928.0,
+    "storage_size_bytes": 135168.0,
+    "objects": 600077
+  },
+  "indexes": {
+    "_id_": {
+      "key": [
+        [
+          "_id",
+          1
+        ]
+      ]
+    },
+    "userId_1": {
+      "key": [
+        [
+          "userId",
+          1
+        ]
+      ]
+    },
+    "orgId_1": {
+      "key": [
+        [
+          "orgId",
+          1
+        ]
+      ]
+    },
+    "initiator_1": {
+      "key": [
+        [
+          "initiator",
+          1
+        ]
+      ]
+    },
+    "agentKey_1": {
+      "key": [
+        [
+          "agentKey",
+          1
+        ]
+      ]
+    },
+    "projectId_1": {
+      "key": [
+        [
+          "projectId",
+          1
+        ]
+      ]
+    },
+    "sessionType_1_orgId_1_userId_1_lastActivityAt_-1": {
+      "key": [
+        [
+          "sessionType",
+          1
+        ],
+        [
+          "orgId",
+          1
+        ],
+        [
+          "userId",
+          1
+        ],
+        [
+          "lastActivityAt",
+          -1
+        ]
+      ]
+    },
+    "sessionType_1_orgId_1_initiator_1": {
+      "key": [
+        [
+          "sessionType",
+          1
+        ],
+        [
+          "orgId",
+          1
+        ],
+        [
+          "initiator",
+          1
+        ]
+      ]
+    },
+    "agentKey_1_orgId_1": {
+      "key": [
+        [
+          "agentKey",
+          1
+        ],
+        [
+          "orgId",
+          1
+        ]
+      ]
+    },
+    "userId_1_agentKey_1": {
+      "key": [
+        [
+          "userId",
+          1
+        ],
+        [
+          "agentKey",
+          1
+        ]
+      ]
+    },
+    "isShared_1": {
+      "key": [
+        [
+          "isShared",
+          1
+        ]
+      ]
+    },
+    "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1": {
+      "key": [
+        [
+          "orgId",
+          1
+        ],
+        [
+          "sharedWith.userId",
+          1
+        ],
+        [
+          "sessionType",
+          1
+        ],
+        [
+          "isDeleted",
+          1
+        ],
+        [
+          "lastActivityAt",
+          -1
+        ]
+      ]
+    },
+    "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1": {
+      "key": [
+        [
+          "orgId",
+          1
+        ],
+        [
+          "sharedWith.teamId",
+          1
+        ],
+        [
+          "sessionType",
+          1
+        ],
+        [
+          "isDeleted",
+          1
+        ],
+        [
+          "lastActivityAt",
+          -1
+        ]
+      ]
+    },
+    "orgId_1_initiator_1_creationKey_1": {
+      "key": [
+        [
+          "orgId",
+          1
+        ],
+        [
+          "initiator",
+          1
+        ],
+        [
+          "creationKey",
+          1
+        ]
+      ],
+      "partial": {
+        "creationKey": {
+          "$type": "string"
+        }
+      }
+    },
+    "projectId_1_orgId_1_isDeleted_1_lastActivityAt_-1": {
+      "key": [
+        [
+          "projectId",
+          1
+        ],
+        [
+          "orgId",
+          1
+        ],
+        [
+          "isDeleted",
+          1
+        ],
+        [
+          "lastActivityAt",
+          -1
+        ]
+      ]
+    },
+    "lastActivityAt_-1": {
+      "key": [
+        [
+          "lastActivityAt",
+          -1
+        ]
+      ]
+    }
+  },
+  "budget_ms": 200,
+  "results": {
+    "CollabU": {
+      "caller": "CollabU",
+      "team_ids_count": 21,
+      "matching_share_rows": {
+        "rows": 3208,
+        "sessions": 3047
+      },
+      "plans": {
+        "shared_list_page1": {
+          "name": "shared_list_page1",
+          "namespace": "chatSessions",
+          "stages": [
+            "PROJECTION_SIMPLE",
+            "SORT",
+            "FETCH",
+            "OR",
+            "FETCH",
+            "IXSCAN",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [
+            {
+              "stage": "SORT",
+              "limitAmount": 20,
+              "sortPattern": {
+                "lastActivityAt": -1,
+                "_id": -1
+              }
+            }
+          ],
+          "index_names": [
+            "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+            "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.userId": [
+                  "[ObjectId('4f06f4685a5afdc9efc617cd'), ObjectId('4f06f4685a5afdc9efc617cd')]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            },
+            {
+              "indexName": "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.teamId": [
+                  "[\"all_89d593650154bedaafc9feae\", \"all_89d593650154bedaafc9feae\"]",
+                  "[\"team-00000\", \"team-00000\"]",
+                  "[\"team-00001\", \"team-00001\"]",
+                  "[\"team-00002\", \"team-00002\"]",
+                  "[\"team-00003\", \"team-00003\"]",
+                  "[\"team-00004\", \"team-00004\"]",
+                  "[\"team-00005\", \"team-00005\"]",
+                  "[\"team-00006\", \"team-00006\"]",
+                  "[\"team-00007\", \"team-00007\"]",
+                  "[\"team-00008\", \"team-00008\"]",
+                  "[\"team-00009\", \"team-00009\"]",
+                  "[\"team-00010\", \"team-00010\"]",
+                  "[\"team-00011\", \"team-00011\"]",
+                  "[\"team-00012\", \"team-00012\"]",
+                  "[\"team-00013\", \"team-00013\"]",
+                  "[\"team-00014\", \"team-00014\"]",
+                  "[\"team-00015\", \"team-00015\"]",
+                  "[\"team-00016\", \"team-00016\"]",
+                  "[\"team-00017\", \"team-00017\"]",
+                  "[\"team-00018\", \"team-00018\"]",
+                  "[\"team-00019\", \"team-00019\"]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 20,
+          "total_keys_examined": 2880,
+          "total_docs_examined": 5414,
+          "execution_time_ms": 51,
+          "execution_time_ms_cold": 55,
+          "execution_time_ms_warm_runs": [
+            60,
+            51,
+            40
+          ],
+          "page_size": 20,
+          "command": {
+            "find": "chatSessions",
+            "sort": {
+              "lastActivityAt": -1,
+              "_id": -1
+            },
+            "projection": {
+              "__v": 0,
+              "sessionType": 0,
+              "archivedFor": 0,
+              "hiddenFor": 0,
+              "creationKey": 0,
+              "schemaVersion": 0
+            },
+            "skip": 0,
+            "limit": 20
+          },
+          "filter": {
+            "$and": [
+              {
+                "$and": [
+                  {
+                    "orgId": {
+                      "$oid": "89d593650154bedaafc9feae"
+                    },
+                    "isDeleted": false,
+                    "sessionType": "chat",
+                    "$or": [
+                      {
+                        "sharedWith": {
+                          "$elemMatch": {
+                            "userId": {
+                              "$oid": "4f06f4685a5afdc9efc617cd"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "sharedWith": {
+                          "$elemMatch": {
+                            "userId": null,
+                            "teamId": {
+                              "$in": [
+                                "team-00000",
+                                "team-00001",
+                                "team-00002",
+                                "team-00003",
+                                "team-00004",
+                                "team-00005",
+                                "team-00006",
+                                "team-00007",
+                                "team-00008",
+                                "team-00009",
+                                "team-00010",
+                                "team-00011",
+                                "team-00012",
+                                "team-00013",
+                                "team-00014",
+                                "team-00015",
+                                "team-00016",
+                                "team-00017",
+                                "team-00018",
+                                "team-00019",
+                                "all_89d593650154bedaafc9feae"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "archivedFor": {
+                      "$ne": {
+                        "$oid": "4f06f4685a5afdc9efc617cd"
+                      }
+                    }
+                  },
+                  {
+                    "hiddenFor": {
+                      "$ne": {
+                        "$oid": "4f06f4685a5afdc9efc617cd"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "isArchived": false
+              }
+            ]
+          },
+          "rejected_plans": 6,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "PROJECTION_SIMPLE > SORT > FETCH > OR > FETCH > IXSCAN > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages [{'stage': 'SORT', 'limitAmount': 20, 'sortPattern': {'lastActivityAt': -1, '_id': -1}}]"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "51 ms (budget 200)"
+            },
+            {
+              "id": "keys_examined_le_share_rows",
+              "ok": true,
+              "detail": "2880 keys examined, 3208 matching share rows"
+            },
+            {
+              "id": "docs_examined_le_2x_returned",
+              "ok": false,
+              "detail": "5414 docs examined for 20 returned",
+              "requirement": "PERF-03",
+              "informational": true
+            }
+          ]
+        },
+        "shared_list_count": {
+          "name": "shared_list_count",
+          "namespace": "chatSessions",
+          "stages": [
+            "GROUP",
+            "FETCH",
+            "OR",
+            "FETCH",
+            "IXSCAN",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [],
+          "index_names": [
+            "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+            "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.userId": [
+                  "[ObjectId('4f06f4685a5afdc9efc617cd'), ObjectId('4f06f4685a5afdc9efc617cd')]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            },
+            {
+              "indexName": "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.teamId": [
+                  "[\"all_89d593650154bedaafc9feae\", \"all_89d593650154bedaafc9feae\"]",
+                  "[\"team-00000\", \"team-00000\"]",
+                  "[\"team-00001\", \"team-00001\"]",
+                  "[\"team-00002\", \"team-00002\"]",
+                  "[\"team-00003\", \"team-00003\"]",
+                  "[\"team-00004\", \"team-00004\"]",
+                  "[\"team-00005\", \"team-00005\"]",
+                  "[\"team-00006\", \"team-00006\"]",
+                  "[\"team-00007\", \"team-00007\"]",
+                  "[\"team-00008\", \"team-00008\"]",
+                  "[\"team-00009\", \"team-00009\"]",
+                  "[\"team-00010\", \"team-00010\"]",
+                  "[\"team-00011\", \"team-00011\"]",
+                  "[\"team-00012\", \"team-00012\"]",
+                  "[\"team-00013\", \"team-00013\"]",
+                  "[\"team-00014\", \"team-00014\"]",
+                  "[\"team-00015\", \"team-00015\"]",
+                  "[\"team-00016\", \"team-00016\"]",
+                  "[\"team-00017\", \"team-00017\"]",
+                  "[\"team-00018\", \"team-00018\"]",
+                  "[\"team-00019\", \"team-00019\"]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 1,
+          "total_keys_examined": 2843,
+          "total_docs_examined": 2713,
+          "execution_time_ms": 8,
+          "execution_time_ms_cold": 10,
+          "execution_time_ms_warm_runs": [
+            8,
+            8,
+            7
+          ],
+          "page_size": null,
+          "command": {
+            "aggregate": "chatSessions",
+            "pipeline": [
+              {
+                "$match": {
+                  "$and": [
+                    {
+                      "$and": [
+                        {
+                          "orgId": {
+                            "$oid": "89d593650154bedaafc9feae"
+                          },
+                          "isDeleted": false,
+                          "sessionType": "chat",
+                          "$or": [
+                            {
+                              "sharedWith": {
+                                "$elemMatch": {
+                                  "userId": {
+                                    "$oid": "4f06f4685a5afdc9efc617cd"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "sharedWith": {
+                                "$elemMatch": {
+                                  "userId": null,
+                                  "teamId": {
+                                    "$in": [
+                                      "team-00000",
+                                      "team-00001",
+                                      "team-00002",
+                                      "team-00003",
+                                      "team-00004",
+                                      "team-00005",
+                                      "team-00006",
+                                      "team-00007",
+                                      "team-00008",
+                                      "team-00009",
+                                      "team-00010",
+                                      "team-00011",
+                                      "team-00012",
+                                      "team-00013",
+                                      "team-00014",
+                                      "team-00015",
+                                      "team-00016",
+                                      "team-00017",
+                                      "team-00018",
+                                      "team-00019",
+                                      "all_89d593650154bedaafc9feae"
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "archivedFor": {
+                            "$ne": {
+                              "$oid": "4f06f4685a5afdc9efc617cd"
+                            }
+                          }
+                        },
+                        {
+                          "hiddenFor": {
+                            "$ne": {
+                              "$oid": "4f06f4685a5afdc9efc617cd"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "isArchived": false
+                    }
+                  ]
+                }
+              },
+              {
+                "$group": {
+                  "_id": 1,
+                  "n": {
+                    "$sum": 1
+                  }
+                }
+              }
+            ]
+          },
+          "filter": null,
+          "rejected_plans": 6,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "GROUP > FETCH > OR > FETCH > IXSCAN > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages none (index order)"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "8 ms (budget 200)"
+            },
+            {
+              "id": "keys_examined_le_share_rows",
+              "ok": true,
+              "detail": "2843 keys examined, 3208 matching share rows"
+            }
+          ]
+        },
+        "by_id_gate": {
+          "name": "by_id_gate",
+          "namespace": "chatSessions",
+          "stages": [
+            "LIMIT",
+            "PROJECTION_SIMPLE",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [],
+          "index_names": [
+            "_id_"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "_id_",
+              "bounds": {
+                "_id": [
+                  "[ObjectId('6c0005390000000000000022'), ObjectId('6c0005390000000000000022')]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 1,
+          "total_keys_examined": 1,
+          "total_docs_examined": 1,
+          "execution_time_ms": 0,
+          "execution_time_ms_cold": 0,
+          "execution_time_ms_warm_runs": [
+            0,
+            0,
+            0
+          ],
+          "page_size": 1,
+          "command": {
+            "find": "chatSessions",
+            "projection": {
+              "orgId": 1,
+              "userId": 1,
+              "isDeleted": 1,
+              "sharedWith": 1,
+              "projectId": 1,
+              "projectVisibility": 1,
+              "settings": 1,
+              "aclVersion": 1,
+              "initiator": 1,
+              "isArchived": 1,
+              "agentKey": 1
+            },
+            "limit": 1
+          },
+          "filter": {
+            "_id": {
+              "$oid": "6c0005390000000000000022"
+            },
+            "orgId": {
+              "$oid": "89d593650154bedaafc9feae"
+            },
+            "isDeleted": false,
+            "sessionType": "chat"
+          },
+          "rejected_plans": 6,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "LIMIT > PROJECTION_SIMPLE > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages none (index order)"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "0 ms (budget 200)"
+            }
+          ]
+        },
+        "poll_304": {
+          "name": "poll_304",
+          "namespace": "chatSessions",
+          "stages": [
+            "LIMIT",
+            "PROJECTION_SIMPLE",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [],
+          "index_names": [
+            "_id_"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "_id_",
+              "bounds": {
+                "_id": [
+                  "[ObjectId('6c0005390000000000000022'), ObjectId('6c0005390000000000000022')]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 1,
+          "total_keys_examined": 1,
+          "total_docs_examined": 1,
+          "execution_time_ms": 0,
+          "execution_time_ms_cold": 0,
+          "execution_time_ms_warm_runs": [
+            0,
+            0,
+            0
+          ],
+          "page_size": 1,
+          "command": {
+            "find": "chatSessions",
+            "projection": {
+              "rev": 1
+            },
+            "limit": 1
+          },
+          "filter": {
+            "_id": {
+              "$oid": "6c0005390000000000000022"
+            },
+            "orgId": {
+              "$oid": "89d593650154bedaafc9feae"
+            },
+            "isDeleted": false
+          },
+          "rejected_plans": 4,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "LIMIT > PROJECTION_SIMPLE > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages none (index order)"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "0 ms (budget 200)"
+            },
+            {
+              "id": "one_rev_read",
+              "ok": true,
+              "detail": "1 finds projecting {rev: 1}",
+              "requirement": "PERF-05"
+            },
+            {
+              "id": "no_message_query",
+              "ok": true,
+              "detail": "0 message commands",
+              "requirement": "PERF-05"
+            },
+            {
+              "id": "by_id_read",
+              "ok": true,
+              "detail": "1 keys / 1 docs",
+              "requirement": "PERF-05"
+            }
+          ],
+          "other_session_reads_on_poll": 1
+        }
+      },
+      "http_page1": {
+        "returned": 20,
+        "total": 2674,
+        "expected_total": 2674
+      },
+      "by_id_gate_chat": "6c0005390000000000000022"
+    },
+    "CollabU300": {
+      "caller": "CollabU300",
+      "team_ids_count": 301,
+      "matching_share_rows": {
+        "rows": 6657,
+        "sessions": 5722
+      },
+      "plans": {
+        "shared_list_page1": {
+          "name": "shared_list_page1",
+          "namespace": "chatSessions",
+          "stages": [
+            "PROJECTION_SIMPLE",
+            "SORT",
+            "FETCH",
+            "OR",
+            "FETCH",
+            "IXSCAN",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [
+            {
+              "stage": "SORT",
+              "limitAmount": 20,
+              "sortPattern": {
+                "lastActivityAt": -1,
+                "_id": -1
+              }
+            }
+          ],
+          "index_names": [
+            "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+            "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.userId": [
+                  "[ObjectId('9bb846609db59af75d8c5c90'), ObjectId('9bb846609db59af75d8c5c90')]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            },
+            {
+              "indexName": "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.teamId": [
+                  "[\"all_89d593650154bedaafc9feae\", \"all_89d593650154bedaafc9feae\"]",
+                  "[\"team-00000\", \"team-00000\"]",
+                  "[\"team-00001\", \"team-00001\"]",
+                  "[\"team-00002\", \"team-00002\"]",
+                  "[\"team-00003\", \"team-00003\"]",
+                  "[\"team-00004\", \"team-00004\"]",
+                  "[\"team-00005\", \"team-00005\"]",
+                  "[\"team-00006\", \"team-00006\"]",
+                  "[\"team-00007\", \"team-00007\"]",
+                  "[\"team-00008\", \"team-00008\"]",
+                  "[\"team-00009\", \"team-00009\"]",
+                  "[\"team-00010\", \"team-00010\"]",
+                  "[\"team-00011\", \"team-00011\"]",
+                  "[\"team-00012\", \"team-00012\"]",
+                  "[\"team-00013\", \"team-00013\"]",
+                  "[\"team-00014\", \"team-00014\"]",
+                  "[\"team-00015\", \"team-00015\"]",
+                  "[\"team-00016\", \"team-00016\"]",
+                  "[\"team-00017\", \"team-00017\"]",
+                  "[\"team-00018\", \"team-00018\"]",
+                  "[\"team-00019\", \"team-00019\"]",
+                  "[\"team-00020\", \"team-00020\"]",
+                  "[\"team-00021\", \"team-00021\"]",
+                  "[\"team-00022\", \"team-00022\"]",
+                  "[\"team-00023\", \"team-00023\"]",
+                  "[\"team-00024\", \"team-00024\"]",
+                  "[\"team-00025\", \"team-00025\"]",
+                  "[\"team-00026\", \"team-00026\"]",
+                  "[\"team-00027\", \"team-00027\"]",
+                  "[\"team-00028\", \"team-00028\"]",
+                  "[\"team-00029\", \"team-00029\"]",
+                  "[\"team-00030\", \"team-00030\"]",
+                  "[\"team-00031\", \"team-00031\"]",
+                  "[\"team-00032\", \"team-00032\"]",
+                  "[\"team-00033\", \"team-00033\"]",
+                  "[\"team-00034\", \"team-00034\"]",
+                  "[\"team-00035\", \"team-00035\"]",
+                  "[\"team-00036\", \"team-00036\"]",
+                  "[\"team-00037\", \"team-00037\"]",
+                  "[\"team-00038\", \"team-00038\"]",
+                  "[\"team-00039\", \"team-00039\"]",
+                  "[\"team-00040\", \"team-00040\"]",
+                  "[\"team-00041\", \"team-00041\"]",
+                  "[\"team-00042\", \"team-00042\"]",
+                  "[\"team-00043\", \"team-00043\"]",
+                  "[\"team-00044\", \"team-00044\"]",
+                  "[\"team-00045\", \"team-00045\"]",
+                  "[\"team-00046\", \"team-00046\"]",
+                  "[\"team-00047\", \"team-00047\"]",
+                  "[\"team-00048\", \"team-00048\"]",
+                  "[\"team-00049\", \"team-00049\"]",
+                  "[\"team-00050\", \"team-00050\"]",
+                  "[\"team-00051\", \"team-00051\"]",
+                  "[\"team-00052\", \"team-00052\"]",
+                  "[\"team-00053\", \"team-00053\"]",
+                  "[\"team-00054\", \"team-00054\"]",
+                  "[\"team-00055\", \"team-00055\"]",
+                  "[\"team-00056\", \"team-00056\"]",
+                  "[\"team-00057\", \"team-00057\"]",
+                  "[\"team-00058\", \"team-00058\"]",
+                  "[\"team-00059\", \"team-00059\"]",
+                  "[\"team-00060\", \"team-00060\"]",
+                  "[\"team-00061\", \"team-00061\"]",
+                  "[\"team-00062\", \"team-00062\"]",
+                  "[\"team-00063\", \"team-00063\"]",
+                  "[\"team-00064\", \"team-00064\"]",
+                  "[\"team-00065\", \"team-00065\"]",
+                  "[\"team-00066\", \"team-00066\"]",
+                  "[\"team-00067\", \"team-00067\"]",
+                  "[\"team-00068\", \"team-00068\"]",
+                  "[\"team-00069\", \"team-00069\"]",
+                  "[\"team-00070\", \"team-00070\"]",
+                  "[\"team-00071\", \"team-00071\"]",
+                  "[\"team-00072\", \"team-00072\"]",
+                  "[\"team-00073\", \"team-00073\"]",
+                  "[\"team-00074\", \"team-00074\"]",
+                  "[\"team-00075\", \"team-00075\"]",
+                  "[\"team-00076\", \"team-00076\"]",
+                  "[\"team-00077\", \"team-00077\"]",
+                  "[\"team-00078\", \"team-00078\"]",
+                  "[\"team-00079\", \"team-00079\"]",
+                  "[\"team-00080\", \"team-00080\"]",
+                  "[\"team-00081\", \"team-00081\"]",
+                  "[\"team-00082\", \"team-00082\"]",
+                  "[\"team-00083\", \"team-00083\"]",
+                  "[\"team-00084\", \"team-00084\"]",
+                  "[\"team-00085\", \"team-00085\"]",
+                  "[\"team-00086\", \"team-00086\"]",
+                  "[\"team-00087\", \"team-00087\"]",
+                  "[\"team-00088\", \"team-00088\"]",
+                  "[\"team-00089\", \"team-00089\"]",
+                  "[\"team-00090\", \"team-00090\"]",
+                  "[\"team-00091\", \"team-00091\"]",
+                  "[\"team-00092\", \"team-00092\"]",
+                  "[\"team-00093\", \"team-00093\"]",
+                  "[\"team-00094\", \"team-00094\"]",
+                  "[\"team-00095\", \"team-00095\"]",
+                  "[\"team-00096\", \"team-00096\"]",
+                  "[\"team-00097\", \"team-00097\"]",
+                  "[\"team-00098\", \"team-00098\"]",
+                  "[\"team-00099\", \"team-00099\"]",
+                  "[\"team-00100\", \"team-00100\"]",
+                  "[\"team-00101\", \"team-00101\"]",
+                  "[\"team-00102\", \"team-00102\"]",
+                  "[\"team-00103\", \"team-00103\"]",
+                  "[\"team-00104\", \"team-00104\"]",
+                  "[\"team-00105\", \"team-00105\"]",
+                  "[\"team-00106\", \"team-00106\"]",
+                  "[\"team-00107\", \"team-00107\"]",
+                  "[\"team-00108\", \"team-00108\"]",
+                  "[\"team-00109\", \"team-00109\"]",
+                  "[\"team-00110\", \"team-00110\"]",
+                  "[\"team-00111\", \"team-00111\"]",
+                  "[\"team-00112\", \"team-00112\"]",
+                  "[\"team-00113\", \"team-00113\"]",
+                  "[\"team-00114\", \"team-00114\"]",
+                  "[\"team-00115\", \"team-00115\"]",
+                  "[\"team-00116\", \"team-00116\"]",
+                  "[\"team-00117\", \"team-00117\"]",
+                  "[\"team-00118\", \"team-00118\"]",
+                  "[\"team-00119\", \"team-00119\"]",
+                  "[\"team-00120\", \"team-00120\"]",
+                  "[\"team-00121\", \"team-00121\"]",
+                  "[\"team-00122\", \"team-00122\"]",
+                  "[\"team-00123\", \"team-00123\"]",
+                  "[\"team-00124\", \"team-00124\"]",
+                  "[\"team-00125\", \"team-00125\"]",
+                  "[\"team-00126\", \"team-00126\"]",
+                  "[\"team-00127\", \"team-00127\"]",
+                  "[\"team-00128\", \"team-00128\"]",
+                  "[\"team-00129\", \"team-00129\"]",
+                  "[\"team-00130\", \"team-00130\"]",
+                  "[\"team-00131\", \"team-00131\"]",
+                  "[\"team-00132\", \"team-00132\"]",
+                  "[\"team-00133\", \"team-00133\"]",
+                  "[\"team-00134\", \"team-00134\"]",
+                  "[\"team-00135\", \"team-00135\"]",
+                  "[\"team-00136\", \"team-00136\"]",
+                  "[\"team-00137\", \"team-00137\"]",
+                  "[\"team-00138\", \"team-00138\"]",
+                  "[\"team-00139\", \"team-00139\"]",
+                  "[\"team-00140\", \"team-00140\"]",
+                  "[\"team-00141\", \"team-00141\"]",
+                  "[\"team-00142\", \"team-00142\"]",
+                  "[\"team-00143\", \"team-00143\"]",
+                  "[\"team-00144\", \"team-00144\"]",
+                  "[\"team-00145\", \"team-00145\"]",
+                  "[\"team-00146\", \"team-00146\"]",
+                  "[\"team-00147\", \"team-00147\"]",
+                  "[\"team-00148\", \"team-00148\"]",
+                  "[\"team-00149\", \"team-00149\"]",
+                  "[\"team-00150\", \"team-00150\"]",
+                  "[\"team-00151\", \"team-00151\"]",
+                  "[\"team-00152\", \"team-00152\"]",
+                  "[\"team-00153\", \"team-00153\"]",
+                  "[\"team-00154\", \"team-00154\"]",
+                  "[\"team-00155\", \"team-00155\"]",
+                  "[\"team-00156\", \"team-00156\"]",
+                  "[\"team-00157\", \"team-00157\"]",
+                  "[\"team-00158\", \"team-00158\"]",
+                  "[\"team-00159\", \"team-00159\"]",
+                  "[\"team-00160\", \"team-00160\"]",
+                  "[\"team-00161\", \"team-00161\"]",
+                  "[\"team-00162\", \"team-00162\"]",
+                  "[\"team-00163\", \"team-00163\"]",
+                  "[\"team-00164\", \"team-00164\"]",
+                  "[\"team-00165\", \"team-00165\"]",
+                  "[\"team-00166\", \"team-00166\"]",
+                  "[\"team-00167\", \"team-00167\"]",
+                  "[\"team-00168\", \"team-00168\"]",
+                  "[\"team-00169\", \"team-00169\"]",
+                  "[\"team-00170\", \"team-00170\"]",
+                  "[\"team-00171\", \"team-00171\"]",
+                  "[\"team-00172\", \"team-00172\"]",
+                  "[\"team-00173\", \"team-00173\"]",
+                  "[\"team-00174\", \"team-00174\"]",
+                  "[\"team-00175\", \"team-00175\"]",
+                  "[\"team-00176\", \"team-00176\"]",
+                  "[\"team-00177\", \"team-00177\"]",
+                  "[\"team-00178\", \"team-00178\"]",
+                  "[\"team-00179\", \"team-00179\"]",
+                  "[\"team-00180\", \"team-00180\"]",
+                  "[\"team-00181\", \"team-00181\"]",
+                  "[\"team-00182\", \"team-00182\"]",
+                  "[\"team-00183\", \"team-00183\"]",
+                  "[\"team-00184\", \"team-00184\"]",
+                  "[\"team-00185\", \"team-00185\"]",
+                  "[\"team-00186\", \"team-00186\"]",
+                  "[\"team-00187\", \"team-00187\"]",
+                  "[\"team-00188\", \"team-00188\"]",
+                  "[\"team-00189\", \"team-00189\"]",
+                  "[\"team-00190\", \"team-00190\"]",
+                  "[\"team-00191\", \"team-00191\"]",
+                  "[\"team-00192\", \"team-00192\"]",
+                  "[\"team-00193\", \"team-00193\"]",
+                  "[\"team-00194\", \"team-00194\"]",
+                  "[\"team-00195\", \"team-00195\"]",
+                  "[\"team-00196\", \"team-00196\"]",
+                  "[\"team-00197\", \"team-00197\"]",
+                  "[\"team-00198\", \"team-00198\"]",
+                  "[\"team-00199\", \"team-00199\"]",
+                  "[\"team-00200\", \"team-00200\"]",
+                  "[\"team-00201\", \"team-00201\"]",
+                  "[\"team-00202\", \"team-00202\"]",
+                  "[\"team-00203\", \"team-00203\"]",
+                  "[\"team-00204\", \"team-00204\"]",
+                  "[\"team-00205\", \"team-00205\"]",
+                  "[\"team-00206\", \"team-00206\"]",
+                  "[\"team-00207\", \"team-00207\"]",
+                  "[\"team-00208\", \"team-00208\"]",
+                  "[\"team-00209\", \"team-00209\"]",
+                  "[\"team-00210\", \"team-00210\"]",
+                  "[\"team-00211\", \"team-00211\"]",
+                  "[\"team-00212\", \"team-00212\"]",
+                  "[\"team-00213\", \"team-00213\"]",
+                  "[\"team-00214\", \"team-00214\"]",
+                  "[\"team-00215\", \"team-00215\"]",
+                  "[\"team-00216\", \"team-00216\"]",
+                  "[\"team-00217\", \"team-00217\"]",
+                  "[\"team-00218\", \"team-00218\"]",
+                  "[\"team-00219\", \"team-00219\"]",
+                  "[\"team-00220\", \"team-00220\"]",
+                  "[\"team-00221\", \"team-00221\"]",
+                  "[\"team-00222\", \"team-00222\"]",
+                  "[\"team-00223\", \"team-00223\"]",
+                  "[\"team-00224\", \"team-00224\"]",
+                  "[\"team-00225\", \"team-00225\"]",
+                  "[\"team-00226\", \"team-00226\"]",
+                  "[\"team-00227\", \"team-00227\"]",
+                  "[\"team-00228\", \"team-00228\"]",
+                  "[\"team-00229\", \"team-00229\"]",
+                  "[\"team-00230\", \"team-00230\"]",
+                  "[\"team-00231\", \"team-00231\"]",
+                  "[\"team-00232\", \"team-00232\"]",
+                  "[\"team-00233\", \"team-00233\"]",
+                  "[\"team-00234\", \"team-00234\"]",
+                  "[\"team-00235\", \"team-00235\"]",
+                  "[\"team-00236\", \"team-00236\"]",
+                  "[\"team-00237\", \"team-00237\"]",
+                  "[\"team-00238\", \"team-00238\"]",
+                  "[\"team-00239\", \"team-00239\"]",
+                  "[\"team-00240\", \"team-00240\"]",
+                  "[\"team-00241\", \"team-00241\"]",
+                  "[\"team-00242\", \"team-00242\"]",
+                  "[\"team-00243\", \"team-00243\"]",
+                  "[\"team-00244\", \"team-00244\"]",
+                  "[\"team-00245\", \"team-00245\"]",
+                  "[\"team-00246\", \"team-00246\"]",
+                  "[\"team-00247\", \"team-00247\"]",
+                  "[\"team-00248\", \"team-00248\"]",
+                  "[\"team-00249\", \"team-00249\"]",
+                  "[\"team-00250\", \"team-00250\"]",
+                  "[\"team-00251\", \"team-00251\"]",
+                  "[\"team-00252\", \"team-00252\"]",
+                  "[\"team-00253\", \"team-00253\"]",
+                  "[\"team-00254\", \"team-00254\"]",
+                  "[\"team-00255\", \"team-00255\"]",
+                  "[\"team-00256\", \"team-00256\"]",
+                  "[\"team-00257\", \"team-00257\"]",
+                  "[\"team-00258\", \"team-00258\"]",
+                  "[\"team-00259\", \"team-00259\"]",
+                  "[\"team-00260\", \"team-00260\"]",
+                  "[\"team-00261\", \"team-00261\"]",
+                  "[\"team-00262\", \"team-00262\"]",
+                  "[\"team-00263\", \"team-00263\"]",
+                  "[\"team-00264\", \"team-00264\"]",
+                  "[\"team-00265\", \"team-00265\"]",
+                  "[\"team-00266\", \"team-00266\"]",
+                  "[\"team-00267\", \"team-00267\"]",
+                  "[\"team-00268\", \"team-00268\"]",
+                  "[\"team-00269\", \"team-00269\"]",
+                  "[\"team-00270\", \"team-00270\"]",
+                  "[\"team-00271\", \"team-00271\"]",
+                  "[\"team-00272\", \"team-00272\"]",
+                  "[\"team-00273\", \"team-00273\"]",
+                  "[\"team-00274\", \"team-00274\"]",
+                  "[\"team-00275\", \"team-00275\"]",
+                  "[\"team-00276\", \"team-00276\"]",
+                  "[\"team-00277\", \"team-00277\"]",
+                  "[\"team-00278\", \"team-00278\"]",
+                  "[\"team-00279\", \"team-00279\"]",
+                  "[\"team-00280\", \"team-00280\"]",
+                  "[\"team-00281\", \"team-00281\"]",
+                  "[\"team-00282\", \"team-00282\"]",
+                  "[\"team-00283\", \"team-00283\"]",
+                  "[\"team-00284\", \"team-00284\"]",
+                  "[\"team-00285\", \"team-00285\"]",
+                  "[\"team-00286\", \"team-00286\"]",
+                  "[\"team-00287\", \"team-00287\"]",
+                  "[\"team-00288\", \"team-00288\"]",
+                  "[\"team-00289\", \"team-00289\"]",
+                  "[\"team-00290\", \"team-00290\"]",
+                  "[\"team-00291\", \"team-00291\"]",
+                  "[\"team-00292\", \"team-00292\"]",
+                  "[\"team-00293\", \"team-00293\"]",
+                  "[\"team-00294\", \"team-00294\"]",
+                  "[\"team-00295\", \"team-00295\"]",
+                  "[\"team-00296\", \"team-00296\"]",
+                  "[\"team-00297\", \"team-00297\"]",
+                  "[\"team-00298\", \"team-00298\"]",
+                  "[\"team-00299\", \"team-00299\"]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 20,
+          "total_keys_examined": 6179,
+          "total_docs_examined": 10147,
+          "execution_time_ms": 100,
+          "execution_time_ms_cold": 100,
+          "execution_time_ms_warm_runs": [
+            100,
+            88,
+            117
+          ],
+          "page_size": 20,
+          "command": {
+            "find": "chatSessions",
+            "sort": {
+              "lastActivityAt": -1,
+              "_id": -1
+            },
+            "projection": {
+              "__v": 0,
+              "sessionType": 0,
+              "archivedFor": 0,
+              "hiddenFor": 0,
+              "creationKey": 0,
+              "schemaVersion": 0
+            },
+            "skip": 0,
+            "limit": 20
+          },
+          "filter": {
+            "$and": [
+              {
+                "$and": [
+                  {
+                    "orgId": {
+                      "$oid": "89d593650154bedaafc9feae"
+                    },
+                    "isDeleted": false,
+                    "sessionType": "chat",
+                    "$or": [
+                      {
+                        "sharedWith": {
+                          "$elemMatch": {
+                            "userId": {
+                              "$oid": "9bb846609db59af75d8c5c90"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "sharedWith": {
+                          "$elemMatch": {
+                            "userId": null,
+                            "teamId": {
+                              "$in": [
+                                "team-00000",
+                                "team-00001",
+                                "team-00002",
+                                "team-00003",
+                                "team-00004",
+                                "team-00005",
+                                "team-00006",
+                                "team-00007",
+                                "team-00008",
+                                "team-00009",
+                                "team-00010",
+                                "team-00011",
+                                "team-00012",
+                                "team-00013",
+                                "team-00014",
+                                "team-00015",
+                                "team-00016",
+                                "team-00017",
+                                "team-00018",
+                                "team-00019",
+                                "team-00020",
+                                "team-00021",
+                                "team-00022",
+                                "team-00023",
+                                "team-00024",
+                                "team-00025",
+                                "team-00026",
+                                "team-00027",
+                                "team-00028",
+                                "team-00029",
+                                "team-00030",
+                                "team-00031",
+                                "team-00032",
+                                "team-00033",
+                                "team-00034",
+                                "team-00035",
+                                "team-00036",
+                                "team-00037",
+                                "team-00038",
+                                "team-00039",
+                                "team-00040",
+                                "team-00041",
+                                "team-00042",
+                                "team-00043",
+                                "team-00044",
+                                "team-00045",
+                                "team-00046",
+                                "team-00047",
+                                "team-00048",
+                                "team-00049",
+                                "team-00050",
+                                "team-00051",
+                                "team-00052",
+                                "team-00053",
+                                "team-00054",
+                                "team-00055",
+                                "team-00056",
+                                "team-00057",
+                                "team-00058",
+                                "team-00059",
+                                "team-00060",
+                                "team-00061",
+                                "team-00062",
+                                "team-00063",
+                                "team-00064",
+                                "team-00065",
+                                "team-00066",
+                                "team-00067",
+                                "team-00068",
+                                "team-00069",
+                                "team-00070",
+                                "team-00071",
+                                "team-00072",
+                                "team-00073",
+                                "team-00074",
+                                "team-00075",
+                                "team-00076",
+                                "team-00077",
+                                "team-00078",
+                                "team-00079",
+                                "team-00080",
+                                "team-00081",
+                                "team-00082",
+                                "team-00083",
+                                "team-00084",
+                                "team-00085",
+                                "team-00086",
+                                "team-00087",
+                                "team-00088",
+                                "team-00089",
+                                "team-00090",
+                                "team-00091",
+                                "team-00092",
+                                "team-00093",
+                                "team-00094",
+                                "team-00095",
+                                "team-00096",
+                                "team-00097",
+                                "team-00098",
+                                "team-00099",
+                                "team-00100",
+                                "team-00101",
+                                "team-00102",
+                                "team-00103",
+                                "team-00104",
+                                "team-00105",
+                                "team-00106",
+                                "team-00107",
+                                "team-00108",
+                                "team-00109",
+                                "team-00110",
+                                "team-00111",
+                                "team-00112",
+                                "team-00113",
+                                "team-00114",
+                                "team-00115",
+                                "team-00116",
+                                "team-00117",
+                                "team-00118",
+                                "team-00119",
+                                "team-00120",
+                                "team-00121",
+                                "team-00122",
+                                "team-00123",
+                                "team-00124",
+                                "team-00125",
+                                "team-00126",
+                                "team-00127",
+                                "team-00128",
+                                "team-00129",
+                                "team-00130",
+                                "team-00131",
+                                "team-00132",
+                                "team-00133",
+                                "team-00134",
+                                "team-00135",
+                                "team-00136",
+                                "team-00137",
+                                "team-00138",
+                                "team-00139",
+                                "team-00140",
+                                "team-00141",
+                                "team-00142",
+                                "team-00143",
+                                "team-00144",
+                                "team-00145",
+                                "team-00146",
+                                "team-00147",
+                                "team-00148",
+                                "team-00149",
+                                "team-00150",
+                                "team-00151",
+                                "team-00152",
+                                "team-00153",
+                                "team-00154",
+                                "team-00155",
+                                "team-00156",
+                                "team-00157",
+                                "team-00158",
+                                "team-00159",
+                                "team-00160",
+                                "team-00161",
+                                "team-00162",
+                                "team-00163",
+                                "team-00164",
+                                "team-00165",
+                                "team-00166",
+                                "team-00167",
+                                "team-00168",
+                                "team-00169",
+                                "team-00170",
+                                "team-00171",
+                                "team-00172",
+                                "team-00173",
+                                "team-00174",
+                                "team-00175",
+                                "team-00176",
+                                "team-00177",
+                                "team-00178",
+                                "team-00179",
+                                "team-00180",
+                                "team-00181",
+                                "team-00182",
+                                "team-00183",
+                                "team-00184",
+                                "team-00185",
+                                "team-00186",
+                                "team-00187",
+                                "team-00188",
+                                "team-00189",
+                                "team-00190",
+                                "team-00191",
+                                "team-00192",
+                                "team-00193",
+                                "team-00194",
+                                "team-00195",
+                                "team-00196",
+                                "team-00197",
+                                "team-00198",
+                                "team-00199",
+                                "team-00200",
+                                "team-00201",
+                                "team-00202",
+                                "team-00203",
+                                "team-00204",
+                                "team-00205",
+                                "team-00206",
+                                "team-00207",
+                                "team-00208",
+                                "team-00209",
+                                "team-00210",
+                                "team-00211",
+                                "team-00212",
+                                "team-00213",
+                                "team-00214",
+                                "team-00215",
+                                "team-00216",
+                                "team-00217",
+                                "team-00218",
+                                "team-00219",
+                                "team-00220",
+                                "team-00221",
+                                "team-00222",
+                                "team-00223",
+                                "team-00224",
+                                "team-00225",
+                                "team-00226",
+                                "team-00227",
+                                "team-00228",
+                                "team-00229",
+                                "team-00230",
+                                "team-00231",
+                                "team-00232",
+                                "team-00233",
+                                "team-00234",
+                                "team-00235",
+                                "team-00236",
+                                "team-00237",
+                                "team-00238",
+                                "team-00239",
+                                "team-00240",
+                                "team-00241",
+                                "team-00242",
+                                "team-00243",
+                                "team-00244",
+                                "team-00245",
+                                "team-00246",
+                                "team-00247",
+                                "team-00248",
+                                "team-00249",
+                                "team-00250",
+                                "team-00251",
+                                "team-00252",
+                                "team-00253",
+                                "team-00254",
+                                "team-00255",
+                                "team-00256",
+                                "team-00257",
+                                "team-00258",
+                                "team-00259",
+                                "team-00260",
+                                "team-00261",
+                                "team-00262",
+                                "team-00263",
+                                "team-00264",
+                                "team-00265",
+                                "team-00266",
+                                "team-00267",
+                                "team-00268",
+                                "team-00269",
+                                "team-00270",
+                                "team-00271",
+                                "team-00272",
+                                "team-00273",
+                                "team-00274",
+                                "team-00275",
+                                "team-00276",
+                                "team-00277",
+                                "team-00278",
+                                "team-00279",
+                                "team-00280",
+                                "team-00281",
+                                "team-00282",
+                                "team-00283",
+                                "team-00284",
+                                "team-00285",
+                                "team-00286",
+                                "team-00287",
+                                "team-00288",
+                                "team-00289",
+                                "team-00290",
+                                "team-00291",
+                                "team-00292",
+                                "team-00293",
+                                "team-00294",
+                                "team-00295",
+                                "team-00296",
+                                "team-00297",
+                                "team-00298",
+                                "team-00299",
+                                "all_89d593650154bedaafc9feae"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "archivedFor": {
+                      "$ne": {
+                        "$oid": "9bb846609db59af75d8c5c90"
+                      }
+                    }
+                  },
+                  {
+                    "hiddenFor": {
+                      "$ne": {
+                        "$oid": "9bb846609db59af75d8c5c90"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "isArchived": false
+              }
+            ]
+          },
+          "rejected_plans": 6,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "PROJECTION_SIMPLE > SORT > FETCH > OR > FETCH > IXSCAN > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages [{'stage': 'SORT', 'limitAmount': 20, 'sortPattern': {'lastActivityAt': -1, '_id': -1}}]"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "100 ms (budget 200)"
+            },
+            {
+              "id": "keys_examined_le_share_rows",
+              "ok": true,
+              "detail": "6179 keys examined, 6657 matching share rows"
+            },
+            {
+              "id": "docs_examined_le_2x_returned",
+              "ok": false,
+              "detail": "10147 docs examined for 20 returned",
+              "requirement": "PERF-03",
+              "informational": true
+            }
+          ]
+        },
+        "shared_list_count": {
+          "name": "shared_list_count",
+          "namespace": "chatSessions",
+          "stages": [
+            "GROUP",
+            "FETCH",
+            "OR",
+            "FETCH",
+            "IXSCAN",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [],
+          "index_names": [
+            "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+            "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "orgId_1_sharedWith.userId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.userId": [
+                  "[ObjectId('9bb846609db59af75d8c5c90'), ObjectId('9bb846609db59af75d8c5c90')]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            },
+            {
+              "indexName": "orgId_1_sharedWith.teamId_1_sessionType_1_isDeleted_1_lastActivityAt_-1",
+              "bounds": {
+                "orgId": [
+                  "[ObjectId('89d593650154bedaafc9feae'), ObjectId('89d593650154bedaafc9feae')]"
+                ],
+                "sharedWith.teamId": [
+                  "[\"all_89d593650154bedaafc9feae\", \"all_89d593650154bedaafc9feae\"]",
+                  "[\"team-00000\", \"team-00000\"]",
+                  "[\"team-00001\", \"team-00001\"]",
+                  "[\"team-00002\", \"team-00002\"]",
+                  "[\"team-00003\", \"team-00003\"]",
+                  "[\"team-00004\", \"team-00004\"]",
+                  "[\"team-00005\", \"team-00005\"]",
+                  "[\"team-00006\", \"team-00006\"]",
+                  "[\"team-00007\", \"team-00007\"]",
+                  "[\"team-00008\", \"team-00008\"]",
+                  "[\"team-00009\", \"team-00009\"]",
+                  "[\"team-00010\", \"team-00010\"]",
+                  "[\"team-00011\", \"team-00011\"]",
+                  "[\"team-00012\", \"team-00012\"]",
+                  "[\"team-00013\", \"team-00013\"]",
+                  "[\"team-00014\", \"team-00014\"]",
+                  "[\"team-00015\", \"team-00015\"]",
+                  "[\"team-00016\", \"team-00016\"]",
+                  "[\"team-00017\", \"team-00017\"]",
+                  "[\"team-00018\", \"team-00018\"]",
+                  "[\"team-00019\", \"team-00019\"]",
+                  "[\"team-00020\", \"team-00020\"]",
+                  "[\"team-00021\", \"team-00021\"]",
+                  "[\"team-00022\", \"team-00022\"]",
+                  "[\"team-00023\", \"team-00023\"]",
+                  "[\"team-00024\", \"team-00024\"]",
+                  "[\"team-00025\", \"team-00025\"]",
+                  "[\"team-00026\", \"team-00026\"]",
+                  "[\"team-00027\", \"team-00027\"]",
+                  "[\"team-00028\", \"team-00028\"]",
+                  "[\"team-00029\", \"team-00029\"]",
+                  "[\"team-00030\", \"team-00030\"]",
+                  "[\"team-00031\", \"team-00031\"]",
+                  "[\"team-00032\", \"team-00032\"]",
+                  "[\"team-00033\", \"team-00033\"]",
+                  "[\"team-00034\", \"team-00034\"]",
+                  "[\"team-00035\", \"team-00035\"]",
+                  "[\"team-00036\", \"team-00036\"]",
+                  "[\"team-00037\", \"team-00037\"]",
+                  "[\"team-00038\", \"team-00038\"]",
+                  "[\"team-00039\", \"team-00039\"]",
+                  "[\"team-00040\", \"team-00040\"]",
+                  "[\"team-00041\", \"team-00041\"]",
+                  "[\"team-00042\", \"team-00042\"]",
+                  "[\"team-00043\", \"team-00043\"]",
+                  "[\"team-00044\", \"team-00044\"]",
+                  "[\"team-00045\", \"team-00045\"]",
+                  "[\"team-00046\", \"team-00046\"]",
+                  "[\"team-00047\", \"team-00047\"]",
+                  "[\"team-00048\", \"team-00048\"]",
+                  "[\"team-00049\", \"team-00049\"]",
+                  "[\"team-00050\", \"team-00050\"]",
+                  "[\"team-00051\", \"team-00051\"]",
+                  "[\"team-00052\", \"team-00052\"]",
+                  "[\"team-00053\", \"team-00053\"]",
+                  "[\"team-00054\", \"team-00054\"]",
+                  "[\"team-00055\", \"team-00055\"]",
+                  "[\"team-00056\", \"team-00056\"]",
+                  "[\"team-00057\", \"team-00057\"]",
+                  "[\"team-00058\", \"team-00058\"]",
+                  "[\"team-00059\", \"team-00059\"]",
+                  "[\"team-00060\", \"team-00060\"]",
+                  "[\"team-00061\", \"team-00061\"]",
+                  "[\"team-00062\", \"team-00062\"]",
+                  "[\"team-00063\", \"team-00063\"]",
+                  "[\"team-00064\", \"team-00064\"]",
+                  "[\"team-00065\", \"team-00065\"]",
+                  "[\"team-00066\", \"team-00066\"]",
+                  "[\"team-00067\", \"team-00067\"]",
+                  "[\"team-00068\", \"team-00068\"]",
+                  "[\"team-00069\", \"team-00069\"]",
+                  "[\"team-00070\", \"team-00070\"]",
+                  "[\"team-00071\", \"team-00071\"]",
+                  "[\"team-00072\", \"team-00072\"]",
+                  "[\"team-00073\", \"team-00073\"]",
+                  "[\"team-00074\", \"team-00074\"]",
+                  "[\"team-00075\", \"team-00075\"]",
+                  "[\"team-00076\", \"team-00076\"]",
+                  "[\"team-00077\", \"team-00077\"]",
+                  "[\"team-00078\", \"team-00078\"]",
+                  "[\"team-00079\", \"team-00079\"]",
+                  "[\"team-00080\", \"team-00080\"]",
+                  "[\"team-00081\", \"team-00081\"]",
+                  "[\"team-00082\", \"team-00082\"]",
+                  "[\"team-00083\", \"team-00083\"]",
+                  "[\"team-00084\", \"team-00084\"]",
+                  "[\"team-00085\", \"team-00085\"]",
+                  "[\"team-00086\", \"team-00086\"]",
+                  "[\"team-00087\", \"team-00087\"]",
+                  "[\"team-00088\", \"team-00088\"]",
+                  "[\"team-00089\", \"team-00089\"]",
+                  "[\"team-00090\", \"team-00090\"]",
+                  "[\"team-00091\", \"team-00091\"]",
+                  "[\"team-00092\", \"team-00092\"]",
+                  "[\"team-00093\", \"team-00093\"]",
+                  "[\"team-00094\", \"team-00094\"]",
+                  "[\"team-00095\", \"team-00095\"]",
+                  "[\"team-00096\", \"team-00096\"]",
+                  "[\"team-00097\", \"team-00097\"]",
+                  "[\"team-00098\", \"team-00098\"]",
+                  "[\"team-00099\", \"team-00099\"]",
+                  "[\"team-00100\", \"team-00100\"]",
+                  "[\"team-00101\", \"team-00101\"]",
+                  "[\"team-00102\", \"team-00102\"]",
+                  "[\"team-00103\", \"team-00103\"]",
+                  "[\"team-00104\", \"team-00104\"]",
+                  "[\"team-00105\", \"team-00105\"]",
+                  "[\"team-00106\", \"team-00106\"]",
+                  "[\"team-00107\", \"team-00107\"]",
+                  "[\"team-00108\", \"team-00108\"]",
+                  "[\"team-00109\", \"team-00109\"]",
+                  "[\"team-00110\", \"team-00110\"]",
+                  "[\"team-00111\", \"team-00111\"]",
+                  "[\"team-00112\", \"team-00112\"]",
+                  "[\"team-00113\", \"team-00113\"]",
+                  "[\"team-00114\", \"team-00114\"]",
+                  "[\"team-00115\", \"team-00115\"]",
+                  "[\"team-00116\", \"team-00116\"]",
+                  "[\"team-00117\", \"team-00117\"]",
+                  "[\"team-00118\", \"team-00118\"]",
+                  "[\"team-00119\", \"team-00119\"]",
+                  "[\"team-00120\", \"team-00120\"]",
+                  "[\"team-00121\", \"team-00121\"]",
+                  "[\"team-00122\", \"team-00122\"]",
+                  "[\"team-00123\", \"team-00123\"]",
+                  "[\"team-00124\", \"team-00124\"]",
+                  "[\"team-00125\", \"team-00125\"]",
+                  "[\"team-00126\", \"team-00126\"]",
+                  "[\"team-00127\", \"team-00127\"]",
+                  "[\"team-00128\", \"team-00128\"]",
+                  "[\"team-00129\", \"team-00129\"]",
+                  "[\"team-00130\", \"team-00130\"]",
+                  "[\"team-00131\", \"team-00131\"]",
+                  "[\"team-00132\", \"team-00132\"]",
+                  "[\"team-00133\", \"team-00133\"]",
+                  "[\"team-00134\", \"team-00134\"]",
+                  "[\"team-00135\", \"team-00135\"]",
+                  "[\"team-00136\", \"team-00136\"]",
+                  "[\"team-00137\", \"team-00137\"]",
+                  "[\"team-00138\", \"team-00138\"]",
+                  "[\"team-00139\", \"team-00139\"]",
+                  "[\"team-00140\", \"team-00140\"]",
+                  "[\"team-00141\", \"team-00141\"]",
+                  "[\"team-00142\", \"team-00142\"]",
+                  "[\"team-00143\", \"team-00143\"]",
+                  "[\"team-00144\", \"team-00144\"]",
+                  "[\"team-00145\", \"team-00145\"]",
+                  "[\"team-00146\", \"team-00146\"]",
+                  "[\"team-00147\", \"team-00147\"]",
+                  "[\"team-00148\", \"team-00148\"]",
+                  "[\"team-00149\", \"team-00149\"]",
+                  "[\"team-00150\", \"team-00150\"]",
+                  "[\"team-00151\", \"team-00151\"]",
+                  "[\"team-00152\", \"team-00152\"]",
+                  "[\"team-00153\", \"team-00153\"]",
+                  "[\"team-00154\", \"team-00154\"]",
+                  "[\"team-00155\", \"team-00155\"]",
+                  "[\"team-00156\", \"team-00156\"]",
+                  "[\"team-00157\", \"team-00157\"]",
+                  "[\"team-00158\", \"team-00158\"]",
+                  "[\"team-00159\", \"team-00159\"]",
+                  "[\"team-00160\", \"team-00160\"]",
+                  "[\"team-00161\", \"team-00161\"]",
+                  "[\"team-00162\", \"team-00162\"]",
+                  "[\"team-00163\", \"team-00163\"]",
+                  "[\"team-00164\", \"team-00164\"]",
+                  "[\"team-00165\", \"team-00165\"]",
+                  "[\"team-00166\", \"team-00166\"]",
+                  "[\"team-00167\", \"team-00167\"]",
+                  "[\"team-00168\", \"team-00168\"]",
+                  "[\"team-00169\", \"team-00169\"]",
+                  "[\"team-00170\", \"team-00170\"]",
+                  "[\"team-00171\", \"team-00171\"]",
+                  "[\"team-00172\", \"team-00172\"]",
+                  "[\"team-00173\", \"team-00173\"]",
+                  "[\"team-00174\", \"team-00174\"]",
+                  "[\"team-00175\", \"team-00175\"]",
+                  "[\"team-00176\", \"team-00176\"]",
+                  "[\"team-00177\", \"team-00177\"]",
+                  "[\"team-00178\", \"team-00178\"]",
+                  "[\"team-00179\", \"team-00179\"]",
+                  "[\"team-00180\", \"team-00180\"]",
+                  "[\"team-00181\", \"team-00181\"]",
+                  "[\"team-00182\", \"team-00182\"]",
+                  "[\"team-00183\", \"team-00183\"]",
+                  "[\"team-00184\", \"team-00184\"]",
+                  "[\"team-00185\", \"team-00185\"]",
+                  "[\"team-00186\", \"team-00186\"]",
+                  "[\"team-00187\", \"team-00187\"]",
+                  "[\"team-00188\", \"team-00188\"]",
+                  "[\"team-00189\", \"team-00189\"]",
+                  "[\"team-00190\", \"team-00190\"]",
+                  "[\"team-00191\", \"team-00191\"]",
+                  "[\"team-00192\", \"team-00192\"]",
+                  "[\"team-00193\", \"team-00193\"]",
+                  "[\"team-00194\", \"team-00194\"]",
+                  "[\"team-00195\", \"team-00195\"]",
+                  "[\"team-00196\", \"team-00196\"]",
+                  "[\"team-00197\", \"team-00197\"]",
+                  "[\"team-00198\", \"team-00198\"]",
+                  "[\"team-00199\", \"team-00199\"]",
+                  "[\"team-00200\", \"team-00200\"]",
+                  "[\"team-00201\", \"team-00201\"]",
+                  "[\"team-00202\", \"team-00202\"]",
+                  "[\"team-00203\", \"team-00203\"]",
+                  "[\"team-00204\", \"team-00204\"]",
+                  "[\"team-00205\", \"team-00205\"]",
+                  "[\"team-00206\", \"team-00206\"]",
+                  "[\"team-00207\", \"team-00207\"]",
+                  "[\"team-00208\", \"team-00208\"]",
+                  "[\"team-00209\", \"team-00209\"]",
+                  "[\"team-00210\", \"team-00210\"]",
+                  "[\"team-00211\", \"team-00211\"]",
+                  "[\"team-00212\", \"team-00212\"]",
+                  "[\"team-00213\", \"team-00213\"]",
+                  "[\"team-00214\", \"team-00214\"]",
+                  "[\"team-00215\", \"team-00215\"]",
+                  "[\"team-00216\", \"team-00216\"]",
+                  "[\"team-00217\", \"team-00217\"]",
+                  "[\"team-00218\", \"team-00218\"]",
+                  "[\"team-00219\", \"team-00219\"]",
+                  "[\"team-00220\", \"team-00220\"]",
+                  "[\"team-00221\", \"team-00221\"]",
+                  "[\"team-00222\", \"team-00222\"]",
+                  "[\"team-00223\", \"team-00223\"]",
+                  "[\"team-00224\", \"team-00224\"]",
+                  "[\"team-00225\", \"team-00225\"]",
+                  "[\"team-00226\", \"team-00226\"]",
+                  "[\"team-00227\", \"team-00227\"]",
+                  "[\"team-00228\", \"team-00228\"]",
+                  "[\"team-00229\", \"team-00229\"]",
+                  "[\"team-00230\", \"team-00230\"]",
+                  "[\"team-00231\", \"team-00231\"]",
+                  "[\"team-00232\", \"team-00232\"]",
+                  "[\"team-00233\", \"team-00233\"]",
+                  "[\"team-00234\", \"team-00234\"]",
+                  "[\"team-00235\", \"team-00235\"]",
+                  "[\"team-00236\", \"team-00236\"]",
+                  "[\"team-00237\", \"team-00237\"]",
+                  "[\"team-00238\", \"team-00238\"]",
+                  "[\"team-00239\", \"team-00239\"]",
+                  "[\"team-00240\", \"team-00240\"]",
+                  "[\"team-00241\", \"team-00241\"]",
+                  "[\"team-00242\", \"team-00242\"]",
+                  "[\"team-00243\", \"team-00243\"]",
+                  "[\"team-00244\", \"team-00244\"]",
+                  "[\"team-00245\", \"team-00245\"]",
+                  "[\"team-00246\", \"team-00246\"]",
+                  "[\"team-00247\", \"team-00247\"]",
+                  "[\"team-00248\", \"team-00248\"]",
+                  "[\"team-00249\", \"team-00249\"]",
+                  "[\"team-00250\", \"team-00250\"]",
+                  "[\"team-00251\", \"team-00251\"]",
+                  "[\"team-00252\", \"team-00252\"]",
+                  "[\"team-00253\", \"team-00253\"]",
+                  "[\"team-00254\", \"team-00254\"]",
+                  "[\"team-00255\", \"team-00255\"]",
+                  "[\"team-00256\", \"team-00256\"]",
+                  "[\"team-00257\", \"team-00257\"]",
+                  "[\"team-00258\", \"team-00258\"]",
+                  "[\"team-00259\", \"team-00259\"]",
+                  "[\"team-00260\", \"team-00260\"]",
+                  "[\"team-00261\", \"team-00261\"]",
+                  "[\"team-00262\", \"team-00262\"]",
+                  "[\"team-00263\", \"team-00263\"]",
+                  "[\"team-00264\", \"team-00264\"]",
+                  "[\"team-00265\", \"team-00265\"]",
+                  "[\"team-00266\", \"team-00266\"]",
+                  "[\"team-00267\", \"team-00267\"]",
+                  "[\"team-00268\", \"team-00268\"]",
+                  "[\"team-00269\", \"team-00269\"]",
+                  "[\"team-00270\", \"team-00270\"]",
+                  "[\"team-00271\", \"team-00271\"]",
+                  "[\"team-00272\", \"team-00272\"]",
+                  "[\"team-00273\", \"team-00273\"]",
+                  "[\"team-00274\", \"team-00274\"]",
+                  "[\"team-00275\", \"team-00275\"]",
+                  "[\"team-00276\", \"team-00276\"]",
+                  "[\"team-00277\", \"team-00277\"]",
+                  "[\"team-00278\", \"team-00278\"]",
+                  "[\"team-00279\", \"team-00279\"]",
+                  "[\"team-00280\", \"team-00280\"]",
+                  "[\"team-00281\", \"team-00281\"]",
+                  "[\"team-00282\", \"team-00282\"]",
+                  "[\"team-00283\", \"team-00283\"]",
+                  "[\"team-00284\", \"team-00284\"]",
+                  "[\"team-00285\", \"team-00285\"]",
+                  "[\"team-00286\", \"team-00286\"]",
+                  "[\"team-00287\", \"team-00287\"]",
+                  "[\"team-00288\", \"team-00288\"]",
+                  "[\"team-00289\", \"team-00289\"]",
+                  "[\"team-00290\", \"team-00290\"]",
+                  "[\"team-00291\", \"team-00291\"]",
+                  "[\"team-00292\", \"team-00292\"]",
+                  "[\"team-00293\", \"team-00293\"]",
+                  "[\"team-00294\", \"team-00294\"]",
+                  "[\"team-00295\", \"team-00295\"]",
+                  "[\"team-00296\", \"team-00296\"]",
+                  "[\"team-00297\", \"team-00297\"]",
+                  "[\"team-00298\", \"team-00298\"]",
+                  "[\"team-00299\", \"team-00299\"]"
+                ],
+                "sessionType": [
+                  "[\"chat\", \"chat\"]"
+                ],
+                "isDeleted": [
+                  "[false, false]"
+                ],
+                "lastActivityAt": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 1,
+          "total_keys_examined": 5884,
+          "total_docs_examined": 5086,
+          "execution_time_ms": 25,
+          "execution_time_ms_cold": 23,
+          "execution_time_ms_warm_runs": [
+            23,
+            26,
+            25
+          ],
+          "page_size": null,
+          "command": {
+            "aggregate": "chatSessions",
+            "pipeline": [
+              {
+                "$match": {
+                  "$and": [
+                    {
+                      "$and": [
+                        {
+                          "orgId": {
+                            "$oid": "89d593650154bedaafc9feae"
+                          },
+                          "isDeleted": false,
+                          "sessionType": "chat",
+                          "$or": [
+                            {
+                              "sharedWith": {
+                                "$elemMatch": {
+                                  "userId": {
+                                    "$oid": "9bb846609db59af75d8c5c90"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "sharedWith": {
+                                "$elemMatch": {
+                                  "userId": null,
+                                  "teamId": {
+                                    "$in": [
+                                      "team-00000",
+                                      "team-00001",
+                                      "team-00002",
+                                      "team-00003",
+                                      "team-00004",
+                                      "team-00005",
+                                      "team-00006",
+                                      "team-00007",
+                                      "team-00008",
+                                      "team-00009",
+                                      "team-00010",
+                                      "team-00011",
+                                      "team-00012",
+                                      "team-00013",
+                                      "team-00014",
+                                      "team-00015",
+                                      "team-00016",
+                                      "team-00017",
+                                      "team-00018",
+                                      "team-00019",
+                                      "team-00020",
+                                      "team-00021",
+                                      "team-00022",
+                                      "team-00023",
+                                      "team-00024",
+                                      "team-00025",
+                                      "team-00026",
+                                      "team-00027",
+                                      "team-00028",
+                                      "team-00029",
+                                      "team-00030",
+                                      "team-00031",
+                                      "team-00032",
+                                      "team-00033",
+                                      "team-00034",
+                                      "team-00035",
+                                      "team-00036",
+                                      "team-00037",
+                                      "team-00038",
+                                      "team-00039",
+                                      "team-00040",
+                                      "team-00041",
+                                      "team-00042",
+                                      "team-00043",
+                                      "team-00044",
+                                      "team-00045",
+                                      "team-00046",
+                                      "team-00047",
+                                      "team-00048",
+                                      "team-00049",
+                                      "team-00050",
+                                      "team-00051",
+                                      "team-00052",
+                                      "team-00053",
+                                      "team-00054",
+                                      "team-00055",
+                                      "team-00056",
+                                      "team-00057",
+                                      "team-00058",
+                                      "team-00059",
+                                      "team-00060",
+                                      "team-00061",
+                                      "team-00062",
+                                      "team-00063",
+                                      "team-00064",
+                                      "team-00065",
+                                      "team-00066",
+                                      "team-00067",
+                                      "team-00068",
+                                      "team-00069",
+                                      "team-00070",
+                                      "team-00071",
+                                      "team-00072",
+                                      "team-00073",
+                                      "team-00074",
+                                      "team-00075",
+                                      "team-00076",
+                                      "team-00077",
+                                      "team-00078",
+                                      "team-00079",
+                                      "team-00080",
+                                      "team-00081",
+                                      "team-00082",
+                                      "team-00083",
+                                      "team-00084",
+                                      "team-00085",
+                                      "team-00086",
+                                      "team-00087",
+                                      "team-00088",
+                                      "team-00089",
+                                      "team-00090",
+                                      "team-00091",
+                                      "team-00092",
+                                      "team-00093",
+                                      "team-00094",
+                                      "team-00095",
+                                      "team-00096",
+                                      "team-00097",
+                                      "team-00098",
+                                      "team-00099",
+                                      "team-00100",
+                                      "team-00101",
+                                      "team-00102",
+                                      "team-00103",
+                                      "team-00104",
+                                      "team-00105",
+                                      "team-00106",
+                                      "team-00107",
+                                      "team-00108",
+                                      "team-00109",
+                                      "team-00110",
+                                      "team-00111",
+                                      "team-00112",
+                                      "team-00113",
+                                      "team-00114",
+                                      "team-00115",
+                                      "team-00116",
+                                      "team-00117",
+                                      "team-00118",
+                                      "team-00119",
+                                      "team-00120",
+                                      "team-00121",
+                                      "team-00122",
+                                      "team-00123",
+                                      "team-00124",
+                                      "team-00125",
+                                      "team-00126",
+                                      "team-00127",
+                                      "team-00128",
+                                      "team-00129",
+                                      "team-00130",
+                                      "team-00131",
+                                      "team-00132",
+                                      "team-00133",
+                                      "team-00134",
+                                      "team-00135",
+                                      "team-00136",
+                                      "team-00137",
+                                      "team-00138",
+                                      "team-00139",
+                                      "team-00140",
+                                      "team-00141",
+                                      "team-00142",
+                                      "team-00143",
+                                      "team-00144",
+                                      "team-00145",
+                                      "team-00146",
+                                      "team-00147",
+                                      "team-00148",
+                                      "team-00149",
+                                      "team-00150",
+                                      "team-00151",
+                                      "team-00152",
+                                      "team-00153",
+                                      "team-00154",
+                                      "team-00155",
+                                      "team-00156",
+                                      "team-00157",
+                                      "team-00158",
+                                      "team-00159",
+                                      "team-00160",
+                                      "team-00161",
+                                      "team-00162",
+                                      "team-00163",
+                                      "team-00164",
+                                      "team-00165",
+                                      "team-00166",
+                                      "team-00167",
+                                      "team-00168",
+                                      "team-00169",
+                                      "team-00170",
+                                      "team-00171",
+                                      "team-00172",
+                                      "team-00173",
+                                      "team-00174",
+                                      "team-00175",
+                                      "team-00176",
+                                      "team-00177",
+                                      "team-00178",
+                                      "team-00179",
+                                      "team-00180",
+                                      "team-00181",
+                                      "team-00182",
+                                      "team-00183",
+                                      "team-00184",
+                                      "team-00185",
+                                      "team-00186",
+                                      "team-00187",
+                                      "team-00188",
+                                      "team-00189",
+                                      "team-00190",
+                                      "team-00191",
+                                      "team-00192",
+                                      "team-00193",
+                                      "team-00194",
+                                      "team-00195",
+                                      "team-00196",
+                                      "team-00197",
+                                      "team-00198",
+                                      "team-00199",
+                                      "team-00200",
+                                      "team-00201",
+                                      "team-00202",
+                                      "team-00203",
+                                      "team-00204",
+                                      "team-00205",
+                                      "team-00206",
+                                      "team-00207",
+                                      "team-00208",
+                                      "team-00209",
+                                      "team-00210",
+                                      "team-00211",
+                                      "team-00212",
+                                      "team-00213",
+                                      "team-00214",
+                                      "team-00215",
+                                      "team-00216",
+                                      "team-00217",
+                                      "team-00218",
+                                      "team-00219",
+                                      "team-00220",
+                                      "team-00221",
+                                      "team-00222",
+                                      "team-00223",
+                                      "team-00224",
+                                      "team-00225",
+                                      "team-00226",
+                                      "team-00227",
+                                      "team-00228",
+                                      "team-00229",
+                                      "team-00230",
+                                      "team-00231",
+                                      "team-00232",
+                                      "team-00233",
+                                      "team-00234",
+                                      "team-00235",
+                                      "team-00236",
+                                      "team-00237",
+                                      "team-00238",
+                                      "team-00239",
+                                      "team-00240",
+                                      "team-00241",
+                                      "team-00242",
+                                      "team-00243",
+                                      "team-00244",
+                                      "team-00245",
+                                      "team-00246",
+                                      "team-00247",
+                                      "team-00248",
+                                      "team-00249",
+                                      "team-00250",
+                                      "team-00251",
+                                      "team-00252",
+                                      "team-00253",
+                                      "team-00254",
+                                      "team-00255",
+                                      "team-00256",
+                                      "team-00257",
+                                      "team-00258",
+                                      "team-00259",
+                                      "team-00260",
+                                      "team-00261",
+                                      "team-00262",
+                                      "team-00263",
+                                      "team-00264",
+                                      "team-00265",
+                                      "team-00266",
+                                      "team-00267",
+                                      "team-00268",
+                                      "team-00269",
+                                      "team-00270",
+                                      "team-00271",
+                                      "team-00272",
+                                      "team-00273",
+                                      "team-00274",
+                                      "team-00275",
+                                      "team-00276",
+                                      "team-00277",
+                                      "team-00278",
+                                      "team-00279",
+                                      "team-00280",
+                                      "team-00281",
+                                      "team-00282",
+                                      "team-00283",
+                                      "team-00284",
+                                      "team-00285",
+                                      "team-00286",
+                                      "team-00287",
+                                      "team-00288",
+                                      "team-00289",
+                                      "team-00290",
+                                      "team-00291",
+                                      "team-00292",
+                                      "team-00293",
+                                      "team-00294",
+                                      "team-00295",
+                                      "team-00296",
+                                      "team-00297",
+                                      "team-00298",
+                                      "team-00299",
+                                      "all_89d593650154bedaafc9feae"
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "archivedFor": {
+                            "$ne": {
+                              "$oid": "9bb846609db59af75d8c5c90"
+                            }
+                          }
+                        },
+                        {
+                          "hiddenFor": {
+                            "$ne": {
+                              "$oid": "9bb846609db59af75d8c5c90"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "isArchived": false
+                    }
+                  ]
+                }
+              },
+              {
+                "$group": {
+                  "_id": 1,
+                  "n": {
+                    "$sum": 1
+                  }
+                }
+              }
+            ]
+          },
+          "filter": null,
+          "rejected_plans": 6,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "GROUP > FETCH > OR > FETCH > IXSCAN > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages none (index order)"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "25 ms (budget 200)"
+            },
+            {
+              "id": "keys_examined_le_share_rows",
+              "ok": true,
+              "detail": "5884 keys examined, 6657 matching share rows"
+            }
+          ]
+        },
+        "by_id_gate": {
+          "name": "by_id_gate",
+          "namespace": "chatSessions",
+          "stages": [
+            "LIMIT",
+            "PROJECTION_SIMPLE",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [],
+          "index_names": [
+            "_id_"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "_id_",
+              "bounds": {
+                "_id": [
+                  "[ObjectId('6c0005390000000000000008'), ObjectId('6c0005390000000000000008')]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 1,
+          "total_keys_examined": 1,
+          "total_docs_examined": 1,
+          "execution_time_ms": 0,
+          "execution_time_ms_cold": 0,
+          "execution_time_ms_warm_runs": [
+            0,
+            0,
+            0
+          ],
+          "page_size": 1,
+          "command": {
+            "find": "chatSessions",
+            "projection": {
+              "orgId": 1,
+              "userId": 1,
+              "isDeleted": 1,
+              "sharedWith": 1,
+              "projectId": 1,
+              "projectVisibility": 1,
+              "settings": 1,
+              "aclVersion": 1,
+              "initiator": 1,
+              "isArchived": 1,
+              "agentKey": 1
+            },
+            "limit": 1
+          },
+          "filter": {
+            "_id": {
+              "$oid": "6c0005390000000000000008"
+            },
+            "orgId": {
+              "$oid": "89d593650154bedaafc9feae"
+            },
+            "isDeleted": false,
+            "sessionType": "chat"
+          },
+          "rejected_plans": 6,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "LIMIT > PROJECTION_SIMPLE > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages none (index order)"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "0 ms (budget 200)"
+            }
+          ]
+        },
+        "poll_304": {
+          "name": "poll_304",
+          "namespace": "chatSessions",
+          "stages": [
+            "LIMIT",
+            "PROJECTION_SIMPLE",
+            "FETCH",
+            "IXSCAN"
+          ],
+          "collscan": false,
+          "sort_stages": [],
+          "index_names": [
+            "_id_"
+          ],
+          "index_bounds": [
+            {
+              "indexName": "_id_",
+              "bounds": {
+                "_id": [
+                  "[ObjectId('6c0005390000000000000008'), ObjectId('6c0005390000000000000008')]"
+                ]
+              }
+            }
+          ],
+          "n_returned": 1,
+          "total_keys_examined": 1,
+          "total_docs_examined": 1,
+          "execution_time_ms": 0,
+          "execution_time_ms_cold": 0,
+          "execution_time_ms_warm_runs": [
+            0,
+            0,
+            0
+          ],
+          "page_size": 1,
+          "command": {
+            "find": "chatSessions",
+            "projection": {
+              "rev": 1
+            },
+            "limit": 1
+          },
+          "filter": {
+            "_id": {
+              "$oid": "6c0005390000000000000008"
+            },
+            "orgId": {
+              "$oid": "89d593650154bedaafc9feae"
+            },
+            "isDeleted": false
+          },
+          "rejected_plans": 4,
+          "checks": [
+            {
+              "id": "no_collscan",
+              "ok": true,
+              "detail": "LIMIT > PROJECTION_SIMPLE > FETCH > IXSCAN"
+            },
+            {
+              "id": "sort_bounded_by_limit",
+              "ok": true,
+              "detail": "SORT stages none (index order)"
+            },
+            {
+              "id": "execution_time_ms",
+              "ok": true,
+              "detail": "0 ms (budget 200)"
+            },
+            {
+              "id": "one_rev_read",
+              "ok": true,
+              "detail": "1 finds projecting {rev: 1}",
+              "requirement": "PERF-05"
+            },
+            {
+              "id": "no_message_query",
+              "ok": true,
+              "detail": "0 message commands",
+              "requirement": "PERF-05"
+            },
+            {
+              "id": "by_id_read",
+              "ok": true,
+              "detail": "1 keys / 1 docs",
+              "requirement": "PERF-05"
+            }
+          ],
+          "other_session_reads_on_poll": 1
+        }
+      },
+      "http_page1": {
+        "returned": 20,
+        "total": 5006,
+        "expected_total": 5006
+      },
+      "by_id_gate_chat": "6c0005390000000000000008"
+    }
+  },
+  "failed_checks": []
+}

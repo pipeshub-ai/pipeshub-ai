@@ -64,6 +64,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("available_tools",            Volatility.CONV),
     ("knowledge_sources",          Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
+    ("collaboration_rules",        Volatility.CONV),
     ("user_context",               Volatility.CONV),
     ("answer_confidence",          Volatility.CONV),
     # Worked examples — injected for SMALL and MID tiers only; omitted for
@@ -84,6 +85,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("preloaded_tools",            Volatility.TURN),
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
+    ("collaboration_sender",       Volatility.TURN),
     ("attachments",                Volatility.TURN),
     ("extra_sections",             Volatility.TURN),
 )

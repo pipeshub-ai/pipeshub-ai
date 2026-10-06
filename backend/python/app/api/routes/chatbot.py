@@ -17,9 +17,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field, field_validator
 
+from app.agents.agent_loop.cancellation.policy import CancelRequester
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
-    RunOwner,
 )
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
@@ -41,6 +41,16 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
+from app.modules.agents.collaboration import (
+    CollaborationContext,
+    MentionRef,
+    PreviousConversationTurn,
+    ResumeRequest,
+    build_help_card,
+    is_help_command,
+    stream_help_card,
+    turns_to_dicts,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import (
     render_all_pages_as_pil_from_bytes_sync,
@@ -53,7 +63,10 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
-from app.services.featureflag.platform_settings import is_user_context_enabled
+from app.services.featureflag.platform_settings import (
+    is_chat_mentions_enabled,
+    is_user_context_enabled,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
@@ -81,7 +94,7 @@ router = APIRouter()
 class ChatQuery(BaseModel):
     query: str
     limit: int | None = 50
-    previousConversations: list[dict] = []
+    previousConversations: list[PreviousConversationTurn] = []
     filters: dict[str, Any] | None = None
     retrievalMode: str | None = "HYBRID"
     quickMode: bool | None = False
@@ -118,6 +131,16 @@ class ChatQuery(BaseModel):
     # that predate this field or don't need cancellation (the agent loop
     # generates one itself — see `stream_bridge.py`/`bridge.py`).
     runId: str | None = None
+    # The chat's ACL version from Node (always present on Node requests).
+    # Keys the chat-content PDP allow cache; absent means "do not cache".
+    aclVersion: int | None = None
+    # Present only when Node sends a multi-participant chat; opaque
+    # `participant_<n>` refs only, never user ids (extra='forbid').
+    collaboration: CollaborationContext | None = None
+    # Set by Node on a follow-up that answers an ask_user_question card.
+    resume: ResumeRequest | None = None
+    # Roster refs of who this message mentions; never ids (see collaboration/mentions.py).
+    mentions: list[MentionRef] = []
     # Set by Node for a project-scoped chat (see `applyProjectScope`,
     # project-context.ts). When true and the effective `filters` carry no
     # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
@@ -845,16 +868,6 @@ async def upload_chat_attachments(
     }
 
 
-class AttachmentPermissionRequest(BaseModel):
-    userIds: list[str]
-    recordIds: list[str]
-
-
-class ArtifactPermissionRequest(BaseModel):
-    conversationId: str
-    userIds: list[str]
-
-
 _PermissionRequestT = TypeVar("_PermissionRequestT", bound=BaseModel)
 
 _PERMISSION_EDGE_LOOKUP_CONCURRENCY = 16
@@ -943,202 +956,53 @@ async def _records_owned_by(
     }
 
 
-async def _user_record_pairs(
-    graph_provider: IGraphDBProvider, user_ids: list[str], record_ids: list[str]
-) -> tuple[list[tuple[str, str]], list[dict[str, Any] | None]]:
-    user_keys = await _resolve_user_keys(graph_provider, list(dict.fromkeys(user_ids)))
-    pairs = [
-        (user_key, record_id)
-        for user_key in dict.fromkeys(user_keys)
-        for record_id in dict.fromkeys(record_ids)
-    ]
-    return pairs, await _get_permission_edges(graph_provider, pairs)
-
-
-async def _grant_reader_permissions(
-    graph_provider: IGraphDBProvider,
-    grantor_user_id: str,
-    user_ids: list[str],
-    record_ids: list[str],
-) -> int:
-    """Create READER edges for pairs with no permission edge yet, on records the
-    grantor owns. Existing edges are left alone: `batch_create_edges` overwrites
-    every property, so re-granting would downgrade an OWNER edge and rewrite edges
-    on every shared conversation view."""
-    if not user_ids or not record_ids:
-        return 0
-
-    pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
-    missing = [pair for pair, edge in zip(pairs, existing) if edge is None]
-    if not missing:
-        return 0
-
-    owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in missing))
-    )
-    ts = get_epoch_timestamp_in_ms()
-    edges: list[dict[str, Any]] = [
-        {
-            "from_id": user_key,
-            "from_collection": CollectionNames.USERS.value,
-            "to_id": record_id,
-            "to_collection": CollectionNames.RECORDS.value,
-            "type": "USER",
-            "role": "READER",
-            "createdAtTimestamp": ts,
-            "updatedAtTimestamp": ts,
-        }
-        for user_key, record_id in missing
-        if record_id in owned
-    ]
-    if edges:
-        await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
-    return len(edges)
-
-
-async def _revoke_reader_permissions(
-    graph_provider: IGraphDBProvider,
-    grantor_user_id: str,
-    user_ids: list[str],
-    record_ids: list[str],
-) -> int:
-    """Remove READER edges on records the grantor owns. `batch_delete_edges` matches
-    `(_from, _to)` regardless of role, so without the READER filter an unshare that
-    names the owner would delete the owner's own OWNER edges."""
-    if not user_ids or not record_ids:
-        return 0
-
-    pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
-    readers = [
-        pair for pair, edge in zip(pairs, existing) if edge and edge.get("role") == "READER"
-    ]
-    if not readers:
-        return 0
-
-    owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in readers))
-    )
-    edges: list[dict[str, Any]] = [
-        {
-            "from_id": user_key,
-            "from_collection": CollectionNames.USERS.value,
-            "to_id": record_id,
-            "to_collection": CollectionNames.RECORDS.value,
-        }
-        for user_key, record_id in readers
-        if record_id in owned
-    ]
-    if edges:
-        await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
-    return len(edges)
-
-
-async def _get_artifact_record_ids_for_conversation(
-    graph_provider: IGraphDBProvider, org_id: str, conversation_id: str
+async def _chat_attachment_ids(
+    graph_provider: IGraphDBProvider, org_id: str, record_ids: list[str]
 ) -> list[str]:
-    """Every artifact record id (`_key`, shared with its `records` doc) in a
-    conversation. Sorted so SKIP/LIMIT pages don't overlap or skip, and raises on
-    graph errors rather than reporting them as "no artifacts"."""
-    record_ids: list[str] = []
-    skip = 0
-    page_size = 200
-    while True:
-        docs = await graph_provider.get_documents_paginated(
-            CollectionNames.ARTIFACTS.value,
-            skip=skip,
-            limit=page_size,
-            filters={"orgId": org_id, "conversationId": conversation_id},
-            sort_field="_key",
-            raise_on_error=True,
+    """Keep only ids whose record is an ATTACHMENTS record in `org_id`. The provider
+    swallows lookup errors and returns no records, so a failed lookup yields an empty
+    (fail-closed) set rather than an error."""
+    unique_ids = list(dict.fromkeys(record_ids))
+    if not unique_ids:
+        return []
+    records = await graph_provider.get_records_by_record_ids(unique_ids, org_id)
+    found = {
+        (record.get("_key") or record.get("id"))
+        for record in records
+        if record.get("connectorName") == Connectors.ATTACHMENTS.value
+        and record.get("orgId") == org_id
+    }
+    kept = [record_id for record_id in unique_ids if record_id in found]
+    if len(kept) < len(unique_ids):
+        logger.warning(
+            "Dropped %d non-attachment record id(s) from attachment permission request",
+            len(unique_ids) - len(kept),
         )
-        if not docs:
-            break
-        for doc in docs:
-            record_id = doc.get("_key") or doc.get("id")
-            if record_id:
-                record_ids.append(record_id)
-        if len(docs) < page_size:
-            break
-        skip += page_size
-    return record_ids
+    return kept
 
 
-@router.post("/chat/attachments/permissions")
+class AttachmentValidateRequest(BaseModel):
+    recordIds: list[str] = Field(max_length=50)
+
+
+@router.post("/chat/attachments/validate")
 @inject
-async def grant_attachment_permissions(
+async def validate_attachment_ids(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
-    """Grant READER on chat attachment records to the users a conversation was shared with."""
-    _, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
-    granted = await _grant_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, payload.recordIds
-    )
-    return {"granted": granted}
-
-
-@router.delete("/chat/attachments/permissions")
-@inject
-async def revoke_attachment_permissions(
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
-) -> dict[str, Any]:
-    """Revoke READER on chat attachment records from users a conversation was unshared from."""
-    _, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
-    revoked = await _revoke_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, payload.recordIds
-    )
-    return {"revoked": revoked}
-
-
-@router.post("/chat/artifacts/permissions")
-@inject
-async def grant_artifact_permissions(
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
-) -> dict[str, Any]:
-    """Grant READER on a conversation's artifacts. Node calls this on share, and on
-    each shared viewer's first-page load so artifacts created after the share
-    become readable."""
-    org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
-    if not payload.userIds:
-        return {"granted": 0}
-
-    record_ids = await _get_artifact_record_ids_for_conversation(
-        graph_provider, org_id, payload.conversationId
-    )
-    granted = await _grant_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, record_ids
-    )
-    return {"granted": granted}
-
-
-@router.delete("/chat/artifacts/permissions")
-@inject
-async def revoke_artifact_permissions(
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
-) -> dict[str, Any]:
-    """Revoke READER on a conversation's artifacts from users it was unshared from."""
-    org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
-    if not payload.userIds:
-        return {"revoked": 0}
-
-    record_ids = await _get_artifact_record_ids_for_conversation(
-        graph_provider, org_id, payload.conversationId
-    )
-    revoked = await _revoke_reader_permissions(
-        graph_provider, grantor_user_id, payload.userIds, record_ids
-    )
-    return {"revoked": revoked}
+    """Return the ids that are chat attachments the token's caller may attach: owned by
+    the user, or for a service account (no graph User node, so no OWNER edge) any
+    ATTACHMENTS record in the token's org. Upload records carry no uploader identity,
+    so there is nothing tighter to match for service accounts."""
+    org_id, user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, AttachmentValidateRequest)
+    attachment_ids = await _chat_attachment_ids(graph_provider, org_id, payload.recordIds)
+    if claims.get("isServiceAccount") is True:
+        return {"recordIds": attachment_ids}
+    owned = await _records_owned_by(graph_provider, user_id, attachment_ids)
+    return {"recordIds": [record_id for record_id in attachment_ids if record_id in owned]}
 
 
 @router.delete(
@@ -1291,6 +1155,18 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
+    if is_help_command(query_info.query) and await is_chat_mentions_enabled(config_service):
+        card = await build_help_card(
+            graph_provider,
+            user_id=user_id,
+            org_id=org_id,
+            participant_count=len(query_info.collaboration.participants) if query_info.collaboration else 1,
+            logger=logger_,
+        )
+        async for chunk in stream_help_card(card, run_id=query_info.runId, thread_id=query_info.conversationId):
+            yield chunk
+        return
+
     # LLM init, system prompts, user/org enrichment, and the entity vector
     # store are independent of each other and all sit before the first
     # streamed byte, so they run as one wave instead of serial round trips.
@@ -1364,7 +1240,7 @@ async def _generate_chat_stream_via_agent_loop(
     query_dict = {
         "query": query_info.query,
         "limit": query_info.limit,
-        "previous_conversations": query_info.previousConversations,
+        "previous_conversations": turns_to_dicts(query_info.previousConversations),
         "filters": effective_filters,
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
@@ -1376,8 +1252,15 @@ async def _generate_chat_stream_via_agent_loop(
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
         "runId": query_info.runId,
+        "aclVersion": query_info.aclVersion,
         "is_service_account": bool(user.get("isServiceAccount")),
     }
+    if query_info.collaboration is not None:
+        query_dict["collaboration"] = query_info.collaboration.model_dump()
+    if query_info.collaboration is not None and query_info.mentions:
+        query_dict["mentions"] = [m.model_dump() for m in query_info.mentions]
+    if query_info.resume is not None:
+        query_dict["resume"] = query_info.resume.model_dump()
     user_info = {
         "userId": user_id,
         "orgId": org_id,
@@ -1578,7 +1461,7 @@ async def cancel_chat_stream(
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
     user = getattr(request.state, "user", {}) or {}
-    requester = RunOwner(
+    requester = CancelRequester(
         user_id=user.get("userId", ""),
         org_id=user.get("orgId", ""),
         conversation_id=cancel_request.conversationId,
@@ -1587,4 +1470,49 @@ async def cancel_chat_stream(
     outcome = await cancellation_registry.cancel(cancel_request.runId, requester)
     if outcome == "forbidden":
         raise HTTPException(status_code=403, detail="You do not own this run")
+    return {"cancelled": outcome == "cancelled"}
+
+
+_PARTICIPANT_CANCEL_MAX_TTL_SECONDS = 120
+
+
+@router.post("/chat/cancel/participant")
+async def cancel_chat_stream_as_participant(
+    request: Request,
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_CANCEL)),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> dict[str, bool]:
+    """Stop a run the caller did not start. Node has already checked the caller's role;
+    the token is bound to one `{conversationId, runId}` and this route cancels only
+    that pair, matching the registered run by org and conversation instead of user."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body") from None
+    try:
+        cancel_request = CancelRunRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {e!s}") from e
+    if not cancel_request.conversationId:
+        raise HTTPException(status_code=400, detail="conversationId is required")
+
+    exp, iat = claims.get("exp"), claims.get("iat")
+    if (
+        claims.get("conversationId") != cancel_request.conversationId
+        or claims.get("runId") != cancel_request.runId
+        or not isinstance(exp, int | float)
+        or not isinstance(iat, int | float)
+        or exp - iat > _PARTICIPANT_CANCEL_MAX_TTL_SECONDS
+    ):
+        raise HTTPException(status_code=403, detail="Token is not bound to this run")
+
+    requester = CancelRequester(
+        user_id=str(claims.get("userId", "")),
+        org_id=str(claims.get("orgId", "")),
+        conversation_id=str(claims["conversationId"]),
+        via_participant_grant=True,
+    )
+    outcome = await cancellation_registry.cancel(cancel_request.runId, requester)
+    if outcome == "forbidden":
+        raise HTTPException(status_code=403, detail="Run belongs to another conversation")
     return {"cancelled": outcome == "cancelled"}

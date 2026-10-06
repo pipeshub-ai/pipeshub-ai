@@ -59,55 +59,111 @@ describe('resolveCallerTeamIds', () => {
   it('returns the id of every team the caller belongs to', async () => {
     sinon
       .stub(AIServiceCommand.prototype, 'execute')
-      .resolves({ statusCode: 200, data: { teams: [{ id: 'team-a' }, { id: 'team-b' }] } } as any);
+      .resolves({ statusCode: 200, data: { teamIds: ['team-a', 'team-b'] } } as any);
 
     const teamIds = await resolveCallerTeamIds(makeRequest(), appConfig);
 
     expect(teamIds).to.deep.equal(['team-a', 'team-b']);
   });
 
-  it('asks the connector service for a single generous page, as the caller', async () => {
+  it('asks the connector service for the caller team ids with a 2s budget, as the caller', async () => {
     const executeStub = sinon
       .stub(AIServiceCommand.prototype, 'execute')
-      .resolves({ statusCode: 200, data: { teams: [] } } as any);
+      .resolves({ statusCode: 200, data: { teamIds: [] } } as any);
 
     await resolveCallerTeamIds(makeRequest({ authorization: 'Bearer caller-token' }), appConfig);
 
     const command = executeStub.firstCall.thisValue as any;
-    expect(command.uri).to.equal('http://localhost:8088/api/v1/entity/user/teams?limit=500');
+    expect(command.uri).to.equal('http://localhost:8088/api/v1/entity/user/team-ids');
+    expect(command.timeoutMs).to.equal(2000);
     expect(command.method).to.equal('GET');
     expect(command.headers.authorization).to.equal('Bearer caller-token');
   });
 
-  it('falls back to `_id` and drops rows that carry no id at all', async () => {
-    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
-      statusCode: 200,
-      data: { teams: [{ id: 'team-a' }, { _id: 'team-b' }, {}, { id: '' }, { id: 'team-c', _id: 'ignored' }] },
-    } as any);
+  it('forwards every caller header plus a JSON content type, and nothing else, to the connector call', async () => {
+    const executeStub = sinon
+      .stub(AIServiceCommand.prototype, 'execute')
+      .resolves({ statusCode: 200, data: { teamIds: [] } } as any);
 
-    const teamIds = await resolveCallerTeamIds(makeRequest(), appConfig);
+    await resolveCallerTeamIds(
+      makeRequest({ authorization: 'Bearer caller-token', 'x-request-id': 'r-1' }),
+      appConfig,
+    );
 
-    expect(teamIds).to.deep.equal(['team-a', 'team-b', 'team-c']);
+    const command = executeStub.firstCall.thisValue as any;
+    expect(command.headers).to.deep.equal({
+      authorization: 'Bearer caller-token',
+      'x-request-id': 'r-1',
+      'content-type': 'application/json',
+    });
+    expect(command.queryParams).to.equal(undefined);
   });
 
-  it('returns no teams when the response has no `teams` field', async () => {
+  it('logs the exact warning texts alerts match on', async () => {
+    const stub = sinon.stub(AIServiceCommand.prototype, 'execute');
+    stub.onCall(0).resolves({ statusCode: 500, data: null } as any);
+    stub.onCall(1).resolves({ statusCode: 200, data: {} } as any);
+    stub.onCall(2).rejects(new Error('boom'));
+
+    await resolveCallerTeamIds(makeRequest(), appConfig);
+    await resolveCallerTeamIds(makeRequest(), appConfig);
+    await resolveCallerTeamIds(makeRequest(), appConfig);
+
+    expect(warnStub.getCalls().map((c) => c.args[0])).to.deep.equal([
+      'Caller team-id lookup returned a non-200 response',
+      'Caller team-id lookup response has no teamIds',
+      'Failed to resolve caller team memberships for project access',
+    ]);
+  });
+
+  it('drops ids that are not non-empty strings', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+      statusCode: 200,
+      data: { teamIds: ['team-a', '', null, 7, 'team-c'] },
+    } as any);
+
+    expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal(['team-a', 'team-c']);
+  });
+
+  it('returns no teams, with a warning, when the response has no `teamIds` field', async () => {
     sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as any);
 
     expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal([]);
+    expect(warnStub.calledOnce).to.equal(true);
   });
 
-  it('returns no teams when the response has no body', async () => {
+  it('returns no teams, with a warning, when the response has no body', async () => {
     sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: null } as any);
 
     expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal([]);
+    expect(warnStub.calledOnce).to.equal(true);
   });
 
-  it('returns no teams on a non-200, ignoring whatever the body claims', async () => {
-    sinon
-      .stub(AIServiceCommand.prototype, 'execute')
-      .resolves({ statusCode: 403, data: { teams: [{ id: 'team-a' }] } } as any);
+  it('returns an empty list without a warning for a caller in no teams', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { teamIds: [] } } as any);
 
     expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal([]);
+    expect(warnStub.called).to.equal(false);
+  });
+
+  it('returns no teams on a 422, ignoring the body, and warns once with the status code', async () => {
+    sinon
+      .stub(AIServiceCommand.prototype, 'execute')
+      .resolves({ statusCode: 422, data: { teamIds: ['team-a'] } } as any);
+
+    expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal([]);
+    expect(warnStub.calledOnce).to.equal(true);
+    expect(warnStub.firstCall.args[1]).to.deep.equal({ statusCode: 422 });
+  });
+
+  it('returns no teams on a 401, ignoring the body, and warns once with the status code', async () => {
+    sinon
+      .stub(AIServiceCommand.prototype, 'execute')
+      .resolves({ statusCode: 401, data: { teamIds: ['team-a'] } } as any);
+
+    expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal([]);
+    expect(warnStub.calledOnce).to.equal(true);
+    expect(warnStub.firstCall.args[1]).to.deep.equal({ statusCode: 401 });
   });
 
   it('degrades to no teams, with a warning, when the lookup throws', async () => {
@@ -133,7 +189,7 @@ describe('resolveCallerTeamIds', () => {
     it('issues one lookup for repeated calls on the same request', async () => {
       const executeStub = sinon
         .stub(AIServiceCommand.prototype, 'execute')
-        .resolves({ statusCode: 200, data: { teams: [{ id: 'team-a' }] } } as any);
+        .resolves({ statusCode: 200, data: { teamIds: ['team-a'] } } as any);
       const req = makeRequest();
 
       const first = await resolveCallerTeamIds(req, appConfig);
@@ -146,7 +202,7 @@ describe('resolveCallerTeamIds', () => {
     it('shares the in-flight lookup between concurrent calls on the same request', async () => {
       const executeStub = sinon
         .stub(AIServiceCommand.prototype, 'execute')
-        .resolves({ statusCode: 200, data: { teams: [{ id: 'team-a' }] } } as any);
+        .resolves({ statusCode: 200, data: { teamIds: ['team-a'] } } as any);
       const req = makeRequest();
 
       const results = await Promise.all([
@@ -161,8 +217,8 @@ describe('resolveCallerTeamIds', () => {
 
     it('never serves one request\'s teams to another request', async () => {
       const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute');
-      executeStub.onFirstCall().resolves({ statusCode: 200, data: { teams: [{ id: 'team-a' }] } } as any);
-      executeStub.onSecondCall().resolves({ statusCode: 200, data: { teams: [{ id: 'team-b' }] } } as any);
+      executeStub.onFirstCall().resolves({ statusCode: 200, data: { teamIds: ['team-a'] } } as any);
+      executeStub.onSecondCall().resolves({ statusCode: 200, data: { teamIds: ['team-b'] } } as any);
 
       const forAlice = await resolveCallerTeamIds(makeRequest(), appConfig);
       const forBob = await resolveCallerTeamIds(makeRequest(), appConfig);

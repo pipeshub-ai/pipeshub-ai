@@ -15,6 +15,11 @@ import {
 import { Box, Flex, Text, Button, Dialog, Callout, VisuallyHidden } from '@radix-ui/themes';
 import { AgentsApi } from '../api';
 import { extractAgentConfigFromFlow } from './extract-agent-config';
+import {
+  handleServerError,
+  slugifyAgentName,
+  type AgentHandleServerError,
+} from './agent-handle-utils';
 import { useAgentBuilderData } from './hooks/use-agent-builder-data';
 import { useAgentBuilderState } from './hooks/use-agent-builder-state';
 import { useAgentBuilderNodeTemplates } from './hooks/use-node-templates';
@@ -46,6 +51,10 @@ import type { McpInstanceIdFlowNode } from './sidebar-mcp-utils';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
+
+/** A refused handle is shown under the field, and every other failure in the page's own error banner. */
+const handleRefusalShownInline = (handleChanged: boolean) =>
+  handleChanged ? { suppressErrorToast: true } : undefined;
 
 const SVC_ACCT_TOOLSET_BLOCK_TOAST_MS = 9000;
 
@@ -107,6 +116,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setEdgeDeleteDialogOpen,
     edgeToDelete,
     setEdgeToDelete,
+    isMobile,
     sidebarOpen,
     setSidebarOpen,
     agentName,
@@ -139,8 +149,26 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const [isDeletingAgent, setIsDeletingAgent] = useState(false);
   const [agentNameError, setAgentNameError] = useState<string | null>(null);
   const agentNameInputRef = useRef<HTMLInputElement>(null);
+  // null = the user has not chosen a handle; the stored one (or a preview derived from the name) applies.
+  const [handleChoice, setHandleChoice] = useState<string | null>(null);
+  const [handleError, setHandleError] = useState<AgentHandleServerError | null>(null);
 
   const effectiveAgentKey = loadedAgent?._key ?? editingKey ?? null;
+
+  const storedHandle = loadedAgent?.handle ?? null;
+  const handleValue = handleChoice ?? storedHandle ?? slugifyAgentName(agentName);
+  const handleIsDerived = handleChoice === null && storedHandle === null;
+  const handleChanged = handleChoice !== null && handleChoice !== storedHandle;
+
+  useEffect(() => {
+    setHandleChoice(null);
+    setHandleError(null);
+  }, [loadedAgent?._key, loadedAgent?.handle]);
+
+  const handleChange = useCallback((next: string) => {
+    setHandleChoice(next);
+    setHandleError(null);
+  }, []);
 
   const { nodeTemplates } = useAgentBuilderNodeTemplates(
     availableTools,
@@ -489,9 +517,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       serializeNodes(nodes) !== cleanSnapshot.nodesJson ||
       serializeEdges(edges) !== cleanSnapshot.edgesJson ||
       agentName.trim() !== cleanSnapshot.agentName ||
-      shareWithOrg !== cleanSnapshot.shareWithOrg
+      shareWithOrg !== cleanSnapshot.shareWithOrg ||
+      handleChanged
     );
-  }, [nodes, edges, agentName, shareWithOrg, cleanSnapshot]);
+  }, [nodes, edges, agentName, shareWithOrg, cleanSnapshot, handleChanged]);
 
   // beforeunload guard: browser tab close / refresh / address-bar navigation.
   useEffect(() => {
@@ -629,10 +658,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           shareWithOrg,
           isServiceAccount
         ),
+        ...(handleChanged ? { handle: handleChoice } : {}),
       };
 
       if (loadedAgent) {
-        const updated = await AgentsApi.updateAgent(loadedAgent._key, payload);
+        const updated = await AgentsApi.updateAgent(loadedAgent._key, payload, handleRefusalShownInline(handleChanged));
         // Agent's model list may have changed — drop the chat-side cache so
         // the next chat view for this agent refetches fresh models.
         invalidateModelsForContext(loadedAgent._key);
@@ -645,7 +675,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         });
         setShowPostUpdateDialog(true);
       } else {
-        const created = await AgentsApi.createAgent(payload);
+        const created = await AgentsApi.createAgent(payload, handleRefusalShownInline(handleChanged));
         invalidateModelsForContext(created._key);
         setCleanSnapshot({
           nodesJson: serializeNodes(nodes),
@@ -657,7 +687,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
     } catch (e: unknown) {
-      setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
+      const rejected = handleChanged && handleChoice ? handleServerError(e, handleChoice) : null;
+      if (rejected) {
+        setHandleError(rejected);
+      } else {
+        setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
+      }
     } finally {
       setSaving(false);
       saveRef.current = false;
@@ -677,6 +712,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setSaving,
     setSuccess,
     shareWithOrg,
+    handleChanged,
+    handleChoice,
     t,
   ]);
 
@@ -710,10 +747,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           true,
           true
         ),
+        ...(handleChanged ? { handle: handleChoice } : {}),
       };
 
       if (currentAgent) {
-        const updated = await AgentsApi.updateAgent(currentAgent._key, agentConfig);
+        const updated = await AgentsApi.updateAgent(currentAgent._key, agentConfig, handleRefusalShownInline(handleChanged));
         invalidateModelsForContext(currentAgent._key);
         setServiceAccountConfirmOpen(false);
         await refreshAgent(currentAgent._key, { knownAgent: updated });
@@ -725,7 +763,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         });
         setSuccess(t('agentBuilder.serviceAccountConverted'));
       } else {
-        const created = await AgentsApi.createAgent(agentConfig);
+        const created = await AgentsApi.createAgent(agentConfig, handleRefusalShownInline(handleChanged));
         invalidateModelsForContext(created._key);
         setServiceAccountConfirmOpen(false);
         setCleanSnapshot({
@@ -737,6 +775,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
     } catch (e: unknown) {
+      const rejected = handleChanged && handleChoice ? handleServerError(e, handleChoice) : null;
+      if (rejected) {
+        setServiceAccountConfirmOpen(false);
+        setHandleError(rejected);
+        return;
+      }
       setServiceAccountError(getUserFacingErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
     } finally {
       setServiceAccountCreating(false);
@@ -754,6 +798,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setCleanSnapshot,
     setSuccess,
     showInlineAgentNameRequired,
+    handleChanged,
+    handleChoice,
     t,
   ]);
 
@@ -830,6 +876,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           deletePermissionDenied={!canDeleteAgentPermission}
           sharePermissionDenied={!canShareAgent}
           createdBy={loadedAgent?.createdBy ?? null}
+          handle={handleValue}
+          handleIsDerived={handleIsDerived}
+          canEditHandle={canPersist && !isAgentStructureLocked}
+          onHandleChange={handleChange}
+          handleServerError={handleError}
         />
 
         {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner) && (
@@ -944,9 +995,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           </Flex>
         )}
 
-        <Flex style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
+        <Flex style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
           <AgentBuilderSidebar
             open={sidebarOpen}
+            overlay={isMobile}
             width={AGENT_BUILDER_SIDEBAR_WIDTH}
             loading={loading}
             nodeTemplates={nodeTemplates}

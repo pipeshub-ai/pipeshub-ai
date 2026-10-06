@@ -6,6 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
 import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { ArtifactListItem, ArtifactsSortField } from '../types';
 
 interface ArtifactsListViewProps {
@@ -79,6 +80,9 @@ export function ArtifactsListView({
   onPageChange,
 }: ArtifactsListViewProps) {
   const { t } = useTranslation();
+  // Six fixed-width columns leave no room for the name on a phone: keep name, date and actions, and show type and size under the name.
+  const isMobile = useIsMobile();
+  const actionsWidth = isMobile ? '64px' : '88px';
   const start = pagination.totalCount === 0 ? 0 : (pagination.page - 1) * pagination.limit + 1;
   const end = Math.min(pagination.page * pagination.limit, pagination.totalCount);
   const hasPrev = pagination.page > 1;
@@ -103,11 +107,15 @@ export function ArtifactsListView({
         }}
       >
         <SortHeader label={t('artifacts.name', { defaultValue: 'Name' })} field="name" sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} flex={2} />
-        <SortHeader label={t('filter.type')} field="artifactType" sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width="140px" />
-        <SortHeader label={t('artifacts.conversation', { defaultValue: 'Conversation' })} sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} flex={1} />
-        <SortHeader label={t('filter.dateCreated')} field="createdAtTimestamp" sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width="140px" />
-        <SortHeader label={t('artifacts.size', { defaultValue: 'Size' })} sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width="90px" />
-        <Box style={{ width: '88px' }} />
+        {!isMobile && (
+          <>
+            <SortHeader label={t('filter.type')} field="artifactType" sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width="140px" />
+            <SortHeader label={t('artifacts.conversation', { defaultValue: 'Conversation' })} sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} flex={1} />
+          </>
+        )}
+        <SortHeader label={t('filter.dateCreated')} field="createdAtTimestamp" sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width={isMobile ? '112px' : '140px'} />
+        {!isMobile && <SortHeader label={t('artifacts.size', { defaultValue: 'Size' })} sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width="90px" />}
+        <Box style={{ width: actionsWidth, flexShrink: 0 }} />
       </Flex>
       <Box style={{ flex: 1, overflow: 'auto' }}>
         {items.map((item) => (
@@ -126,24 +134,39 @@ export function ArtifactsListView({
             onKeyDown={activatePreview(item)}
           >
             <Flex align="center" gap="2" style={{ flex: 2, minWidth: 0, paddingRight: 'var(--space-2)' }}>
-              <FileIcon filename={item.name} mimeType={item.mimeType || undefined} size={18} />
-              <Text size="2" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {item.name}
-              </Text>
+              <Box style={{ flexShrink: 0, display: 'flex' }}>
+                <FileIcon filename={item.name} mimeType={item.mimeType || undefined} size={18} />
+              </Box>
+              <Flex direction="column" style={{ minWidth: 0 }}>
+                <Text size="2" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {item.name}
+                </Text>
+                {isMobile && (
+                  <Text size="1" style={{ color: 'var(--slate-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.artifactType} · {formatSize(item.sizeInBytes ?? undefined)}
+                  </Text>
+                )}
+              </Flex>
             </Flex>
-            <Text size="2" style={{ width: '140px', color: 'var(--slate-11)' }}>
-              {item.artifactType}
-            </Text>
-            <Text size="2" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--slate-11)' }}>
-              {item.conversationTitle || t('artifacts.untitledChat', { defaultValue: '—' })}
-            </Text>
-            <Text size="2" style={{ width: '140px', color: 'var(--slate-11)' }}>
+            {!isMobile && (
+              <>
+                <Text size="2" style={{ width: '140px', color: 'var(--slate-11)' }}>
+                  {item.artifactType}
+                </Text>
+                <Text size="2" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--slate-11)' }}>
+                  {item.conversationTitle || t('artifacts.untitledChat', { defaultValue: '—' })}
+                </Text>
+              </>
+            )}
+            <Text size="2" style={{ width: isMobile ? '112px' : '140px', flexShrink: 0, color: 'var(--slate-11)' }}>
               {item.createdAt ? formatDate(item.createdAt) : '—'}
             </Text>
-            <Text size="2" style={{ width: '90px', color: 'var(--slate-11)' }}>
-              {formatSize(item.sizeInBytes ?? undefined)}
-            </Text>
-            <Flex gap="1" style={{ width: '88px' }} onClick={(e) => e.stopPropagation()}>
+            {!isMobile && (
+              <Text size="2" style={{ width: '90px', color: 'var(--slate-11)' }}>
+                {formatSize(item.sizeInBytes ?? undefined)}
+              </Text>
+            )}
+            <Flex gap="1" style={{ width: actionsWidth, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
               <Button variant="ghost" size="1" color="gray" onClick={() => onDownload(item)} aria-label={t('action.download')}>
                 <MaterialIcon name="download" size={16} />
               </Button>

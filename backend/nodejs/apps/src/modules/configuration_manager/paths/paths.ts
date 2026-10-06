@@ -53,6 +53,10 @@ export const configPaths = {
   // Value: JSON.stringify({ conversationsMigrated, agentConversationsMigrated, ... }).
   // See chat_sessions.migration.ts.
   chatSessionsMigration: '/migrations/chat_sessions_v1',
+  // Value: JSON.stringify({ scanned, normalized, downgradedWrites, raced, errored }).
+  chatCollaboratorsMigration: '/migrations/chat_collaborators_v1',
+  // Value: JSON.stringify({ chatSessions, projects }) — documents stamped aclVersion:0.
+  aclVersionMigration: '/migrations/acl_version_v1',
   // Python-owned flag (backend/python/app/migrations/kb_apps_migration.py) — read-only from Node.
   kbAppsMigrationDone: '/migrations/kb_apps_v1',
   webSearch: '/services/webSearch',

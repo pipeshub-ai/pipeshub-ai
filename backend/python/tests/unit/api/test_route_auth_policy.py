@@ -41,13 +41,13 @@ _ROUTERS = {
 
 # Every route that admits a service token, with the scopes it admits.
 _SERVICE_TOKEN_ROUTES = {
+    ("agent", "POST", "/internal/create-from-chat"): {"agent:create:chat"},
     ("agent", "POST", "/{agent_id}/chat/stream"): {"conversation:create"},
     ("agent", "GET", "/{agent_id}/internal/service-account"): {"conversation:create"},
+    ("agent", "GET", "/{agent_id}/readiness"): {"conversation:create"},
     ("chatbot", "POST", "/chat/attachments/upload"): {"conversation:create"},
-    ("chatbot", "POST", "/chat/attachments/permissions"): {"conversation:permissions"},
-    ("chatbot", "DELETE", "/chat/attachments/permissions"): {"conversation:permissions"},
-    ("chatbot", "POST", "/chat/artifacts/permissions"): {"conversation:permissions"},
-    ("chatbot", "DELETE", "/chat/artifacts/permissions"): {"conversation:permissions"},
+    ("chatbot", "POST", "/chat/attachments/validate"): {"conversation:permissions"},
+    ("chatbot", "POST", "/chat/cancel/participant"): {"conversation:cancel"},
     (
         "connectors",
         "GET",
@@ -59,6 +59,7 @@ _SERVICE_TOKEN_ROUTES = {
     },
     ("connectors", "GET", "/api/v1/internal/records/{record_id}/content"): {"record:content"},
     ("connectors", "GET", "/api/v1/connectors/internal/all-scheduled"): {"fetch:config"},
+    ("entity", "GET", "/api/v1/entity/user/team-ids"): {"team:ids:read"},
     ("parsing", "POST", "/api/v1/parse"): {"document:parse"},
     ("parsing", "GET", "/api/v1/parse/providers"): {"document:parse"},
     ("extraction", "POST", "/api/v1/extract/classify"): {"document:classify"},

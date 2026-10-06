@@ -297,6 +297,8 @@ export const ToolsetsApi = {
     includeRegistry?: boolean;
     limitPerPage?: number;
     authStatus?: 'authenticated' | 'not-authenticated';
+    /** For lookups that only enrich a screen: a failure must not raise the global error toast. */
+    quiet?: boolean;
   }): Promise<{ toolsets: BuilderSidebarToolset[]; filterCounts?: ToolsetsFilterCounts }> {
     const limit = params?.limitPerPage ?? PAGE_SIZE;
     return fetchAllToolsetPages((page) =>
@@ -306,6 +308,7 @@ export const ToolsetsApi = {
         search: params?.search,
         includeRegistry: params?.includeRegistry ?? false,
         authStatus: params?.authStatus,
+        quiet: params?.quiet,
       })
     );
   },
@@ -335,6 +338,7 @@ export const ToolsetsApi = {
     authStatus?: 'authenticated' | 'not-authenticated';
     /** Scope list to one toolset type (instances for that type only). */
     toolsetType?: string;
+    quiet?: boolean;
   }): Promise<ToolsetsPageResponse> {
     const limit = Math.min(params.limit ?? PAGE_SIZE, MAX_TOOLSETS_LIST_LIMIT);
     const { data } = await apiClient.get<{
@@ -357,6 +361,7 @@ export const ToolsetsApi = {
         authStatus: params.authStatus,
         toolsetType: params.toolsetType?.trim() || undefined,
       },
+      suppressErrorToast: params.quiet,
     });
     const rows = data?.toolsets ?? [];
     const fc = data?.filterCounts;

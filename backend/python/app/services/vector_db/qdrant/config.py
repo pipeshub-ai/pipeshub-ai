@@ -9,10 +9,12 @@ class QdrantConfig:
     prefer_grpc: bool = True
     https: bool = False
     timeout: int = 300
+    # None: the client's default (6334). The stored config carries it as `grpcPort`.
+    grpc_port: int | None = None
 
     @property
     def qdrant_config(self) -> dict:
-        return {
+        config = {
             "host": self.host,
             "port": self.port,
             "api_key": self.api_key,
@@ -20,6 +22,9 @@ class QdrantConfig:
             "https": self.https,
             "timeout": self.timeout
         }
+        if self.grpc_port is not None:
+            config["grpc_port"] = self.grpc_port
+        return config
 
     @classmethod
     def from_dict(cls, data: dict) -> "QdrantConfig":
@@ -32,4 +37,6 @@ class QdrantConfig:
             prefer_grpc=bool(data.get("prefer_grpc", True)),
             https=bool(data.get("https", False)),
             timeout=int(data.get("timeout", 300)),
+            # `grpc_port` is the canonical spelling, `grpcPort` the Node.js one the config manager stores
+            grpc_port=int(grpc_port) if (grpc_port := data.get("grpc_port") or data.get("grpcPort")) else None,
         )

@@ -2456,6 +2456,7 @@ class ArtifactRecord(Record):
     artifact_type: ArtifactType = Field(default=ArtifactType.OTHER, description="Type of artifact")
     source_tool: str | None = Field(default=None, description="Tool that generated this artifact (e.g. coding_sandbox.execute_python)")
     conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
+    run_id: str | None = Field(default=None, description="Node-minted runId of the agent run that created this artifact")
     is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
     expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
     visibility: ArtifactVisibility = Field(
@@ -2497,6 +2498,7 @@ class ArtifactRecord(Record):
             "artifactType": self.artifact_type.value,
             "sourceTool": self.source_tool,
             "conversationId": self.conversation_id,
+            "runId": self.run_id,
             "isTemporary": self.is_temporary,
             "expiresAt": self.expires_at,
             "visibility": self.visibility.value,
@@ -2563,6 +2565,7 @@ class ArtifactRecord(Record):
             artifact_type=artifact_type,
             source_tool=artifact_doc.get("sourceTool"),
             conversation_id=artifact_doc.get("conversationId"),
+            run_id=artifact_doc.get("runId"),
             is_temporary=artifact_doc.get("isTemporary", False),
             expires_at=artifact_doc.get("expiresAt"),
             visibility=visibility,

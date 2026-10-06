@@ -10,6 +10,13 @@ import {
   type ToastPlacement,
 } from '@/lib/store/toast-store';
 import { useThemeAppearance } from '@/app/components/theme-provider';
+import {
+  TOAST_MOBILE_QUERY,
+  TOAST_SAFE_BOTTOM_VAR,
+  TOAST_SAFE_RIGHT_VAR,
+  TOAST_SAFE_TOP_VAR,
+  resolveToastPlacement,
+} from '@/lib/toast-safe-area';
 import { Toast } from './toast';
 
 // ========================================
@@ -51,9 +58,13 @@ function ToastStack({
       style={{
         position: 'fixed',
         ...(isTop
-          ? { top: 'max(16px, env(safe-area-inset-top, 0px))' }
-          : { bottom: 'max(16px, env(safe-area-inset-bottom, 0px))' }),
-        right: 'max(16px, env(safe-area-inset-right, 0px))',
+          ? {
+              top: `calc(max(16px, env(safe-area-inset-top, 0px)) + var(${TOAST_SAFE_TOP_VAR}, 0px))`,
+            }
+          : {
+              bottom: `calc(max(16px, env(safe-area-inset-bottom, 0px)) + var(${TOAST_SAFE_BOTTOM_VAR}, 0px))`,
+            }),
+        right: `calc(max(16px, env(safe-area-inset-right, 0px)) + var(${TOAST_SAFE_RIGHT_VAR}, 0px))`,
         left: 'auto',
         maxHeight: 'calc(100dvh - 32px)',
         maxWidth: 'min(420px, calc(100vw - 32px))',
@@ -80,7 +91,11 @@ function ToastStack({
             key={toast.id}
             style={{
               flexShrink: 0,
-              pointerEvents: 'auto',
+              // The row is as wide as the stack (420px) and the toast narrower (340px collapsed): keep it flush
+              // with the right edge, and let clicks through the empty part of the row.
+              display: 'flex',
+              justifyContent: 'flex-end',
+              pointerEvents: 'none',
               transform: `scale(${scale})`,
               transformOrigin: isTop ? 'top right' : 'bottom right',
               opacity,
@@ -88,7 +103,7 @@ function ToastStack({
               animation: toast.isExiting ? 'none' : 'toastSlideIn 0.3s ease',
             }}
           >
-            <Toast toast={toast} onDismiss={onDismiss} />
+            <Toast toast={toast} onDismiss={onDismiss} style={{ pointerEvents: 'auto' }} />
           </Box>
         );
       })}
@@ -120,16 +135,24 @@ export function ToastContainer() {
   const { appearance } = useThemeAppearance();
 
   const [mounted, setMounted] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
     setMounted(true);
+    const mql = window.matchMedia(TOAST_MOBILE_QUERY);
+    setIsMobile(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
   }, []);
 
   if (toasts.length === 0 || !mounted) {
     return null;
   }
 
-  const topToasts = toasts.filter((t) => t.placement === 'top');
-  const bottomToasts = toasts.filter((t) => t.placement !== 'top');
+  const isTopToast = (t: (typeof toasts)[number]) =>
+    resolveToastPlacement(t.placement, isMobile) === 'top';
+  const topToasts = toasts.filter(isTopToast);
+  const bottomToasts = toasts.filter((t) => !isTopToast(t));
 
   return ReactDOM.createPortal(
     <Theme accentColor="jade" grayColor="olive" appearance={appearance} radius="medium" data-accent-color="emerald">

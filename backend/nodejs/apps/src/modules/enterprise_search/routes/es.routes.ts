@@ -37,6 +37,7 @@ import {
   getAgentConversationById,
   deleteAgentConversationById,
   createAgent,
+  checkAgentHandle,
   getAgent,
   deleteAgent,
   updateAgent,
@@ -80,6 +81,7 @@ import {
   addMessageParamsSchema,
   addMessageStreamParamsSchema,
   conversationShareParamsSchema,
+  conversationUnshareParamsSchema,
   conversationTitleParamsSchema,
   conversationProjectLinkSchema,
   conversationProjectVisibilitySchema,
@@ -97,6 +99,8 @@ import {
   updateAgentFeedbackParamsSchema,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
+  agentInternalStreamCreateSchema,
+  agentInternalAddMessageParamsSchema,
   agentCreateConversationSchema,
   agentAddMessageSchema,
   getAllConversationsQuerySchema,
@@ -110,6 +114,7 @@ import {
   agentAttachmentUploadSchema,
   agentAttachmentRecordIdParamsSchema,
   createAgentSchema,
+  agentHandleAvailabilitySchema,
   updateAgentSchema,
   deleteAgentSchema,
   getAgentParamsSchema,
@@ -125,6 +130,31 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { COLLAB_TYPES } from '../services/collaboration/collab.types';
+import { ConversationGuards } from '../services/collaboration/http/conversation-guards';
+import { ConversationTurnDeps } from '../services/collaboration/turn/turn-deps';
+import { hydrateScopedUser } from '../services/collaboration/http/hydrate-scoped-user.middleware';
+import { IConversationCollaborationService } from '../services/collaboration/conversation-collaboration.service';
+import {
+  collaborationLimiters,
+  legacyShareScope,
+  mountCollaborationRoutes,
+} from './collaboration.routes';
+import { mountMentionRoutes } from './mentions.routes';
+import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
+import { Logger } from '../../../libs/services/logger.service';
+import { AgentDraftRefResolver } from '../services/collaboration/agent-draft/agent-draft-ref.service';
+import { IFeatureFlags } from '../../configuration_manager/services/platform-feature-flags.service';
+
+/** Resolved at router build so a container without the binding fails at boot, not on the first request. */
+function requireConversationGuards(container: Container): ConversationGuards {
+  return container.get<ConversationGuards>(COLLAB_TYPES.ConversationGuards);
+}
+
+/** Resolved at router build for the same reason as the guards. */
+function requireTurnDeps(container: Container): ConversationTurnDeps {
+  return container.get<ConversationTurnDeps>(COLLAB_TYPES.ConversationTurnDeps);
+}
 import { fillDefaultChatModel } from '../utils/default-chat-model';
 
 /** Max bytes per file for chat attachment uploads (PDF/JPEG/PNG). Aligned with frontend, Slack, and Python. */
@@ -133,6 +163,11 @@ const CHAT_ATTACHMENT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'recordId');
+  const guards = requireConversationGuards(container);
+  const turnDeps = requireTurnDeps(container);
+  const collaboration = container.get<IConversationCollaborationService>(
+    COLLAB_TYPES.CollaborationService,
+  );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
   const defaultChatModel = fillDefaultChatModel(
@@ -163,7 +198,8 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     defaultChatModel,
-    createConversation(appConfig),
+    guards.caller(),
+    createConversation(appConfig, turnDeps),
   );
 
   /**
@@ -179,9 +215,11 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/internal/create',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    hydrateScopedUser(appConfig),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     defaultChatModel,
-    createConversation(appConfig),
+    guards.caller(),
+    createConversation(appConfig, turnDeps),
   );
 
   /**
@@ -231,15 +269,18 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(enterpriseSearchStreamCreateSchema),
     defaultChatModel,
-    streamChat(appConfig),
+    guards.caller(),
+    streamChat(appConfig, turnDeps),
   );
 
   router.post(
     '/internal/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    hydrateScopedUser(appConfig),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     defaultChatModel,
-    streamChatInternal(appConfig),
+    guards.caller(),
+    streamChatInternal(appConfig, turnDeps),
   );
 
   /**
@@ -257,7 +298,9 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(addMessageParamsSchema),
     defaultChatModel,
-    addMessage(appConfig),
+    guards.authorize('send', 'chat'),
+    guards.runLease('chat'),
+    addMessage(appConfig, turnDeps),
   );
 
   /**
@@ -273,9 +316,12 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/internal/:conversationId/messages',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    hydrateScopedUser(appConfig),
     ValidationMiddleware.validate(addMessageParamsSchema),
     defaultChatModel,
-    addMessage(appConfig),
+    guards.authorize('send', 'chat'),
+    guards.runLease('chat'),
+    addMessage(appConfig, turnDeps),
   );
 
   /**
@@ -293,15 +339,20 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(addMessageStreamParamsSchema),
     defaultChatModel,
-    addMessageStream(appConfig),
+    guards.authorize('send', 'chat'),
+    guards.runLease('chat'),
+    addMessageStream(appConfig, turnDeps),
   );
 
   router.post(
     '/internal/:conversationId/messages/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    hydrateScopedUser(appConfig),
     ValidationMiddleware.validate(addMessageParamsSchema),
     defaultChatModel,
-    addMessageStreamInternal(appConfig),
+    guards.authorize('send', 'chat'),
+    guards.runLease('chat'),
+    addMessageStreamInternal(appConfig, turnDeps),
   );
 
   /**
@@ -315,6 +366,11 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(getAllConversationsQuerySchema),
+    guards.listScope('chat', {
+      includeOwned: (req) => req.query.source !== 'shared',
+      includeShared: (req) => req.query.source === 'shared',
+      archived: 'exclude',
+    }),
     getAllConversations,
   );
 
@@ -329,7 +385,8 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(conversationIdParamsSchema),
-    getConversationById(appConfig),
+    guards.authorize('read', 'chat'),
+    getConversationById(appConfig, turnDeps.users),
   );
 
   /**
@@ -343,6 +400,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
+    guards.authorize('delete', 'chat'),
     deleteConversationById,
   );
 
@@ -356,8 +414,11 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/share',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    legacyShareScope(container),
+    collaborationLimiters(container).mutate,
     ValidationMiddleware.validate(conversationShareParamsSchema),
-    shareConversationById(appConfig),
+    guards.authorize('manageCollaborators', 'chat'),
+    shareConversationById(appConfig, collaboration),
   );
 
   /**
@@ -373,19 +434,23 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/unshare',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    ValidationMiddleware.validate(conversationShareParamsSchema),
-    unshareConversationById(appConfig),
+    legacyShareScope(container),
+    collaborationLimiters(container).mutate,
+    ValidationMiddleware.validate(conversationUnshareParamsSchema),
+    guards.authorize('manageCollaborators', 'chat'),
+    unshareConversationById(appConfig, collaboration),
   );
 
   /**
    * @route PUT /api/v1/conversations/:conversationId/project
-   * @desc Link (or, with `projectId: null`, unlink) a conversation to a project. Initiator-only.
+   * @desc Link (or, with `projectId: null`, unlink) a conversation to a project. Owner-only (linkProject guard).
    */
   router.put(
     '/:conversationId/project',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationProjectLinkSchema),
+    guards.authorize('linkProject', 'chat'),
     setConversationProject,
   );
 
@@ -398,6 +463,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationProjectVisibilitySchema),
+    guards.authorize('linkProject', 'chat'),
     setConversationProjectVisibility,
   );
 
@@ -414,7 +480,9 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(regenerateAnswersParamsSchema),
     defaultChatModel,
-    regenerateAnswers(appConfig),
+    guards.authorize('regenerate', 'chat'),
+    guards.runLease('chat', { op: 'regenerate' }),
+    regenerateAnswers(appConfig, turnDeps),
   );
 
   /**
@@ -429,6 +497,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(cancelConversationStreamParamsSchema),
+    guards.authorize('cancel', 'chat'),
     cancelConversationStream(appConfig),
   );
 
@@ -443,6 +512,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationTitleParamsSchema),
+    guards.authorize('rename', 'chat'),
     updateTitle,
   );
 
@@ -458,6 +528,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(updateFeedbackParamsSchema),
+    guards.authorize('feedback', 'chat'),
     updateFeedback,
   );
 
@@ -472,6 +543,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
+    guards.authorize('archiveSelf', 'chat'),
     archiveConversation,
   );
 
@@ -486,6 +558,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
+    guards.authorize('archiveSelf', 'chat'),
     unarchiveConversation,
   );
 
@@ -500,6 +573,10 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(listAllArchivesConversationQuerySchema),
+    guards.listScope('chat', {
+      includeProjects: (_req, collab) => collab,
+      archived: 'only',
+    }),
     listAllArchivesConversation,
   );
 
@@ -516,8 +593,15 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(searchArchivedConversationsQuerySchema),
+    guards.listScope('chat', {
+      includeProjects: (_req, collab) => collab,
+      archived: 'only',
+    }),
     searchArchivedConversations(appConfig),
   );
+
+  mountCollaborationRoutes(router, container, 'chat');
+  mountMentionRoutes(router, container, 'chat');
 
   return router;
 }
@@ -629,16 +713,34 @@ export function createSemanticSearchRouter(container: Container): Router {
 export function createAgentConversationalRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'agentKey', 'recordId', 'provider', 'model_key');
+  const guards = requireConversationGuards(container);
+  const turnDeps = requireTurnDeps(container);
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
   const keyValueStoreService = container.isBound('KeyValueStoreService')
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
 
+  const draftRefs = new AgentDraftRefResolver(
+    guards,
+    container.get<IFeatureFlags>(COLLAB_TYPES.FeatureFlags),
+  );
+
   const agentAttachmentUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
   });
+
+  const handleAvailabilityLimiter = createKeyedRateLimiter(
+    Logger.getInstance({ service: 'AgentRoutes' }),
+    {
+      prefix: 'agents:handle',
+      maxRequestsPerMinute: 60,
+      message: 'Too many handle checks. Please try again later.',
+      code: 'RATE_LIMITED',
+      shared: true,
+    },
+  );
 
   /**
    * @route GET /api/v1/agents/conversations/show/archives
@@ -650,6 +752,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(listAllAgentsArchivedConversationsGroupedQuerySchema),
+    guards.caller(),
     listAllAgentsArchivedConversationsGrouped(appConfig),
   );
 
@@ -658,7 +761,8 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(agentCreateConversationSchema),
-    createAgentConversation(appConfig),
+    guards.caller(),
+    createAgentConversation(appConfig, turnDeps),
   );
 
   router.post(
@@ -666,7 +770,8 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(agentStreamCreateSchema),
-    streamAgentConversation(appConfig),
+    guards.caller(),
+    streamAgentConversation(appConfig, turnDeps),
   );
 
   router.post(
@@ -674,7 +779,9 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(agentAddMessageSchema),
-    addMessageToAgentConversation(appConfig),
+    guards.authorize('send', 'agent'),
+    guards.runLease('agent'),
+    addMessageToAgentConversation(appConfig, turnDeps),
   );
 
   router.post(
@@ -682,21 +789,34 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(agentAddMessageParamsSchema),
-    addMessageStreamToAgentConversation(appConfig),
+    guards.authorize('send', 'agent'),
+    guards.runLease('agent'),
+    addMessageStreamToAgentConversation(appConfig, turnDeps),
   );
 
   router.post(
     '/:agentKey/conversations/internal/:conversationId/messages/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    hydrateScopedUser(appConfig, keyValueStoreService),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    addMessageStreamToAgentConversationInternal(appConfig, keyValueStoreService),
+    ValidationMiddleware.validate(agentInternalAddMessageParamsSchema),
+    guards.authorize('send', 'agent'),
+    guards.runLease('agent'),
+    addMessageStreamToAgentConversationInternal(
+      appConfig,
+      turnDeps,
+      keyValueStoreService,
+    ),
   );
 
   router.post(
     '/:agentKey/conversations/internal/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    hydrateScopedUser(appConfig, keyValueStoreService),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    streamAgentConversationInternal(appConfig, keyValueStoreService),
+    ValidationMiddleware.validate(agentInternalStreamCreateSchema),
+    guards.caller(),
+    streamAgentConversationInternal(appConfig, turnDeps, keyValueStoreService),
   );
 
   router.post(
@@ -728,13 +848,15 @@ export function createAgentConversationalRouter(container: Container): Router {
     deleteChatAttachment(appConfig),
   );
 
-    router.post(
-      '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
-      authMiddleware.authenticate,
-      requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-      ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
-      regenerateAgentAnswers(appConfig),
-    );
+  router.post(
+    '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
+    guards.authorize('regenerate', 'agent'),
+    guards.runLease('agent', { op: 'regenerate' }),
+    regenerateAgentAnswers(appConfig, turnDeps),
+  );
 
   /**
    * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/cancel
@@ -749,6 +871,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(cancelAgentConversationStreamParamsSchema),
+    guards.authorize('cancel', 'agent'),
     cancelAgentConversationStream(appConfig),
   );
 
@@ -761,6 +884,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(updateAgentFeedbackParamsSchema),
+    guards.authorize('feedback', 'agent'),
     updateAgentFeedback,
   );
 
@@ -769,6 +893,11 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(getAllAgentConversationsQuerySchema),
+    guards.listScope('agent', {
+      shareRows: 'never',
+      sharedWithMeList: true,
+      archived: 'exclude',
+    }),
     getAllAgentConversations,
   );
 
@@ -777,6 +906,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(getAgentConversationByIdSchema),
+    guards.authorize('read', 'agent'),
     getAgentConversationById,
   );
 
@@ -785,6 +915,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(deleteAgentConversationParamsSchema),
+    guards.authorize('delete', 'agent'),
     deleteAgentConversationById,
   );
 
@@ -797,18 +928,20 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationTitleParamsSchema),
+    guards.authorize('rename', 'agent'),
     updateAgentConversationTitle,
   );
 
   /**
    * @route PUT /api/v1/agents/:agentKey/conversations/:conversationId/project
-   * @desc Link (or unlink) an agent conversation to a project. Initiator-only.
+   * @desc Link (or unlink) an agent conversation to a project. Owner-only (linkProject guard).
    */
   router.put(
     '/:agentKey/conversations/:conversationId/project',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationProjectLinkSchema),
+    guards.authorize('linkProject', 'agent'),
     setConversationProject,
   );
 
@@ -821,6 +954,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationProjectVisibilitySchema),
+    guards.authorize('linkProject', 'agent'),
     setConversationProjectVisibility,
   );
 
@@ -833,6 +967,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationParamsSchema),
+    guards.authorize('archiveSelf', 'agent'),
     archiveAgentConversation,
   );
 
@@ -845,6 +980,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationParamsSchema),
+    guards.authorize('archiveSelf', 'agent'),
     unarchiveAgentConversation,
   );
 
@@ -857,6 +993,11 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(listAllArchivesAgentConversationQuerySchema),
+    guards.listScope('agent', {
+      includeShared: (_req, collab) => collab,
+      includeProjects: (_req, collab) => collab,
+      archived: 'only',
+    }),
     listAllArchivesAgentConversation(),
   ); 
 
@@ -865,7 +1006,16 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(createAgentSchema),
-    createAgent(appConfig),
+    createAgent(appConfig, draftRefs),
+  );
+
+  router.get(
+    '/handle-availability',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_READ),
+    handleAvailabilityLimiter,
+    ValidationMiddleware.validate(agentHandleAvailabilitySchema),
+    checkAgentHandle(appConfig),
   );
 
   router.get(
@@ -915,6 +1065,9 @@ export function createAgentConversationalRouter(container: Container): Router {
     ValidationMiddleware.validate(getModelUsageRequestSchema),
     getModelUsage(appConfig),
   );
+
+  mountCollaborationRoutes(router, container, 'agent');
+  mountMentionRoutes(router, container, 'agent');
 
   return router;
 }

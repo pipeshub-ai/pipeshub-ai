@@ -9,11 +9,16 @@ against.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from app.models.entities import ArtifactType, ArtifactVisibility, LifecycleStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from app.agents.agent_loop.context import AgentContext
 
 __all__ = [
     "Actor",
@@ -36,6 +41,38 @@ class Actor(BaseModel):
 
     org_id: str
     user_id: str
+    # The Node-minted `runId` of the turn creating artifacts; stamped on the
+    # artifact doc so the PDP can resolve the turn's `shareToolResults` consent.
+    run_id: str | None = None
+    # The chat's `aclVersion` from the AI payload; the only key under which the
+    # PDP client may cache an allow.
+    acl_version: int | None = None
+    # The chat the run belongs to. A non-owner read of another chat's artifact is
+    # denied on the run path, as for attachments, and `acl_version` only keys the
+    # PDP cache for this chat.
+    conversation_id: str | None = None
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any]) -> "Actor":
+        """Build from an agent `tool_state`/`chat_state` mapping."""
+        return cls(
+            org_id=state.get("org_id", ""),
+            user_id=state.get("user_id", ""),
+            run_id=state.get("run_id"),
+            acl_version=state.get("acl_version"),
+            conversation_id=state.get("conversation_id"),
+        )
+
+    @classmethod
+    def from_context(cls, context: "AgentContext") -> "Actor":
+        """Build from an `AgentContext`."""
+        return cls(
+            org_id=context.org_id,
+            user_id=context.user_id,
+            run_id=getattr(context, "run_id", None),
+            acl_version=getattr(context, "acl_version", None),
+            conversation_id=getattr(context, "conversation_id", None),
+        )
 
 
 class ArtifactVersion(BaseModel):
@@ -91,6 +128,7 @@ class ArtifactMetadata(BaseModel):
     # `resolve()` — the code artifact this output was derived from, if any.
     derived_from_code_artifact_id: str | None = None
     derived_from_code_version: int | None = None
+    run_id: str | None = None
 
     def to_tool_response(self) -> dict:
         """Compact block appended to a tool's response so the model sees

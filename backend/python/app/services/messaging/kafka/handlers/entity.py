@@ -11,7 +11,14 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.task_manager import (
+    reindex_task_manager,
+    sync_task_manager,
+)
+from app.connectors.sources.localKB.handlers.project_kb_reconcile import (
+    ProjectKbSyncPayload,
+    reconcile_project_kb,
+)
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -51,6 +58,8 @@ class EntityEventService(BaseEventService):
                 return await self._handle_app_enabled(payload)
             elif event_type == "appDisabled":
                 return await self._handle_app_disabled(payload)
+            elif event_type == "projectKbSync":
+                return await self._handle_project_kb_sync(payload)
             else:
                 self.logger.error(f"Unknown entity event type: {event_type}")
                 return False
@@ -79,6 +88,20 @@ class EntityEventService(BaseEventService):
 
         except Exception as e:
             self.logger.error(f"Error sending sync event: {str(e)}")
+            return False
+
+    async def _handle_project_kb_sync(self, payload: dict) -> bool:
+        """Reconcile a project's hidden KB with the desired membership; False makes the consumer retry."""
+        try:
+            event = ProjectKbSyncPayload.model_validate(payload)
+            result = await reconcile_project_kb(
+                self.graph_provider, event.org_id, event.kb_id, event.desired, self.logger
+            )
+            if result.skipped_reason:
+                self.logger.warning(f"Project KB sync skipped for {event.kb_id}: {result.skipped_reason}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error reconciling project KB: {str(e)}")
             return False
 
     # ORG EVENTS

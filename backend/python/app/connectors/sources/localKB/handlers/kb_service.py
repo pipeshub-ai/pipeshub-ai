@@ -54,6 +54,8 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # KB folders use this mime type in the RECORDS doc (matches the legacy create_folder
 # path). Note this differs from MimeTypes.FOLDER ("text/directory").
 KB_FOLDER_MIME_TYPE = "application/vnd.folder"
+TEAM_GRANT_ROLES = ("WRITER", "COMMENTER", "READER")
+KB_USER_GRANT_ROLES = ("OWNER", "ORGANIZER", "WRITER", "COMMENTER", "READER")
 FOLDER_DEPTH_LIMIT_REASON = (
     f"Folders can be nested at most {KB_MAX_FOLDER_DEPTH} levels deep. "
     "Move this content higher up, or flatten some of the folders."
@@ -1602,23 +1604,65 @@ class KnowledgeBaseService:
         user_ids: List[str],  # External user IDs
         team_ids: List[str],  # External team IDs
         role: str,
+        principals: Optional[List[Dict[str, str]]] = None,  # [{principalType, principalId, role}]
     ) -> Optional[Dict]:
-        """Optimized version - single AQL query approach"""
+        """Grant KB access. `principals` carries a role per grantee; the legacy
+        (user_ids, team_ids, role) shape applies one role to everyone."""
         try:
-            self.logger.info(f"🚀 Creating {role} permissions for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id}")
+            self.logger.info(
+                f"🚀 Creating KB permissions on KB {kb_id}: "
+                f"{len(principals) if principals is not None else len(user_ids or []) + len(team_ids or [])} principals"
+            )
 
-            # Step 1: Validate inputs early
-            unique_users = list(dict.fromkeys(user_ids)) if user_ids else []
-            unique_teams = list(dict.fromkeys(team_ids)) if team_ids else []
+            # Step 1: validate every principal before anything is written.
+            # role_groups: role -> ([external user ids], [team ids])
+            role_groups: Dict[str, tuple] = {}
+            if principals is not None:
+                seen: set = set()
+                for p in principals:
+                    ptype, pid, prole = p.get("principalType"), p.get("principalId"), p.get("role")
+                    if ptype not in ("user", "team") or not pid:
+                        return {"success": False, "reason": "Each principal needs a principalType (user or team) and a principalId.", "code": 400}
+                    if (ptype, pid) in seen:
+                        continue
+                    seen.add((ptype, pid))
+                    if ptype == "team" and prole not in TEAM_GRANT_ROLES:
+                        return {
+                            "success": False,
+                            "reason": f"Invalid role for team {pid}: {prole}. Allowed: {', '.join(TEAM_GRANT_ROLES)}.",
+                            "code": 400,
+                        }
+                    if ptype == "user" and prole not in KB_USER_GRANT_ROLES:
+                        return {"success": False, "reason": f"Invalid role for user {pid}: {prole}.", "code": 400}
+                    users, teams = role_groups.setdefault(prole, ([], []))
+                    (users if ptype == "user" else teams).append(pid)
+                if not seen:
+                    return {"success": False, "reason": "No users or teams provided", "code": 400}
+            else:
+                unique_users = list(dict.fromkeys(user_ids)) if user_ids else []
+                unique_teams = list(dict.fromkeys(team_ids)) if team_ids else []
 
-            if not unique_users and not unique_teams:
-                return {"success": False, "reason": "No users or teams provided", "code": 400}
+                if not unique_users and not unique_teams:
+                    return {"success": False, "reason": "No users or teams provided", "code": 400}
 
-            # Role is required for users, but not for teams (teams don't have roles)
-            if unique_users:
-                valid_roles = ["OWNER", "ORGANIZER", "WRITER", "COMMENTER", "READER"]
-                if not role or role not in valid_roles:
+                # A team grant applies to every current and future member, so it can never be OWNER.
+                if unique_teams and role and role not in TEAM_GRANT_ROLES:
+                    return {
+                        "success": False,
+                        "reason": (
+                            f"Invalid role for teams: {role}. Allowed: {', '.join(TEAM_GRANT_ROLES)}. "
+                            "Send `principals` with a role per user or team to grant different roles."
+                        ),
+                        "code": 400,
+                    }
+
+                if unique_users and (not role or role not in KB_USER_GRANT_ROLES):
                     return {"success": False, "reason": f"Invalid role: {role}. Role is required for users.", "code": 400}
+
+                role_groups[role if role else "READER"] = (unique_users, unique_teams)
+
+            all_users = [u for users, _ in role_groups.values() for u in users]
+            all_teams = [t for _, teams in role_groups.values() for t in teams]
 
             self.logger.info(f"Looking up requester for create_kb_permissions: {requester_id}")
             requester_key, _, err = await self._resolve_user_and_kb_access(
@@ -1629,35 +1673,57 @@ class KnowledgeBaseService:
                 return err
 
             graph_user_ids, resolve_err = await self._resolve_user_ids_to_graph_keys(
-                unique_users, requester_id
+                all_users, requester_id
             )
             if resolve_err:
                 return resolve_err
+            graph_key_by_user = dict(zip(all_users, graph_user_ids or []))
 
-            team_err = await self._teams_not_in_requester_org(unique_teams, requester_id)
+            team_err = await self._teams_not_in_requester_org(all_teams, requester_id)
             if team_err:
                 return team_err
 
-            # Step 2: Single AQL query to do everything at once
-            # Pass role even if only teams (it will be ignored for teams)
-            result = await self.graph_provider.create_kb_permissions(
-                kb_id=kb_id,
-                requester_id=requester_id,
-                user_ids=graph_user_ids,
-                team_ids=unique_teams,
-                role=role if role else "READER"  # Default for teams (won't be used)
-            )
+            # Re-sharing overwrites a role, so it must not demote the last OWNER (same rule as update_kb_permission).
+            demoting = [graph_key_by_user[u] for r, (us, _) in role_groups.items() if r != "OWNER" for u in us]
+            if demoting:
+                promoting = [graph_key_by_user[u] for u in role_groups.get("OWNER", ([], []))[0]]
+                current = (await self.graph_provider.get_kb_permissions(
+                    kb_id=kb_id, user_ids=demoting + promoting, team_ids=[]
+                )).get("users") or {}
+                owners_demoted = sum(1 for u in demoting if current.get(u) == "OWNER")
+                if owners_demoted:
+                    new_owners = sum(1 for u in promoting if current.get(u) != "OWNER")
+                    total_owner_count = await self.graph_provider.count_kb_owners(kb_id=kb_id)
+                    if total_owner_count - owners_demoted + new_owners < 1:
+                        return {
+                            "success": False,
+                            "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
+                            "code": 400,
+                        }
 
-            if result.get("success"):
-                self.logger.info(f"✅ Permissions created: {result['grantedCount']} granted")
-                # A revoked user keeps reading this KB until the entry
-                # expires otherwise: the cache is only invalidated on
-                # record-set changes, and a permission edit changes no
-                # records. Rare enough that the extra DEL costs nothing.
-                await notify_kb_records_changed(kb_id)
-                return result
-            else:
+            # Step 2: one provider call writes every edge atomically, so a failure leaves no partial share.
+            grants: List[Dict[str, str]] = []
+            graph_grants: List[Dict[str, str]] = []
+            for group_role, (group_users, group_teams) in role_groups.items():
+                for u in group_users:
+                    grants.append({"principalType": "user", "principalId": u, "role": group_role})
+                    graph_grants.append({"principalType": "user", "principalId": graph_key_by_user[u], "role": group_role})
+                for t in group_teams:
+                    grants.append({"principalType": "team", "principalId": t, "role": group_role})
+                    graph_grants.append({"principalType": "team", "principalId": t, "role": group_role})
+            result = await self.graph_provider.create_kb_principal_permissions(kb_id=kb_id, grants=graph_grants)
+            if not result.get("success"):
                 return self._mutation_failure(result, "share this knowledge base")
+
+            self.logger.info(f"✅ Permissions created: {result.get('grantedCount', 0)} granted")
+            # A revoked user keeps reading this KB until the entry
+            # expires otherwise: the cache is only invalidated on
+            # record-set changes, and a permission edit changes no
+            # records. Rare enough that the extra DEL costs nothing.
+            await notify_kb_records_changed(kb_id)
+            if len(role_groups) == 1:
+                return {**result, "role": next(iter(role_groups))}
+            return {**result, "role": "MIXED", "details": {"grants": grants}}
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create KB permissions: {str(e)}")
@@ -1683,12 +1749,11 @@ class KnowledgeBaseService:
                     "code": 400
                 }
 
-            # Teams don't have roles - they just have access or not
-            # So we can only update user permissions, not team permissions
-            if team_ids:
+            # A team grant covers every current and future member, so it can never be OWNER.
+            if team_ids and new_role not in TEAM_GRANT_ROLES:
                 return {
                     "success": False,
-                    "reason": "Teams don't have roles. Only user permissions can be updated.",
+                    "reason": f"Invalid role for teams: {new_role}. Allowed: {', '.join(TEAM_GRANT_ROLES)}.",
                     "code": 400
                 }
 
@@ -1705,6 +1770,10 @@ class KnowledgeBaseService:
             )
             if resolve_err:
                 return resolve_err
+
+            team_err = await self._teams_not_in_requester_org(team_ids, requester_id)
+            if team_err:
+                return team_err
 
             # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "WRITER", "COMMENTER", "READER"]

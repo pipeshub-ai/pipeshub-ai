@@ -1,6 +1,7 @@
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import eslintPluginPrettier from 'eslint-plugin-prettier/recommended';
+import { domainBoundaryConfig } from './eslint.boundaries.mjs';
 
 export default tseslint.config(
   // Base recommended rules
@@ -92,6 +93,9 @@ export default tseslint.config(
       'no-unreachable': 'error',
     },
   },
+
+  // Import boundaries for domain folders (ADR-007)
+  domainBoundaryConfig,
 
   // Ignore patterns
   {

@@ -75,7 +75,7 @@ export default defineConfig({
     {
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, ...AI_SPECS],
+      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /collab-chats\//, ...AI_SPECS],
       dependencies: ['setup'],
       use: {
         ...devices['Desktop Chrome'],
@@ -104,6 +104,21 @@ export default defineConfig({
         storageState: '.auth/user.json',
       },
     },
+
+    // Collaborative-chats browser journeys. They need the stack that tests/e2e/collab-chats/run.sh boots (real Node API,
+    // scripted fake of the Python services), so they have no shared login and are not part of the other projects.
+    // Registered only when that stack is there (run.sh sets PCC_STACK_STATE), so a plain `npm run test:e2e` skips them.
+    ...(process.env.PCC_STACK_STATE ? [{
+      name: 'collab-chats',
+      testMatch: /collab-chats\/.*\.spec\.ts/,
+      fullyParallel: false,
+      workers: 1,
+      use: {
+        ...devices['Desktop Chrome'],
+        // The Playwright image runs the browser as a non-root user without user namespaces.
+        launchOptions: { args: ['--no-sandbox'] },
+      },
+    }] : []),
 
     // Unauthenticated tests — no dependencies, no saved state
     {

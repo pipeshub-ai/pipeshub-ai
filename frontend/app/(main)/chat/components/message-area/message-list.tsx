@@ -4,11 +4,13 @@ import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import { Flex, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { ChatResponse } from './chat-response';
+import { ChatResponse, formatMessageTime } from './chat-response';
+import { NoteBubble } from './note-bubble';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useUserStore } from '@/lib/store/user-store';
 import type { ChatArtifact, MessagePart } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -52,6 +54,7 @@ const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
 export function MessageList() {
+  const meUserId = useUserStore((s) => s.profile?.userId ?? null);
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
@@ -1049,6 +1052,18 @@ export function MessageList() {
 
           {messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
+            if (pair.note) {
+              return (
+                <div key={pair.key} ref={(el) => setMessageRef(pair.key, el)}>
+                  <NoteBubble
+                    content={pair.question}
+                    author={pair.author}
+                    meUserId={meUserId}
+                    timeLabel={pair.createdAt ? formatMessageTime(pair.createdAt) : undefined}
+                  />
+                </div>
+              );
+            }
             return (
               <div
                 key={pair.key}
@@ -1060,6 +1075,7 @@ export function MessageList() {
                   citationMaps={pair.citationMaps}
                   citationCallbacks={citationCallbacks}
                   confidence={pair.confidence}
+                  answerMatchType={pair.answerMatchType}
                   isStreaming={pair.isStreaming}
                   modelInfo={pair.modelInfo}
                   collections={pair.collections}
@@ -1078,9 +1094,14 @@ export function MessageList() {
                   persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
                   persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
+                  persistedAgentDraft={pair.persistedAgentDraft}
+                  agentDraftAuthor={pair.agentDraftAuthor}
+                  agentDraftMessageId={pair.agentDraftMessageId}
                   feedbackInfo={pair.feedbackInfo}
                   status={pair.status}
                   unanswered={pair.unanswered}
+                  author={pair.author}
+                  requestedBy={pair.requestedBy}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

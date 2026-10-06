@@ -20,6 +20,7 @@ import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import type { ProjectSummary } from './project-types';
+import { OWNER_ACCESS_VIEW } from './utils/conversation-access';
 
 // ── localStorage helpers for agent capabilities ──────────────────────
 
@@ -261,6 +262,11 @@ export function isConversationStreamingInScope(
   return false;
 }
 
+/** `access.isOwner` of a slot; `null` until the detail response has arrived. */
+export function selectSlotIsOwner(slot: ChatSlot | undefined): boolean | null {
+  return slot?.access?.isOwner ?? null;
+}
+
 // ── Helper: create a default empty slot ─────────────────────────────
 
 function createDefaultSlot(convId: string | null): ChatSlot {
@@ -293,7 +299,14 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     stopping: false,
     messagePagination: null,
     lastAccessedAt: Date.now(),
-    isOwner: isNew ? true : null,
+    access: isNew ? OWNER_ACCESS_VIEW : null,
+    activeRun: null,
+    rev: null,
+    accessLost: false,
+    linkedProject: null,
+    queuedSend: null,
+    composerRestore: null,
+    changedNotice: null,
   };
 }
 
@@ -945,6 +958,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { slots } = get();
     for (const [slotId, slot] of Object.entries(slots)) {
       if (slot.convId !== convId) continue;
+      // Access was lost: the slot stays on screen while active but is never handed out again.
+      if (slot.accessLost) continue;
       if (opts === undefined) {
         return { slotId, slot };
       }
@@ -1276,8 +1291,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const conv = state.agentConversations[aidx];
         nextAgent = [conv, ...state.agentConversations.slice(0, aidx), ...state.agentConversations.slice(aidx + 1)];
       }
-      if (next === state.conversations && nextAgent === state.agentConversations) return state;
-      return { conversations: next, agentConversations: nextAgent };
+      let nextShared = state.sharedConversations;
+      const sidx = state.sharedConversations.findIndex((c) => c.id === conversationId);
+      if (sidx > 0) {
+        const conv = state.sharedConversations[sidx];
+        nextShared = [conv, ...state.sharedConversations.slice(0, sidx), ...state.sharedConversations.slice(sidx + 1)];
+      }
+      if (
+        next === state.conversations &&
+        nextAgent === state.agentConversations &&
+        nextShared === state.sharedConversations
+      ) {
+        return state;
+      }
+      return { conversations: next, agentConversations: nextAgent, sharedConversations: nextShared };
     }),
 
   updateConversationModelInfoInLists: (conversationId, modelInfo) => {

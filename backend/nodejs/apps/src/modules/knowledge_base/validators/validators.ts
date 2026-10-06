@@ -279,12 +279,37 @@ export const createFolderSchema = z.object({
   }),
 });
 
+const KB_TEAM_GRANT_ROLES: readonly string[] = ['WRITER', 'COMMENTER', 'READER'];
+
+const kbPermissionPrincipalSchema = z.object({
+  principalType: z.enum(['user', 'team']),
+  principalId: z.string().min(1),
+  role: z.enum(['OWNER', 'ORGANIZER', 'WRITER', 'COMMENTER', 'READER']),
+});
+
+export const MAX_KB_PERMISSION_PRINCIPALS = 500;
+
+// `principals` carries a role per grantee; userIds/teamIds/role is the legacy shape.
+// Team-role limits (no OWNER/ORGANIZER) are enforced by the connector service.
 export const kbPermissionSchema = z.object({
   body: z.object({
+    principals: z
+      .array(kbPermissionPrincipalSchema)
+      .min(1)
+      .max(MAX_KB_PERMISSION_PRINCIPALS)
+      .optional(),
     userIds: z.array(z.string()).optional(),
     teamIds: z.array(z.string()).optional(),
-    role: z.enum(['OWNER', 'WRITER', 'READER']).optional(), // Optional for teams
-  }).refine((data) => (data.userIds && data.userIds.length > 0) || (data.teamIds && data.teamIds.length > 0),
+    role: z.enum(['OWNER', 'WRITER', 'COMMENTER', 'READER']).optional(), // Optional for teams
+  }).refine(
+    (data) =>
+      !data.principals ||
+      (!data.userIds?.length && !data.teamIds?.length && !data.role),
+    {
+      message: 'Send either principals or userIds/teamIds/role, not both',
+      path: ['principals'],
+    },
+  ).refine((data) => data.principals || (data.userIds && data.userIds.length > 0) || (data.teamIds && data.teamIds.length > 0),
     {
       message: 'At least one user or team ID is required',
       path: ['userIds'],
@@ -321,18 +346,18 @@ export const getPermissionsSchema = z.object({
 
 export const updatePermissionsSchema = z.object({
   body: z.object({
-    role: z.enum(['OWNER', 'WRITER', 'READER']),
+    role: z.enum(['OWNER', 'WRITER', 'COMMENTER', 'READER']),
     userIds: z.array(z.string()).optional(),
-    teamIds: z.array(z.string()).optional(), // Teams don't have roles, so this will be ignored
+    teamIds: z.array(z.string()).optional(),
   }).refine((data) => {
-    // Only users can be updated (teams don't have roles)
+    // A team grant covers every current and future member, so it can never be OWNER.
     if (data.teamIds && data.teamIds.length > 0) {
-      return false;
+      return KB_TEAM_GRANT_ROLES.includes(data.role);
     }
     return true;
   }, {
-    message: 'Teams do not have roles. Only user permissions can be updated.',
-    path: ['teamIds'],
+    message: 'A team role must be one of WRITER, COMMENTER or READER.',
+    path: ['role'],
   }),
   params: z.object({
     kbId: z.string().uuid(),

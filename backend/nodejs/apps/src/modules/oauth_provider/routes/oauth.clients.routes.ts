@@ -27,7 +27,7 @@ export function createOAuthClientsRouter(container: Container): Router {
   const appConfig = container.get<AppConfig>('AppConfig')
 
   // Rate limiter for OAuth client management
-  const oauthClientRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute)
+  const oauthClientRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute, 'clients')
 
   // All routes require an interactive user session: a bearer token issued to
   // a client must not be able to register or reconfigure clients.

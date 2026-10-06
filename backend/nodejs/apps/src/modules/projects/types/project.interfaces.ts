@@ -6,13 +6,17 @@ export type ProjectPrincipalType = 'user' | 'team';
 export type ProjectVisibility = 'private' | 'org';
 /** Owner-controlled default for whether new/existing chats in this project are visible to project members. */
 export type ProjectChatSharing = 'private' | 'members';
+/** Ceiling on the chat role a project member inherits (H2). */
+export type ProjectChatAccess = 'viewer' | 'editor';
 /** Effective access role computed for the requesting user, or 'none' for an unauthorized caller. */
 export type ProjectRole = 'owner' | 'editor' | 'viewer' | 'none';
 
 export interface IProjectMember {
   principalType: ProjectPrincipalType;
-  /** userId (principalType 'user') or teamId (principalType 'team'). */
-  principalId: Types.ObjectId;
+  /** The userId for a 'user' row. Team rows written before teams were string-keyed carry a legacy ObjectId here; read them, never write them. */
+  principalId?: Types.ObjectId;
+  /** Graph team key (UUID or `all_<orgId>`) of a 'team' row. */
+  teamId?: string;
   role: ProjectMemberRole;
   addedBy: Types.ObjectId;
   addedAt: Date;
@@ -48,6 +52,10 @@ export interface IProject {
   linkedKnowledgeBaseId?: string | null;
   visibility: ProjectVisibility;
   chatSharing: ProjectChatSharing;
+  /** H2 ceiling for inherited chat access; absent on legacy rows = 'viewer'. */
+  projectChatAccess?: ProjectChatAccess;
+  /** Bumped on every ACL change; absent on legacy rows = 0 (`.lean()` skips defaults). */
+  aclVersion?: number;
   members: IProjectMember[];
   isPinned: boolean;
   isArchived: boolean;

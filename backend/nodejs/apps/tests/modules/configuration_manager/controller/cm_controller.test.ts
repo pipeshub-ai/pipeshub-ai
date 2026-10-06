@@ -697,6 +697,29 @@ describe('ConfigurationManager Controller', () => {
       expect(res.json.firstCall.args[0].message).to.equal('Platform settings saved')
     })
 
+    it('keeps stored flags the request does not send (Labs posts only the flags it lists)', async () => {
+      const stored = { fileUploadMaxSizeBytes: 100, featureFlags: { ENABLE_BETA_CONNECTORS: true, ENABLE_MCP: true } }
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(`encrypted:${JSON.stringify(stored)}`) })
+      const req = createMockRequest({ body: { fileUploadMaxSizeBytes: 200, featureFlags: { ENABLE_MCP: false } } })
+
+      await setPlatformSettings(kvs)(req, createMockResponse(), createMockNext())
+
+      const saved = JSON.parse(String(kvs.set.firstCall.args[1]).replace('encrypted:', ''))
+      expect(saved.fileUploadMaxSizeBytes).to.equal(200)
+      expect(saved.featureFlags.ENABLE_BETA_CONNECTORS).to.equal(true)
+      expect(saved.featureFlags.ENABLE_MCP).to.equal(false)
+    })
+
+    it('saves the sent flags when nothing is stored yet', async () => {
+      const kvs = createMockKeyValueStore()
+      const req = createMockRequest({ body: { fileUploadMaxSizeBytes: 100, featureFlags: { ENABLE_COLLABORATIVE_CHATS: true } } })
+
+      await setPlatformSettings(kvs)(req, createMockResponse(), createMockNext())
+
+      const saved = JSON.parse(String(kvs.set.firstCall.args[1]).replace('encrypted:', ''))
+      expect(saved.featureFlags.ENABLE_COLLABORATIVE_CHATS).to.equal(true)
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
         set: sinon.stub().rejects(new Error('store failed')),
@@ -826,6 +849,47 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('PH02-16 characterization: feature-flag surfaces keep existing keys', () => {
+    const EXISTING_KEYS = [
+      'ENABLE_BETA_CONNECTORS',
+      'ENABLE_MCP',
+      'ENABLE_ACTIONS',
+      'ENABLE_VECTOR_STORE_REBUILD',
+      'ENABLE_PROJECTS',
+      'ENABLE_SKILLS',
+      'ENABLE_CONTAINER_PERMISSION_FILTER',
+      'ENABLE_USER_CONTEXT',
+    ]
+
+    it('available lists exactly the non-hidden flags', async () => {
+      const res = createMockResponse()
+      await getAvailablePlatformFeatureFlags()(createMockRequest(), res, createMockNext())
+      const keys = res.json.firstCall.args[0].flags.map((f: any) => f.key)
+      const visibleExisting = EXISTING_KEYS.filter((k) => k !== 'ENABLE_BETA_CONNECTORS')
+      visibleExisting.splice(visibleExisting.indexOf('ENABLE_USER_CONTEXT'), 0, 'ENABLE_SOFT_DELETE')
+      expect(keys).to.deep.equal([
+        ...visibleExisting,
+        'ENABLE_COLLABORATIVE_CHATS',
+        'ENABLE_CHAT_MENTIONS',
+        'ENABLE_CHAT_AGENT_BUILDER',
+        'ENABLE_CHAT_SHARE_EMAILS',
+        'ALLOW_ORG_WIDE_CHAT_WRITE',
+      ])
+    })
+
+    it('effective contains every existing key with its default value', async () => {
+      const res = createMockResponse()
+      await getEffectivePlatformFeatureFlags(createMockKeyValueStore())(
+        createMockRequest(), res, createMockNext(),
+      )
+      const flags = res.json.firstCall.args[0].featureFlags
+      for (const k of EXISTING_KEYS) expect(flags, k).to.have.property(k)
+      expect(flags.ENABLE_SKILLS).to.equal(true)
+      expect(flags.ENABLE_USER_CONTEXT).to.equal(true)
+      expect(flags.ENABLE_MCP).to.equal(false)
     })
   })
 

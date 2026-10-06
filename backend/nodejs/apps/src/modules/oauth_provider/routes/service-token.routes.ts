@@ -27,6 +27,7 @@ export function createServiceTokenRouter(container: Container): Router {
   const rateLimiter = createOAuthClientRateLimiter(
     logger,
     appConfig.maxOAuthClientRequestsPerMinute,
+    'service-token',
   );
 
   router.use(authMiddleware.authenticate.bind(authMiddleware));

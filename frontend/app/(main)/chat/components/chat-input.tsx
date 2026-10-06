@@ -8,6 +8,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { Flex, Box, Text, IconButton, Tooltip, Popover } from '@radix-ui/themes';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { useToastComposerInset } from '@/lib/toast-safe-area';
 import { ChatInputExpansionPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-expansion-panel';
 import { ChatInputOverlayPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-overlay-panel';
 import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/connectors-collections-panel';
@@ -46,6 +47,16 @@ import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import { PastedTextChip } from '@/chat/components/pasted-text-chip';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
+import { ComposerField } from './composer/composer-field';
+import { MentionChooser } from './composer/mention-chooser';
+import { resolveTypedMentions, type ResolverCandidate } from './composer/typed-mention-resolver';
+import { useChatParticipants } from '@/chat/mentions/use-chat-participants';
+import { useFeatureFlagsStore, selectChatMentionsEnabled } from '@/lib/store/feature-flags-store';
+import type { MentionRef } from './composer/composer-input.types';
+import type { ComposerInputHandle } from './composer/composer-input.types';
+import { onComposerMentionRequest } from '@/chat/utils/composer-commands';
+import { openFreshAgentChat } from '@/chat/build-chat-url';
+import { useQueuedSendComposer } from '@/chat/hooks/use-queued-send-composer';
 import {
   isLargePaste,
   createPastedTextFile,
@@ -77,7 +88,7 @@ interface ChatInputProps {
    * server-assigned refs of files whose upload finished successfully.
    * Chips still uploading or in error are blocked from submit by `canSubmit`.
    */
-  onSend?: (message: string, attachments?: AttachmentRef[]) => void;
+  onSend?: (message: string, attachments?: AttachmentRef[], mentions?: MentionRef[]) => void;
   /**
    * Per-file upload. Fired the moment a file is added to the composer
    * (not at send time). Receives an abort signal so the composer can cancel
@@ -110,6 +121,8 @@ interface ChatInputProps {
    */
   prefill?: { text: string; key: number } | null;
 }
+
+type PasteIntent = { kind: 'files'; files: File[] } | { kind: 'text'; text: string };
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -181,6 +194,10 @@ export function ChatInput({
   prefill,
 }: ChatInputProps) {
   const router = useRouter();
+  const mentionsEnabled = useFeatureFlagsStore(selectChatMentionsEnabled);
+  const participants = useChatParticipants(mentionsEnabled);
+  const [chooser, setChooser] = useState<{ typed: string; candidates: ResolverCandidate[] } | null>(null);
+  const chosenRef = useRef<Record<string, MentionRef>>({});
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
   const [message, setMessage] = useState('');
   const [showUploadArea, setShowUploadArea] = useState(false);
@@ -212,7 +229,8 @@ export function ChatInput({
   const isActionMode = isRegenerateMode || isEditMode;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useToastComposerInset(containerRef);
+  const composerRef = useRef<ComposerInputHandle>(null);
   const chipsScrollRef = useRef<HTMLDivElement>(null);
 
   // `prefill` seeds the composer from an external suggestion chip. Keyed by
@@ -223,8 +241,12 @@ export function ChatInput({
     if (!prefill || prefill.key === lastPrefillKeyRef.current) return;
     lastPrefillKeyRef.current = prefill.key;
     setMessage(prefill.text);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, [prefill]);
+  useEffect(
+    () => onComposerMentionRequest(() => composerRef.current?.insertText('@')),
+    [],
+  );
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   /**
@@ -403,6 +425,7 @@ export function ChatInput({
 
   // Active slot ID for regenerate/edit flows
   const activeSlotId = useChatStore((s) => s.activeSlotId);
+  useQueuedSendComposer(activeSlotId, message, setMessage);
 
   // Is the active slot currently streaming?
   const isStreaming = useChatStore((s) =>
@@ -663,7 +686,7 @@ export function ChatInput({
     setActiveMessageAction({ type: 'editQuery', messageId, text });
     // Populate the textarea with the original question so the user can edit it
     setMessage(text ?? '');
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, [dismissExpansionPanels]);
 
   // Dismissing either action clears the pill bar and resets the textarea to empty.
@@ -854,13 +877,44 @@ export function ChatInput({
       const refs = uploadedFiles
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
-      onSend(message, refs.length > 0 ? refs : undefined);
+      let outText = message;
+      let mentions = composerRef.current?.getValue().mentions ?? [];
+      if (mentionsEnabled) {
+        const resolved = resolveTypedMentions({
+          text: message,
+          mentions,
+          candidates: participants.candidates,
+          choices: chosenRef.current,
+        });
+        if (resolved.status === 'ambiguous') {
+          setChooser({ typed: resolved.typed, candidates: resolved.candidates });
+          return;
+        }
+        // The server only answers an agent mention for the chat's own agent (guest turns come later): say so before sending.
+        const elsewhere = resolved.mentions.find((m) => m.type === 'agent' && m.id !== participants.agentId);
+        if (elsewhere) {
+          const toastId = toast.warning(t('chat.mentions.agentNotInChat'), {
+            action: {
+              label: t('chat.agentDraft.openAgentChat'),
+              onClick: () => {
+                toast.dismiss(toastId);
+                openFreshAgentChat(elsewhere.id, router);
+              },
+            },
+          });
+          return;
+        }
+        outText = resolved.text;
+        mentions = resolved.mentions;
+        chosenRef.current = {};
+      }
+      // A third argument only when there are mentions, so a caller (and a flag-off send) sees today's two-argument call.
+      if (mentions.length > 0) onSend(outText, refs.length > 0 ? refs : undefined, mentions);
+      else onSend(outText, refs.length > 0 ? refs : undefined);
       setMessage('');
       setUploadedFiles([]);
       setShowUploadArea(false);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
+      composerRef.current?.clear();
     }
   };
 
@@ -1124,12 +1178,12 @@ export function ChatInput({
    * Both paths use the same gating as the attach control: enterprise search
    * (`mode === 'search'`) and web search do not accept attachments.
    */
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+  const classifyPaste = useCallback((data: DataTransfer | null | undefined): PasteIntent | null => {
     if (isRegenerateMode || isSearchMode || settings.queryMode === 'web-search') {
-      return;
+      return null;
     }
-    const items = e.clipboardData?.items;
-    if (!items) return;
+    const items = data?.items;
+    if (!data || !items) return null;
 
     const fileItems: File[] = [];
     let hasFileItem = false;
@@ -1156,25 +1210,32 @@ export function ChatInput({
       }
     }
 
-    if (fileItems.length > 0) {
-      // Stop the event here — without this, bubbling causes the handler to fire
-      // once for each ancestor that also has onPaste registered, producing
-      // duplicate chips for the same paste action.
-      e.stopPropagation();
-      // Prevent the browser from trying to render the raw image data as text.
-      e.preventDefault();
-      processFiles(fileItems, { source: 'paste' });
-      return;
-    }
+    if (fileItems.length > 0) return { kind: 'files', files: fileItems };
 
     // No file items — check whether the plain text itself is large enough
     // to collapse into an attachment. Held Shift bypasses this entirely.
-    if (hasFileItem || shiftKeyHeldRef.current) return;
-    const text = e.clipboardData?.getData('text/plain') ?? '';
-    if (!text || !isLargePaste(text)) return;
+    if (hasFileItem || shiftKeyHeldRef.current) return null;
+    const text = data.getData('text/plain') ?? '';
+    return text && isLargePaste(text) ? { kind: 'text', text } : null;
+  }, [isRegenerateMode, isSearchMode, settings.queryMode]);
 
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const intent = classifyPaste(e.clipboardData);
+    if (!intent) return;
+
+    // Stop the event here — without this, bubbling causes the handler to fire
+    // once for each ancestor that also has onPaste registered, producing
+    // duplicate chips for the same paste action. preventDefault keeps the
+    // browser from rendering raw image data (or the large text) into the field.
     e.stopPropagation();
     e.preventDefault();
+
+    if (intent.kind === 'files') {
+      processFiles(intent.files, { source: 'paste' });
+      return;
+    }
+
+    const { text } = intent;
     const file = createPastedTextFile(text, {
       ...DEFAULT_PASTE_ATTACHMENT_CONFIG,
       truncationNotice: t('chat.attachments.pasteTruncated', {
@@ -1188,7 +1249,13 @@ export function ChatInput({
       pasteCharCount: text.length,
       pasteLineCount: text.split('\n').length,
     });
-  }, [processFiles, isRegenerateMode, isSearchMode, settings.queryMode]);
+  }, [processFiles, classifyPaste, t]);
+
+  /** The rich editor asks before inserting a paste: the container owns attachment and pasted-text chips. */
+  const shouldDeferPaste = useCallback(
+    (data: DataTransfer | null) => classifyPaste(data) !== null,
+    [classifyPaste],
+  );
 
   /**
    * "Show in text field" — moves a pasted-text chip's content back into the
@@ -1200,7 +1267,7 @@ export function ChatInput({
     void file.file.text().then((text) => {
       setMessage((prev) => (prev.trim() ? `${prev}\n\n${text}` : text));
       removeFile(file.id);
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      setTimeout(() => composerRef.current?.focus(), 0);
     });
   }, [removeFile]);
 
@@ -1281,11 +1348,6 @@ export function ChatInput({
     !isUniversalAgentLoading &&
     !hasUploadingAttachments;
 
-  // Display value combines committed text with interim speech so users see real-time feedback
-  const displayValue = interimTranscript
-    ? message + (message.length > 0 ? ' ' : '') + interimTranscript
-    : message;
-
   const speechTooltip =
     speechUnavailableReason === 'stt-not-configured'
       ? t('chat.voiceSttNotConfigured', {
@@ -1336,8 +1398,8 @@ export function ChatInput({
 
   // Auto-focus the textarea when expanding from widget to full
   useEffect(() => {
-    if (isExpanded && variant === 'widget' && textareaRef.current) {
-      textareaRef.current.focus();
+    if (isExpanded && variant === 'widget') {
+      composerRef.current?.focus();
     }
   }, [isExpanded, variant]);
 
@@ -1455,29 +1517,6 @@ export function ChatInput({
 
   const composerActive =
     !isStreaming && (isInputFocused || message.trim() || isEditMode || isListening);
-
-  const textareaLayoutStyle: React.CSSProperties = {
-    width: '100%',
-    backgroundColor: 'transparent',
-    outline: 'none',
-    border: 'none',
-    fontSize: 'var(--font-size-2)',
-    lineHeight: 1.5,
-    resize: 'none',
-    minHeight: '24px',
-    maxHeight: '120px',
-    fontFamily: 'Manrope, sans-serif',
-    height: 'auto',
-    overflow: 'auto',
-    padding: 0,
-    margin: 0,
-  };
-
-  const syncTextareaHeight = (e: React.FormEvent<HTMLTextAreaElement>) => {
-    const target = e.currentTarget;
-    target.style.height = 'auto';
-    target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
-  };
 
   return (
     <>
@@ -1930,39 +1969,55 @@ export function ChatInput({
       ) : ((usesScopedPanel && isAgentResourcesPanelOpen) || assistantCollectionsOverlayActive) &&
         expansionViewMode === 'overlay' ? (
         /* Render textarea underneath while overlay is open */
-        <textarea
+        <ComposerField
+          rich={mentionsEnabled}
+          shouldDeferPaste={shouldDeferPaste}
           value={message}
-          onChange={(e) => setMessage(e.target.value)}
+          onChange={setMessage}
           onKeyDown={handleKeyDown}
           onFocus={() => setIsInputFocused(true)}
           onBlur={() => setIsInputFocused(false)}
           placeholder={resolvedPlaceholder}
-          rows={1}
-          style={{ ...textareaLayoutStyle, color: 'var(--slate-11)' }}
-          onInput={syncTextareaHeight}
+          ariaLabel={resolvedPlaceholder}
+          muted
         />
       ) : !showUploadArea || isActionMode ? (
         // isActionMode keeps the textarea visible even when showUploadArea is true,
         // so the user can see / edit their query during edit or regenerate flows.
         // In regenerate mode the textarea is disabled and text is rendered dimmed;
         // in edit mode it is fully editable (focused immediately on activation).
-        <textarea
-          ref={textareaRef}
-          value={displayValue}
-          onChange={(e) => setMessage(e.target.value)}
+        <ComposerField
+          rich={mentionsEnabled}
+          shouldDeferPaste={shouldDeferPaste}
+          ref={composerRef}
+          value={message}
+          interim={interimTranscript}
+          onChange={setMessage}
           onKeyDown={handleKeyDown}
           onFocus={() => setIsInputFocused(true)}
           onBlur={() => setIsInputFocused(false)}
           placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
+          ariaLabel={isListening ? t('chat.listening') : resolvedPlaceholder}
           readOnly={isRegenerateMode}
-          rows={1}
-          style={{
-            ...textareaLayoutStyle,
-            color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--slate-12)',
-          }}
-          onInput={syncTextareaHeight}
         />
       ) : null}
+
+      {chooser && (
+        <MentionChooser
+          typed={chooser.typed}
+          candidates={chooser.candidates}
+          onPick={(candidate) => {
+            chosenRef.current = { ...chosenRef.current, [chooser.typed.toLowerCase()]: candidate.ref };
+            setChooser(null);
+            handleSubmit({ preventDefault() {} } as React.FormEvent);
+          }}
+          onCancel={() => {
+            chosenRef.current = {};
+            setChooser(null);
+            composerRef.current?.focus();
+          }}
+        />
+      )}
 
       {/* Bottom controls — fixed 32px row so left/right share one baseline */}
       <Flex align="center" justify="between" style={{ width: '100%', minWidth: 0, minHeight: 32 }}>

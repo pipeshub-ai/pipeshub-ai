@@ -1,27 +1,22 @@
 """A SQL query's CSV export is a real artifact record, end to end.
 
 Runs `save_query_result_csv` against the real `ArtifactRegistryService`, the
-real conversation-share permission helpers and the real record authorizer
-(over in-memory graph/blob fakes), and checks what the user actually depends
-on: only the owner can read the CSV, sharing the conversation lets the
-people it is shared with read it, and the artifact tools can list and
-update it like any other artifact.
+real `can_read_record` / record authorizer and a fake Node PDP (over
+in-memory graph/blob fakes), and checks what the user actually depends on:
+only the owner can read the CSV, the people a conversation is shared with can
+read it when Node allows that turn's `runId`, and the artifact tools can list
+and update it like any other artifact.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from app.api.routes.chatbot import (
-    _get_artifact_record_ids_for_conversation,
-    _grant_reader_permissions,
-    _revoke_reader_permissions,
-)
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
 from app.models.entities import RecordType
+from app.modules.authz.chat_content_access import can_read_record
 from app.sandbox.artifact_upload import save_query_result_csv
 from app.services.artifact_registry import Actor, ArtifactRegistryService
 from app.services.artifact_registry.access import (
@@ -34,11 +29,15 @@ from app.services.record_content import RecordAccessDeniedError, TieredRecordAut
 
 from ..services.artifact_registry.fakes import FakeBlobStore, FakeGraphProvider
 
+if TYPE_CHECKING:
+    from app.modules.authz.node_pdp_client import ChatContentCheck
+
 ORG = "org-1"
 OWNER = "user-owner"
 COLLEAGUE = "user-colleague"
 STRANGER = "user-stranger"
 CONVERSATION = "conv-1"
+RUN = "run-1"
 
 COLUMNS = ["id", "salary"]
 ROWS = [(1, 100), (2, 200)]
@@ -69,19 +68,41 @@ class _Graph(FakeGraphProvider):
         return True
 
 
-def _setup(*, signs_urls: bool = False) -> tuple[_Graph, FakeBlobStore, ArtifactRegistryService]:
+def _setup(*, signs_urls: bool = False, pdp: _FakePdp | None = None) -> tuple[_Graph, FakeBlobStore, ArtifactRegistryService]:
     graph = _Graph()
     for user_id, key in ((OWNER, "ukey-owner"), (COLLEAGUE, "ukey-colleague"), (STRANGER, "ukey-stranger")):
         graph.add_user(user_id, key=key)
+        graph.nodes[CollectionNames.USERS.value][key] = {"_key": key, "userId": user_id}
     blob = FakeBlobStore(signs_urls=signs_urls)
-    return graph, blob, ArtifactRegistryService(graph, blob)
+    return graph, blob, ArtifactRegistryService(graph, blob, pdp=pdp)
 
 
-async def _export(graph: _Graph, blob: FakeBlobStore, *, user_id: str | None = OWNER) -> dict[str, Any]:
+class _FakePdp:
+    """Node's H5 for one conversation: members read an artifact only when its
+    `runId` is a turn whose asker consented to share tool results."""
+
+    def __init__(self, *, members: set[str], consented_runs: set[str]) -> None:
+        self.members = members
+        self.consented_runs = consented_runs
+        self.reqs: list[ChatContentCheck] = []
+
+    async def can_read_chat_content(self, req: ChatContentCheck) -> bool:
+        self.reqs.append(req)
+        return (
+            req.resource_type == "chatArtifact"
+            and req.conversation_id == CONVERSATION
+            and req.user_id in self.members
+            and req.run_id in self.consented_runs
+        )
+
+
+async def _export(
+    graph: _Graph, blob: FakeBlobStore, *, user_id: str | None = OWNER, run_id: str | None = RUN,
+) -> dict[str, Any]:
     result = await save_query_result_csv(
         blob_store=blob, graph_provider=graph, org_id=ORG, user_id=user_id,
         conversation_id=CONVERSATION, columns=COLUMNS, rows=ROWS,
-        file_name="query_result_1.csv", source_tool="sql.execute_sql_query",
+        file_name="query_result_1.csv", source_tool="sql.execute_sql_query", run_id=run_id,
     )
     assert result is not None and result["type"] == "artifacts"
     (entry,) = result["artifacts"]
@@ -112,6 +133,7 @@ class TestTheRecord:
         artifact = graph.nodes[CollectionNames.ARTIFACTS.value][record_id]
         assert (artifact["orgId"], artifact["conversationId"]) == (ORG, CONVERSATION)
         assert artifact["sourceTool"] == "sql.execute_sql_query"
+        assert artifact["runId"] == RUN
         assert artifact["contentHash"] == compute_content_hash(CSV)
 
         assert _permission_edges(graph, record_id) == {"ukey-owner": "OWNER"}
@@ -173,7 +195,7 @@ class TestWhoCanRead:
         with pytest.raises(AccessDeniedError):
             await registry.get_download_url(actor=colleague, artifact_id=entry["recordId"])
         with pytest.raises(RecordAccessDeniedError):
-            await TieredRecordAuthorizer(graph).authorize(colleague, _record_view(entry))
+            await TieredRecordAuthorizer(graph).authorize(colleague, _record(graph, entry))
 
     async def test_user_in_another_org_cannot_read_it(self) -> None:
         graph, blob, registry = _setup()
@@ -184,40 +206,57 @@ class TestWhoCanRead:
             await registry.get_download_url(actor=Actor(org_id="org-2", user_id=OWNER), artifact_id=entry["recordId"])
 
 
-def _record_view(entry: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(id=entry["recordId"], org_id=ORG)
+def _record(graph: _Graph, entry: dict[str, Any]) -> dict[str, Any]:
+    return graph.nodes[CollectionNames.RECORDS.value][entry["recordId"]]
 
 
 class TestSharingTheConversation:
-    async def test_share_grants_reader_and_unshare_revokes_it(self) -> None:
-        graph, blob, registry = _setup()
+    async def test_collaborator_reads_when_node_allows_the_turn(self) -> None:
+        pdp = _FakePdp(members={COLLEAGUE}, consented_runs={RUN})
+        graph, blob, registry = _setup(pdp=pdp)
         entry = await _export(graph, blob)
         record_id = entry["recordId"]
         colleague = Actor(org_id=ORG, user_id=COLLEAGUE)
 
-        shared = await _get_artifact_record_ids_for_conversation(graph, ORG, CONVERSATION)
-        assert shared == [record_id]
-
-        assert await _grant_reader_permissions(graph, OWNER, [COLLEAGUE], shared) == 1
-        assert _permission_edges(graph, record_id) == {"ukey-owner": "OWNER", "ukey-colleague": "READER"}
+        # No permission edge is written for the collaborator: the PDP is the only grant.
+        assert _permission_edges(graph, record_id) == {"ukey-owner": "OWNER"}
         await registry.get_download_url(actor=colleague, artifact_id=record_id)
-        await TieredRecordAuthorizer(graph).authorize(colleague, _record_view(entry))
+        await TieredRecordAuthorizer(graph, pdp).authorize(colleague, _record(graph, entry))
+        assert await can_read_record(graph, pdp, user_id=COLLEAGUE, org_id=ORG, record=record_id)
+
+        assert {(r.user_id, r.record_id, r.run_id, r.owner_user_id) for r in pdp.reqs} == {
+            (COLLEAGUE, record_id, RUN, OWNER),
+        }
+
+    async def test_stranger_is_denied(self) -> None:
+        pdp = _FakePdp(members={COLLEAGUE}, consented_runs={RUN})
+        graph, blob, registry = _setup(pdp=pdp)
+        entry = await _export(graph, blob)
+        stranger = Actor(org_id=ORG, user_id=STRANGER)
 
         with pytest.raises(AccessDeniedError):
-            await registry.get_download_url(actor=Actor(org_id=ORG, user_id=STRANGER), artifact_id=record_id)
+            await registry.get_download_url(actor=stranger, artifact_id=entry["recordId"])
+        with pytest.raises(RecordAccessDeniedError):
+            await TieredRecordAuthorizer(graph, pdp).authorize(stranger, _record(graph, entry))
+        assert not await can_read_record(graph, pdp, user_id=STRANGER, org_id=ORG, record=entry["recordId"])
 
-        assert await _revoke_reader_permissions(graph, OWNER, [COLLEAGUE], shared) == 1
-        with pytest.raises(AccessDeniedError):
-            await registry.get_download_url(actor=colleague, artifact_id=record_id)
-
-    async def test_someone_who_does_not_own_it_cannot_share_it(self) -> None:
-        graph, blob, _ = _setup()
+    async def test_turn_without_consent_stays_owner_only(self) -> None:
+        pdp = _FakePdp(members={COLLEAGUE}, consented_runs=set())
+        graph, blob, registry = _setup(pdp=pdp)
         entry = await _export(graph, blob)
 
-        granted = await _grant_reader_permissions(graph, STRANGER, [COLLEAGUE], [entry["recordId"]])
+        with pytest.raises(AccessDeniedError):
+            await registry.get_download_url(actor=Actor(org_id=ORG, user_id=COLLEAGUE), artifact_id=entry["recordId"])
 
-        assert granted == 0
-        assert "ukey-colleague" not in _permission_edges(graph, entry["recordId"])
+    async def test_export_without_a_runid_is_owner_only(self) -> None:
+        pdp = _FakePdp(members={COLLEAGUE}, consented_runs={RUN})
+        graph, blob, registry = _setup(pdp=pdp)
+        entry = await _export(graph, blob, run_id=None)
+
+        assert graph.nodes[CollectionNames.ARTIFACTS.value][entry["recordId"]].get("runId") is None
+        with pytest.raises(AccessDeniedError):
+            await registry.get_download_url(actor=Actor(org_id=ORG, user_id=COLLEAGUE), artifact_id=entry["recordId"])
+        await registry.get_download_url(actor=Actor(org_id=ORG, user_id=OWNER), artifact_id=entry["recordId"])
 
 
 class TestArtifactTools:
@@ -242,10 +281,10 @@ class TestArtifactTools:
         assert (version.version, metadata.version) == (2, 2)
         assert blob.documents[entry["documentId"]]["content"] == revised
 
-    async def test_reader_cannot_add_a_version(self) -> None:
-        graph, blob, registry = _setup()
+    async def test_collaborator_cannot_add_a_version(self) -> None:
+        pdp = _FakePdp(members={COLLEAGUE}, consented_runs={RUN})
+        graph, blob, registry = _setup(pdp=pdp)
         entry = await _export(graph, blob)
-        await _grant_reader_permissions(graph, OWNER, [COLLEAGUE], [entry["recordId"]])
 
         with pytest.raises(AccessDeniedError):
             await registry.add_version(

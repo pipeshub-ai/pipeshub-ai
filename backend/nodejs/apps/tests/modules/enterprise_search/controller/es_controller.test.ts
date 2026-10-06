@@ -1,12 +1,12 @@
+import { turnDeps } from '../helpers/turn-deps'
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
-import jwt from 'jsonwebtoken'
 import { EventEmitter } from 'events'
 import {
   createConversation,
-  getAllConversations,
+  getAllConversations as getAllConversationsUnscoped,
   getConversationById,
   deleteConversationById,
   shareConversationById,
@@ -16,8 +16,8 @@ import {
   archiveConversation,
   archiveAgentConversation,
   unarchiveConversation,
-  listAllArchivesConversation,
-  searchArchivedConversations,
+  listAllArchivesConversation as listAllArchivesConversationUnscoped,
+  searchArchivedConversations as searchArchivedConversationsUnscoped,
   search,
   searchHistory,
   getSearchById,
@@ -34,7 +34,7 @@ import {
   streamChatInternal,
   regenerateAnswers,
   createAgentConversation,
-  getAllAgentConversations,
+  getAllAgentConversations as getAllAgentConversationsUnscoped,
   getAgentConversationById,
   deleteAgentConversationById,
   createAgent,
@@ -58,6 +58,13 @@ import {
   cancelConversationStream,
   cancelAgentConversationStream,
 } from '../../../../src/modules/enterprise_search/controller/es_controller'
+import { chatListScope, withListScope } from '../helpers/list-scope'
+
+const getAllConversations = withListScope(getAllConversationsUnscoped, 'chat', chatListScope)
+const listAllArchivesConversation = withListScope(listAllArchivesConversationUnscoped, 'chat', { includeProjects: false })
+const searchArchivedConversations = (appConfig: any) =>
+  withListScope(searchArchivedConversationsUnscoped(appConfig), 'chat', { includeProjects: false })
+const getAllAgentConversations = withListScope(getAllAgentConversationsUnscoped, 'agent')
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
@@ -69,6 +76,7 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { withOwnerGrant } from '../helpers/conversation-grant'
 
 /** A query stub that `await` resolves to `doc`, for `ChatSession.findOne` in the error-message tests. */
 const resolvingTo = (doc: unknown) =>
@@ -89,7 +97,7 @@ const VALID_OID2 = 'bbbbbbbbbbbbbbbbbbbbbbbb'
 const VALID_OID3 = 'cccccccccccccccccccccccc'
 
 function createMockRequest(overrides: Record<string, any> = {}): any {
-  return {
+  return withOwnerGrant({
     headers: { authorization: 'Bearer test-token' },
     body: {},
     params: {},
@@ -98,7 +106,7 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
     context: { requestId: 'req-123' },
     on: sinon.stub(),
     ...overrides,
-  }
+  })
 }
 
 function createMockResponse(): any {
@@ -159,6 +167,9 @@ interface CapturedAICall {
 function capturePermissionSyncCalls(): CapturedAICall[] {
   const calls: CapturedAICall[] = []
   sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+    if (String(this.uri).includes('/entity/user/team-ids')) {
+      return Promise.resolve({ statusCode: 200, data: { teamIds: [] } } as any)
+    }
     calls.push({
       uri: this.uri,
       method: this.method,
@@ -170,25 +181,6 @@ function capturePermissionSyncCalls(): CapturedAICall[] {
     return Promise.resolve({ statusCode: 200, data: {} } as any)
   })
   return calls
-}
-
-/** `ChatSessionMessage.find(...).populate().lean()` used when collecting chat-attachment record ids. */
-function stubChatSessionMessageLeanFind(messages: any[]): sinon.SinonStub {
-  restoreIfStubbed(ChatSessionMessage, 'find')
-  const chain: any = {
-    populate() {
-      return chain
-    },
-    lean: () => Promise.resolve(messages),
-  }
-  return sinon.stub(ChatSessionMessage, 'find').returns(chain)
-}
-
-function serviceTokenClaims(call: CapturedAICall): Record<string, unknown> {
-  const token = call.headers.authorization.replace(/^Bearer /, '')
-  const claims = jwt.verify(token, createMockAppConfig().scopedJwtSecret) as Record<string, unknown>
-  expect(claims.scopes).to.deep.equal(['conversation:permissions'])
-  return claims
 }
 
 function createMockSession(): any {
@@ -358,6 +350,9 @@ describe('Enterprise Search Controller', () => {
     if (!(ChatSession.findOneAndUpdate as any).restore) {
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1 } as any)
     }
+    if (!(ChatSession.updateOne as any).restore) {
+      sinon.stub(ChatSession, 'updateOne').resolves({ matchedCount: 1 } as any)
+    }
     if (!(ChatSessionMessage.insertMany as any).restore) {
       sinon.stub(ChatSessionMessage, 'insertMany').resolves([createMockMessageDoc()] as any)
     }
@@ -402,12 +397,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('createConversation', () => {
     it('should return a handler function', () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should pass BadRequestError to next when user is missing and body has no query', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
@@ -420,7 +415,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should pass BadRequestError to next when query is missing', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const req = createMockRequest({ body: {} })
       const res = createMockResponse()
       const next = createMockNext()
@@ -433,7 +428,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should pass BadRequestError to next when query is empty string', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const req = createMockRequest({ body: { query: '' } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -446,7 +441,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should create conversation and return CREATED on happy path', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [
           { messageType: 'user_query', content: 'hello' },
@@ -497,7 +492,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should include reasoningEffort in the AI payload when provided', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -535,7 +530,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should default reasoningEffort to null in the AI payload when omitted', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -573,7 +568,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with error when AI service fails', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -597,7 +592,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when ECONNREFUSED happens from AI service', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -627,12 +622,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('streamChat', () => {
     it('should return a handler function', () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should throw BadRequestError when query is missing', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
 
@@ -645,7 +640,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should throw BadRequestError when body has no query', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const req = createMockRequest({ body: {} })
       const res = createMockResponse()
 
@@ -658,7 +653,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should set SSE headers and write connected event on happy path', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -694,7 +689,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should include reasoningEffort in the AI payload when provided', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -728,7 +723,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle stream error and write error event', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -759,7 +754,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('saves and shows a plain message, not the socket error, when the stream drops', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -792,7 +787,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should not emit generic incomplete SSE error when AI already sent an error event', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -836,7 +831,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI service stream start failure', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -860,7 +855,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should process stream data with complete event', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
         save: sinon.stub(),
@@ -903,12 +898,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('streamChatInternal', () => {
     it('should return a handler function', () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should call next with error when hydration fails (no email)', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
       const req = createMockRequest({
         user: undefined,
         tokenPayload: {},
@@ -927,12 +922,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessage', () => {
     it('should return a handler function', () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should call next with error when conversationId is missing', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
       sinon.stub(ChatSession, 'findOne').resolves(null)
       const req = createMockRequest({
         params: {},
@@ -947,7 +942,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should pass BadRequestError to next when query is missing', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
         body: {},
@@ -963,7 +958,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       // addMessage uses plain `await Conversation.findOne(...)` (thenable, no .lean().exec())
       sinon.stub(ChatSession, 'findOne').returns({
@@ -986,7 +981,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should add message and return response on happy path', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -1032,7 +1027,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with error when AI service returns non-200', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -1067,12 +1062,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStream', () => {
     it('should return a handler function', () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should throw BadRequestError when query is missing', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
       const req = createMockRequest({ body: {} })
       const res = createMockResponse()
 
@@ -1085,7 +1080,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should set SSE headers and process stream on happy path', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -1126,7 +1121,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle stream error event', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [],
@@ -1161,7 +1156,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('saves and shows a plain message, not the socket error, when a follow-up stream drops', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({ messages: [], modelInfo: {} })
       mockDoc.messages = [...mockDoc.messages]
       sinon.stub(ChatSession, 'findOne').returns(resolvingTo(mockDoc))
@@ -1191,7 +1186,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle conversation not found', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
@@ -1215,12 +1210,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStreamInternal', () => {
     it('should return a handler function', () => {
-      const handler = addMessageStreamInternal(createMockAppConfig())
+      const handler = addMessageStreamInternal(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should call next when hydration fails', async () => {
-      const handler = addMessageStreamInternal(createMockAppConfig())
+      const handler = addMessageStreamInternal(createMockAppConfig(), turnDeps())
       const req: any = {
         headers: {},
         body: { query: 'test' },
@@ -1480,10 +1475,12 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
-      expect(aiExecuteStub.called).to.be.false
+      expect(
+        aiExecuteStub.getCalls().filter((c) => !String((c.thisValue as any).uri).includes('/entity/user/team-ids')),
+      ).to.be.empty
     })
 
-    it('should sync artifact permissions for the viewer when a shared (non-owner) user opens the conversation', async () => {
+    it('PH07-13: makes no Python grant call when a shared (non-owner) user opens the conversation', async () => {
       const mockConversation = {
         _id: VALID_OID,
         title: 'Test',
@@ -1517,23 +1514,12 @@ describe('Enterprise Search Controller', () => {
 
       await getConversationById(createMockAppConfig())(req, res, next)
 
-      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
-      expect(artifactCall).to.exist
-      expect(artifactCall!.method).to.equal('POST')
-      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
-        conversationId: VALID_OID,
-        userIds: [VALID_OID2],
-      })
-      // The owner, not the viewer, is the grantor; the viewer's token is never forwarded.
-      expect(serviceTokenClaims(artifactCall!)).to.include({ userId: VALID_OID, orgId: VALID_OID3 })
-      expect(artifactCall!.timeoutMs).to.equal(3000)
-      expect(artifactCall!.maxAttempts).to.equal(1)
-
+      expect(calls).to.be.empty
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should sync attachment permissions for a shared viewer from message chips and ATTACHMENTS citations', async () => {
+    it('PH07-13: makes no Python grant call for a shared viewer despite message chips and ATTACHMENTS citations', async () => {
       const mockConversation = {
         _id: VALID_OID,
         title: 'Test',
@@ -1589,78 +1575,12 @@ describe('Enterprise Search Controller', () => {
 
       await getConversationById(createMockAppConfig())(req, res, next)
 
-      const attachmentCall = calls.find((c) =>
-        c.uri.includes('/chat/attachments/permissions'),
-      )
-      expect(attachmentCall).to.exist
-      expect(attachmentCall!.method).to.equal('POST')
-      const body = JSON.parse(attachmentCall!.body)
-      expect(body.userIds).to.deep.equal([VALID_OID2])
-      expect(body.recordIds).to.have.members(['att-chip', 'att-cite'])
-      expect(body.recordIds).to.not.include('kb-doc')
-      expect(serviceTokenClaims(attachmentCall!)).to.include({
-        userId: VALID_OID,
-        orgId: VALID_OID3,
-      })
-      expect(attachmentCall!.timeoutMs).to.equal(3000)
-      expect(attachmentCall!.maxAttempts).to.equal(1)
-
+      expect(calls).to.be.empty
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should sync attachment permissions (but not artifacts) when a shared viewer loads an older page', async () => {
-      const mockConversation = {
-        _id: VALID_OID,
-        title: 'Test',
-        initiator: VALID_OID,
-        isShared: true,
-        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
-        status: 'complete',
-      }
-      const findOneChain: any = {
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().returnsThis(),
-        exec: sinon.stub().resolves(mockConversation),
-      }
-      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
-      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
-      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(40)
-      stubGetMessages(ChatSessionMessage, [
-        {
-          messageType: 'user_query',
-          content: 'old ss',
-          attachments: [{ recordId: 'att-old' }],
-        },
-      ])
-      stubUsersFindForSharedBy()
-
-      const calls = capturePermissionSyncCalls()
-
-      const req = createMockRequest({
-        params: { conversationId: VALID_OID },
-        query: { page: '2', limit: '20' },
-        user: { userId: VALID_OID2, orgId: VALID_OID3 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await getConversationById(createMockAppConfig())(req, res, next)
-
-      expect(calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))).to.not.exist
-      const attachmentCall = calls.find((c) =>
-        c.uri.includes('/chat/attachments/permissions'),
-      )
-      expect(attachmentCall).to.exist
-      expect(JSON.parse(attachmentCall!.body)).to.deep.equal({
-        userIds: [VALID_OID2],
-        recordIds: ['att-old'],
-      })
-      expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
-    })
-
-    it('should not sync artifact permissions when a shared viewer loads an older page', async () => {
+    it('PH07-13: makes no Python grant call when a shared viewer loads an older page', async () => {
       const mockConversation = {
         _id: VALID_OID,
         title: 'Test',
@@ -1698,42 +1618,6 @@ describe('Enterprise Search Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should still return the conversation when syncing artifact permissions fails', async () => {
-      const mockConversation = {
-        _id: VALID_OID,
-        title: 'Test',
-        initiator: VALID_OID,
-        isShared: true,
-        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
-        status: 'complete',
-      }
-      const findOneChain: any = {
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().returnsThis(),
-        exec: sinon.stub().resolves(mockConversation),
-      }
-      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
-      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
-      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
-      restoreIfStubbed(ChatSessionMessage, 'find')
-      sinon.stub(ChatSessionMessage, 'find')
-      stubUsersFindForSharedBy()
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
-
-      const req = createMockRequest({
-        params: { conversationId: VALID_OID },
-        query: { page: '1', limit: '20' },
-        user: { userId: VALID_OID2, orgId: VALID_OID3 },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await getConversationById(createMockAppConfig())(req, res, next)
-
-      expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
-    })
   })
 
   describe('deleteConversationById', () => {
@@ -1838,20 +1722,6 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next with BadRequestError for invalid access level', async () => {
-      const handler = shareConversationById(createMockAppConfig())
-      const req = createMockRequest({
-        params: { conversationId: VALID_OID },
-        body: { userIds: [VALID_OID2], accessLevel: 'admin' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
     it('should share conversation on happy path', async () => {
       const handler = shareConversationById(createMockAppConfig())
 
@@ -1878,13 +1748,6 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
       } as any)
 
-      // shareConversationById does a bare `await ChatSessionMessage.find(...).lean()`
-      // (no .exec()) — stubMongooseFind's `.lean()` returns the chain itself, not a
-      // promise, so it would resolve to a non-array here; return a real promise.
-      const attachmentLookup = stubChatSessionMessageLeanFind([
-        { attachments: [{ recordId: 'rec-1' }] },
-      ])
-
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
         body: { userIds: [VALID_OID2], accessLevel: 'read' },
@@ -1899,9 +1762,6 @@ describe('Enterprise Search Controller', () => {
       // scoped to chat sessions only (never able to touch an agent session).
       expect(findOne.firstCall.args[0].sessionType).to.equal('chat')
       expect(update.firstCall.args[0]).to.deep.equal({ _id: VALID_OID, sessionType: 'chat' })
-      // Attachment permission grant reads message attachments from the
-      // separate chatSessionMessages collection, not conversation.messages.
-      expect(attachmentLookup.calledWith({ sessionId: VALID_OID }, { attachments: 1, citations: 1 })).to.be.true
 
       if (!next.called) {
         const response = res.json.firstCall.args[0]
@@ -1931,7 +1791,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should grant artifact permissions (in addition to attachment permissions) after sharing', async () => {
+    it('PH07-13: makes no Python grant call after sharing', async () => {
       const handler = shareConversationById(createMockAppConfig())
 
       const mockConversation = {
@@ -1951,7 +1811,6 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
       } as any)
 
-      stubChatSessionMessageLeanFind([{ attachments: [{ recordId: 'rec-1' }] }])
 
       const calls = capturePermissionSyncCalls()
 
@@ -1965,126 +1824,89 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      const attachmentCall = calls.find((c) => c.uri.includes('/chat/attachments/permissions'))
-      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
-      expect(attachmentCall).to.exist
-      expect(artifactCall).to.exist
-      expect(artifactCall!.method).to.equal('POST')
-      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
-        conversationId: VALID_OID,
-        userIds: [VALID_OID2],
-      })
-      for (const call of [attachmentCall!, artifactCall!]) {
-        expect(serviceTokenClaims(call)).to.include({ userId: VALID_OID, orgId: VALID_OID2 })
-      }
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(calls).to.be.empty
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should still share the conversation when granting artifact permissions fails', async () => {
-      const handler = shareConversationById(createMockAppConfig())
+  })
 
-      const mockConversation = {
-        _id: VALID_OID,
-        sharedWith: [],
-        isShared: false,
-      }
-      stubThenableFindOne(ChatSession, mockConversation)
+  describe('share/unshare preserve sharedWith rows without a userId', () => {
+    const team = () => ({ principalType: 'team', teamId: 't1', accessLevel: 'read' })
+    const noUser = () => ({ accessLevel: 'read' })
+    const preserved = () => [team(), noUser()]
+    const malformed = () => [null, ...preserved()]
+    const shape = (rows: any[]) => rows.map((r: any) => (r.userId ? String(r.userId) : r))
+    const owner = () => ({ userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) })
 
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
-
-      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
-      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
-        _id: VALID_OID,
-        isShared: true,
-        shareLink: undefined,
-        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
-      } as any)
-
-      stubChatSessionMessageLeanFind([])
-
-      // Every AIServiceCommand call (including the new artifact-permissions
-      // grant) fails; the share itself must still succeed.
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
-
-      const req = createMockRequest({
-        params: { conversationId: VALID_OID },
-        body: { userIds: [VALID_OID2], accessLevel: 'read' },
-        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
-      })
+    const run = async (handler: any, params: any, body: any) => {
       const res = createMockResponse()
       const next = createMockNext()
+      await handler(createMockRequest({ params, body, user: owner() }), res, next)
+      return { res, next }
+    }
 
-      await handler(req, res, next)
+    it('shareConversationById: ignores and preserves rows without userId, adds the new user', async () => {
+      const valid = { userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }
+      stubThenableFindOne(ChatSession, { _id: VALID_OID, sharedWith: [...malformed(), valid], isShared: false })
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ _id: VALID_OID, isShared: true, sharedWith: [] } as any)
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as any)
+
+      const { res, next } = await run(shareConversationById(createMockAppConfig()), { conversationId: VALID_OID }, { userIds: [VALID_OID2], accessLevel: 'read' })
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
-      const response = res.json.firstCall.args[0]
-      expect(response.isShared).to.equal(true)
+      const saved = update.firstCall.args[1] as any
+      expect(shape(saved.sharedWith)).to.deep.equal([...preserved(), VALID_OID3, VALID_OID2])
+      expect(saved.$inc).to.deep.equal({ aclVersion: 1 })
     })
 
-    it('should grant attachment permissions for ATTACHMENTS citations even without message chips', async () => {
-      const handler = shareConversationById(createMockAppConfig())
-
-      const mockConversation = {
-        _id: VALID_OID,
-        sharedWith: [],
-        isShared: false,
-      }
-      stubThenableFindOne(ChatSession, mockConversation)
-
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
-
+    it('unshareConversationById: ignores and preserves rows without userId, removes only the targeted user', async () => {
+      const keep = { userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }
+      const drop = { userId: new mongoose.Types.ObjectId(VALID_OID2), accessLevel: 'read' }
+      stubThenableFindOne(ChatSession, { _id: VALID_OID, sharedWith: [...malformed(), keep, drop] })
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
-      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
-        _id: VALID_OID,
-        isShared: true,
-        shareLink: undefined,
-        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
-      } as any)
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ _id: VALID_OID, isShared: true, sharedWith: [keep] } as any)
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as any)
 
-      stubChatSessionMessageLeanFind([
-        {
-          attachments: [],
-          citations: [
-            {
-              citationId: {
-                metadata: { recordId: 'png-1', connector: 'ATTACHMENTS' },
-              },
-            },
-            {
-              citationId: {
-                metadata: { recordId: 'kb-doc', connector: 'KNOWLEDGE_BASE' },
-              },
-            },
-          ],
-        },
-      ])
+      const { res, next } = await run(unshareConversationById(createMockAppConfig()), { conversationId: VALID_OID }, { userIds: [VALID_OID2] })
 
-      const calls = capturePermissionSyncCalls()
-
-      const req = createMockRequest({
-        params: { conversationId: VALID_OID },
-        body: { userIds: [VALID_OID2], accessLevel: 'read' },
-        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      const attachmentCall = calls.find((c) =>
-        c.uri.includes('/chat/attachments/permissions'),
-      )
-      expect(attachmentCall).to.exist
-      expect(JSON.parse(attachmentCall!.body)).to.deep.equal({
-        userIds: [VALID_OID2],
-        recordIds: ['png-1'],
-      })
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
+      const saved = update.firstCall.args[1] as any
+      expect(shape(saved.sharedWith)).to.deep.equal([...preserved(), VALID_OID3])
+      expect(saved.$inc).to.deep.equal({ aclVersion: 1 })
+    })
+
+    it('shareSearch: ignores and preserves rows without userId, adds the new user', async () => {
+      const valid = { userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }
+      stubThenableFindOne(EnterpriseSemanticSearch, { _id: VALID_OID, sharedWith: [...malformed(), valid], isShared: false })
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      const update = sinon.stub(EnterpriseSemanticSearch, 'findByIdAndUpdate').resolves({ _id: VALID_OID, isShared: true } as any)
+
+      const { res, next } = await run(shareSearch(createMockAppConfig()), { searchId: VALID_OID }, { userIds: [VALID_OID2], accessLevel: 'read' })
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const saved = update.firstCall.args[1] as any
+      expect(shape(saved.sharedWith)).to.deep.equal([...preserved(), VALID_OID3, VALID_OID2])
+    })
+
+    it('unshareSearch: ignores and preserves rows without userId, removes only the targeted user', async () => {
+      const keep = { userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }
+      const drop = { userId: new mongoose.Types.ObjectId(VALID_OID2), accessLevel: 'read' }
+      stubThenableFindOne(EnterpriseSemanticSearch, { _id: VALID_OID, sharedWith: [...malformed(), keep, drop] })
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      const update = sinon.stub(EnterpriseSemanticSearch, 'findByIdAndUpdate').resolves({ _id: VALID_OID, isShared: true } as any)
+
+      const { res, next } = await run(unshareSearch(createMockAppConfig()), { searchId: VALID_OID }, { userIds: [VALID_OID2] })
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const saved = update.firstCall.args[1] as any
+      expect(shape(saved.sharedWith)).to.deep.equal([...preserved(), VALID_OID3])
     })
   })
 
@@ -2195,7 +2017,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should revoke artifact permissions (in addition to attachment permissions) after unsharing', async () => {
+    it('PH07-13: makes no Python grant call after unsharing', async () => {
       const mockConversation = {
         _id: VALID_OID,
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
@@ -2209,7 +2031,6 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [],
       } as any)
 
-      stubChatSessionMessageLeanFind([{ attachments: [{ recordId: 'rec-1' }] }])
 
       const calls = capturePermissionSyncCalls()
 
@@ -2224,56 +2045,11 @@ describe('Enterprise Search Controller', () => {
       const handler = unshareConversationById(createMockAppConfig())
       await handler(req, res, next)
 
-      const attachmentCall = calls.find((c) => c.uri.includes('/chat/attachments/permissions'))
-      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
-      expect(attachmentCall).to.exist
-      expect(artifactCall).to.exist
-      expect(artifactCall!.method).to.equal('DELETE')
-      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
-        conversationId: VALID_OID,
-        userIds: [VALID_OID3],
-      })
-      expect(serviceTokenClaims(artifactCall!)).to.include({ userId: VALID_OID, orgId: VALID_OID2 })
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should still unshare the conversation when revoking artifact permissions fails', async () => {
-      const mockConversation = {
-        _id: VALID_OID,
-        sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
-      }
-      stubMongooseFind(ChatSession, 'findOne', mockConversation)
-      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
-      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
-        _id: VALID_OID,
-        isShared: false,
-        shareLink: undefined,
-        sharedWith: [],
-      } as any)
-
-      stubChatSessionMessageLeanFind([])
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
-
-      const req = createMockRequest({
-        params: { conversationId: VALID_OID },
-        body: { userIds: [VALID_OID3] },
-        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      const handler = unshareConversationById(createMockAppConfig())
-      await handler(req, res, next)
-
+      expect(calls).to.be.empty
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
-      const response = res.json.firstCall.args[0]
-      expect(response).to.have.property('unsharedUsers')
     })
+
   })
 
   describe('updateTitle', () => {
@@ -2680,12 +2456,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('regenerateAnswers', () => {
     it('should return a handler function', () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should set SSE headers and handle stream', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
       const userQueryId = new mongoose.Types.ObjectId()
@@ -3683,12 +3459,12 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createAgentConversation', () => {
     it('should return a handler function', () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should pass BadRequestError to next when query is missing', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
         body: {},
@@ -3704,7 +3480,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should create agent conversation and return CREATED', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -3737,7 +3513,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should include reasoningEffort in the AI payload when provided', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -3768,7 +3544,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when AI service fails', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -3794,12 +3570,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('streamAgentConversationInternal', () => {
     it('should return a handler function', () => {
-      const handler = streamAgentConversationInternal(createMockAppConfig())
+      const handler = streamAgentConversationInternal(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should call next when hydration fails', async () => {
-      const handler = streamAgentConversationInternal(createMockAppConfig())
+      const handler = streamAgentConversationInternal(createMockAppConfig(), turnDeps())
       const req: any = {
         headers: {},
         body: { query: 'test' },
@@ -3820,12 +3596,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStreamToAgentConversation', () => {
     it('should return a handler function', () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should throw BadRequestError when query is missing', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
         body: {},
@@ -3841,7 +3617,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should set SSE headers and stream on happy path', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -3882,7 +3658,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle conversation not found', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
@@ -3905,12 +3681,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStreamToAgentConversationInternal', () => {
     it('should return a handler function', () => {
-      const handler = addMessageStreamToAgentConversationInternal(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversationInternal(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should call next when hydration fails', async () => {
-      const handler = addMessageStreamToAgentConversationInternal(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversationInternal(createMockAppConfig(), turnDeps())
       const req: any = {
         headers: {},
         body: { query: 'test' },
@@ -3931,12 +3707,12 @@ describe('Enterprise Search Controller', () => {
 
   describe('regenerateAgentAnswers', () => {
     it('should return a handler function', () => {
-      const handler = regenerateAgentAnswers(createMockAppConfig())
+      const handler = regenerateAgentAnswers(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should set SSE headers and handle stream', async () => {
-      const handler = regenerateAgentAnswers(createMockAppConfig())
+      const handler = regenerateAgentAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
       const userQueryId = new mongoose.Types.ObjectId()
@@ -4146,16 +3922,16 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('deleteAgentConversationById', () => {
-    it('should return success with null conversation when user is not authenticated', async () => {
+    it('fails closed when no guard granted the conversation', async () => {
       const req = createMockRequest({ user: undefined, params: { conversationId: 'ac-1' } })
       const res = createMockResponse()
       const next = createMockNext()
 
       await deleteAgentConversationById(req, res, next)
 
-      // When user is undefined, validateAgentConversationAccess catches the CastError
-      // and returns null, so the controller returns 200 with null conversation
-      expect(res.status.calledWith(200)).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('conversation guard not mounted')
+      expect(res.status.called).to.be.false
     })
 
     it('should return 200 when conversation is not found', async () => {
@@ -4389,7 +4165,8 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [],
       } as any)
       sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
-      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves(null)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -4691,8 +4468,8 @@ describe('Enterprise Search Controller', () => {
           userId: VALID_OID3,
           name: 'Priya Sharma',
         })
-        // shared branch strips the sharedWith field from the projection
-        expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
+        // other recipients are not exposed on a shared row
+        expect(response.conversations[0]).to.not.have.property('sharedWith')
       }
     })
 
@@ -4835,7 +4612,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('streamChat (deep paths)', () => {
     it('should handle stream data with token and citation events', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockConversation = createMockConversationDoc()
       sinon.stub(ChatSession.prototype, 'save').resolves(mockConversation)
@@ -4871,7 +4648,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStream (deep paths)', () => {
     it('should handle adding message to existing conversation via stream', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockConversation = createMockConversationDoc({
         messages: [
@@ -4904,7 +4681,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('createConversation (deep paths)', () => {
     it('should handle AI service returning non-200 status (failed conversation)', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
 
       const mockSaved = createMockConversationDoc()
       sinon.stub(ChatSession.prototype, 'save').resolves(mockSaved)
@@ -4933,7 +4710,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('createAgentConversation (deep paths)', () => {
     it('should handle AI service failure during agent conversation creation', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockSaved = createMockConversationDoc({ agentKey: 'agent-1' })
       // Override toObject for agent conversation
@@ -5133,7 +4910,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessage (deep paths)', () => {
     it('should handle AI service returning non-200 on addMessage', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       const mockConversation = createMockConversationDoc({
         messages: [
@@ -5166,7 +4943,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('error handling via backend errors', () => {
     it('should handle ECONNREFUSED error in createConversation', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -5226,6 +5003,80 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should relay a taken handle as a 409 with its suggestion', async () => {
+      const handler = createAgent(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 409,
+        data: {
+          detail: {
+            code: 'HANDLE_TAKEN',
+            message: 'The handle @sales-bot is already taken.',
+            suggestion: 'sales-bot-2',
+          },
+        },
+      } as any)
+
+      const req = createMockRequest({
+        body: { name: 'Agent', handle: 'sales-bot' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(409)
+      expect(error.code).to.equal('HANDLE_TAKEN')
+      expect(error.message).to.equal('The handle @sales-bot is already taken.')
+      expect(error.publicDetails).to.deep.equal({ suggestion: 'sales-bot-2' })
+    })
+
+    it('should relay a reserved handle as a 400 in updateAgent', async () => {
+      const handler = updateAgent(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 400,
+        data: {
+          detail: { code: 'HANDLE_RESERVED', message: 'The handle @assistant is reserved.' },
+        },
+      } as any)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { handle: 'assistant' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(400)
+      expect(error.code).to.equal('HANDLE_RESERVED')
+    })
+
+    it('should still map other 409s through the generic mapper', async () => {
+      const handler = createAgent(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 409,
+        data: { detail: 'Something else conflicts' },
+      } as any)
+
+      const req = createMockRequest({
+        body: { name: 'Agent' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const next = createMockNext()
+
+      await handler(req, createMockResponse(), next)
+
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(409)
+      expect(error.code).to.equal('HTTP_CONFLICT')
     })
 
     it('should handle backend error with response status 404 in createAgent', async () => {
@@ -5330,7 +5181,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChatInternal (hydration paths)', () => {
     it('should proceed when user already has userId and orgId', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -5360,7 +5211,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should hydrate from tokenPayload email when user is missing', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
 
       // Stub Users.findOne to return a user
       sinon.stub(Users, 'findOne').resolves({
@@ -5406,7 +5257,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when user not found in DB during hydration', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves(null)
 
@@ -5431,7 +5282,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStreamInternal (hydration paths)', () => {
     it('should proceed when user already has userId and orgId', async () => {
-      const handler = addMessageStreamInternal(createMockAppConfig())
+      const handler = addMessageStreamInternal(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -5471,7 +5322,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('streamAgentConversationInternal (hydration paths)', () => {
     it('should proceed when user already has userId and orgId', async () => {
-      const handler = streamAgentConversationInternal(createMockAppConfig())
+      const handler = streamAgentConversationInternal(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5504,7 +5355,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStreamToAgentConversationInternal (hydration paths)', () => {
     it('should proceed when user already has userId and orgId', async () => {
-      const handler = addMessageStreamToAgentConversationInternal(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversationInternal(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5548,7 +5399,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat (complete event save)', () => {
     it('should process complete event and save conversation', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -5589,7 +5440,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle stream error event and write error to SSE', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -5621,7 +5472,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStream (complete event save)', () => {
     it('should process complete event and save conversation on addMessage stream', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -5670,7 +5521,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStreamToAgentConversation (complete event save)', () => {
     it('should process complete event and save agent conversation', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5718,7 +5569,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle stream error in agent conversation stream', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5755,7 +5606,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should persist tool_call on ask_user_question success event', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5807,7 +5658,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should forward ask_user_question without persisting when status is not success', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5847,7 +5698,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should forward malformed ask_user_question event without persisting', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5887,7 +5738,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should still forward ask_user_question when DB persistence fails', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5932,7 +5783,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI service stream start failure for agent conversation', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5968,7 +5819,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('stream drops never reach the user as raw socket errors', () => {
     it('saves and shows a plain message when an agent follow-up stream drops', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({ agentKey: 'agent-1', messages: [], modelInfo: {} })
       mockDoc.messages = [...mockDoc.messages]
       sinon.stub(ChatSession, 'findOne').returns(resolvingTo(mockDoc))
@@ -5998,7 +5849,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('shows a plain message when a regeneration stream drops', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
       const messageId = new mongoose.Types.ObjectId()
       const userQueryId = new mongoose.Types.ObjectId()
       const mockConversation = createMockConversationDoc({
@@ -6052,7 +5903,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('regenerateAnswers (deep paths)', () => {
     it('should call next (via SSE error) when conversation not found', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       stubMongooseFind(ChatSession, 'findOne', null)
 
@@ -6072,7 +5923,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle stream error during regeneration', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
       const userQueryId = new mongoose.Types.ObjectId()
@@ -6121,7 +5972,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('regenerateAgentAnswers (deep paths)', () => {
     it('should handle stream error during agent regeneration', async () => {
-      const handler = regenerateAgentAnswers(createMockAppConfig())
+      const handler = regenerateAgentAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
       const userQueryId = new mongoose.Types.ObjectId()
@@ -6174,7 +6025,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation (additional deep paths)', () => {
     it('should handle AI service returning 200 with answer and citations', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [
           { messageType: 'user_query', content: 'hello' },
@@ -6270,12 +6121,12 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamAgentConversation', () => {
     it('should return a handler function', () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should throw BadRequestError when query is missing', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
         body: {},
@@ -6291,7 +6142,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should set SSE headers and write connected event on happy path', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6323,7 +6174,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle stream error event', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6354,7 +6205,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI service stream start failure', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6379,7 +6230,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should process complete event and save agent conversation', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6418,7 +6269,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should persist tool_call on ask_user_question success event', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6464,7 +6315,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should forward malformed ask_user_question event without persisting', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6498,7 +6349,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should still forward ask_user_question when DB persistence fails', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6537,7 +6388,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle client disconnect by destroying stream', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6578,7 +6429,7 @@ describe('Enterprise Search Controller', () => {
     // propagates the negotiated protocol to Python's aiPayload.
     // -----------------------------------------------------------------------
     it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6615,7 +6466,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should default to agui and propagate it to Python when protocol is omitted', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6648,7 +6499,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should process a RUN_FINISHED frame from Python and re-emit RUN_FINISHED to the client', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6687,7 +6538,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should surface a RUN_ERROR frame from Python as an SSE error to the client', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6728,12 +6579,12 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageToAgentConversation', () => {
     it('should return a handler function', () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
       expect(handler).to.be.a('function')
     })
 
     it('should pass BadRequestError to next when query is missing', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
         body: {},
@@ -6749,7 +6600,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
@@ -6771,7 +6622,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should add message to agent conversation and return response on happy path', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -6816,7 +6667,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with error when AI service fails', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -6845,7 +6696,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle ECONNREFUSED error from AI service', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -6879,7 +6730,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI service returning non-200 status', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -6917,7 +6768,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation (service request path)', () => {
     it('should look up user from tokenPayload email when user property is absent', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves({
         _id: new mongoose.Types.ObjectId(VALID_OID),
@@ -6972,7 +6823,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when user not found from tokenPayload email', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves(null)
 
@@ -7005,7 +6856,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessage (service request path)', () => {
     it('should look up user from tokenPayload email and add message', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves({
         _id: new mongoose.Types.ObjectId(VALID_OID),
@@ -7058,7 +6909,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when user not found from tokenPayload in addMessage', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves(null)
 
@@ -7149,7 +7000,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream (error event in stream data)', () => {
     it('should handle error event in SSE stream data and mark conversation failed', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -7192,7 +7043,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle malformed error event in SSE stream data', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -7237,7 +7088,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat (malformed complete event)', () => {
     it('should forward event when complete data cannot be parsed', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -7277,7 +7128,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('regenerateAnswers (validation branches)', () => {
     it('should error when conversation has no messages', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const mockConversation = createMockConversationDoc({
         messages: [],
@@ -7304,7 +7155,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should error when messageId does not match last message', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
       const differentId = new mongoose.Types.ObjectId()
@@ -7337,7 +7188,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should error when last message is not a bot response', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
 
@@ -7369,7 +7220,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should error when conversation has only one message (no user query to regenerate)', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
 
@@ -7400,7 +7251,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should error when previous message is not a user query', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
 
@@ -7431,8 +7282,8 @@ describe('Enterprise Search Controller', () => {
       expect(res.end.called).to.be.true
     })
 
-    it('should error when conversationId is missing', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+    it('fails closed without a conversation id: no guard could have granted it', async () => {
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const req = createMockRequest({
         params: { messageId: VALID_OID3 },
@@ -7442,11 +7293,15 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       res.flush = sinon.stub()
 
-      await handler(req, res)
+      let caught: unknown
+      try {
+        await handler(req, res)
+      } catch (error) {
+        caught = error
+      }
 
-      const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
-      expect(res.end.called).to.be.true
+      expect((caught as Error).message).to.equal('conversation guard not mounted')
+      expect(res.writeHead.called).to.equal(false)
     })
   })
 
@@ -7964,7 +7819,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat (no complete data on end)', () => {
     it('should mark conversation as failed when no complete data received on stream end', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8004,7 +7859,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream (no complete data on end)', () => {
     it('should mark conversation as failed when no complete data received', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -8129,7 +7984,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - handleBackendError branches', () => {
     it('should handle AI response error with status 400', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8154,7 +8009,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI response error with status 401', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8179,7 +8034,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI response error with status 403', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8204,7 +8059,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI response error with status 404', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8229,7 +8084,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI response error with status 502', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8254,7 +8109,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI response error with status 503', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8279,7 +8134,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI response error with status 504', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8304,7 +8159,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI response error with unknown status', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8329,7 +8184,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI error with request but no response', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8351,7 +8206,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle AI error with detail field', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8373,7 +8228,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle fetch failed error message', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8396,7 +8251,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle error response with data.reason fallback', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8426,7 +8281,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - service request path', () => {
     it('should handle service request with tokenPayload email', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockUser = {
         _id: new mongoose.Types.ObjectId(VALID_OID),
         orgId: new mongoose.Types.ObjectId(VALID_OID2),
@@ -8468,7 +8323,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next with NotFoundError when user not found via service request', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves(null)
 
@@ -8496,7 +8351,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessage - service request path', () => {
     it('should handle service request with tokenPayload email', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
       const mockUser = {
         _id: new mongoose.Types.ObjectId(VALID_OID),
         orgId: new mongoose.Types.ObjectId(VALID_OID2),
@@ -8549,7 +8404,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - error with headers already sent', () => {
     it('should not call writeHead when headersSent is true', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession.prototype, 'save').rejects(new Error('DB crash'))
 
@@ -8575,7 +8430,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - client disconnect handling', () => {
     it('should destroy stream when client disconnects', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8617,7 +8472,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - disconnect while AI stream is still opening', () => {
     it('saves STOPPED, not FAILED, when the client disconnects before executeStream resolves', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8670,7 +8525,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - parse error in complete event', () => {
     it('should forward event when complete data cannot be parsed', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -8708,7 +8563,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream - error events in stream data', () => {
     it('should process error events from stream data', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -8750,7 +8605,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle unparseable error events in stream', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -8795,7 +8650,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream - AI stream start failure', () => {
     it('should handle stream creation failure', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -8832,7 +8687,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - optional body fields', () => {
     it('should handle request with all optional model fields', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -9124,7 +8979,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChatInternal - hydration paths', () => {
     it('should skip hydration when user already exists with userId and orgId', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -9153,7 +9008,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should call next when user not found during hydration', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves(null)
 
@@ -9214,8 +9069,8 @@ describe('Enterprise Search Controller', () => {
   // regenerateAnswers - validation failures
   // -----------------------------------------------------------------------
   describe('regenerateAnswers - validation', () => {
-    it('should error when conversationId is missing', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+    it('fails closed without a conversation id: no guard could have granted it', async () => {
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
       const req = createMockRequest({
         params: {},
         body: {},
@@ -9224,14 +9079,19 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       res.flush = sinon.stub()
 
-      await handler(req, res)
+      let caught: unknown
+      try {
+        await handler(req, res)
+      } catch (error) {
+        caught = error
+      }
 
-      const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
+      expect((caught as Error).message).to.equal('conversation guard not mounted')
+      expect(res.writeHead.called).to.equal(false)
     })
 
     it('should error when conversation has no messages', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const mockConversation = createMockConversationDoc({
         messages: [],
@@ -9253,7 +9113,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should error when trying to regenerate non-last message', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const msgId1 = new mongoose.Types.ObjectId()
       const msgId2 = new mongoose.Types.ObjectId()
@@ -9281,7 +9141,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should error when last message is not bot_response', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const msgId = new mongoose.Types.ObjectId()
 
@@ -9318,7 +9178,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('startAIStream - error mapping', () => {
     it('should map ECONNREFUSED to ServiceUnavailableError in stream start', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -9348,7 +9208,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - savedConversation null in outer catch', () => {
     it('should skip markConversationFailed when savedConversation is null', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       // Make save return null to simulate failed creation
       sinon.stub(ChatSession.prototype, 'save').resolves(null as any)
@@ -9373,7 +9233,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamAgentConversation - savedConversation null in catch', () => {
     it('should skip markAgentConversationFailed when savedConversation is null', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession.prototype, 'save').resolves(null as any)
 
@@ -9398,7 +9258,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream - headers already sent in catch', () => {
     it('should not call writeHead when headersSent is true in catch block', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession, 'findOne').returns({
         then: (_resolve: any, reject: any) => { throw new Error('DB crash') },
@@ -9427,7 +9287,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStreamToAgentConversation - headers already sent in catch', () => {
     it('should not call writeHead when headersSent is true', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession, 'findOne').returns({
         then: () => { throw new Error('DB crash') },
@@ -9455,7 +9315,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamAgentConversation - headers already sent in catch', () => {
     it('should not call writeHead when headersSent is true', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession.prototype, 'save').rejects(new Error('DB crash'))
 
@@ -9481,7 +9341,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - dbError when saving complete conversation', () => {
     it('should write error event when saving conversation throws in stream end handler', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -9530,7 +9390,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - markConversationFailed fails in stream error handler', () => {
     it('should still write error event when markConversationFailed throws', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -9699,7 +9559,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream - modelInfo field updates', () => {
     it('should update modelInfo fields when provided in body', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -9741,7 +9601,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should skip modelInfo field when value is null or undefined', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -9785,7 +9645,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStreamToAgentConversation - error event in SSE data', () => {
     it('should handle error event in agent stream data', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -9829,7 +9689,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle malformed error event in agent stream data', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -9874,7 +9734,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStreamToAgentConversation - complete event parse error', () => {
     it('should forward event when complete data cannot be parsed', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -9922,7 +9782,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamAgentConversation - complete event parse error', () => {
     it('should forward event when complete data cannot be parsed', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -9962,7 +9822,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream - complete event parse error', () => {
     it('should forward event when complete data cannot be parsed', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -10008,7 +9868,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStream - client disconnect handling', () => {
     it('should destroy stream when client disconnects', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -10055,7 +9915,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageStreamToAgentConversation - no complete data on end', () => {
     it('should mark conversation as failed when no complete data received', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -10098,7 +9958,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamAgentConversation - no complete data on end', () => {
     it('should mark conversation as failed when no complete data received', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -10135,7 +9995,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - optional body fields defaulting', () => {
     it('should use defaults when optional body fields are missing', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -10161,7 +10021,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should use provided body fields when present', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -10201,7 +10061,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamAgentConversation - optional body fields', () => {
     it('should use provided agent-specific body fields', async () => {
-      const handler = streamAgentConversation(createMockAppConfig())
+      const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -10244,7 +10104,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessage - ECONNREFUSED in AI service', () => {
     it('should call next with unavailable error on ECONNREFUSED', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -10283,7 +10143,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - AI response with no citations', () => {
     it('should handle AI response where citations is undefined/empty', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -10327,7 +10187,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createAgentConversation - ECONNREFUSED error', () => {
     it('should call next with unavailable error on ECONNREFUSED', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -10360,7 +10220,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createAgentConversation - AI response with undefined citations', () => {
     it('should handle undefined citations in AI response', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -10407,7 +10267,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessage - AI response with msg field', () => {
     it('should use msg field in error when data is null', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'prev' }],
@@ -10595,7 +10455,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageToAgentConversation - modelInfo field update', () => {
     it('should update modelInfo fields when provided in body', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -10643,7 +10503,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - query validation branches', () => {
     it('should skip XSS validation when query is not a string', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: '123' }],
       })
@@ -10677,7 +10537,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessage - non-string query skips XSS validation', () => {
     it('should skip XSS validation when query is a number', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'prev' }],
@@ -10711,7 +10571,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessageToAgentConversation - non-string query', () => {
     it('should skip XSS validation when query is a number', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -10747,7 +10607,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createAgentConversation - non-string query', () => {
     it('should skip XSS validation when query is a number', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -10783,7 +10643,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('regenerateAnswers - complete event with save', () => {
     it('should handle complete event and save regenerated answer', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
 
       const messageId = new mongoose.Types.ObjectId()
       const userQueryId = new mongoose.Types.ObjectId()
@@ -10846,7 +10706,7 @@ describe('Enterprise Search Controller', () => {
 
     for (const c of cases) {
       it(`createConversation: ${c.name}`, async () => {
-        const handler = createConversation(createMockAppConfig())
+        const handler = createConversation(createMockAppConfig(), turnDeps())
         const mockDoc = createMockConversationDoc({ messages: [{ messageType: 'user_query', content: 'hello' }] })
         sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
         sinon.stub(AIServiceCommand.prototype, 'execute').resolves(asAIResponse(c.response))
@@ -10867,7 +10727,7 @@ describe('Enterprise Search Controller', () => {
       })
 
       it(`createAgentConversation: ${c.name}`, async () => {
-        const handler = createAgentConversation(createMockAppConfig())
+        const handler = createAgentConversation(createMockAppConfig(), turnDeps())
         const mockDoc = createMockConversationDoc({
           agentKey: 'agent-1',
           messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -10894,7 +10754,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('createAgentConversation - AI response non-200 with msg', () => {
     it('should handle AI response with non-200 status and msg field', async () => {
-      const handler = createAgentConversation(createMockAppConfig())
+      const handler = createAgentConversation(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -11064,7 +10924,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - body with all optional fields', () => {
     it('should use provided previousConversations, recordIds, filters, modelKey, chatMode', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -11105,7 +10965,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - body with all optional fields provided', () => {
     it('should use provided values instead of defaults', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [
           { messageType: 'user_query', content: 'hello' },
@@ -11162,7 +11022,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('addMessage - body with all optional fields provided', () => {
     it('should use provided filters, modelKey, chatMode', async () => {
-      const handler = addMessage(createMockAppConfig())
+      const handler = addMessage(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         _id: new mongoose.Types.ObjectId(VALID_OID),
         messages: [{ messageType: 'user_query', content: 'old' }],
@@ -11223,7 +11083,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('handleBackendError - errorDetail fallbacks via createConversation', () => {
     it('should use data.reason when data.detail is missing', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -11248,7 +11108,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should use data.message when detail and reason are missing', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -11273,7 +11133,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should use Unknown error when all data fields are missing', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -11303,7 +11163,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('handleBackendError - error.detail path', () => {
     it('should use error.detail when no response and no request', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -11333,7 +11193,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('handleBackendError - error.request path', () => {
     it('should use error.request when no response but has request', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -11363,7 +11223,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - session null branches', () => {
     it('should save without session when rsAvailable is false', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
         status: 'inprogress',
@@ -11405,7 +11265,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - error.message fallback branches', () => {
     it('should handle error without message in stream error handler', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -11441,7 +11301,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - catch block error.message fallback', () => {
     it('should handle error without message in outer catch block', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       sinon.stub(ChatSession.prototype, 'save').rejects({ stack: 'error stack' })
 
@@ -11561,7 +11421,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('createConversation - service request with empty email', () => {
     it('should call next with error when email lookup finds no user', async () => {
-      const handler = createConversation(createMockAppConfig())
+      const handler = createConversation(createMockAppConfig(), turnDeps())
 
       sinon.stub(Users, 'findOne').resolves(null)
 
@@ -11654,7 +11514,7 @@ describe('Enterprise Search Controller', () => {
     }
 
     it('should log error and write SSE event when catch-block save returns null (lines 6128-6138)', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = buildMockDocPair('null')
 
       sinon.stub(ChatSession, 'findOne').returns({
@@ -11683,7 +11543,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should handle inner DB error when catch-block save throws (lines 6141-6147)', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = buildMockDocPair('throw')
 
       sinon.stub(ChatSession, 'findOne').returns({
@@ -11711,7 +11571,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should write 500 SSE header when headers not yet sent in outer catch', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
 
       // Return null from findOne so existingConversation stays undefined and the
       // outer catch hits the !res.headersSent branch (line 6149-6151)
@@ -11745,7 +11605,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - agent mode parsing', () => {
     it('should parse agent:auto as agentMode=true and chatMode=auto', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
@@ -11784,7 +11644,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should parse agent:quick as agentMode=true and chatMode=quick', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
@@ -11823,7 +11683,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should parse plain agent as agentMode=true and chatMode=quick', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
@@ -11862,7 +11722,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should not set agentMode when chatMode does not include agent', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
@@ -11901,7 +11761,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should default to quick mode when chatMode is not provided', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'test query' }],
@@ -12490,7 +12350,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubStreamChatDeps(mockStream)
 
-        const handler = streamChat(createMockAppConfig())
+        const handler = streamChat(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           body: { query: 'hello', chatMode: 'agent:auto' },
           user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
@@ -12510,7 +12370,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubStreamChatDeps(mockStream)
 
-        const handler = streamChat(createMockAppConfig())
+        const handler = streamChat(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           body: { query: 'hello', chatMode: 'agent:auto', tools: ['tool1', 'tool2'] },
           user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
@@ -12531,7 +12391,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubStreamChatDeps(mockStream)
 
-        const handler = streamChat(createMockAppConfig())
+        const handler = streamChat(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           body: { query: 'hello', chatMode: 'agent:auto', tools: 'not-an-array' },
           user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
@@ -12552,7 +12412,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubStreamChatDeps(mockStream)
 
-        const handler = streamChat(createMockAppConfig())
+        const handler = streamChat(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           body: { query: 'hello', chatMode: 'quick', tools: ['tool1'] },
           user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
@@ -12595,7 +12455,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubAddMessageStreamDeps(mockStream)
 
-        const handler = addMessageStream(createMockAppConfig())
+        const handler = addMessageStream(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID },
           body: { query: 'follow up', chatMode: 'agent:auto' },
@@ -12616,7 +12476,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubAddMessageStreamDeps(mockStream)
 
-        const handler = addMessageStream(createMockAppConfig())
+        const handler = addMessageStream(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID },
           body: { query: 'follow up', chatMode: 'agent:auto', tools: ['toolA', 'toolB'] },
@@ -12638,7 +12498,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubAddMessageStreamDeps(mockStream)
 
-        const handler = addMessageStream(createMockAppConfig())
+        const handler = addMessageStream(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID },
           body: { query: 'follow up', chatMode: 'agent:auto', tools: 99 },
@@ -12674,7 +12534,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubStreamAgentConversationDeps(mockStream)
 
-        const handler = streamAgentConversation(createMockAppConfig())
+        const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { agentKey: 'agent-1' },
           body: { query: 'hello' },
@@ -12695,7 +12555,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubStreamAgentConversationDeps(mockStream)
 
-        const handler = streamAgentConversation(createMockAppConfig())
+        const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { agentKey: 'agent-1' },
           body: { query: 'hello', tools: ['tool1', 'tool2'] },
@@ -12717,7 +12577,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubStreamAgentConversationDeps(mockStream)
 
-        const handler = streamAgentConversation(createMockAppConfig())
+        const handler = streamAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { agentKey: 'agent-1' },
           body: { query: 'hello', tools: 'bad-value' },
@@ -12770,7 +12630,7 @@ describe('Enterprise Search Controller', () => {
           } as any)
         })
 
-        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID, agentKey: 'agent-1' },
           body: { query: 'follow up' },
@@ -12795,7 +12655,7 @@ describe('Enterprise Search Controller', () => {
           } as any)
         })
 
-        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID, agentKey: 'agent-1' },
           body: { query: 'follow up', tools: ['tool1', 'tool2'] },
@@ -12821,7 +12681,7 @@ describe('Enterprise Search Controller', () => {
           } as any)
         })
 
-        const handler = addMessageToAgentConversation(createMockAppConfig())
+        const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID, agentKey: 'agent-1' },
           body: { query: 'follow up', tools: { invalid: true } },
@@ -12864,7 +12724,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubAddMessageStreamToAgentConversationDeps(mockStream)
 
-        const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+        const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID, agentKey: 'agent-1' },
           body: { query: 'follow up' },
@@ -12885,7 +12745,7 @@ describe('Enterprise Search Controller', () => {
         const mockStream = createMockStream()
         stubAddMessageStreamToAgentConversationDeps(mockStream)
 
-        const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+        const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
         const req = createMockRequest({
           params: { conversationId: VALID_OID, agentKey: 'agent-1' },
           body: { query: 'follow up', tools: ['toolX', 'toolY'] },
@@ -13063,7 +12923,7 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   describe('streamChat - AG-UI protocol', () => {
     it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -13097,7 +12957,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should default to agui and propagate it to Python when protocol is omitted', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -13127,7 +12987,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should process a RUN_FINISHED frame from Python, persist it, and re-emit RUN_FINISHED to the client', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -13163,7 +13023,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should surface a RUN_ERROR frame from Python as an AG-UI RUN_ERROR to the client', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -13199,7 +13059,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStream - AG-UI protocol', () => {
     it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -13237,7 +13097,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should process a RUN_FINISHED frame from Python and re-emit RUN_FINISHED to the client', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
       })
@@ -13278,7 +13138,7 @@ describe('Enterprise Search Controller', () => {
 
   describe('addMessageStreamToAgentConversation - AG-UI protocol', () => {
     it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -13317,7 +13177,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should process a RUN_FINISHED frame from Python and re-emit RUN_FINISHED to the client', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -13357,7 +13217,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should persist an ask_user_question CUSTOM event as a tool_call message', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -13477,9 +13337,6 @@ describe('Enterprise Search Controller', () => {
         _id: VALID_OID,
         sharedWith: [],
       } as any)
-      // unshareConversationById revokes attachment permissions via a bare
-      // `.find(...).lean()` (no .exec()); give it a real resolving promise.
-      stubChatSessionMessageLeanFind([])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -13532,7 +13389,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('addMessageToAgentConversation scopes the lookup to sessionType agent', async () => {
-      const handler = addMessageToAgentConversation(createMockAppConfig())
+      const handler = addMessageToAgentConversation(createMockAppConfig(), turnDeps())
       const mockConversation = createMockConversationDoc({ agentKey: 'agent-1' })
       const findOne = sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(mockConversation),
@@ -13609,7 +13466,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('regenerateAnswers scopes the buildQueryFilter lookup to sessionType chat', async () => {
-      const handler = regenerateAnswers(createMockAppConfig())
+      const handler = regenerateAnswers(createMockAppConfig(), turnDeps())
       const messageId = new mongoose.Types.ObjectId()
       const findOne = sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
@@ -13628,7 +13485,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('regenerateAgentAnswers scopes the buildQueryFilter lookup to sessionType agent', async () => {
-      const handler = regenerateAgentAnswers(createMockAppConfig())
+      const handler = regenerateAgentAnswers(createMockAppConfig(), turnDeps())
       const messageId = new mongoose.Types.ObjectId()
       const findOne = sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
@@ -13684,7 +13541,16 @@ describe('Enterprise Search Controller', () => {
 
       const contentMatchId = new mongoose.Types.ObjectId()
       restoreIfStubbed(ChatSessionMessage, 'aggregate')
-      sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: contentMatchId }])
+      const messageAggregate = sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: contentMatchId }])
+      const accessibleId = new mongoose.Types.ObjectId()
+      const accessibleChain: any = {
+        sort: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([{ _id: accessibleId }]),
+      }
+      sinon.stub(ChatSession, 'find').returns(accessibleChain)
 
       const assistantDoc = {
         _id: VALID_OID, title: 'assistant match', updatedAt: new Date(), archivedBy: VALID_OID,
@@ -13721,11 +13587,13 @@ describe('Enterprise Search Controller', () => {
 
       // Content search: matched chatSessionMessages ids feed into the $match.
       const matchStage = (aggregate.firstCall.args[0][0] as any).$match
-      expect(matchStage.$and[0].$or[1]).to.deep.equal({ _id: { $in: [contentMatchId] } })
+      expect((messageAggregate.firstCall.args[0][0] as any).$match.sessionId).to.deep.equal({ $in: [accessibleId] })
+      expect(matchStage.$or[0].$and.at(-1).$or[1]).to.deep.equal({ _id: { $in: [contentMatchId] } })
+      expect(matchStage.$or[1].$and.at(-1).$or[1]).to.deep.equal({ _id: { $in: [contentMatchId] } })
       // Cross-type isolation: assistant/agent predicates stay mutually
       // exclusive by sessionType even though merged into one aggregation.
-      expect(matchStage.$or[0].sessionType).to.equal('chat')
-      expect(matchStage.$or[1].sessionType).to.equal('agent')
+      expect(matchStage.$or[0].$and[0].$and[0].sessionType).to.equal('chat')
+      expect(matchStage.$or[1].$and[0].sessionType).to.equal('agent')
     })
   })
 
@@ -13838,13 +13706,12 @@ describe('Enterprise Search Controller', () => {
       expect(capturedBody).to.deep.equal({ runId: 'run-456', conversationId: VALID_OID })
     })
 
-    it('calls next with NotFoundError when the agent conversation is not owned by the caller', async () => {
+    it('fails closed and never reaches the AI service when no guard granted the conversation', async () => {
       const handler = cancelAgentConversationStream(createMockAppConfig())
-      restoreIfStubbed(ChatSession, 'findOne')
-      sinon.stub(ChatSession, 'findOne').resolves(null)
       const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute')
 
       const req = createMockRequest({
+        user: undefined,
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
         body: { runId: 'run-456' },
       })

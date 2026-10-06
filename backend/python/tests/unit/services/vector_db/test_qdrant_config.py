@@ -140,3 +140,23 @@ class TestQdrantConfigFromDict:
         config = QdrantConfig.from_dict(original)
         result = config.qdrant_config
         assert result == original
+
+
+class TestQdrantConfigGrpcPort:
+    """The gRPC port is separate from the REST port; the config manager stores it as `grpcPort`."""
+
+    def test_from_dict_reads_the_node_spelling(self):
+        assert QdrantConfig.from_dict({"host": "h", "port": 6333, "grpcPort": 7334}).grpc_port == 7334
+
+    def test_from_dict_reads_the_canonical_spelling(self):
+        assert QdrantConfig.from_dict({"grpc_port": 7335}).grpc_port == 7335
+
+    def test_from_dict_without_it_leaves_the_client_default(self):
+        config = QdrantConfig.from_dict({"host": "h", "port": 6333})
+        assert config.grpc_port is None
+        assert "grpc_port" not in config.qdrant_config
+
+    def test_qdrant_config_carries_it_when_set(self):
+        config = QdrantConfig(host="h", port=6333, grpc_port=7334)
+        assert config.qdrant_config["grpc_port"] == 7334
+        assert QdrantConfig.from_dict(config.qdrant_config) == config

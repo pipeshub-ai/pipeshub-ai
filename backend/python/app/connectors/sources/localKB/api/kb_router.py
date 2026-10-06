@@ -25,6 +25,8 @@ from app.connectors.sources.localKB.api.models import (
     ListKnowledgeBaseResponse,
     ListPermissionsResponse,
     ListRecordsResponse,
+    MAX_PERMISSION_PRINCIPALS,
+    PermissionPrincipal,
     RemovePermissionResponse,
     SuccessResponse,
     UpdateKnowledgeBaseRequest,
@@ -33,7 +35,10 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinFolderResponse,
     UploadRecordsinKBResponse,
 )
-from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.handlers.kb_service import (
+    TEAM_GRANT_ROLES,
+    KnowledgeBaseService,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -1153,13 +1158,38 @@ async def create_kb_permissions(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
-        # Role is required for users, but optional for teams (teams don't have roles)
+        # Legacy {userIds, teamIds, role}: a teams-only grant without a role defaults to READER
+        # and is capped below OWNER in the service. `principals` carries a role per grantee.
         role = body.get("role")
         user_ids = body.get("userIds") or []
         team_ids = body.get("teamIds") or []
+        raw_principals = body.get("principals")
 
-        # Validate: role is required if users are provided
-        if user_ids and not role:
+        principals: Optional[List[Dict[str, str]]] = None
+        if raw_principals is not None:
+            if user_ids or team_ids or role:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Send either principals or userIds/teamIds/role, not both",
+                )
+            if not isinstance(raw_principals, list) or len(raw_principals) > MAX_PERMISSION_PRINCIPALS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"principals must be a list of at most {MAX_PERMISSION_PRINCIPALS} entries",
+                )
+            principals = []
+            for index, p in enumerate(raw_principals):
+                try:
+                    principals.append(PermissionPrincipal(**p).model_dump(mode="json"))
+                except (ValidationError, TypeError) as e:
+                    logging.getLogger(__name__).warning(
+                        f"Invalid principal at index {index}: {type(e).__name__}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid principal at index {index}",
+                    )
+        elif user_ids and not role:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Role is required when adding users"
@@ -1171,6 +1201,7 @@ async def create_kb_permissions(
             user_ids=user_ids,
             team_ids=team_ids,
             role=role,
+            principals=principals,
         )
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
@@ -1213,7 +1244,6 @@ async def update_kb_permission(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
-        # Teams don't have roles, so we can only update user permissions
         user_ids = body.get("userIds") or []
         team_ids = body.get("teamIds") or []
         new_role = body.get("role")
@@ -1225,11 +1255,10 @@ async def update_kb_permission(
                 detail="Role is required"
             )
 
-        # Teams don't have roles - reject at router level for faster feedback
-        if team_ids:
+        if team_ids and new_role not in TEAM_GRANT_ROLES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Teams do not have roles. Only user permissions can be updated."
+                detail=f"Invalid role for teams: {new_role}. Allowed: {', '.join(TEAM_GRANT_ROLES)}."
             )
 
         result = await kb_service.update_kb_permission(

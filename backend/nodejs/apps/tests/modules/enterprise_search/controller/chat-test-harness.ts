@@ -4,6 +4,7 @@ import mongoose, { Types } from 'mongoose'
 import { MongoExpiredSessionError } from 'mongodb'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
+import { ChatSessionReadState } from '../../../../src/modules/enterprise_search/schema/chat.session.read-state.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
@@ -42,6 +43,27 @@ const valuesAt = (value: unknown, path: string[]): unknown[] => {
   return valuesAt(value[head as string], rest)
 }
 
+/** Like `valuesAt` but leaves the last segment's array intact, which `$elemMatch` needs. */
+const rawAt = (value: unknown, path: string[]): unknown[] => {
+  if (path.length === 0) return [value]
+  if (Array.isArray(value)) return value.flatMap((item) => rawAt(item, path))
+  if (!isPlainObject(value)) return [undefined]
+  const [head, ...rest] = path
+  return rawAt(value[head as string], rest)
+}
+
+const deepEquals = (a: unknown, b: unknown): boolean => {
+  const x = normalize(a)
+  const y = normalize(b)
+  if (x instanceof Date && y instanceof Date) return x.getTime() === y.getTime()
+  if (Array.isArray(x) && Array.isArray(y)) return x.length === y.length && x.every((item, i) => deepEquals(item, y[i]))
+  if (isPlainObject(x) && isPlainObject(y)) {
+    const keys = Object.keys(x)
+    return keys.length === Object.keys(y).length && keys.every((k) => k in y && deepEquals(x[k], y[k]))
+  }
+  return x === y
+}
+
 const equals = (candidate: unknown, expected: unknown): boolean => {
   if (Array.isArray(candidate)) return candidate.some((item) => equals(item, expected))
   const a = normalize(candidate)
@@ -51,12 +73,51 @@ const equals = (candidate: unknown, expected: unknown): boolean => {
   return a === b
 }
 
-const compare = (candidate: unknown, bound: unknown, test: (a: number, b: number) => boolean): boolean => {
-  const toNumber = (v: unknown): number => (v instanceof Date ? v.getTime() : Number(v))
-  return candidate !== undefined && candidate !== null && test(toNumber(candidate), toNumber(bound))
+const typeRank = (v: unknown): number => {
+  // Aggregation sorts a missing field below null, so `$expr: {$eq: ['$absent', null]}` is false.
+  if (v === undefined) return -1
+  if (v === null) return 0
+  if (typeof v === 'number') return 1
+  if (typeof v === 'string') return 2
+  if (Array.isArray(v)) return 5
+  if (isObjectId(v)) return 7
+  if (typeof v === 'boolean') return 8
+  if (v instanceof Date) return 9
+  return 4
 }
 
-const matchesCondition = (candidates: unknown[], condition: unknown): boolean => {
+/** BSON comparison order: values of different types sort by type, same-type values by value. */
+const bsonOrder = (a: unknown, b: unknown): number => {
+  const rankA = typeRank(a)
+  const rankB = typeRank(b)
+  if (rankA !== rankB) return rankA - rankB
+  const x = normalize(a)
+  const y = normalize(b)
+  if (x instanceof Date && y instanceof Date) return x.getTime() - y.getTime()
+  if (typeof x === 'number' && typeof y === 'number') return x - y
+  if (typeof x === 'boolean' && typeof y === 'boolean') return Number(x) - Number(y)
+  const left = typeof x === 'string' ? x : JSON.stringify(x)
+  const right = typeof y === 'string' ? y : JSON.stringify(y)
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/** Query comparison brackets by BSON type: a missing field or a value of another type (a Date against an ObjectId, a string against a number) never matches. */
+const compare = (candidate: unknown, bound: unknown, test: (order: number) => boolean): boolean => {
+  if (Array.isArray(candidate)) return candidate.some((item) => compare(item, bound, test))
+  if (candidate === undefined || candidate === null) return false
+  return typeRank(candidate) === typeRank(bound) && test(bsonOrder(candidate, bound))
+}
+
+const LOGICAL_KEYS = new Set(['$and', '$or', '$nor', '$expr'])
+
+const satisfiesElemMatch = (element: unknown, sub: Filter): boolean => {
+  const keys = Object.keys(sub)
+  const onScalars = keys.length > 0 && keys.every((k) => k.startsWith('$') && !LOGICAL_KEYS.has(k))
+  if (onScalars) return !Array.isArray(element) && matchesCondition([element], sub, [element])
+  return isPlainObject(element) && matchesFilter(element, sub)
+}
+
+const matchesCondition = (candidates: unknown[], condition: unknown, raw: unknown[]): boolean => {
   const isOperator = isPlainObject(condition) && Object.keys(condition).some((key) => key.startsWith('$'))
   if (!isOperator) return candidates.some((candidate) => equals(candidate, condition))
   return Object.entries(condition).every(([operator, argument]) => {
@@ -71,10 +132,16 @@ const matchesCondition = (candidates: unknown[], condition: unknown): boolean =>
         return !(argument as unknown[]).some((a) => candidates.some((c) => equals(c, a)))
       case '$exists':
         return candidates.some((c) => c !== undefined) === Boolean(argument)
+      case '$gt':
+        return candidates.some((c) => compare(c, argument, (o) => o > 0))
       case '$gte':
-        return candidates.some((c) => compare(c, argument, (a, b) => a >= b))
+        return candidates.some((c) => compare(c, argument, (o) => o >= 0))
+      case '$lt':
+        return candidates.some((c) => compare(c, argument, (o) => o < 0))
       case '$lte':
-        return candidates.some((c) => compare(c, argument, (a, b) => a <= b))
+        return candidates.some((c) => compare(c, argument, (o) => o <= 0))
+      case '$elemMatch':
+        return raw.some((r) => Array.isArray(r) && r.some((element) => satisfiesElemMatch(element, argument as Filter)))
       case '$regex': {
         const flags = typeof condition.$options === 'string' ? condition.$options : ''
         const pattern = new RegExp(String(argument), flags)
@@ -88,13 +155,60 @@ const matchesCondition = (candidates: unknown[], condition: unknown): boolean =>
   })
 }
 
+const isTruthy = (v: unknown): boolean => v !== false && v !== null && v !== undefined && v !== 0
+
+/** The aggregation expressions `$expr` may use; anything else throws rather than silently matching. */
+const evalExpr = (expr: unknown, doc: Doc): unknown => {
+  if (typeof expr === 'string') {
+    return expr.startsWith('$') ? rawAt(doc, expr.slice(1).split('.'))[0] : expr
+  }
+  if (Array.isArray(expr)) return expr.map((item) => evalExpr(item, doc))
+  if (!isPlainObject(expr)) return expr
+  const keys = Object.keys(expr)
+  if (keys.length !== 1 || !(keys[0] as string).startsWith('$')) return expr
+  const operator = keys[0] as string
+  const raw = expr[operator]
+  const args = (Array.isArray(raw) ? raw : [raw]).map((item) => evalExpr(item, doc))
+  switch (operator) {
+    case '$eq':
+      return bsonOrder(args[0], args[1]) === 0
+    case '$ne':
+      return bsonOrder(args[0], args[1]) !== 0
+    case '$lt':
+      return bsonOrder(args[0], args[1]) < 0
+    case '$lte':
+      return bsonOrder(args[0], args[1]) <= 0
+    case '$gt':
+      return bsonOrder(args[0], args[1]) > 0
+    case '$gte':
+      return bsonOrder(args[0], args[1]) >= 0
+    case '$and':
+      return args.every(isTruthy)
+    case '$or':
+      return args.some(isTruthy)
+    case '$not':
+      return !isTruthy(args[0])
+    case '$ifNull': {
+      const found = args.slice(0, -1).find((a) => a !== null && a !== undefined)
+      return found ?? args[args.length - 1]
+    }
+    case '$size':
+      if (!Array.isArray(args[0])) throw new Error('The argument to $size must be an array')
+      return args[0].length
+    default:
+      throw new Error(`The in-memory store does not understand $expr.${operator.slice(1)}`)
+  }
+}
+
 /** Evaluates a MongoDB query filter against one plain document, the way the server would. */
 export const matchesFilter = (doc: Doc, filter: Filter): boolean =>
   Object.entries(filter).every(([key, condition]) => {
     if (key === '$or') return (condition as Filter[]).some((f) => matchesFilter(doc, f))
     if (key === '$and') return (condition as Filter[]).every((f) => matchesFilter(doc, f))
+    if (key === '$expr') return isTruthy(evalExpr(condition, doc))
     if (key.startsWith('$')) throw new Error(`The in-memory store does not understand ${key}`)
-    return matchesCondition(valuesAt(doc, key.split('.')), condition)
+    const path = key.split('.')
+    return matchesCondition(valuesAt(doc, path), condition, rawAt(doc, path))
   })
 
 interface QueryState {
@@ -180,8 +294,25 @@ const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
 }
 
 type SessionOption = { session?: unknown } | null | undefined
+type UpdateOptions = {
+  session?: unknown
+  arrayFilters?: Filter[]
+  new?: boolean
+  returnDocument?: 'before' | 'after'
+  upsert?: boolean
+} | null | undefined
+
+interface UpdateResult {
+  acknowledged: boolean
+  matchedCount: number
+  modifiedCount: number
+}
 
 const plain = (doc: { toObject(): unknown }): Doc => doc.toObject() as Doc
+
+const assertNoUpsert = (options: UpdateOptions): void => {
+  if (options?.upsert) throw new Error('The in-memory store does not understand upsert; extend the update stubs before relying on it')
+}
 
 /** Mirrors the MongoDB driver and Mongoose, which refuse any operation on an ended session. */
 const assertSessionUsable = (options: SessionOption): void => {
@@ -191,18 +322,130 @@ const assertSessionUsable = (options: SessionOption): void => {
   }
 }
 
-const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc): void => {
+const pathValue = (doc: unknown, path: string): unknown =>
+  path === ''
+    ? doc
+    : path.split('.').reduce<unknown>((value, token) => {
+        if (Array.isArray(value)) return value[Number(token)]
+        return isPlainObject(value) ? value[token] : undefined
+      }, doc)
+
+const arrayFilterIdentifier = (filter: Filter): string | undefined => {
+  const [key, condition] = Object.entries(filter)[0] ?? []
+  if (key === undefined) return undefined
+  if (key.startsWith('$')) return arrayFilterIdentifier((condition as Filter[])[0] ?? {})
+  return key.split('.')[0]
+}
+
+/** The index the plain positional `$` stands for: the first element the query's predicate on that array matched. */
+const positionalIndex = (doc: Doc, filter: Filter | undefined, arrayPath: string): number => {
+  const items = pathValue(doc, arrayPath)
+  if (Array.isArray(items) && filter) {
+    for (const [key, condition] of Object.entries(filter)) {
+      let test: ((item: unknown) => boolean) | undefined
+      if (key === arrayPath) {
+        const sub = isPlainObject(condition) ? condition.$elemMatch : undefined
+        test = (item) => (sub ? satisfiesElemMatch(item, sub as Filter) : matchesCondition([item], condition, [item]))
+      } else if (key.startsWith(`${arrayPath}.`)) {
+        const rest = key.slice(arrayPath.length + 1)
+        test = (item) => isPlainObject(item) && matchesFilter(item, { [rest]: condition })
+      }
+      const index = test ? items.findIndex(test) : -1
+      if (index >= 0) return index
+    }
+  }
+  throw new Error('The positional operator did not find the match needed from the query')
+}
+
+interface UpdateContext {
+  filter?: Filter
+  arrayFilters?: Filter[]
+  isInsert?: boolean
+}
+
+/** Replaces `$`, `$[]` and `$[ident]` segments with the concrete array indexes they stand for. */
+const expandPath = (doc: Doc, path: string, ctx: UpdateContext): string[] => {
+  let prefixes: string[][] = [[]]
+  for (const token of path.split('.')) {
+    if (token !== '$' && !token.startsWith('$[')) {
+      prefixes = prefixes.map((prefix) => [...prefix, token])
+      continue
+    }
+    prefixes = prefixes.flatMap((prefix) => {
+      const arrayPath = prefix.join('.')
+      const items = pathValue(doc, arrayPath)
+      if (!Array.isArray(items)) {
+        throw new Error(`The path '${arrayPath}' must exist in the document in order to apply array updates`)
+      }
+      let indexes: number[]
+      if (token === '$') {
+        indexes = [positionalIndex(doc, ctx.filter, arrayPath)]
+      } else if (token === '$[]') {
+        indexes = items.map((_, i) => i)
+      } else {
+        const identifier = token.slice(2, -1)
+        const filters = (ctx.arrayFilters ?? []).filter((f) => arrayFilterIdentifier(f) === identifier)
+        if (filters.length === 0) throw new Error(`No array filter found for identifier '${identifier}' in path '${path}'`)
+        indexes = items.flatMap((item, i) => (filters.every((f) => matchesFilter({ [identifier]: item }, f)) ? [i] : []))
+      }
+      return indexes.map((i) => [...prefix, String(i)])
+    })
+  }
+  return prefixes.map((prefix) => prefix.join('.'))
+}
+
+const UPDATE_OPERATORS = new Set(['$set', '$unset', '$inc', '$push', '$pull', '$addToSet', '$setOnInsert', '$max', '$min'])
+
+const matchesPullCondition = (element: unknown, condition: unknown): boolean => {
+  if (!isPlainObject(condition)) return equals(element, condition)
+  if (Object.keys(condition).some((k) => k.startsWith('$'))) return matchesCondition([element], condition, [element])
+  return isPlainObject(element) && matchesFilter(element, condition)
+}
+
+const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc, ctx: UpdateContext = {}): void => {
+  for (const key of Object.keys(update)) {
+    if (key.startsWith('$') && !UPDATE_OPERATORS.has(key)) {
+      throw new Error(`The in-memory store does not understand ${key}; extend applyUpdate before relying on it`)
+    }
+  }
   const operators = Object.keys(update).some((key) => key.startsWith('$'))
-  const set = (operators ? update.$set : update) as Doc | undefined
-  for (const [path, value] of Object.entries(set ?? {})) doc.set(path, value)
-  for (const path of Object.keys((update.$unset as Doc | undefined) ?? {})) doc.set(path, undefined)
-  for (const [path, value] of Object.entries((update.$inc as Doc | undefined) ?? {})) {
-    doc.set(path, Number(doc.get(path) ?? 0) + Number(value))
+  const each = (source: Doc | undefined, apply: (path: string, value: unknown) => void): void => {
+    for (const [path, value] of Object.entries(source ?? {})) {
+      for (const concrete of expandPath(plain(doc), path, ctx)) apply(concrete, value)
+    }
   }
-  for (const [path, value] of Object.entries((update.$push as Doc | undefined) ?? {})) {
-    const current = (doc.get(path) as unknown[] | undefined) ?? []
-    doc.set(path, [...current, value])
+  const currentArray = (path: string): unknown[] => {
+    const value = pathValue(plain(doc), path)
+    return Array.isArray(value) ? value : []
   }
+  const set = (path: string, value: unknown): void => {
+    doc.set(path, value)
+  }
+
+  // Mongoose folds top-level non-operator keys into `$set` even next to operators such as `$inc`.
+  const flat = Object.fromEntries(Object.entries(update).filter(([key]) => !key.startsWith('$')))
+  each(operators ? { ...flat, ...(update.$set as Doc | undefined) } : update, set)
+  if (ctx.isInsert) each(update.$setOnInsert as Doc | undefined, set)
+  each(update.$unset as Doc | undefined, (path) => doc.set(path, undefined))
+  each(update.$inc as Doc | undefined, (path, value) => doc.set(path, Number(doc.get(path) ?? 0) + Number(value)))
+  each(update.$push as Doc | undefined, (path, value) => doc.set(path, [...currentArray(path), value]))
+  each(update.$pull as Doc | undefined, (path, condition) =>
+    doc.set(path, currentArray(path).filter((element) => !matchesPullCondition(element, condition))),
+  )
+  each(update.$addToSet as Doc | undefined, (path, value) => {
+    const additions = isPlainObject(value) && Array.isArray(value.$each) ? value.$each : [value]
+    const next = currentArray(path)
+    for (const addition of additions) if (!next.some((existing) => deepEquals(existing, addition))) next.push(addition)
+    doc.set(path, next)
+  })
+  each(update.$max as Doc | undefined, (path, value) => {
+    const current = pathValue(plain(doc), path)
+    if (current === undefined || current === null || bsonOrder(value, current) > 0) doc.set(path, value)
+  })
+  each(update.$min as Doc | undefined, (path, value) => {
+    const current = pathValue(plain(doc), path)
+    if (current === undefined || current === null || bsonOrder(value, current) < 0) doc.set(path, value)
+  })
 }
 
 /** Every chat session and message the controller reads or writes, held in memory. */
@@ -211,6 +454,13 @@ export class InMemoryChatStore {
   readonly messages: MessageDoc[] = []
   /** One entry per write the controller performed, so a test can prove nothing was written. */
   readonly writes: string[] = []
+  readonly readStates: Array<InstanceType<typeof ChatSessionReadState>> = []
+  /** How many times a list asked for read positions; one per page is the contract. */
+  readStateQueries = 0
+
+  addReadState(fields: { userId: Types.ObjectId; sessionId: Types.ObjectId; lastReadSeq: number; orgId?: Types.ObjectId }): void {
+    this.readStates.push(new ChatSessionReadState({ orgId: new Types.ObjectId(), ...fields }))
+  }
 
   addSession(fields: Doc): SessionDoc {
     const doc = new ChatSession({ lastActivityAt: Date.now(), status: 'Complete', ...fields })
@@ -224,6 +474,39 @@ export class InMemoryChatStore {
     const doc = new ChatSessionMessage({ sessionId: session._id, orgId: session.orgId, seq, ...fields })
     this.messages.push(doc)
     return doc
+  }
+
+  /** The unique indexes of `chatSessionMessages`: `{sessionId, seq}` and the partial `{sessionId, authorUserId, clientMessageId}`. */
+  assertUniqueKeys(doc: MessageDoc): void {
+    const key = (m: MessageDoc, fields: string[]): string => JSON.stringify(fields.map((f) => normalize(m.get(f))))
+    const clientKey = typeof doc.clientMessageId === 'string' ? ['sessionId', 'authorUserId', 'clientMessageId'] : undefined
+    for (const other of this.messages) {
+      if (key(other, ['sessionId', 'seq']) === key(doc, ['sessionId', 'seq'])) {
+        throw Object.assign(new Error('E11000 duplicate key error collection: chatSessionMessages index: sessionId_1_seq_1'), { code: 11000, keyPattern: { sessionId: 1, seq: 1 } })
+      }
+      if (clientKey && typeof other.clientMessageId === 'string' && key(other, clientKey) === key(doc, clientKey)) {
+        throw Object.assign(new Error('E11000 duplicate key error collection: chatSessionMessages index: sessionId_1_authorUserId_1_clientMessageId_1'), {
+          code: 11000,
+          keyPattern: { sessionId: 1, authorUserId: 1, clientMessageId: 1 },
+        })
+      }
+    }
+  }
+
+  /** The partial unique index `{orgId, initiator, creationKey}` of `chatSessions`. */
+  assertUniqueCreationKey(doc: SessionDoc): void {
+    const key = doc.get('creationKey') as unknown
+    if (typeof key !== 'string') return
+    const same = (other: SessionDoc): boolean =>
+      other.get('creationKey') === key &&
+      String(other.get('orgId')) === String(doc.get('orgId')) &&
+      String(other.get('initiator')) === String(doc.get('initiator'))
+    if (this.sessions.some(same)) {
+      throw Object.assign(new Error('E11000 duplicate key error collection: chatSessions index: orgId_1_initiator_1_creationKey_1'), {
+        code: 11000,
+        keyPattern: { orgId: 1, initiator: 1, creationKey: 1 },
+      })
+    }
   }
 
   session(id: unknown): SessionDoc | undefined {
@@ -268,10 +551,25 @@ export class InMemoryChatStore {
     const realSessionSave = ChatSession.prototype.save
     sinon.stub(ChatSession.prototype, 'save').callsFake(async function (this: SessionDoc, options?: SessionOption) {
       store.writes.push('chatSession.save')
-      const saved = await realSessionSave.call(this, options as never)
-      if (!store.sessions.includes(this)) store.sessions.push(this)
-      return saved
+      // Checked and tracked before the first await, so two creates racing on one key cannot both pass.
+      const tracked = store.sessions.includes(this)
+      if (!tracked) {
+        store.assertUniqueCreationKey(this)
+        store.sessions.push(this)
+      }
+      try {
+        return await realSessionSave.call(this, options as never)
+      } catch (error) {
+        if (!tracked) store.sessions.splice(store.sessions.indexOf(this), 1)
+        throw error
+      }
     } as never)
+    sinon.stub(ChatSession, 'deleteOne').callsFake(((filter: Filter) => {
+      const doomed = store.findSessions(filter)[0]
+      if (doomed) store.sessions.splice(store.sessions.indexOf(doomed), 1)
+      store.writes.push('chatSession.deleteOne')
+      return new FakeQuery(() => ({ acknowledged: true, deletedCount: doomed ? 1 : 0 }))
+    }) as never)
     sinon.stub(ChatSession, 'findOne').callsFake(((filter: Filter, _projection?: unknown, options?: SessionOption) => {
       assertSessionUsable(options)
       return withSession(new FakeQuery((state) => one(store.findSessions(filter)[0], state)), options)
@@ -282,19 +580,58 @@ export class InMemoryChatStore {
       new FakeQuery((state) => shape(store.findSessions(filter), state))) as never)
     sinon.stub(ChatSession, 'countDocuments').callsFake(((filter: Filter) =>
       new FakeQuery(() => store.findSessions(filter).length)) as never)
-    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: SessionOption) => {
+    const asUpdated = (doc: SessionDoc | MessageDoc | undefined, filter: Filter, update: Doc, options: UpdateOptions): FakeQuery<unknown> => {
       assertSessionUsable(options)
-      const doc = store.findSessions(filter)[0]
-      if (doc) {
-        applyUpdate(doc, update)
-        store.writes.push(update.$inc ? 'chatSession.allocateSeq' : 'chatSession.update')
+      assertNoUpsert(options)
+      // Mongoose returns the pre-update document unless the caller asks for `new: true` or `returnDocument: 'after'`.
+      const returnsBefore = !(options?.new === true || options?.returnDocument === 'after')
+      const before = doc ? plain(doc) : undefined
+      if (doc) applyUpdate(doc, update, { filter, arrayFilters: options?.arrayFilters })
+      // The server answers with the document as this update left it, even if another update lands before the caller reads it.
+      const after = doc && !returnsBefore ? (doc.constructor as unknown as { hydrate(o: unknown): StoredDoc }).hydrate(plain(doc)) : undefined
+      return new FakeQuery((state) => {
+        if (after) return state.lean ? after.toObject() : bindSession(after, state)
+        if (!doc || !before || !returnsBefore) return one(doc, state)
+        if (state.lean) return before
+        return bindSession((doc.constructor as unknown as { hydrate(o: unknown): MessageDoc }).hydrate(before), state)
+      })
+    }
+    // Only a matched filter writes, so a lost race or a failed fence leaves `writes` untouched.
+    const updateStub =
+      <D extends SessionDoc | MessageDoc>(find: (filter: Filter) => D[], label: string, many: boolean) =>
+      (filter: Filter, update: Doc, options?: UpdateOptions) => {
+        assertSessionUsable(options)
+        assertNoUpsert(options)
+        return withSession(
+          new FakeQuery<UpdateResult>(() => {
+            const matched = many ? find(filter) : find(filter).slice(0, 1)
+            let modifiedCount = 0
+            for (const doc of matched) {
+              const before = JSON.stringify(plain(doc))
+              applyUpdate(doc, update, { filter, arrayFilters: options?.arrayFilters })
+              if (JSON.stringify(plain(doc)) !== before) modifiedCount += 1
+            }
+            if (matched.length > 0) store.writes.push(label)
+            return { acknowledged: true, matchedCount: matched.length, modifiedCount }
+          }),
+          options,
+        )
       }
-      return new FakeQuery((state) => one(doc, state))
+    sinon.stub(ChatSession, 'updateOne').callsFake(updateStub((f) => store.findSessions(f), 'chatSession.updateOne', false) as never)
+    sinon.stub(ChatSession, 'updateMany').callsFake(updateStub((f) => store.findSessions(f), 'chatSession.updateMany', true) as never)
+    sinon.stub(ChatSessionMessage, 'updateOne').callsFake(updateStub((f) => store.findMessages(f), 'message.updateOne', false) as never)
+    sinon.stub(ChatSessionMessage, 'updateMany').callsFake(updateStub((f) => store.findMessages(f), 'message.updateMany', true) as never)
+    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: UpdateOptions) => {
+      const doc = store.findSessions(filter)[0]
+      const query = asUpdated(doc, filter, update, options)
+      if (doc) store.writes.push((update.$inc as Doc | undefined)?.nextSeq !== undefined ? 'chatSession.allocateSeq' : 'chatSession.update')
+      return query
     }) as never)
 
     sinon.stub(ChatSessionMessage, 'insertMany').callsFake(((docs: Doc[], options?: SessionOption) => {
       assertSessionUsable(options)
       const inserted = docs.map((fields) => new ChatSessionMessage(fields))
+      for (const doc of inserted) store.assertUniqueKeys(doc)
       store.messages.push(...inserted)
       store.writes.push('message.insert')
       return Promise.resolve(inserted)
@@ -323,24 +660,30 @@ export class InMemoryChatStore {
       store.writes.push('message.replace')
       return new FakeQuery((state) => one(replaced, state))
     }) as never)
-    sinon.stub(ChatSessionMessage, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: SessionOption) => {
-      assertSessionUsable(options)
+    sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: Filter) => {
+      const doomed = new Set(store.findMessages(filter))
+      store.messages.splice(0, store.messages.length, ...store.messages.filter((m) => !doomed.has(m)))
+      if (doomed.size > 0) store.writes.push('message.delete')
+      return new FakeQuery(() => ({ acknowledged: true, deletedCount: doomed.size }))
+    }) as never)
+    sinon.stub(ChatSessionMessage, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: UpdateOptions) => {
       const doc = store.findMessages(filter)[0]
-      if (doc) {
-        applyUpdate(doc, update)
-        store.writes.push('message.update')
-      }
-      return new FakeQuery((state) => one(doc, state))
+      const query = asUpdated(doc, filter, update, options)
+      if (doc) store.writes.push('message.update')
+      return query
     }) as never)
 
-    const realCitationSave = Citation.prototype.save
-    sinon.stub(Citation.prototype, 'save').callsFake(function (this: InstanceType<typeof Citation>, options?: SessionOption) {
-      store.writes.push('citation.save')
-      return realCitationSave.call(this, options as never)
-    } as never)
+    sinon.stub(Citation, 'insertMany').callsFake(((docs: unknown[]) => {
+      for (const _ of docs) store.writes.push('citation.save')
+      return Promise.resolve(docs)
+    }) as never)
     sinon.stub(Citation, 'updateMany').callsFake((() => {
       store.writes.push('citation.updateMany')
       return new FakeQuery(() => ({ modifiedCount: 0 }))
+    }) as never)
+    sinon.stub(ChatSessionReadState, 'find').callsFake(((filter: Filter) => {
+      store.readStateQueries += 1
+      return new FakeQuery((state) => shape(store.readStates.filter((r) => matchesFilter(plain(r), filter)) as unknown as StoredDoc[], state))
     }) as never)
     sinon.stub(Users, 'find').callsFake((() => new FakeQuery(() => [])) as never)
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
@@ -395,9 +738,10 @@ export class FakeSSEResponse extends EventEmitter {
     this.resolveEnded = resolve
   })
 
-  writeHead(statusCode: number): this {
+  writeHead(statusCode: number, headers: Record<string, string> = {}): this {
     this.statusCode = statusCode
     this.headersSent = true
+    for (const [name, value] of Object.entries(headers)) this.headers[name.toLowerCase()] = value
     return this
   }
   setHeader(name: string, value: string): this {
@@ -476,6 +820,8 @@ type Reply = { kind: 'json'; status: number; body: unknown } | { kind: 'reject';
  */
 export class FakeAIBackend {
   readonly calls: RecordedCall[] = []
+  /** Runs as each request reaches the service, before it is answered; lets a test change the world mid-turn. */
+  onRequest?: () => void
   private controller: ReadableStreamDefaultController<Uint8Array> | null = null
   private streamReply: Reply | null = null
   private readonly replies: Array<{ path: RegExp; reply: Reply }> = []
@@ -484,6 +830,7 @@ export class FakeAIBackend {
   install(): void {
     sinon.stub(globalThis, 'fetch').callsFake((input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : input.toString()
+      this.onRequest?.()
       const rawBody = typeof init?.body === 'string' ? init.body : '{}'
       const headers = Object.fromEntries(new Headers(init?.headers).entries())
       this.calls.push({ url, method: init?.method ?? 'GET', headers, body: JSON.parse(rawBody) as Record<string, unknown> })

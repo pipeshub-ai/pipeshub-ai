@@ -7,7 +7,10 @@ import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/u
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
+import { turnDeps } from '../helpers/turn-deps'
 import { Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, startStream } from './streaming-flows'
+import { turnDeps } from '../helpers/turn-deps'
+import { withOwnerGrant } from '../helpers/conversation-grant'
 
 describe('es_controller streaming answers', () => {
   afterEach(() => {
@@ -234,7 +237,7 @@ describe('es_controller streaming answers', () => {
     const res = new FakeSSEResponse()
     let error: unknown
     try {
-      await controllerModule.streamChat(appConfig)({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
+      await controllerModule.streamChat(appConfig, turnDeps())({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
     } catch (e) {
       error = e
     }
@@ -279,15 +282,15 @@ describe('es_controller streaming answers', () => {
     const firstQuestion = store.messagesOf(session._id)[0] as { _id: Types.ObjectId }
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {},
         params: { conversationId: String(session._id), messageId: String(firstQuestion._id) },
         body: {},
         query: {},
         user: { userId: OWNER, orgId: ORG },
         context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()

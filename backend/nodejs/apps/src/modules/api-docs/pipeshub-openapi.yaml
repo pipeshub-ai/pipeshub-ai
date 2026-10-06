@@ -213,6 +213,12 @@ tags:
       callable by API clients or the browser. Storage checks only the org, not
       record permissions; read and write files through the Knowledge Base
       routes (for example `GET /knowledgeBase/stream/record/{recordId}`).
+  # Authorization
+  - name: Internal Authz
+    description: |
+      Service-to-service authorization endpoints, authenticated with the
+      `authz:check` scoped token, so these are **not** callable by API clients
+      or the browser.
   - name: Artifacts
     description: User-facing gallery of generated artifacts (preview, download, versions)
   - name: Knowledge Base
@@ -243,6 +249,10 @@ tags:
       member's private chats. See `Conversations` for the two fields
       (`projectId`, `projectVisibility`) that link a conversation to a
       project.
+  - name: Authorization
+    description: |
+      Why a person can open a conversation, and what a change to its sharing would do. Only with
+      `ENABLE_COLLABORATIVE_CHATS` on; with it off these routes answer `404`.
   - name: Semantic Search
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
@@ -394,6 +404,15 @@ components:
         type: string
         format: objectId
 
+    X-Run-Id:
+      description: |
+        Id of the run this turn started. Only sent with `ENABLE_COLLABORATIVE_CHATS` on, where the
+        server mints it (a `runId` in the request body is ignored). Pass it as `runId` to the
+        conversation's `cancel` route to stop the turn.
+      schema:
+        type: string
+        format: uuid
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -453,6 +472,7 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            conversation:share: Share conversations and manage who can access them
             project:read: Read projects and their conversations
             project:write: Create and manage projects
             project:delete: Delete projects
@@ -496,6 +516,7 @@ components:
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
+            conversation:share: Share conversations and manage who can access them
             project:read: Read projects and their conversations
             project:write: Create and manage projects
             project:delete: Delete projects
@@ -511,6 +532,291 @@ components:
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
 
+  responses:
+    ConversationNotFound:
+      description: |
+        The conversation was not found for this caller (`CONVERSATION_NOT_FOUND`).
+
+        The response is the same whether the conversation does not exist, is deleted, belongs to
+        another organization or (on agent routes) another agent, or the caller has no access to it,
+        so it does not reveal whether a conversation exists.
+
+        With `ENABLE_COLLABORATIVE_CHATS` off, every access denial is reported this way, including an
+        operation the caller's access level does not allow (for example a recipient trying to delete).
+        A message, project or user named in the request that cannot be found is a 404 with
+        `HTTP_NOT_FOUND`; a target project the caller cannot see is reported the same way, never as 403.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationForbiddenScope:
+      description: |
+        The token lacks the required OAuth scope (`HTTP_FORBIDDEN`).
+
+        This operation has no conversation-level 403: every caller who can open the conversation may
+        perform it. A caller without access gets a 404.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationForbiddenSend:
+      description: |
+        Forbidden. Either the token lacks the required OAuth scope (`HTTP_FORBIDDEN`), or, with
+        `ENABLE_COLLABORATIVE_CHATS` on:
+
+        - `CONVERSATION_READ_ONLY`: the caller can read the conversation but not add to it.
+        - `OWNER_INACTIVE`: the conversation owner is disabled or deleted, so no one else can add
+          to it.
+        - `PROJECT_ACCESS_REQUIRED`: the conversation is linked to a project and the caller has no
+          access to it themselves; being the owner's collaborator is not enough.
+        - `RESUME_NOT_ALLOWED`: the request answers a pending `ask_user_question` card that was put
+          to someone else (see `resume`). No run starts.
+        - `MENTION_NOT_ALLOWED` (`agent_not_in_chat`, `agent_not_allowed`): a mentioned agent is not this
+          conversation's own, or the sender may not run it. Only with `ENABLE_CHAT_MENTIONS` on.
+        - `MENTION_SA_AGENT_SHARED`: a mentioned service-account agent cannot be used in a shared
+          conversation. Only with `ENABLE_CHAT_MENTIONS` on.
+
+        The error is a JSON body sent before any SSE header, also on the streaming routes.
+        With the flag off a caller without send access gets 404 instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationForbiddenRegenerate:
+      description: |
+        Forbidden. Either the token lacks the required OAuth scope (`HTTP_FORBIDDEN`), or, with
+        `ENABLE_COLLABORATIVE_CHATS` on:
+
+        - `CONVERSATION_READ_ONLY`: the caller can read the conversation but not change it.
+        - `REGENERATE_NOT_ALLOWED`: only the person who asked the question can regenerate its answer
+          (questions saved before collaboration belong to the owner).
+        - `OWNER_INACTIVE`: the conversation owner is disabled or deleted.
+        - `PROJECT_ACCESS_REQUIRED`: the conversation is linked to a project and the caller has no
+          access to it themselves.
+
+        The error is a JSON body sent before any SSE header. With the flag off a caller who is not
+        the owner gets 404 instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationForbiddenCancel:
+      description: |
+        Forbidden. Either the token lacks the required OAuth scope (`HTTP_FORBIDDEN`), the `runId`
+        exists but was registered under a different user, organization or conversation
+        (`HTTP_FORBIDDEN`), or, with `ENABLE_COLLABORATIVE_CHATS` on:
+
+        - `CONVERSATION_READ_ONLY`: the caller can read the conversation but not stop its runs.
+
+        With the flag off a caller who is not the owner gets 404 instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationForbiddenOwnerOnly:
+      description: |
+        Forbidden. Either the token lacks the required OAuth scope (`HTTP_FORBIDDEN`), or, with
+        `ENABLE_COLLABORATIVE_CHATS` on, `CONVERSATION_OWNER_ONLY`: the caller can open the
+        conversation but only its owner may do this.
+
+        With the flag off a caller who is not the owner gets 404 instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    MessageIsNote:
+      description: |
+        `MESSAGE_IS_NOTE`: this message asks nobody, so no run was started, nothing was stored and no
+        lease was taken. Post it to `.../notes` instead. Only with `ENABLE_CHAT_MENTIONS` on.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    MentionRefused:
+      description: |
+        A mention was refused and nothing was stored. `error.details.mentionIndex` names the entry and
+        `error.details.reason` says why:
+
+        - `MENTION_NOT_ALLOWED` (400): `unknown_user` (not an active person of the caller's organization),
+          `not_a_chat_team` (a team the conversation is not shared with), `invalid_assistant`. 403 for `agent_not_in_chat` and
+          `agent_not_allowed` (an agent other than this conversation's, or one the sender may not run).
+        - `MENTION_SA_AGENT_SHARED` (403): a service-account agent in a shared conversation.
+        - `MENTION_DIRECTORY_UNAVAILABLE` (503): the check could not be made; retry shortly.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    CollaborationBadRequest:
+      description: |
+        Bad request. Nothing was written:
+
+        - `INVALID_PRINCIPAL`: a person or team cannot be added. `error.details.principalIds` lists
+          them as `user:<id>` or `team:<id>`. People must be active, non-service members of the
+          caller's organization and not the owner; a team must be one the caller belongs to; the
+          organization-wide team at `write` is refused unless the platform allows it.
+        - `ORG_WIDE_CONFIRMATION_REQUIRED`: the request shares with the whole organization without
+          `confirmOrgWide: true`.
+        - `VALIDATION_ERROR` / `HTTP_BAD_REQUEST`: the request body, path or query is malformed.
+
+        The whole request is validated before anything is written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    CollaborationForbiddenInvite:
+      description: |
+        Forbidden. Either the token lacks the `conversation:share` scope (`HTTP_FORBIDDEN`), or:
+
+        - `CONVERSATION_READ_ONLY`: the caller can read the conversation but not share it.
+        - `CONVERSATION_OWNER_ONLY`: the caller is an editor and the owner has not allowed editors
+          to invite, or the request would change or remove a person or team that is already on the
+          conversation (editors may only add).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    CollaborationForbiddenTransfer:
+      description: |
+        Forbidden. Either the token lacks the `conversation:share` scope (`HTTP_FORBIDDEN`), or:
+
+        - `CONVERSATION_OWNER_ONLY`: only the owner may transfer ownership (also returned to the
+          loser of two simultaneous transfers).
+        - `PROJECT_ACCESS_REQUIRED`: the conversation is linked to a project and the new owner has
+          no access to it.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    CollaborationForbiddenLeave:
+      description: |
+        Forbidden. Either the token lacks the `conversation:write` scope (`HTTP_FORBIDDEN`), or
+        `CONVERSATION_OWNER_ONLY`: the owner cannot leave; transfer ownership or delete the
+        conversation instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    CollaborationConflict:
+      description: |
+        Conflict. `COLLABORATOR_LIMIT`: the request would take the conversation past 200 people and
+        teams. `error.details.max` is the limit. Nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    CollaborationRateLimited:
+      description: |
+        Too many requests (`RATE_LIMITED`). Limits are per user and per minute: 20 for sharing (including leaving)
+        changes, 60 for feed and readiness polls. `error.details.retryAfter` is the number of
+        seconds to wait.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    CollaborationTeamUnavailable:
+      description: |
+        Service unavailable (`TEAM_RESOLUTION_UNAVAILABLE`): a team on the request, or the caller's
+        own teams, could not be looked up. Nothing was written. Retry shortly.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationTeamResolutionUnavailable:
+      description: |
+        `TEAM_RESOLUTION_UNAVAILABLE`: only a team share could grant this caller access and the
+        caller's teams could not be looked up. Retry shortly. Only returned with
+        `ENABLE_COLLABORATIVE_CHATS` on; the owner and direct recipients are not affected.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationUnavailableSend:
+      description: |
+        Service unavailable. Retry shortly. Only returned with `ENABLE_COLLABORATIVE_CHATS` on:
+
+        - `TEAM_RESOLUTION_UNAVAILABLE`: only a team share could grant this caller access and the
+          caller's teams could not be looked up. The owner and direct recipients are not affected.
+        - `OWNER_STATUS_UNAVAILABLE`: the conversation owner's account status could not be checked,
+          so a caller who is not the owner is refused rather than let through. The owner is not
+          affected.
+        - `MENTION_DIRECTORY_UNAVAILABLE`: the mentions in the message could not be checked (with
+          `ENABLE_CHAT_MENTIONS` on). Nothing was stored.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationConflictSend:
+      description: |
+        Conflict. Only returned with `ENABLE_COLLABORATIVE_CHATS` on, as a JSON body sent before any
+        SSE header:
+
+        - `CONVERSATION_BUSY`: another turn is running in this conversation. `error.details.activeRun`
+          names who started it and when; retry once it ends.
+        - `CONVERSATION_CHANGED`: other people added messages after the request's `baseSeq`.
+          `error.details.newerCount` is how many; reload and send again.
+        - `DUPLICATE_MESSAGE`: this caller already sent this `clientMessageId`.
+          `error.details.messageId` is the original message and `error.details.answered` whether it
+          has an answer yet.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationConflictSendPlain:
+      description: |
+        Conflict. Only returned with `ENABLE_COLLABORATIVE_CHATS` on:
+
+        - `CONVERSATION_BUSY`: another turn is running in this conversation. `error.details.activeRun`
+          names who started it and when; retry once it ends.
+        - `CONVERSATION_CHANGED`: other people added messages after the request's `baseSeq`.
+          `error.details.newerCount` is how many; reload and send again.
+        - `DUPLICATE_MESSAGE`: this caller already sent this `clientMessageId`.
+          `error.details.messageId` is the original message and `error.details.answered` whether it
+          has an answer yet.
+        - `RUN_LOST`: the turn lost the conversation to another run while it was generating, so its
+          answer was dropped. Send again.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationConflictRegenerate:
+      description: |
+        Conflict. `CONVERSATION_BUSY`: another turn is running in this conversation, so nothing was
+        changed. `error.details.activeRun` names who started it and when; retry once it ends. Only
+        returned with `ENABLE_COLLABORATIVE_CHATS` on, as a JSON body sent before any SSE header.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationConflictCreate:
+      description: |
+        Conflict. `DUPLICATE_MESSAGE`: a conversation was already created from this
+        `clientMessageId`; `error.details.conversationId` and `error.details.messageId` identify it.
+        Only returned with `ENABLE_COLLABORATIVE_CHATS` on, as a JSON body sent before any SSE header.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConversationConflictCreatePlain:
+      description: |
+        Conflict. Only returned with `ENABLE_COLLABORATIVE_CHATS` on:
+
+        - `DUPLICATE_MESSAGE`: a conversation was already created from this `clientMessageId`;
+          `error.details.conversationId` and `error.details.messageId` identify it.
+        - `RUN_LOST`: the turn lost the conversation to another run while it was generating, so its
+          answer was dropped.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
+    ConnectorSetupRequired:
+      description: |
+        Precondition failed. `CONNECTOR_SETUP_REQUIRED`: the agent needs tools the caller has not
+        connected yet; `error.details.toolsets` lists them. Connect them, then send again. Only
+        returned with `ENABLE_COLLABORATIVE_CHATS` on, as a JSON body sent before any SSE header.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ConversationErrorResponse'
   schemas:
     StoragePurgeResult:
       type: object
@@ -1338,19 +1644,554 @@ components:
             code:
               type: string
               description: |
-                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
+                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`.
+                Domain errors carry their own unprefixed code (for example `CONVERSATION_BUSY`).
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
               example: HTTP_FORBIDDEN
             message:
               type: string
               description: Human-readable description of the error
               example: You need admin access to do this. Ask an admin in your organisation.
+            details:
+              type: object
+              additionalProperties: true
+              description: |
+                Public, structured context for a domain error (for example the run that holds a
+                conversation). Present in every environment, only for domain errors; absent otherwise.
             metadata:
               type: object
               description: Additional context (only present in development environments)
               additionalProperties: true
       required:
         - error
+
+    ConversationErrorCode:
+      type: string
+      description: |
+        Machine-readable `error.code` values raised by the conversation access checks and the
+        collaboration features. They are sent as-is, without the `HTTP_` prefix, and the HTTP
+        status below is the one the code is always sent with.
+
+        | Code | Status | Meaning |
+        | --- | --- | --- |
+        | `CONVERSATION_NOT_FOUND` | 404 | No such conversation for this caller (also: no access). |
+        | `CONVERSATION_READ_ONLY` | 403 | The caller can read the conversation but not add to or change it. |
+        | `CONVERSATION_OWNER_ONLY` | 403 | Only the owner may do this. |
+        | `REGENERATE_NOT_ALLOWED` | 403 | Only the person who asked the question may regenerate its answer. |
+        | `RESUME_NOT_ALLOWED` | 403 | Only the person who was asked may answer the pending question. |
+        | `OWNER_INACTIVE` | 403 | The conversation owner is disabled or deleted. |
+        | `PROJECT_ACCESS_REQUIRED` | 403 | The caller needs access to the linked project. |
+        | `TEAM_RESOLUTION_UNAVAILABLE` | 503 | Team membership could not be resolved; retry shortly. |
+        | `OWNER_STATUS_UNAVAILABLE` | 503 | The owner's account status could not be checked; retry shortly. |
+        | `RUN_LOST` | 409 | A non-streaming turn lost its lease mid-run, so its answer was dropped. |
+        | `CONVERSATION_BUSY` | 409 | Another turn is already running (`details.activeRun`). |
+        | `CONVERSATION_CHANGED` | 409 | The conversation changed since it was loaded (`details.newerCount`). |
+        | `DUPLICATE_MESSAGE` | 409 | The message was already received (`details.messageId`, `details.answered`; a repeated first send also returns `details.conversationId`). |
+        | `COLLABORATOR_LIMIT` | 409 | The collaborator limit was reached (`details.max`). |
+        | `MUTED_SESSIONS_LIMIT` | 409 | The muted conversations limit was reached (`details.max`). |
+        | `CONNECTOR_SETUP_REQUIRED` | 412 | Required tools must be connected first (`details.toolsets`). |
+        | `INVALID_PRINCIPAL` | 400 | A person or team cannot be added (`details.principalIds`). |
+        | `RATE_LIMITED` | 429 | Too many requests (`details.retryAfter`). Sent by the collaboration routes. |
+        | `ORG_WIDE_CONFIRMATION_REQUIRED` | 400 | Sharing with the whole organization needs confirmation. |
+        | `MENTION_NOT_ALLOWED` | 400 or 403 | A mention is refused (`details.mentionIndex`, `details.reason`). A person who is not in the organization or not active, and a team that is not on the conversation, are 400; an agent the sender cannot run, or one that is not this conversation's agent, is 403. Nothing is stored. |
+        | `MENTION_SA_AGENT_SHARED` | 403 | The mentioned agent runs with its creator's access and cannot be used in a shared conversation (`details.mentionIndex`). |
+        | `MENTION_DIRECTORY_UNAVAILABLE` | 503 | The mentions could not be checked; retry shortly. A message that mentions only the assistant is not affected. |
+        | `MESSAGE_IS_NOTE` | 422 | The message asks nobody: the conversation's `respondMode` would not run the AI for it. Post it to `.../notes`. |
+        | `MESSAGE_NOT_NOTE` | 422 | The note would skip an answer the conversation's `respondMode` asks for (it mentions the assistant, or the mode is `always`). Send it as a message. |
+
+        The conversation access checks return `CONVERSATION_NOT_FOUND`, `CONVERSATION_READ_ONLY`,
+        `CONVERSATION_OWNER_ONLY`, `REGENERATE_NOT_ALLOWED`, `OWNER_INACTIVE`,
+        `TEAM_RESOLUTION_UNAVAILABLE` and `OWNER_STATUS_UNAVAILABLE`; with `ENABLE_COLLABORATIVE_CHATS` off only
+        `CONVERSATION_NOT_FOUND` is returned. The others belong to the collaboration features
+        that share the same error set.
+
+        The collaboration routes (`collaborators`, `collaboration-settings`, `transfer-ownership`,
+        `leave`, `feed`, `readiness`) return `CONVERSATION_OWNER_ONLY`, `CONVERSATION_READ_ONLY`,
+        `INVALID_PRINCIPAL`, `ORG_WIDE_CONFIRMATION_REQUIRED`, `COLLABORATOR_LIMIT`,
+        `PROJECT_ACCESS_REQUIRED` (transfer), `RATE_LIMITED` and `TEAM_RESOLUTION_UNAVAILABLE`; they are
+        only mounted with `ENABLE_COLLABORATIVE_CHATS` on and answer 404 otherwise.
+
+        The mention routes (`mentionables`, `notes`) and the `mentions` field of a message need
+        `ENABLE_CHAT_MENTIONS` as well; with it off the routes answer 404 and `mentions` is ignored.
+
+        The turn routes (send, regenerate and the first send) add `PROJECT_ACCESS_REQUIRED`,
+        `RESUME_NOT_ALLOWED`, `CONVERSATION_BUSY`, `CONVERSATION_CHANGED`, `DUPLICATE_MESSAGE`,
+        `RUN_LOST` and, for agents, `CONNECTOR_SETUP_REQUIRED`; they are only returned with
+        `ENABLE_COLLABORATIVE_CHATS` on.
+      enum:
+        - CONVERSATION_NOT_FOUND
+        - CONVERSATION_READ_ONLY
+        - CONVERSATION_OWNER_ONLY
+        - REGENERATE_NOT_ALLOWED
+        - RESUME_NOT_ALLOWED
+        - OWNER_INACTIVE
+        - PROJECT_ACCESS_REQUIRED
+        - CONVERSATION_BUSY
+        - RUN_LOST
+        - CONVERSATION_CHANGED
+        - DUPLICATE_MESSAGE
+        - COLLABORATOR_LIMIT
+        - CONNECTOR_SETUP_REQUIRED
+        - INVALID_PRINCIPAL
+        - TEAM_RESOLUTION_UNAVAILABLE
+        - OWNER_STATUS_UNAVAILABLE
+        - RATE_LIMITED
+        - ORG_WIDE_CONFIRMATION_REQUIRED
+      example: CONVERSATION_NOT_FOUND
+
+    CollaboratorRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - principalType
+        - principalId
+        - accessLevel
+      properties:
+        principalType:
+          type: string
+          enum: [user, team]
+        principalId:
+          type: string
+          description: A user id, or a team id (a UUID, or `all_{orgId}` for the whole organization).
+        accessLevel:
+          type: string
+          enum: [read, write]
+          description: |
+            - `read` - can read the conversation
+            - `write` - can also continue it
+
+    PutCollaboratorsRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - collaborators
+      properties:
+        collaborators:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: Each person or team at most once. A principal already on the conversation at another level is changed (owner only).
+          items:
+            $ref: '#/components/schemas/CollaboratorRequest'
+        note:
+          type: string
+          maxLength: 500
+          description: Hand-over note shown in the recipient's notification (the first 140 characters). Never put in email.
+        confirmOrgWide:
+          type: boolean
+          enum: [true]
+          description: Required to share with the whole organization (`all_{orgId}`).
+
+    CollaborationSettings:
+      type: object
+      additionalProperties: false
+      properties:
+        editorsCanInvite:
+          type: boolean
+          description: Let people with `write` access add (never remove or change) people and teams.
+        ownerContentShared:
+          type: boolean
+          description: The owner's consent to share files and tool results from the owner's own turns.
+        respondMode:
+          $ref: '#/components/schemas/RespondMode'
+
+    RespondMode:
+      type: string
+      enum: [smart, mention_only, always]
+      description: |
+        When the AI answers a message in this conversation (owner only; needs `ENABLE_CHAT_MENTIONS`
+        to have any effect). Absent reads as `smart`.
+
+        - `smart`: the AI answers unless the message mentions only people or teams, which makes it a note.
+        - `mention_only`: the AI answers only a message that mentions the assistant or the conversation's agent; everything else is a note.
+        - `always`: every message is answered, whatever it mentions.
+
+    MentionRef:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      description: |
+        A mention is an id, never a name. `assistant` is always `self` and addresses the conversation's
+        own responder (the assistant, or the agent of an agent conversation); `agent` is that agent's key;
+        `user` is a participant's id; `team` is the id of a team the conversation is shared with.
+      properties:
+        type:
+          type: string
+          enum: [assistant, agent, user, team]
+        id:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    MentionableItem:
+      type: object
+      additionalProperties: false
+      required: [type, id, label]
+      properties:
+        type:
+          type: string
+          enum: [assistant, agent, user, team]
+        id:
+          type: string
+          description: For an `agent`, the agent key.
+        label:
+          type: string
+          description: Display name, looked up on every read and never stored.
+        handle:
+          type: string
+          description: An `agent`'s `@handle`, without the `@`.
+
+    MentionablesResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/MentionableItem'
+
+    CreateNoteRequest:
+      type: object
+      additionalProperties: false
+      required: [query, clientMessageId]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 10000
+          description: The note text. A `<@type:id>` token not listed in `mentions` is stored escaped and mentions nobody.
+        mentions:
+          type: array
+          maxItems: 10
+          default: []
+          items:
+            $ref: '#/components/schemas/MentionRef'
+          description: Only people and teams; a note that mentions the assistant (or types an assistant alias) is refused (`MESSAGE_NOT_NOTE`). Empty is a note only under `respondMode` `mention_only`.
+        clientMessageId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Idempotency key, per author. Posting it again returns the first note.
+
+    NoteResponse:
+      type: object
+      additionalProperties: false
+      required: [note, duplicate, nonParticipants]
+      properties:
+        nonParticipants:
+          type: array
+          items:
+            type: string
+            format: objectId
+          description: |
+            Active colleagues the note mentions who are not on the conversation. The note is stored with
+            them as chips and they are not notified; the owner is offered "add them to the chat".
+        note:
+          type: object
+          additionalProperties: false
+          required: [id, seq, messageType, content, mentions, authorUserId, clientMessageId]
+          properties:
+            id:
+              type: string
+              format: objectId
+            seq:
+              type: integer
+            messageType:
+              type: string
+              enum: [note]
+            content:
+              type: string
+            mentions:
+              type: array
+              items:
+                $ref: '#/components/schemas/MentionRef'
+            authorUserId:
+              type: string
+              format: objectId
+            clientMessageId:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+        duplicate:
+          type: boolean
+          description: True when `clientMessageId` had already been posted and `note` is that earlier note.
+
+    TransferOwnershipRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - newOwnerUserId
+      properties:
+        newOwnerUserId:
+          type: string
+          format: objectId
+          description: An active member of the organization who already has `write` access as a person (not through a team).
+
+    CollaboratorDto:
+      type: object
+      additionalProperties: false
+      required:
+        - principalType
+        - principalId
+        - displayName
+        - accessLevel
+        - state
+      properties:
+        principalType:
+          type: string
+          enum: [user, team]
+        principalId:
+          type: string
+        displayName:
+          type: string
+          description: |
+            Looked up on every read, never stored. A team the caller does not belong to is `A team`;
+            a person who has left the organization is `Former member`.
+        accessLevel:
+          type: string
+          enum: [read, write]
+        state:
+          type: string
+          enum: [active, former_member, deleted_team]
+        addedBy:
+          type: string
+          format: objectId
+        addedAt:
+          type: string
+          format: date-time
+
+    CollaboratorsView:
+      type: object
+      additionalProperties: false
+      description: What the owner, and an editor allowed to invite, get.
+      required:
+        - owner
+        - collaborators
+        - collaboratorCount
+        - settings
+      properties:
+        owner:
+          $ref: '#/components/schemas/CollaborationOwner'
+        collaborators:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollaboratorDto'
+        collaboratorCount:
+          type: integer
+        settings:
+          type: object
+          additionalProperties: false
+          required:
+            - editorsCanInvite
+            - ownerContentShared
+          properties:
+            editorsCanInvite:
+              type: boolean
+            ownerContentShared:
+              type: boolean
+            respondMode:
+              $ref: '#/components/schemas/RespondMode'
+
+    CollaboratorsSummary:
+      type: object
+      additionalProperties: false
+      description: What everyone else gets, with no other person or team named.
+      required:
+        - owner
+        - collaboratorCount
+        - myAccess
+      properties:
+        owner:
+          $ref: '#/components/schemas/CollaborationOwner'
+        collaboratorCount:
+          type: integer
+        myAccess:
+          type: string
+          enum: [owner, write, read]
+        respondMode:
+          type: string
+          enum: [smart, mention_only, always]
+          description: Present once the owner has set it; absent means `smart`.
+
+    CollaborationOwner:
+      type: object
+      additionalProperties: false
+      required:
+        - userId
+        - displayName
+      properties:
+        userId:
+          type: string
+          format: objectId
+        displayName:
+          type: string
+
+    LeaveConversationResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          format: objectId
+        status:
+          type: string
+          enum: [left]
+
+    FeedMessage:
+      type: object
+      additionalProperties: true
+      description: A stored message as the conversation detail returns it, plus `seq`, `author` and the caller's own feedback.
+      required:
+        - _id
+        - seq
+        - messageType
+        - content
+      properties:
+        _id:
+          type: string
+          format: objectId
+        seq:
+          type: integer
+          description: Position in the conversation; gaps are possible.
+        messageType:
+          type: string
+        content:
+          type: string
+        author:
+          type: object
+          additionalProperties: false
+          required:
+            - userId
+            - displayName
+          properties:
+            userId:
+              type: string
+              format: objectId
+            displayName:
+              type: string
+        feedback:
+          type: array
+          maxItems: 1
+          description: Only the caller's own latest feedback.
+          items:
+            type: object
+            additionalProperties: true
+
+    FeedResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - messages
+        - rev
+        - nextSeq
+        - hasMore
+        - activeRun
+        - lastActivityAt
+      properties:
+        messages:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/FeedMessage'
+        rev:
+          type: integer
+          description: Send this back as `rev`; while nothing changes the answer is a 304.
+        nextSeq:
+          type: integer
+          description: The highest `seq` returned (or the `afterSeq` asked for when nothing is newer). Send it as `afterSeq` next.
+        hasMore:
+          type: boolean
+          description: There are more rows after `nextSeq`; ask again at once.
+        activeRun:
+          nullable: true
+          type: object
+          additionalProperties: false
+          required:
+            - userId
+            - displayName
+            - startedAt
+          description: Who is running a turn now. `runId` is present only for callers who can write.
+          properties:
+            userId:
+              type: string
+              format: objectId
+            displayName:
+              type: string
+            startedAt:
+              type: string
+              format: date-time
+            runId:
+              type: string
+        lastActivityAt:
+          type: integer
+          description: Milliseconds since the epoch.
+
+    Readiness:
+      type: object
+      additionalProperties: false
+      required:
+        - canSend
+        - reasons
+      properties:
+        canSend:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+            enum:
+              - CONVERSATION_READ_ONLY
+              - OWNER_INACTIVE
+              - PROJECT_ACCESS_REQUIRED
+              - CONNECTOR_SETUP_REQUIRED
+              - AGENT_UNAVAILABLE
+        missingToolsets:
+          type: array
+          items:
+            type: string
+          description: The caller's own agent tools that still need connecting; never another person's.
+
+    ConversationErrorResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        The standard `ErrorResponse` envelope on conversation routes. `error.code` is one of
+        `ConversationErrorCode` for access and collaboration failures, or a platform code such as
+        `HTTP_FORBIDDEN` (missing OAuth scope) or `HTTP_BAD_REQUEST`.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            requestId:
+              type: string
+              description: Identifier for this request, echoed so a bug report can quote it.
+            code:
+              description: A `ConversationErrorCode`, or another platform error code.
+              anyOf:
+                - $ref: '#/components/schemas/ConversationErrorCode'
+                - type: string
+                  example: HTTP_FORBIDDEN
+            message:
+              type: string
+              description: Human-readable description of the error
+              example: Conversation not found
+            details:
+              type: object
+              additionalProperties: true
+              description: Public context for the code (for example `activeRun` for `CONVERSATION_BUSY`). Absent for access denials.
+            metadata:
+              type: object
+              description: Additional context (only present in development environments)
 
     StreamRecordErrorResponse:
       type: object
@@ -6517,6 +7358,20 @@ components:
             `POST /conversations/{conversationId}/cancel {runId}` while the
             stream is still generating. Optional — a caller that never sends
             one just can't cooperatively cancel the run.
+            With `ENABLE_COLLABORATIVE_CHATS` on the server mints the run id and ignores this
+            field: read it from the `X-Run-Id` response header.
+        clientMessageId:
+          $ref: '#/components/schemas/ClientMessageId'
+        filesShared:
+          type: boolean
+          description: |
+            Whether the sender lets other people in the conversation open the files they attach to
+            this message. Stored with the message; takes effect with file sharing.
+        shareToolResults:
+          type: boolean
+          description: |
+            Whether the sender lets other people see this turn's tool results. Stored with the
+            message; takes effect with file sharing.
 
     ConversationStreamRequest:
       allOf:
@@ -6722,6 +7577,20 @@ components:
             Client-generated identifier for this run. Send it here to enable
             `POST /agents/{agentKey}/conversations/{conversationId}/cancel
             {runId}` while the stream is still generating.
+            With `ENABLE_COLLABORATIVE_CHATS` on the server mints the run id and ignores this
+            field: read it from the `X-Run-Id` response header.
+        clientMessageId:
+          $ref: '#/components/schemas/ClientMessageId'
+        filesShared:
+          type: boolean
+          description: |
+            Whether the sender lets other people in the conversation open the files they attach to
+            this message. Stored with the message; takes effect with file sharing.
+        shareToolResults:
+          type: boolean
+          description: |
+            Whether the sender lets other people see this turn's tool results. Stored with the
+            message; takes effect with file sharing.
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
@@ -6757,6 +7626,43 @@ components:
               name: Siddhant Ota's Private
               nodeType: recordGroup
               connector: KB
+
+    ClientMessageId:
+      type: string
+      minLength: 1
+      maxLength: 64
+      description: |
+        Caller-chosen id that makes a send safe to retry. With `ENABLE_COLLABORATIVE_CHATS` on, a second
+        send of the same value by the same person in the same conversation is refused with `409`
+        `DUPLICATE_MESSAGE` rather than answered twice; another person may use the same value. Ignored
+        with the flag off.
+      example: 7c1f0d52-9c1e-4c53-b8a5-6f1f5d9b2a10
+
+    BaseSeq:
+      type: integer
+      minimum: -1
+      description: |
+        The highest message sequence number the client has shown. With `ENABLE_COLLABORATIVE_CHATS` on, the
+        send is refused with `409` `CONVERSATION_CHANGED` when other people have added messages after it
+        (messages by the sender do not count); `-1` means the client has seen none. Ignored with the flag
+        off.
+
+    ResumeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - toolCallMessageId
+      description: |
+        Marks the send as the answer to a pending `ask_user_question` card. The card must be the most
+        recent one and unanswered, and must have been put to the sender; otherwise the send is refused
+        with `403` `RESUME_NOT_ALLOWED` and nothing runs. With `ENABLE_COLLABORATIVE_CHATS` on, the
+        same check applies to a plain text answer that starts with `User selections:` in a shared
+        conversation. Ignored with the flag off.
+      properties:
+        toolCallMessageId:
+          type: string
+          format: objectId
+          description: Id of the `tool_call` message that holds the card.
 
     RegenerateRequest:
       type: object
@@ -6848,6 +7754,8 @@ components:
             Client-generated identifier for this regeneration run. Send it
             here to enable `POST .../cancel {runId}` while it is still
             generating.
+            With `ENABLE_COLLABORATIVE_CHATS` on the server mints the run id and ignores this
+            field: read it from the `X-Run-Id` response header.
 
     AgentRegenerateRequest:
       allOf:
@@ -6879,6 +7787,18 @@ components:
             The follow-up question or message content. Held to the same
             100,000-character limit as the first message of a conversation.
           example: "Can you elaborate on the revenue trends?"
+        mentions:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/MentionRef'
+          description: |
+            Ids only (`ENABLE_CHAT_MENTIONS` on; ignored otherwise). Every person must be an active member of
+            the organization (one outside the conversation is accepted but never notified), every team on the
+            conversation and every agent one the sender may run, else `MENTION_NOT_ALLOWED`. A message that
+            mentions only people or teams is answered `422` `MESSAGE_IS_NOTE` under `smart` and
+            `mention_only`; post it to `.../notes`. Typing `@PipesHub`, `@assistant`, `@agent`, `@ai` or `@bot`
+            addresses the assistant without a token.
         filters:
           $ref: '#/components/schemas/Filters'
         appliedFilters:
@@ -6953,6 +7873,24 @@ components:
             Client-generated identifier for this run. Send it here to enable
             `POST /conversations/{conversationId}/cancel {runId}` while the
             stream is still generating.
+            With `ENABLE_COLLABORATIVE_CHATS` on the server mints the run id and ignores this
+            field: read it from the `X-Run-Id` response header.
+        clientMessageId:
+          $ref: '#/components/schemas/ClientMessageId'
+        baseSeq:
+          $ref: '#/components/schemas/BaseSeq'
+        filesShared:
+          type: boolean
+          description: |
+            Whether the sender lets other people in the conversation open the files they attach to
+            this message. Stored with the message; takes effect with file sharing.
+        shareToolResults:
+          type: boolean
+          description: |
+            Whether the sender lets other people see this turn's tool results. Stored with the
+            message; takes effect with file sharing.
+        resume:
+          $ref: '#/components/schemas/ResumeRequest'
 
     ConversationMessageStreamRequest:
       allOf:
@@ -7124,6 +8062,24 @@ components:
             Client-generated identifier for this run. Send it here to enable
             `POST /agents/{agentKey}/conversations/{conversationId}/cancel
             {runId}` while the stream is still generating.
+            With `ENABLE_COLLABORATIVE_CHATS` on the server mints the run id and ignores this
+            field: read it from the `X-Run-Id` response header.
+        clientMessageId:
+          $ref: '#/components/schemas/ClientMessageId'
+        baseSeq:
+          $ref: '#/components/schemas/BaseSeq'
+        filesShared:
+          type: boolean
+          description: |
+            Whether the sender lets other people in the conversation open the files they attach to
+            this message. Stored with the message; takes effect with file sharing.
+        shareToolResults:
+          type: boolean
+          description: |
+            Whether the sender lets other people see this turn's tool results. Stored with the
+            message; takes effect with file sharing.
+        resume:
+          $ref: '#/components/schemas/ResumeRequest'
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
@@ -7247,6 +8203,28 @@ components:
           type: string
           format: objectId
           description: Unique message identifier
+        seq:
+          type: integer
+          description: |
+            Position in the conversation, as the feed reports it. Present only on
+            the conversation detail with collaborative chats enabled.
+        author:
+          type: object
+          additionalProperties: false
+          description: |
+            Who the row is attributed to (the question's author, an answer's
+            `requestedBy`), the same as in the feed. `displayName` is empty for a
+            person who has left. Present only on the conversation detail with
+            collaborative chats enabled.
+          required:
+            - userId
+            - displayName
+          properties:
+            userId:
+              type: string
+              format: objectId
+            displayName:
+              type: string
         messageType:
           type: string
           enum: [user_query, bot_response, error, feedback, system, tool_call]
@@ -7284,6 +8262,11 @@ components:
             and only when the model emitted a trailing confidence block.
 
             This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
+        answerMatchType:
+          type: string
+          enum: [Capability Card]
+          description: |
+            Present only on the `@assistant help` capability answer in a shared chat. It is not a search answer, so clients should not show confidence or sources for it.
         followUpQuestions:
           type: array
           items:
@@ -7882,6 +8865,19 @@ components:
               accessLevel:
                 type: string
                 enum: [read, write]
+              principalType:
+                type: string
+                enum: [user, team]
+                description: Absent on rows written before team sharing; treat as `user` when `userId` is set.
+              teamId:
+                type: string
+                description: Graph team id; present iff `principalType` is `team`.
+              addedBy:
+                type: string
+                format: objectId
+              addedAt:
+                type: string
+                format: date-time
           description: Users this conversation is shared with
         isArchived:
           type: boolean
@@ -8044,6 +9040,19 @@ components:
               accessLevel:
                 type: string
                 enum: [read, write]
+              principalType:
+                type: string
+                enum: [user, team]
+                description: Absent on rows written before team sharing; treat as `user` when `userId` is set.
+              teamId:
+                type: string
+                description: Graph team id; present iff `principalType` is `team`.
+              addedBy:
+                type: string
+                format: objectId
+              addedAt:
+                type: string
+                format: date-time
         isArchived:
           type: boolean
         archivedBy:
@@ -8157,7 +9166,6 @@ components:
       additionalProperties: false
       required:
         - principalType
-        - principalId
         - role
         - addedBy
         - addedAt
@@ -8165,11 +9173,14 @@ components:
         principalType:
           type: string
           enum: [user, team]
-          description: Whether `principalId` names a user or a team. Both grant the same `role`, mirroring Collection sharing.
+          description: Whether the row names a user (`principalId`) or a team (`teamId`). Both grant the same `role`, mirroring Collection sharing.
         principalId:
           type: string
           format: objectId
-          description: User or team id of the member. The project owner is implicit and never appears in this list.
+          description: User id of a `user` member. The project owner is implicit and never appears in this list. Team rows written before teams were string-keyed also carry an ObjectId here instead of `teamId`; they are still honoured.
+        teamId:
+          type: string
+          description: Team key of a `team` member, a UUID or `all_{orgId}` for the organisation-wide team.
         role:
           type: string
           enum: [viewer, editor]
@@ -8260,6 +9271,8 @@ components:
             only; `members` exposes them to every project member
             (`projectVisibility: project`). A conversation's own
             `projectVisibility` can override this default per-chat.
+        projectChatAccess:
+          $ref: '#/components/schemas/ProjectChatAccess'
         members:
           type: array
           items:
@@ -8352,8 +9365,8 @@ components:
       additionalProperties: false
       description: |
         All fields optional; only supplied fields are updated.
-        `visibility`/`chatSharing` are owner-only — an editor who is not
-        the owner gets `403` if they include either field. Flattened (not
+        `visibility`/`chatSharing`/`projectChatAccess` are owner-only — an editor who is not
+        the owner gets `403` if they include any of them. Flattened (not
         `allOf: [CreateProjectRequest, ...]`) since `CreateProjectRequest`
         itself is `additionalProperties: false` — composing two closed
         schemas would reject `visibility`/`chatSharing` on every real update.
@@ -8389,6 +9402,136 @@ components:
         chatSharing:
           type: string
           enum: [private, members]
+        projectChatAccess:
+          $ref: '#/components/schemas/ProjectChatAccess'
+
+    ProjectChatAccess:
+      type: string
+      enum: [viewer, editor]
+      default: viewer
+      description: |
+        The most a project member can do in a conversation that is shared with the project
+        (`projectVisibility: project`). `viewer` lets members read; `editor` also lets project
+        editors add to it. Changing it takes effect on the next request. Only with
+        `ENABLE_COLLABORATIVE_CHATS` on: with it off the field is accepted and ignored.
+
+    AuthzExplainPath:
+      type: object
+      additionalProperties: false
+      required: [type, ref, role]
+      properties:
+        type:
+          type: string
+          enum: [owner, direct, team, project]
+          description: How the access comes about.
+        ref:
+          type: string
+          nullable: true
+          description: |
+            The user id (`owner`, `direct`), team id (`team`) or project id (`project`). `null` for a
+            team the caller does not belong to, so a team is not named to someone outside it.
+        role:
+          type: string
+          enum: [viewer, editor, owner]
+
+    AuthzExplainResponse:
+      type: object
+      additionalProperties: false
+      required: [role, via]
+      properties:
+        role:
+          type: string
+          enum: [none, viewer, editor, owner]
+          description: The highest role over all paths. `none` when the subject has no access.
+        via:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthzExplainPath'
+
+    AuthzAccessChange:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, projectId]
+          properties:
+            type:
+              type: string
+              enum: [link]
+            projectId:
+              type: string
+              format: objectId
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              type: string
+              enum: [unlink]
+        - type: object
+          additionalProperties: false
+          required: [type, visibility]
+          properties:
+            type:
+              type: string
+              enum: [visibility]
+            visibility:
+              type: string
+              enum: [private, project]
+      discriminator:
+        propertyName: type
+
+    AuthzPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [resource, change]
+      properties:
+        resource:
+          type: string
+          pattern: '^chat:[0-9a-fA-F]{24}$'
+          example: chat:64f1a2b3c4d5e6f7a8b9c0d1
+        change:
+          $ref: '#/components/schemas/AuthzAccessChange'
+
+    AuthzPrincipalRole:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        userId:
+          type: string
+          format: objectId
+        teamId:
+          type: string
+        role:
+          type: string
+          enum: [viewer, editor, owner]
+
+    AuthzPreviewResponse:
+      type: object
+      additionalProperties: false
+      required: [gains, loses, becomesReadOnly, truncated]
+      properties:
+        gains:
+          type: array
+          description: People or teams with no access today, or a lower role, who would have access. `role` is the role after the change.
+          items:
+            $ref: '#/components/schemas/AuthzPrincipalRole'
+        loses:
+          type: array
+          description: People or teams who would no longer have access. `role` is the role they have today.
+          items:
+            $ref: '#/components/schemas/AuthzPrincipalRole'
+        becomesReadOnly:
+          type: array
+          description: |
+            People or teams who keep access but could no longer add to the conversation, for
+            example collaborators with edit access who have no access to the project it is linked to.
+            `role` is `viewer`.
+          items:
+            $ref: '#/components/schemas/AuthzPrincipalRole'
+        truncated:
+          type: boolean
+          description: True when more than 500 people and teams were involved and only the first 500 were evaluated.
 
     ProjectMembersUpsertRequest:
       type: object
@@ -8407,11 +9550,18 @@ components:
             properties:
               principalId:
                 type: string
-                format: objectId
                 description: |
-                  User id to add or update. Must exist in this org's IAM
+                  User id (ObjectId) to add or update, or, when
+                  `principalType` is `team`, a team key (UUID or
+                  `all_{orgId}`). A user must exist in this org's IAM
                   service (validated the same way as
-                  `POST /conversations/{conversationId}/share`).
+                  `POST /conversations/{conversationId}/share`); a team must
+                  exist in this org's graph. Team members are stored as
+                  `teamId`.
+              principalType:
+                type: string
+                enum: [user, team]
+                default: user
               role:
                 type: string
                 enum: [viewer, editor]
@@ -8442,7 +9592,9 @@ components:
             Permission level for shared users:
 
             - `read` — Can view only
-            - `write` — Can add messages
+            - `write` — Can also continue the conversation when
+              `ENABLE_COLLABORATIVE_CHATS` is on. With it off it is stored as
+              `read` and the response carries an `ACCESS_LEVEL_DOWNGRADED` warning
 
     SemanticSearchRequest:
       type: object
@@ -10064,6 +11216,24 @@ components:
           type: string
           description: Display name of the agent
           example: "Customer Support Assistant"
+        handle:
+          type: string
+          pattern: '^[a-z0-9-]{2,40}$'
+          description: Unique @mention handle within the organization. Absent on agents created before handles existed until the startup migration has run.
+          example: "customer-support"
+        orgId:
+          type: string
+          description: Organization that owns the agent.
+        createdVia:
+          type: string
+          enum: [ui, chat]
+          description: Where the agent was created.
+        sourceConversationId:
+          type: string
+          description: Conversation an agent created from chat was drafted in.
+        sourceMessageId:
+          type: string
+          description: Message an agent created from chat was drafted from.
         description:
           type: string
           description: What this agent is designed to do
@@ -10321,6 +11491,24 @@ components:
         name:
           type: string
           description: Display name of the agent.
+        handle:
+          type: string
+          pattern: '^[a-z0-9-]{2,40}$'
+          description: Unique @mention handle within the organization. Absent on agents created before handles existed until the startup migration has run.
+          example: "customer-support"
+        orgId:
+          type: string
+          description: Organization that owns the agent.
+        createdVia:
+          type: string
+          enum: [ui, chat]
+          description: Where the agent was created.
+        sourceConversationId:
+          type: string
+          description: Conversation an agent created from chat was drafted in.
+        sourceMessageId:
+          type: string
+          description: Message an agent created from chat was drafted from.
         startMessage:
           type: string
           nullable: true
@@ -10681,12 +11869,48 @@ components:
       required:
         - name
       properties:
+        draftRef:
+          type: object
+          additionalProperties: false
+          required: [conversationId, messageId]
+          description: |
+            Creates the agent from an agent draft card shown in a chat (needs `ENABLE_CHAT_AGENT_BUILDER`).
+            `messageId` must be the `draft_agent` card that the caller asked for in `conversationId`, which the
+            caller can read. Anything else (another person's draft, a message that is not a draft card, a
+            conversation the caller cannot read, the flag off) is the same `404 CONVERSATION_NOT_FOUND`.
+
+            An agent created this way is private to its creator and never a service account: `shareWithOrg` is
+            ignored and `isServiceAccount: true` is refused with `400 SERVICE_ACCOUNT_NOT_ALLOWED`. The
+            knowledge sources and tools must already be usable by the caller (`400 INVALID_KNOWLEDGE` /
+            `400 INVALID_TOOLSET`, with the offending ids in `error.details.ids`). The server records
+            `createdVia: chat` and the source conversation and message on the agent.
+
+            `createdVia`, `sourceConversationId` and `sourceMessageId` are set only from `draftRef`; sending
+            them is a `400`.
+          properties:
+            conversationId:
+              type: string
+              format: objectId
+            messageId:
+              type: string
+              format: objectId
         name:
           type: string
           minLength: 1
           maxLength: 200
           description: Agent display name
           example: "Product Support Agent"
+        handle:
+          type: string
+          pattern: '^@?[a-z0-9-]{2,40}$'
+          description: |
+            Unique @mention handle within the organization: 2-40 characters, lowercase
+            letters, digits and hyphens. A leading `@` is ignored. On create it is
+            derived from `name` when omitted (`sales-bot`, then `sales-bot-2`, ...).
+            Reserved words (`pipeshub`, `assistant`, `agent`, `ai`, `bot`, `everyone`,
+            `here`, `all`) are refused with `400 HANDLE_RESERVED`; a handle already in use is
+            refused with `409 HANDLE_TAKEN` and a `suggestion`.
+          example: "product-support"
         description:
           type: string
           maxLength: 100000
@@ -10906,6 +12130,24 @@ components:
           type: string
         name:
           type: string
+        handle:
+          type: string
+          pattern: '^[a-z0-9-]{2,40}$'
+          description: Unique @mention handle within the organization. Absent on agents created before handles existed until the startup migration has run.
+          example: "customer-support"
+        orgId:
+          type: string
+          description: Organization that owns the agent.
+        createdVia:
+          type: string
+          enum: [ui, chat]
+          description: Where the agent was created.
+        sourceConversationId:
+          type: string
+          description: Conversation an agent created from chat was drafted in.
+        sourceMessageId:
+          type: string
+          description: Message an agent created from chat was drafted from.
         description:
           type: string
         startMessage:
@@ -11017,6 +12259,17 @@ components:
           maxLength: 200
           description: Agent display name
           example: "Renamed Agent"
+        handle:
+          type: string
+          pattern: '^@?[a-z0-9-]{2,40}$'
+          description: |
+            Unique @mention handle within the organization: 2-40 characters, lowercase
+            letters, digits and hyphens. A leading `@` is ignored. On create it is
+            derived from `name` when omitted (`sales-bot`, then `sales-bot-2`, ...).
+            Reserved words (`pipeshub`, `assistant`, `agent`, `ai`, `bot`, `everyone`,
+            `here`, `all`) are refused with `400 HANDLE_RESERVED`; a handle already in use is
+            refused with `409 HANDLE_TAKEN` and a `suggestion`.
+          example: "product-support"
         description:
           type: string
           maxLength: 100000
@@ -12186,6 +13439,8 @@ components:
           connection. Carries the newly created `conversationId` and
           `title` so the client can link the stream to the new row before
           any tokens arrive.
+          With `ENABLE_COLLABORATIVE_CHATS` on it also carries the turn's `runId`, as the `X-Run-Id`
+          response header does.
         - `RUN_FINISHED` — fired once after the AI backend finishes.
           The gateway emits `{ type, result }`; `result` carries the full
           persisted `conversation` and a `meta` block.
@@ -12246,6 +13501,8 @@ components:
 
         - `CUSTOM` (`name: "conversation_created"`) — fired once on
           connection.
+          With `ENABLE_COLLABORATIVE_CHATS` on it also carries the turn's `runId`, as the `X-Run-Id`
+          response header does.
         - `RUN_FINISHED` — fired once after the AI backend finishes.
           The gateway emits `{ type, result }`; `result` carries
           `{ conversation, recordsUsed, meta }`.
@@ -12357,6 +13614,8 @@ components:
 
         - `CUSTOM` (`name: "conversation_created"`) — fired once after the
           SSE stream opens.
+          With `ENABLE_COLLABORATIVE_CHATS` on it also carries the turn's `runId`, as the `X-Run-Id`
+          response header does.
         - `RUN_FINISHED` — fired once after the upstream AI's result is
           parsed, citations are saved, and the updated conversation is
           persisted. The gateway emits `{ type, result }`; `result` carries
@@ -15591,6 +16850,28 @@ components:
             connectorId: "conn-abc123"
             connectorName: "S3"
             errorCode: "FORBIDDEN"
+        dedupeKey:
+          type: string
+          description: Per-recipient delivery key; an event with the same key is delivered at most once
+        coalesceKey:
+          type: string
+          description: |
+            Set on events that fold into one unread notification per user (for example `chat.activity`).
+            Later events raise `payload.count` instead of adding a row.
+        context:
+          type: object
+          description: |
+            Present only on `GET /notifications`, only with collaborative chats enabled, and only on
+            `chat.*` rows other than `chat.deleted` whose chat the caller can still read. Resolved when
+            the list is read and never stored; absent when nothing could be resolved.
+          properties:
+            chatTitle:
+              type: string
+              maxLength: 80
+              description: Current title of the chat, cut to 80 characters
+            actorName:
+              type: string
+              description: Display name of the user who caused the notification; never an email address
         isDeleted:
           type: boolean
           default: false
@@ -15606,6 +16887,81 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    NotificationPreferences:
+      type: object
+      description: |
+        Per-user notification switches. A conversation in `mutedSessions` gets no `chat.activity`
+        notifications; the other events are unaffected.
+      required: [email, inApp, mutedSessions]
+      properties:
+        email:
+          type: object
+          required: [chatShared, ownershipTransferred]
+          properties:
+            chatShared:
+              type: boolean
+              description: Email when someone shares a conversation with you
+            ownershipTransferred:
+              type: boolean
+              description: Email when a conversation is transferred to you
+            chatMentioned:
+              type: boolean
+              description: Email when someone mentions you in a conversation (default false)
+        inApp:
+          type: object
+          required: [chatActivity]
+          properties:
+            chatActivity:
+              type: boolean
+              description: In-app notification when collaborators add to a conversation you are in
+            chatMentioned:
+              type: boolean
+              description: In-app notification when someone mentions you in a conversation (default true)
+        mutedSessions:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+            format: objectId
+        tipsSeen:
+          type: array
+          maxItems: 50
+          description: Tips and coachmarks the user has already seen. Stored on the server so they show once per user.
+          items:
+            $ref: '#/components/schemas/TipId'
+
+    TipId:
+      type: string
+      enum:
+        - mentions.firstSharedSend
+        - mentions.firstNote
+        - mentions.firstAgentMention
+        - mentions.popoverIntro
+
+    NotificationPreferencesPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        email:
+          type: object
+          additionalProperties: false
+          properties:
+            chatShared:
+              type: boolean
+            ownershipTransferred:
+              type: boolean
+            chatMentioned:
+              type: boolean
+        inApp:
+          type: object
+          additionalProperties: false
+          properties:
+            chatActivity:
+              type: boolean
+            chatMentioned:
+              type: boolean
 
     # ==================== PAGINATION ====================
     PaginationInfo:
@@ -15780,6 +17136,232 @@ paths:
                   modifiedCount:
                     type: integer
                     description: Number of notifications updated
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/preferences:
+    get:
+      tags:
+        - Notifications
+      summary: Get the caller's notification preferences
+      description: |
+        Returns the signed-in user's notification preferences. A user who never changed
+        anything gets the defaults: everything on except the email for mentions, and no muted
+        conversations. Needs `ENABLE_COLLABORATIVE_CHATS` (404 otherwise).
+      operationId: getNotificationPreferences
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Preferences retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Not found — `ENABLE_COLLABORATIVE_CHATS` is off.
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      tags:
+        - Notifications
+      summary: Update the caller's notification preferences
+      description: |
+        Partially updates the on/off switches. Fields that are left out are unchanged.
+        At least one field is required; unknown fields are rejected. Needs
+        `ENABLE_COLLABORATIVE_CHATS` (404 otherwise).
+      operationId: updateNotificationPreferences
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferencesPatch'
+      responses:
+        '200':
+          description: Preferences updated; returns the full preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '400':
+          description: Empty body, an unknown field or a non-boolean value
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: Not found — `ENABLE_COLLABORATIVE_CHATS` is off.
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/preferences/tips:
+    patch:
+      tags:
+        - Notifications
+      summary: Mark a tip or coachmark as seen
+      description: |
+        Adds the tip to the caller's `tipsSeen` list. Marking a tip that is already there succeeds
+        without change (`$addToSet`). Needs `ENABLE_COLLABORATIVE_CHATS` and the chat mentions
+        feature (`ENABLE_CHAT_MENTIONS`); with either off the route answers 404.
+      operationId: markNotificationTipSeen
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [tipId]
+              properties:
+                tipId:
+                  $ref: '#/components/schemas/TipId'
+      responses:
+        '200':
+          description: Tip recorded; returns the full preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '400':
+          description: Unknown tip id or an unknown field
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '404':
+          description: The chat mentions feature is off
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /notifications/preferences/muted-sessions/{sessionId}:
+    put:
+      tags:
+        - Notifications
+      summary: Mute activity notifications for a conversation
+      description: |
+        Stops `chat.activity` notifications for one conversation. Muting an already muted
+        conversation succeeds without change. The caller must be able to read the conversation.
+        At most 500 conversations can be muted. Needs `ENABLE_COLLABORATIVE_CHATS` (404 otherwise).
+      operationId: muteNotificationSession
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          description: The conversation (chat or agent) id. The caller must be able to read it.
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation muted; returns the full preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '400':
+          description: Invalid session id
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          description: |
+            `MUTED_SESSIONS_LIMIT` — 500 conversations are already muted (`details.max`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid access token
+        '429':
+          description: Rate limit exceeded — global per-user/IP limiter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: Internal server error (e.g. MongoDB unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Notifications
+      summary: Unmute activity notifications for a conversation
+      description: |
+        Resumes `chat.activity` notifications for one conversation. Unmuting a conversation
+        that is not muted succeeds without change. The caller must be able to read the conversation.
+        Needs `ENABLE_COLLABORATIVE_CHATS` (404 otherwise).
+      operationId: unmuteNotificationSession
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          description: The conversation (chat or agent) id. The caller must be able to read it.
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation unmuted; returns the full preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '400':
+          description: Invalid session id
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
         '401':
           description: Unauthorized — missing or invalid access token
         '429':
@@ -18952,6 +20534,9 @@ paths:
                           type: boolean
                         isBlocked:
                           type: boolean
+                        isDisabled:
+                          type: boolean
+                          description: Account disabled by an administrator. Such a user cannot sign in and cannot be added as a chat collaborator.
                         createdAtTimestamp:
                           type: integer
                           description: "Epoch milliseconds of `createdAt` (absent if field is null)"
@@ -23378,6 +24963,103 @@ paths:
                     type: string
                     format: date-time
 
+  # --- Internal authz routes ---------------------------------------------
+  # Service-to-service only, authenticated with the `authz:check` scoped token.
+  /authz/internal/check:
+    post:
+      tags:
+        - Internal Authz
+      summary: Check whether a user may read a chat attachment or artifact (service-to-service)
+      description: |
+        Decides whether `userId` may read a record that belongs to a chat, through
+        the chat's collaborators, teams and project. The caller short-circuits the
+        record's own uploader or creator and asks only for everyone else.
+
+        Always answers `200`. An unknown user, record, chat or run is
+        `allow: false` with `aclVersion: null`, identical to a plain refusal, so
+        the answer reveals nothing about what exists. `aclVersion` is the chat's
+        ACL version on an allow and `null` on a deny. A token for another
+        organization than `orgId` is refused with `403`.
+      operationId: checkChatContentAccess
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - userId
+                - orgId
+                - action
+                - resource
+              properties:
+                userId:
+                  type: string
+                  description: The user asking to read the record.
+                orgId:
+                  type: string
+                  description: Must match the organization of the token.
+                action:
+                  type: string
+                  enum:
+                    - read
+                resource:
+                  type: object
+                  required:
+                    - type
+                    - recordId
+                    - ownerUserId
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - chatAttachment
+                        - chatArtifact
+                    recordId:
+                      type: string
+                    ownerUserId:
+                      type: string
+                      description: Uploader or creator of the record. Only turns this user authored count toward an attachment.
+                    conversationId:
+                      type: string
+                      description: Restricts an attachment to one chat. Required for an artifact.
+                    runId:
+                      type: string
+                      description: The run that produced an artifact. An artifact without one is denied once collaborative chats are enabled.
+                    kind:
+                      type: object
+                      description: Artifact state; a `STAGING` or temporary artifact is never shared.
+                      properties:
+                        visibility:
+                          type: string
+                        isTemporary:
+                          type: boolean
+      responses:
+        '200':
+          description: The decision.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - allow
+                  - aclVersion
+                properties:
+                  allow:
+                    type: boolean
+                  aclVersion:
+                    type: integer
+                    nullable: true
+        '400':
+          description: The request body was malformed.
+        '401':
+          description: The scoped token was missing, invalid or lacked the `authz:check` scope.
+        '403':
+          description: The token's organization does not match `orgId`.
+
   # --- Internal storage routes -------------------------------------------
   # Service-to-service only, authenticated with the storage scoped token.
   # Storage scopes by org, not record permissions, so users have no route
@@ -23830,10 +25512,12 @@ paths:
         - Artifacts
       summary: List accessible artifacts
       description: |
-        Paginated gallery of VISIBLE, non-temporary artifacts the caller can
-        access via record ACL. TOOL_RESULT artifacts are never returned.
-        Conversation titles are a display join and are omitted when the chat
-        is gone or the caller cannot see it.
+        Paginated gallery of the caller's own VISIBLE, non-temporary artifacts
+        (the ones their chat runs created). Another participant's artifact in a
+        shared chat is read from that chat, not listed here. TOOL_RESULT
+        artifacts are never returned. Conversation titles are a display join
+        and are omitted when the chat is gone or the caller cannot open it, and
+        for an OAuth token without `conversation:read`.
       operationId: listArtifacts
       x-pipeshub-sdk: true
       security:
@@ -23912,7 +25596,7 @@ paths:
       tags:
         - Artifacts
       summary: Get artifact metadata
-      description: Metadata and versions for one artifact. Returns 404 if the artifact is missing, inaccessible, or not user-visible.
+      description: Metadata and versions for one of the caller's own artifacts. Returns 404 if the artifact is missing, not the caller's, or not user-visible.
       operationId: getArtifact
       x-pipeshub-sdk: true
       security:
@@ -25777,7 +27461,11 @@ paths:
 
         **Grant to Multiple:**
 
-        Provide arrays of userIds and/or teamIds to grant the same role to multiple entities.
+        Preferred: send `principals`, one entry per user or team, each with its own role. Teams may only receive WRITER, COMMENTER or READER (a team grant covers every current and future member, so OWNER and ORGANIZER are rejected).
+
+        Legacy: arrays of userIds and/or teamIds with one shared `role` are still accepted. A teams-only request without a role grants READER. Do not combine `principals` with the legacy fields.
+
+        The request is validated as a whole: if any principal is invalid, nothing is granted.
       operationId: createKBPermission
       security:
         - bearerAuth: []
@@ -25795,20 +27483,39 @@ paths:
             schema:
               type: object
               properties:
+                principals:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  description: Grantees with a role each. Mutually exclusive with userIds, teamIds and role.
+                  items:
+                    type: object
+                    required: [principalType, principalId, role]
+                    properties:
+                      principalType:
+                        type: string
+                        enum: [user, team]
+                      principalId:
+                        type: string
+                        description: User ID or team ID
+                      role:
+                        type: string
+                        enum: [OWNER, ORGANIZER, WRITER, COMMENTER, READER]
+                        description: Role for this principal. Teams accept only WRITER, COMMENTER or READER.
                 userIds:
                   type: array
                   items:
                     type: string
-                  description: User IDs to grant permission
+                  description: "Legacy: user IDs to grant `role` to"
                 teamIds:
                   type: array
                   items:
                     type: string
-                  description: Team IDs to grant permission
+                  description: "Legacy: team IDs to grant `role` to"
                 role:
                   type: string
-                  enum: [OWNER, WRITER, READER]
-                  description: Permission role to grant. Required when userIds is provided; omit for team-only grants.
+                  enum: [OWNER, WRITER, COMMENTER, READER]
+                  description: "Legacy: role for userIds and teamIds. Required when userIds is provided; a teams-only request defaults to READER. Teams cannot receive OWNER."
       responses:
         '201':
           description: Permissions granted successfully
@@ -25820,9 +27527,11 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
-            - Missing userIds and teamIds
+            - Missing principals, userIds and teamIds
             - Role required when adding users
             - Invalid role value
+            - A team principal with a role other than WRITER, COMMENTER or READER (OWNER and ORGANIZER are not allowed for teams; use `principals` to give users and teams different roles)
+            - `principals` combined with userIds, teamIds or role
             - Invalid kbId (must be UUID)
           content:
             application/json:
@@ -25950,15 +27659,15 @@ paths:
         - Permissions
       summary: Update permissions
       description: |
-        Update permission roles for users on a knowledge base.
+        Update permission roles for users and teams on a knowledge base.
 
         **Required access:** Caller must be KB **OWNER** and hold the `kb:write` OAuth scope when using an OAuth token.
 
         **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
 
-        **Teams:** `teamIds` must be empty or omitted. Teams do not have roles; only user permissions can be updated.
+        **Teams:** `teamIds` are team IDs that already have access. The role applies to every current and future member of the team, so it must be `WRITER`, `COMMENTER` or `READER`; `OWNER` is rejected with **400** when `teamIds` is non-empty.
 
-        Users without an existing permission on the KB are skipped. If none of the supplied users have a permission to update, the request returns **404**.
+        Users and teams without an existing permission on the KB are skipped. If none of the supplied users or teams have a permission to update, the request returns **404**.
       operationId: updateKBPermissions
       security:
         - bearerAuth: []
@@ -25982,8 +27691,8 @@ paths:
               properties:
                 role:
                   type: string
-                  enum: [OWNER, WRITER, READER]
-                  description: New permission role to assign (required)
+                  enum: [OWNER, WRITER, COMMENTER, READER]
+                  description: New permission role to assign (required). Must not be `OWNER` when `teamIds` is non-empty.
                 userIds:
                   type: array
                   items:
@@ -25993,7 +27702,7 @@ paths:
                   type: array
                   items:
                     type: string
-                  description: Must be empty or omitted — non-empty values are rejected (teams cannot have roles updated)
+                  description: Team IDs to update (at least one of `userIds` or `teamIds` must be non-empty)
               required:
                 - role
       responses:
@@ -27223,6 +28932,12 @@ paths:
         honours `tools` / `agentCapabilities`; `internal_search` and
         `web_search` run the search assistant and ignore `tools`. Omitted,
         it defaults to internal search.
+
+        **Retries** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        Send a `clientMessageId` to make the call safe to retry: a second call with the same value is refused
+        with `409` `DUPLICATE_MESSAGE` (before any SSE header) and names the conversation that call created in
+        `error.details.conversationId`. The run id of the turn is returned in the `X-Run-Id` response header.
       operationId: createConversation
       x-pipeshub-sdk: true
       security:
@@ -27241,6 +28956,8 @@ paths:
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             application/json:
               schema:
@@ -27258,6 +28975,8 @@ paths:
           description: Unauthorized — valid bearer token required.
         '403':
           description: Forbidden — the token lacks the `conversation:write` OAuth scope.
+        '409':
+          $ref: '#/components/responses/ConversationConflictCreatePlain'
         '413':
           description: The request is larger than the selected model accepts.
           headers:
@@ -27316,7 +29035,8 @@ paths:
         2. A `CUSTOM` event named `conversation_created` is emitted
            immediately with the new `conversationId` so the client can link
            the stream (sidebar, parallel tabs, deep links) without an extra
-           request.
+           request. With `ENABLE_COLLABORATIVE_CHATS` on it also carries the
+           turn's `runId`, as the `X-Run-Id` response header does.
         3. AI-backend events stream through (token chunks, tool calls,
            status, etc.).
         4. On success a single root `RUN_FINISHED` event is emitted carrying
@@ -27338,6 +29058,12 @@ paths:
         the optional `tools` list restricts which tools the agent may
         invoke for this turn. Outside agent modes the `tools` field is
         ignored.
+
+        **Retries** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        Send a `clientMessageId` to make the call safe to retry: a second call with the same value is refused
+        with `409` `DUPLICATE_MESSAGE` (before any SSE header) and names the conversation that call created in
+        `error.details.conversationId`. The run id of the turn is returned in the `X-Run-Id` response header.
       operationId: streamChat
       x-pipeshub-sdk: true
       security:
@@ -27356,6 +29082,9 @@ paths:
             SSE stream established. The body is a sequence of
             `text/event-stream` frames using the event vocabulary described
             above.
+          headers:
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             text/event-stream:
               schema:
@@ -27371,6 +29100,8 @@ paths:
           description: |
             Forbidden — the caller's token does not include the
             `conversation:chat` OAuth scope.
+        '409':
+          $ref: '#/components/responses/ConversationConflictCreate'
         '500':
           description: |
             Internal error before the SSE stream is established (for
@@ -29093,9 +30824,11 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden - No access to this conversation
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: Conversation not found
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
     delete:
       tags:
@@ -29112,9 +30845,10 @@ paths:
 
         **Permissions:**
 
-        The conversation initiator can always delete. Users the conversation has
-        been shared with may delete it only when their `sharedWith.accessLevel`
-        is `write`.
+        Only the conversation owner can delete. Anyone else gets `404`
+        (`CONVERSATION_NOT_FOUND`) with `ENABLE_COLLABORATIVE_CHATS` off, or
+        `403` (`CONVERSATION_OWNER_ONLY`) if they can open the conversation and
+        the flag is on.
       operationId: deleteConversationById
       x-pipeshub-sdk: true
       security:
@@ -29175,11 +30909,13 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden - token is missing the `conversation:write` scope
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: Conversation not found, already deleted, or caller has no delete access
+          $ref: '#/components/responses/ConversationNotFound'
         '500':
           description: Internal server error while deleting the conversation
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/messages:
     post:
@@ -29214,6 +30950,19 @@ paths:
         The response arrives only when the whole answer is ready, which can
         take minutes for agent runs. Allow a generous client and proxy
         timeout, or use the `/stream` variant for interactive clients.
+
+        **Concurrent turns** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        One turn runs in a conversation at a time. While another turn is running the request is refused with
+        `409` `CONVERSATION_BUSY` before anything is saved. The run id of an accepted turn is returned in the
+        `X-Run-Id` response header (and in the first SSE event, `conversation_created`); it is the id
+        `POST .../cancel` takes. A client that sends `baseSeq` is refused with `409` `CONVERSATION_CHANGED`
+        when other people added messages after that sequence number, and a repeated `clientMessageId` is
+        refused with `409` `DUPLICATE_MESSAGE` instead of being answered twice.
+
+        A text answer that starts with `User selections:`, or a `resume` object, answers a pending
+        `ask_user_question` card. Only the person the question was put to may do so; anyone else gets `403`
+        `RESUME_NOT_ALLOWED` and no run starts. In a conversation that is not shared the text is sent as-is.
       operationId: addMessage
       x-pipeshub-sdk: true
       security:
@@ -29239,6 +30988,8 @@ paths:
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             application/json:
               schema:
@@ -29248,6 +30999,8 @@ paths:
             Invalid request — `query` is missing, empty or over 100,000
             characters, contains markup or printf-style format specifiers, or
             another field fails validation.
+            With `ENABLE_CHAT_MENTIONS` on, also `MENTION_NOT_ALLOWED`: a mentioned person or team is not
+            valid in this conversation (`error.details.mentionIndex` and `reason` say which).
           content:
             application/json:
               schema:
@@ -29255,23 +31008,21 @@ paths:
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
-          description: Forbidden — the token lacks the `conversation:chat` OAuth scope.
+          $ref: '#/components/responses/ConversationForbiddenSend'
         '404':
-          description: |
-            Conversation not found — it does not exist, belongs to another
-            user, is of the other type (assistant vs agent), or, for agent
-            routes, belongs to a different agent.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/ConversationConflictSendPlain'
         '413':
           description: The request is larger than the selected model accepts.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
         '422':
-          description: The model provider's content filter blocked the request.
+          description: |
+            The model provider's content filter blocked the request, or (`ENABLE_CHAT_MENTIONS` on)
+            `MESSAGE_IS_NOTE`: the message asks nobody, so nothing was stored and no lease was taken; post it to
+            `.../notes` instead.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -29304,6 +31055,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/ConversationUnavailableSend'
 
   /conversations/{conversationId}/messages/stream:
     post:
@@ -29322,6 +31075,19 @@ paths:
         `ConversationMessageStreamSSEEvent`; it is the same event set as
         `/conversations/stream`, while the terminal result reflects an
         existing conversation.
+
+        **Concurrent turns** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        One turn runs in a conversation at a time. While another turn is running the request is refused with
+        `409` `CONVERSATION_BUSY` before anything is saved. The run id of an accepted turn is returned in the
+        `X-Run-Id` response header (and in the first SSE event, `conversation_created`); it is the id
+        `POST .../cancel` takes. A client that sends `baseSeq` is refused with `409` `CONVERSATION_CHANGED`
+        when other people added messages after that sequence number, and a repeated `clientMessageId` is
+        refused with `409` `DUPLICATE_MESSAGE` instead of being answered twice.
+
+        A text answer that starts with `User selections:`, or a `resume` object, answers a pending
+        `ask_user_question` card. Only the person the question was put to may do so; anyone else gets `403`
+        `RESUME_NOT_ALLOWED` and no run starts. In a conversation that is not shared the text is sent as-is.
       operationId: addMessageStream
       x-pipeshub-sdk: true
       security:
@@ -29350,6 +31116,9 @@ paths:
             SSE stream established. The body is a sequence of
             `text/event-stream` frames using the event vocabulary described
             on the schema below.
+          headers:
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             text/event-stream:
               schema:
@@ -29359,16 +31128,18 @@ paths:
             Invalid request — `query` is missing, empty or over 100,000
             characters, or another field fails validation (for example a
             malformed `currentTime`).
+            With `ENABLE_CHAT_MENTIONS` on, also `MENTION_NOT_ALLOWED`: a mentioned person or team is not
+            valid in this conversation (`error.details.mentionIndex` and `reason` say which).
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
-          description: |
-            Forbidden — the caller's token does not include the
-            `conversation:chat` OAuth scope.
+          $ref: '#/components/responses/ConversationForbiddenSend'
         '404':
-          description: |
-            The conversation does not exist, is deleted, or does not belong
-            to the caller.
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/ConversationConflictSend'
+        '422':
+          $ref: '#/components/responses/MessageIsNote'
         '500':
           description: |
             Internal error before the SSE stream is established (for
@@ -29376,13 +31147,19 @@ paths:
             conversation). Once the stream is open, terminal failures are
             surfaced as a `RUN_ERROR` SSE event instead of an HTTP status
             change.
+        '503':
+          $ref: '#/components/responses/ConversationUnavailableSend'
 
   /conversations/{conversationId}/share:
     post:
       tags:
         - Conversations
       summary: Share conversation with users
+      deprecated: true
       description: |
+        **Deprecated:** use `PUT /conversations/{conversationId}/collaborators`, which takes people
+        and teams, audits every change and needs the `conversation:share` scope.
+
         Share a conversation with other users in your organization.
 
         **Overview:**
@@ -29393,12 +31170,19 @@ paths:
         **Access Levels:**
 
         - `read` - Can view conversation and messages (default)
-        - `write` - Can view and add new messages
+        - `write` - Can also continue the conversation, when
+          `ENABLE_COLLABORATIVE_CHATS` is on. With it off `write` is stored as
+          `read` and the response carries an `ACCESS_LEVEL_DOWNGRADED` warning.
 
         **Permissions:**
 
-        Only the conversation initiator (owner) can share. Users must belong
-        to the same organization.
+        Only the conversation owner can share; anyone else gets `404`, or `403`
+        `CONVERSATION_OWNER_ONLY` once they can open the conversation with
+        `ENABLE_COLLABORATIVE_CHATS` on. Users must belong to the same
+        organization.
+
+        With `ENABLE_COLLABORATIVE_CHATS` on, an OAuth token also needs
+        `conversation:share`; with it off `conversation:write` is enough.
       operationId: shareConversation
       security:
         - bearerAuth: []
@@ -29460,6 +31244,26 @@ paths:
                           type: string
                           format: objectId
                           description: Subdocument identifier auto-assigned by MongoDB.
+                  warnings:
+                    type: array
+                    description: Present only when `write` was requested and could not be applied (`ENABLE_COLLABORATIVE_CHATS` off); access is stored as `read`.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - code
+                        - requested
+                        - applied
+                      properties:
+                        code:
+                          type: string
+                          enum: [ACCESS_LEVEL_DOWNGRADED]
+                        requested:
+                          type: string
+                          enum: [write]
+                        applied:
+                          type: string
+                          enum: [read]
                   meta:
                     type: object
                     additionalProperties: false
@@ -29485,9 +31289,11 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden - Only owner can share
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: Conversation or users not found
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/title:
     patch:
@@ -29749,11 +31555,13 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden - token is missing the `conversation:write` scope
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: Conversation not found, soft-deleted, or not owned by the caller.
+          $ref: '#/components/responses/ConversationNotFound'
         '500':
           description: Persistence layer failed to update the conversation document.
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/archive:
     patch:
@@ -29770,8 +31578,11 @@ paths:
 
         **Access:**
 
-        The caller must be the conversation's initiator, or be listed in `sharedWith`
-        with `accessLevel: write`. Already-archived conversations return `400`.
+        The conversation owner can archive it. With `ENABLE_COLLABORATIVE_CHATS`
+        on, anyone who can open the conversation can, and once a conversation is
+        shared the archive is per person: it hides the conversation from the
+        caller's own list only. With it off, everyone else gets `404`.
+        Already-archived conversations return `400`.
 
         **Retrieval:**
 
@@ -29833,8 +31644,12 @@ paths:
           description: Conversation is already archived
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: Conversation not found or caller lacks archive permission
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/unarchive:
     patch:
@@ -29904,11 +31719,13 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden - token is missing the `conversation:write` scope
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: Conversation not found or caller lacks unarchive permission
+          $ref: '#/components/responses/ConversationNotFound'
         '500':
           description: Persistence layer failed to update the conversation document.
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/message/{messageId}/regenerate:
     post:
@@ -29946,6 +31763,14 @@ paths:
         Routing still depends on `chatMode`: `internal_search` and
         `web_search` use the assistant backend, while `agent` uses the
         universal agent loop. See `SSEEvent` for the event vocabulary.
+
+        **Concurrent turns** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        Only the person who asked the question may regenerate its answer, the owner included
+        (`REGENERATE_NOT_ALLOWED` otherwise). The regeneration is a turn like any other: while another turn is
+        running the request is refused with `409` `CONVERSATION_BUSY`, and the run id is returned in the
+        `X-Run-Id` response header. The earlier part of the conversation is sent to the model as history, and
+        the replacement answer is recorded as the asker's.
       operationId: regenerateAnswer
       x-pipeshub-sdk: true
       security:
@@ -29984,6 +31809,9 @@ paths:
             `{ type, message, code? }` on failure. Forwarded lifecycle and
             child-run events may contain `runId`, `threadId`, and
             `parentRunId`. Clients should ignore unknown event names.
+          headers:
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             text/event-stream:
               schema:
@@ -29995,8 +31823,14 @@ paths:
             `bot_response`, or no preceding `user_query` exists.
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenRegenerate'
         '404':
-          description: Conversation or message not found
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/ConversationConflictRegenerate'
+        '503':
+          $ref: '#/components/responses/ConversationUnavailableSend'
 
   /conversations/{conversationId}/cancel:
     post:
@@ -30021,6 +31855,13 @@ paths:
         `runId` that exists but was registered under a different
         conversation (even one owned by the same caller) is rejected with
         `403`, same as a `runId` owned by a different user/org.
+
+        **With `ENABLE_COLLABORATIVE_CHATS` on**
+
+        The run that can be cancelled is the one holding the conversation now: the `runId` the turn returned
+        in its `X-Run-Id` header. A `runId` that is not that run, or a conversation with no run in progress,
+        answers `{ "cancelled": false }` without reaching the AI backend. For now only the person who started
+        a run can cancel it; a cancel from anyone else also answers `{ "cancelled": false }`.
       operationId: cancelConversationStream
       x-pipeshub-sdk: true
       security:
@@ -30048,7 +31889,7 @@ paths:
                   description: The `runId` sent when the stream was started.
       responses:
         '200':
-          description: Cancellation requested, or the run had already finished.
+          description: Cancellation requested, or there was no such run to cancel (`cancelled` is false).
           content:
             application/json:
               schema:
@@ -30061,11 +31902,11 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: >-
-            `runId` exists but was registered under a different user, org,
-            or conversation than this request.
+          $ref: '#/components/responses/ConversationForbiddenCancel'
         '404':
-          description: Conversation not found or unauthorized
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/message/{messageId}/feedback:
     post:
@@ -30135,20 +31976,583 @@ paths:
             - `conversationId` or `messageId` is not a valid ObjectId.
         '401':
           description: Unauthorized.
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: |
-            Conversation or message not found, or the caller does not have
-            access to this conversation.
+          $ref: '#/components/responses/ConversationNotFound'
         '500':
           description: Persistence layer failed to append the feedback entry.
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+
+  /conversations/{conversationId}/collaborators:
+    get:
+      tags:
+        - Conversations
+      summary: List who a conversation is shared with
+      description: |
+        Returns who has access to a conversation.
+
+        The owner, and an editor the owner allowed to invite, get every person and team with their level
+        (`CollaboratorsView`). Everyone else who can open the conversation gets only the owner, a count
+        and their own access (`CollaboratorsSummary`); no other person or team is named to them.
+
+        Team names are shown only to people who belong to the team; others see `A team`. A person who has
+        left the organization is a `Former member`, and a team that no longer exists is a `Deleted team`
+        that can be removed.
+      operationId: listCollaborators
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: The collaborators
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+    put:
+      tags:
+        - Conversations
+      summary: Share a conversation or change who can use it
+      description: |
+        Adds people and teams to a conversation, or changes their level, in one request of up to 50.
+
+        **Rules:**
+
+        - The whole request is checked first; one invalid person or team fails it with
+          `INVALID_PRINCIPAL` and nothing is written.
+        - People must be active members of your organization (not service accounts), and not the owner.
+          A team must be one you belong to.
+        - Sharing with the whole organization (`all_{orgId}`) needs `confirmOrgWide: true`, raises no
+          notifications, and at `write` is allowed only when the platform setting
+          `ALLOW_ORG_WIDE_CHAT_WRITE` is on.
+        - The owner may add, change and (with `DELETE`) remove. An editor may add only, and only when the
+          owner turned on `editorsCanInvite`; changing a level that is already set is
+          `CONVERSATION_OWNER_ONLY`.
+        - A conversation holds at most 200 people and teams (`COLLABORATOR_LIMIT`).
+        - Each change is audited, and new people and teams are told. A direct user is also emailed when
+          the platform sends share emails and they did not turn it off; the email never contains the
+          title or the note.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: putCollaborators
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutCollaboratorsRequest'
+      responses:
+        '200':
+          description: The collaborators after the change (the view for the caller)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/CollaborationForbiddenInvite'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/CollaborationConflict'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /conversations/{conversationId}/collaborators/{principalId}:
+    delete:
+      tags:
+        - Conversations
+      summary: Stop sharing with a person or team
+      description: |
+        Removes one person or team. Owner only. Removing someone who is not there succeeds and changes
+        nothing, and a team that no longer exists can be removed. Nobody is notified; the person's earlier
+        unread share notification is archived.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: removeCollaborator
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+        - name: principalId
+          in: path
+          required: true
+          description: A user id, or a team id
+          schema:
+            type: string
+        - name: principalType
+          in: query
+          required: false
+          description: Whether `principalId` is a user or a team
+          schema:
+            type: string
+            enum: [user, team]
+            default: user
+      responses:
+        '200':
+          description: The collaborators after the change
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /conversations/{conversationId}/collaboration-settings:
+    patch:
+      tags:
+        - Conversations
+      summary: Change who may invite and what the owner shares
+      description: |
+        Updates the collaboration settings. Owner only. At least one setting is required.
+        `respondMode` chooses when the AI answers (see `RespondMode`); it applies only with `ENABLE_CHAT_MENTIONS` on.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: updateCollaborationSettings
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollaborationSettings'
+      responses:
+        '200':
+          description: The collaborators view with the new settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollaboratorsView'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /conversations/{conversationId}/mentionables:
+    get:
+      tags:
+        - Conversations
+      summary: List what can be mentioned in a conversation
+      description: |
+        The assistant (`PipesHub`), the other people on the conversation and the teams it is shared with, for
+        the composer's `@` list. With `ENABLE_CHAT_AGENT_BUILDER` on, a conversation that has no agent of its own
+        also lists the caller's **own** agents (`type: agent`, with their `handle`); other people's agents never
+        appear, whoever shared them. Everything comes from this conversation's own participants, so nobody
+        outside it appears. Who else is on it is listed only for the owner and an editor allowed to invite;
+        anyone else gets the assistant and the owner. `q` matches the start of any word of the name. At most 20 items.
+
+        Needs `ENABLE_COLLABORATIVE_CHATS` and `ENABLE_CHAT_MENTIONS` (404 otherwise) and the
+        `conversation:read` OAuth scope.
+      operationId: listMentionables
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 20
+      responses:
+        '200':
+          description: The mentionable people, teams and the assistant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MentionablesResponse'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+
+  /conversations/{conversationId}/notes:
+    post:
+      tags:
+        - Conversations
+      summary: Post a note that mentions people or teams
+      description: |
+        Adds a message that asks nobody: no AI run, no lease and no readiness check, so it can be posted
+        while someone else's turn streams (that turn does not see it). It is ordered by `seq` and bumps the
+        conversation's `rev`, so the feed delivers it. Repeating a `clientMessageId` returns the first note
+        (`200`, `duplicate: true`).
+
+        A team must be on the conversation. A person must be an active member of the caller's
+        organization; one who is not on the conversation is accepted, listed in `nonParticipants` and not
+        notified. The note must be one `respondMode` leaves
+        unanswered: a note that mentions the assistant, any note under `always`, or a note that mentions
+        nobody outside `mention_only`, is `422` `MESSAGE_NOT_NOTE`. Needs `ENABLE_COLLABORATIVE_CHATS` and `ENABLE_CHAT_MENTIONS` (404 otherwise), write
+        access and the `conversation:chat` OAuth scope.
+      operationId: createNote
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNoteRequest'
+      responses:
+        '201':
+          description: The note was stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteResponse'
+        '200':
+          description: This `clientMessageId` was already posted; the earlier note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteResponse'
+        '400':
+          $ref: '#/components/responses/MentionRefused'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenSend'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          description: |
+            `DUPLICATE_MESSAGE`: the caller already sent a question with this `clientMessageId`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationErrorResponse'
+        '422':
+          description: |
+            `MESSAGE_NOT_NOTE`: the note would skip an answer `respondMode` asks for. Send it as a message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationErrorResponse'
+        '503':
+          $ref: '#/components/responses/MentionRefused'
+
+  /conversations/{conversationId}/transfer-ownership:
+    post:
+      tags:
+        - Conversations
+      summary: Hand a conversation to someone else
+      description: |
+        Makes an existing editor the owner. Owner only. The previous owner stays on the conversation as an
+        editor and can then leave.
+
+        The new owner must already be on the conversation as a person with `write` access, be an active
+        member of the organization (`INVALID_PRINCIPAL` otherwise), and, when the conversation is linked to
+        a project, have access to that project (`PROJECT_ACCESS_REQUIRED`). Both people are notified and
+        the new owner is emailed when the platform sends share emails. A run in progress is not
+        interrupted.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: transferConversationOwnership
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+      responses:
+        '200':
+          description: The collaborators after the transfer, as the previous owner now sees them
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/CollaborationForbiddenTransfer'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /conversations/{conversationId}/leave:
+    post:
+      tags:
+        - Conversations
+      summary: Leave a shared conversation
+      description: |
+        Removes the caller's own access as a person and hides the conversation from their lists, even when
+        a team still gives them access (they can still open it by link). The owner cannot leave. If the
+        owner shares with the caller directly again later, the conversation comes back.
+
+        Needs the `conversation:write` OAuth scope.
+      operationId: leaveConversation
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Left
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaveConversationResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/CollaborationForbiddenLeave'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+
+  /conversations/{conversationId}/feed:
+    get:
+      tags:
+        - Conversations
+      summary: Poll a shared conversation for new messages
+      description: |
+        A cheap conditional poll for people watching a shared conversation.
+
+        Send the `rev` you last received. While nothing has changed the answer is `304` with an empty body.
+        Otherwise it returns up to 100 messages after `afterSeq` with their authors, the caller's own
+        feedback only, who is running a turn now, and the new `rev`; keep asking with `afterSeq=nextSeq`
+        while `hasMore` is true. `runId` of the active run is shown only to callers who can write.
+
+        Opening the feed records the caller's read position (at most once every 10 seconds), which drives
+        the unread count on lists. A caller who lost access gets `404`, never `304`.
+
+        Rate limited per user (60 a minute).
+      operationId: getConversationFeed
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+        - name: afterSeq
+          in: query
+          required: false
+          description: Return messages with a `seq` above this. Default -1 (from the start).
+          schema:
+            type: integer
+            minimum: -1
+            default: -1
+        - name: rev
+          in: query
+          required: false
+          description: The `rev` of the last answer.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: New messages, or the current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedResponse'
+        '304':
+          description: Nothing changed since `rev`. Empty body.
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+
+  /conversations/{conversationId}/readiness:
+    get:
+      tags:
+        - Conversations
+      summary: Whether the caller can send a message now
+      description: |
+        Answers for the caller only, so the composer can explain why it is off before a turn is started.
+        A caller with read-only access gets `CONVERSATION_READ_ONLY` and nothing else. Otherwise
+        `reasons` lists `OWNER_INACTIVE`, `PROJECT_ACCESS_REQUIRED`, and for agents
+        `CONNECTOR_SETUP_REQUIRED` with the caller's own `missingToolsets`, or `AGENT_UNAVAILABLE`.
+
+        This is advisory: a send still goes through the same checks.
+
+        Rate limited per user (60 a minute).
+      operationId: getConversationReadiness
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Readiness
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/unshare:
     post:
       tags:
         - Conversations
       summary: Unshare a conversation
+      deprecated: true
       description: |
+        **Deprecated:** use `DELETE /conversations/{conversationId}/collaborators/{principalId}`.
+
         Revoke sharing for a conversation, making it private again.
+
+        With `ENABLE_COLLABORATIVE_CHATS` on, an OAuth token also needs
+        `conversation:share`; with it off `conversation:write` is enough.
       operationId: unshareConversationById
       security:
         - bearerAuth: []
@@ -30261,10 +32665,14 @@ paths:
             - One or more `userIds` is not a valid ObjectId.
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: Conversation not found, or caller is not the initiator.
+          $ref: '#/components/responses/ConversationNotFound'
         '500':
           description: Persistence layer failed to update the conversation document.
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/project:
     put:
@@ -30274,11 +32682,13 @@ paths:
       summary: Link or unlink a conversation to a project
       description: |
         Set (`projectId: <id>`) or clear (`projectId: null`) the project this
-        conversation belongs to. Initiator-only.
+        conversation belongs to. Owner-only.
 
         **Access:**
 
-        The caller must be the conversation's initiator. Linking to a
+        Only the conversation owner (its initiator) can change the link; anyone
+        else gets `404`, or `403` `CONVERSATION_OWNER_ONLY` once they can open
+        the conversation with `ENABLE_COLLABORATIVE_CHATS` on. Linking to a
         non-null `projectId` also requires at least viewer access to that
         project (`404` if not visible to the caller — never `403`, to avoid
         leaking project existence across an org boundary).
@@ -30346,10 +32756,12 @@ paths:
           description: "`projectId` missing or not a valid ObjectId/`null`."
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: |
-            Conversation not found or caller is not the initiator, or the
-            target project does not exist or is not visible to the caller.
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /conversations/{conversationId}/project-visibility:
     patch:
@@ -30360,7 +32772,7 @@ paths:
       description: |
         Explicitly set whether a project-linked conversation is visible to
         other members of that project (`project`) or only to its owner
-        (`private`). Initiator-only. Requires the conversation to already be
+        (`private`). Owner-only. Requires the conversation to already be
         linked to a project via
         `PUT /conversations/{conversationId}/project`.
       operationId: setConversationProjectVisibility
@@ -30413,8 +32825,12 @@ paths:
             to a project.
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: Conversation not found or caller is not the initiator.
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   # -------------------- Projects --------------------
   /projects:
@@ -30590,9 +33006,11 @@ paths:
         - Projects
       summary: Update a project
       description: |
-        Requires editor access. `visibility` and `chatSharing` are
-        owner-only fields — including either as a non-owner editor
-        returns `403`.
+        Requires editor access. `visibility`, `chatSharing` and `projectChatAccess` are
+        owner-only fields — including any of them as a non-owner editor
+        returns `403`. A `projectChatAccess` change bumps the project's ACL version and is
+        recorded in the audit log as `project.chatAccessChanged`. With `ENABLE_COLLABORATIVE_CHATS`
+        off, `projectChatAccess` is ignored.
       operationId: updateProject
       x-pipeshub-sdk: true
       security:
@@ -30629,7 +33047,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`.
+          description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility`, `chatSharing` or `projectChatAccess`.
         '404':
           description: Project not found or not visible to the caller.
     delete:
@@ -31045,7 +33463,7 @@ paths:
           required: true
           schema:
             type: string
-            format: objectId
+          description: User id (ObjectId), or a team key (UUID or `all_{orgId}`) when `principalType` is `team`.
         - name: principalType
           in: query
           required: false
@@ -31077,6 +33495,120 @@ paths:
           description: Project not found or not visible to the caller.
 
   # -------------------- Conversational Speech --------------------
+  /authz/explain:
+    get:
+      tags:
+        - Authorization
+      summary: Explain why someone can open a conversation
+      description: |
+        Lists every way `subject` has access to the conversation: as its owner, by being shared with
+        directly, through a team, or through its project. Without `subject` it explains the caller's own
+        access.
+
+        Explaining someone else is for the conversation owner and organization admins; anyone else gets
+        `403`, whether or not the conversation exists. Teams are looked up on the server for the subject;
+        a team list sent by the client is refused (`400`). A team the caller does not belong to appears with
+        `ref: null`.
+
+        Only with `ENABLE_COLLABORATIVE_CHATS` on; otherwise `404`.
+      operationId: explainAccess
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: resource
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^chat:[0-9a-fA-F]{24}$'
+            example: chat:64f1a2b3c4d5e6f7a8b9c0d1
+        - name: subject
+          in: query
+          required: false
+          description: Whose access to explain. Defaults to the caller.
+          schema:
+            type: string
+            pattern: '^user:[0-9a-fA-F]{24}$'
+            example: user:64f1a2b3c4d5e6f7a8b9c0d2
+      responses:
+        '200':
+          description: The paths to access; `role` is `none` with an empty `via` when there is none.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthzExplainResponse'
+        '400':
+          description: Malformed `resource` or `subject`, or an unknown parameter such as `teamIds`.
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            The caller asked about someone else and is neither the conversation owner nor an admin (also
+            returned when the conversation does not exist), or the token lacks `conversation:read`.
+        '404':
+          description: The collaborative chats feature is off.
+        '429':
+          description: Too many requests.
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+  /authz/explain/preview:
+    post:
+      tags:
+        - Authorization
+      summary: Preview what a sharing change would do
+      description: |
+        Shows who would gain access, lose it, or be left able to read but not write if the conversation
+        were linked to a project, unlinked, or had its project visibility changed. Nothing is changed.
+
+        Owner only. It looks at the current collaborators and the members of the current and target
+        project (up to 500 in all; `truncated` says when there are more). Teams are listed as teams, not
+        expanded into people, and a person's own team memberships are not counted. Members of a project
+        the caller cannot open are never listed.
+
+        Only with `ENABLE_COLLABORATIVE_CHATS` on; otherwise `404`.
+      operationId: previewAccessChange
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthzPreviewRequest'
+      responses:
+        '200':
+          description: The effect of the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthzPreviewResponse'
+        '400':
+          description: Invalid body, or a `visibility` change on a conversation that is not in a project.
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            `CONVERSATION_OWNER_ONLY`: the caller can open the conversation but is not its owner; or the
+            token lacks `conversation:read`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationErrorResponse'
+        '404':
+          description: |
+            `CONVERSATION_NOT_FOUND` (the same whether the conversation does not exist or the caller has no
+            access), a target project the caller cannot open, or the feature is off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationErrorResponse'
+        '429':
+          description: Too many requests.
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+
   /chat/transcribe:
     post:
       tags:
@@ -31484,6 +34016,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31520,6 +34056,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31555,6 +34095,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31595,6 +34139,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31759,6 +34307,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31793,6 +34345,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31827,6 +34383,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31863,6 +34423,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -31903,6 +34467,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -32377,6 +34945,11 @@ paths:
         - Customer support bot with product knowledge
         - Code review assistant with repository access
         - HR assistant with policy documents
+
+        **From a chat draft:** with `draftRef` (needs `ENABLE_CHAT_AGENT_BUILDER`; `404`
+        `CONVERSATION_NOT_FOUND` otherwise) the agent is created from a draft card the caller's own
+        assistant showed in a chat. It is private, cannot be a service account, and every knowledge
+        source and tool in it is checked against the caller's access at that moment.
       operationId: createAgent
       x-pipeshub-sdk: true
       security:
@@ -32397,9 +34970,82 @@ paths:
               schema:
                 $ref: '#/components/schemas/AgentCreateResponse'
         '400':
-          description: Invalid agent configuration
+          description: |
+            Invalid agent configuration, or one of these `error.code` values: `HANDLE_INVALID` (malformed
+            `handle`), `HANDLE_RESERVED`, `INVALID_KNOWLEDGE` / `INVALID_TOOLSET` (with a `draftRef`; the
+            sources or tool instances the caller cannot use are in `error.details.ids`; without a `draftRef`
+            these are logged, not refused), `SERVICE_ACCOUNT_NOT_ALLOWED` (a `draftRef` with
+            `isServiceAccount: true`), or a client-sent `createdVia`, `sourceConversationId` or `sourceMessageId`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+        '404':
+          description: |
+            `draftRef` does not name a draft card the caller asked for in a conversation they can read
+            (`CONVERSATION_NOT_FOUND`), or the agent builder is off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationErrorResponse'
+        '409':
+          description: |
+            `handle` is already in use in the organization (`error.code` `HANDLE_TAKEN`;
+            `error.details.suggestion` is the first free alternative).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/handle-availability:
+    get:
+      tags:
+        - Agents
+      summary: Check whether an agent handle is free
+      description: |
+        Whether `handle` can be used for a new agent in the caller's organization. It looks at every agent
+        of the organization, including private ones the caller cannot see, because the handle is unique
+        across all of them. When the handle is taken, `suggestion` is the first free alternative.
+      operationId: checkAgentHandle
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:read]
+      parameters:
+        - name: handle
+          in: query
+          required: true
+          description: The handle to check; a leading `@` is ignored.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        '200':
+          description: Availability of the handle
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [available]
+                properties:
+                  available:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [invalid, reserved, taken]
+                    description: Why it is not available.
+                  suggestion:
+                    type: string
+                    description: The first free alternative, when `reason` is `taken`.
+        '400':
+          description: Missing or too long `handle`
+        '401':
+          description: Unauthorized
+        '429':
+          description: Too many handle checks (`RATE_LIMITED`); 60 per user per minute, `details.retryAfter` in seconds
 
   /agents/{agentKey}:
     get:
@@ -32558,6 +35204,15 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Agent not found or inaccessible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            `handle` is already in use in the organization (`error.code` `HANDLE_TAKEN`;
+            `error.details.suggestion` is the first free alternative). Nothing else in the
+            request is saved.
           content:
             application/json:
               schema:
@@ -32887,6 +35542,12 @@ paths:
 
         AG-UI is the sole wire protocol. The request must include
         `chatMode: quick`; see `AgentStreamSSEEvent` for the event vocabulary.
+
+        **Retries** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        Send a `clientMessageId` to make the call safe to retry: a second call with the same value is refused
+        with `409` `DUPLICATE_MESSAGE` (before any SSE header) and names the conversation that call created in
+        `error.details.conversationId`. The run id of the turn is returned in the `X-Run-Id` response header.
       operationId: streamAgentConversation
       x-pipeshub-sdk: true
       security:
@@ -32910,6 +35571,9 @@ paths:
       responses:
         '200':
           description: SSE stream (text/event-stream)
+          headers:
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             text/event-stream:
               schema:
@@ -32918,6 +35582,8 @@ paths:
           description: Invalid request body
         '401':
           description: Unauthorized
+        '409':
+          $ref: '#/components/responses/ConversationConflictCreate'
 
   /agents/{agentKey}/conversations/{conversationId}/messages/stream:
     post:
@@ -32931,6 +35597,19 @@ paths:
         AG-UI is the sole wire protocol. The request must include
         `chatMode: quick`; see `AgentMessageStreamSSEEvent` for the event
         vocabulary.
+
+        **Concurrent turns** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        One turn runs in a conversation at a time. While another turn is running the request is refused with
+        `409` `CONVERSATION_BUSY` before anything is saved. The run id of an accepted turn is returned in the
+        `X-Run-Id` response header (and in the first SSE event, `conversation_created`); it is the id
+        `POST .../cancel` takes. A client that sends `baseSeq` is refused with `409` `CONVERSATION_CHANGED`
+        when other people added messages after that sequence number, and a repeated `clientMessageId` is
+        refused with `409` `DUPLICATE_MESSAGE` instead of being answered twice.
+
+        A text answer that starts with `User selections:`, or a `resume` object, answers a pending
+        `ask_user_question` card. Only the person the question was put to may do so; anyone else gets `403`
+        `RESUME_NOT_ALLOWED` and no run starts. In a conversation that is not shared the text is sent as-is.
       operationId: streamAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -32958,16 +35637,32 @@ paths:
       responses:
         '200':
           description: SSE stream (text/event-stream)
+          headers:
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             text/event-stream:
               schema:
                 $ref: '#/components/schemas/AgentMessageStreamSSEEvent'
         '400':
-          description: Invalid request body
+          description: |
+            Invalid request body.
+            With `ENABLE_CHAT_MENTIONS` on, also `MENTION_NOT_ALLOWED`: a mentioned person or team is not
+            valid in this conversation (`error.details.mentionIndex` and `reason` say which).
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenSend'
         '404':
-          description: Conversation not found
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/ConversationConflictSend'
+        '422':
+          $ref: '#/components/responses/MessageIsNote'
+        '412':
+          $ref: '#/components/responses/ConnectorSetupRequired'
+        '503':
+          $ref: '#/components/responses/ConversationUnavailableSend'
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate:
     post:
@@ -33011,6 +35706,14 @@ paths:
         responses before the stream starts. Valid-shape requests that fail
         conversation lookup or regenerate rules are reported as
         `RUN_ERROR` events after stream initialization.
+
+        **Concurrent turns** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        Only the person who asked the question may regenerate its answer, the owner included
+        (`REGENERATE_NOT_ALLOWED` otherwise). The regeneration is a turn like any other: while another turn is
+        running the request is refused with `409` `CONVERSATION_BUSY`, and the run id is returned in the
+        `X-Run-Id` response header. The earlier part of the conversation is sent to the model as history, and
+        the replacement answer is recorded as the asker's.
       operationId: regenerateAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -33061,6 +35764,9 @@ paths:
             `threadId`, and `parentRunId`. Additional backend-defined
             agent/tool events may be emitted.
             Clients should ignore unknown event names.
+          headers:
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             text/event-stream:
               schema:
@@ -33074,6 +35780,16 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenRegenerate'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/ConversationConflictRegenerate'
+        '412':
+          $ref: '#/components/responses/ConnectorSetupRequired'
+        '503':
+          $ref: '#/components/responses/ConversationUnavailableSend'
 
   /agents/{agentKey}/conversations/{conversationId}/cancel:
     post:
@@ -33095,6 +35811,13 @@ paths:
         `runId` that exists but was registered under a different
         conversation (even one owned by the same caller) is rejected with
         `403`, same as a `runId` owned by a different user/org.
+
+        **With `ENABLE_COLLABORATIVE_CHATS` on**
+
+        The run that can be cancelled is the one holding the conversation now: the `runId` the turn returned
+        in its `X-Run-Id` header. A `runId` that is not that run, or a conversation with no run in progress,
+        answers `{ "cancelled": false }` without reaching the AI backend. For now only the person who started
+        a run can cancel it; a cancel from anyone else also answers `{ "cancelled": false }`.
       operationId: cancelAgentConversationStream
       x-pipeshub-sdk: true
       security:
@@ -33130,7 +35853,7 @@ paths:
                   description: The `runId` sent when the stream was started.
       responses:
         '200':
-          description: Cancellation requested, or the run had already finished.
+          description: Cancellation requested, or there was no such run to cancel (`cancelled` is false).
           content:
             application/json:
               schema:
@@ -33143,11 +35866,11 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: >-
-            `runId` exists but was registered under a different user, org,
-            or conversation than this request.
+          $ref: '#/components/responses/ConversationForbiddenCancel'
         '404':
-          description: Conversation not found or unauthorized
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/feedback:
     post:
@@ -33209,10 +35932,14 @@ paths:
             - `conversationId` or `messageId` is not a valid ObjectId.
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: Conversation or message not found
+          $ref: '#/components/responses/ConversationNotFound'
         '500':
           description: Persistence layer failed to append the feedback entry.
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations/{conversationId}/messages:
     post:
@@ -33245,6 +35972,19 @@ paths:
         The response arrives only when the whole answer is ready, which can
         take minutes for agent runs. Allow a generous client and proxy
         timeout, or use the `/stream` variant for interactive clients.
+
+        **Concurrent turns** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        One turn runs in a conversation at a time. While another turn is running the request is refused with
+        `409` `CONVERSATION_BUSY` before anything is saved. The run id of an accepted turn is returned in the
+        `X-Run-Id` response header (and in the first SSE event, `conversation_created`); it is the id
+        `POST .../cancel` takes. A client that sends `baseSeq` is refused with `409` `CONVERSATION_CHANGED`
+        when other people added messages after that sequence number, and a repeated `clientMessageId` is
+        refused with `409` `DUPLICATE_MESSAGE` instead of being answered twice.
+
+        A text answer that starts with `User selections:`, or a `resume` object, answers a pending
+        `ask_user_question` card. Only the person the question was put to may do so; anyone else gets `403`
+        `RESUME_NOT_ALLOWED` and no run starts. In a conversation that is not shared the text is sent as-is.
       operationId: addAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -33275,6 +36015,8 @@ paths:
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             application/json:
               schema:
@@ -33284,6 +36026,8 @@ paths:
             Invalid request — `query` is missing, empty or over 100,000
             characters, contains markup or printf-style format specifiers, or
             another field fails validation.
+            With `ENABLE_CHAT_MENTIONS` on, also `MENTION_NOT_ALLOWED`: a mentioned person or team is not
+            valid in this conversation (`error.details.mentionIndex` and `reason` say which).
           content:
             application/json:
               schema:
@@ -33291,23 +36035,23 @@ paths:
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
-          description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
+          $ref: '#/components/responses/ConversationForbiddenSend'
         '404':
-          description: |
-            Conversation not found — it does not exist, belongs to another
-            user, is of the other type (assistant vs agent), or, for agent
-            routes, belongs to a different agent.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/ConversationConflictSendPlain'
+        '412':
+          $ref: '#/components/responses/ConnectorSetupRequired'
         '413':
           description: The request is larger than the selected model accepts.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
         '422':
-          description: The model provider's content filter blocked the request.
+          description: |
+            The model provider's content filter blocked the request, or (`ENABLE_CHAT_MENTIONS` on)
+            `MESSAGE_IS_NOTE`: the message asks nobody, so nothing was stored and no lease was taken; post it to
+            `.../notes` instead.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -33340,13 +36084,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/ConversationUnavailableSend'
 
   /agents/{agentKey}/conversations/{conversationId}/archive:
     post:
       tags:
         - Agents
       summary: Archive an agent conversation
-      description: Marks the conversation as archived for the authenticated owner.
+      description: |
+        Archives the conversation for the caller. Once a conversation is shared, archiving is per
+        person (with `ENABLE_COLLABORATIVE_CHATS` on) and hides it from the caller's own list only;
+        the other people still see it.
       operationId: archiveAgentConversation
       x-pipeshub-sdk: true
       security:
@@ -33384,12 +36133,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: Conversation not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations/{conversationId}/unarchive:
     post:
@@ -33434,12 +36183,625 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: Conversation not found
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+
+  /agents/{agentKey}/conversations/{conversationId}/collaborators:
+    get:
+      tags:
+        - Agents
+      summary: List who a conversation is shared with
+      description: |
+        Returns who has access to a conversation.
+
+        The owner, and an editor the owner allowed to invite, get every person and team with their level
+        (`CollaboratorsView`). Everyone else who can open the conversation gets only the owner, a count
+        and their own access (`CollaboratorsSummary`); no other person or team is named to them.
+
+        Team names are shown only to people who belong to the team; others see `A team`. A person who has
+        left the organization is a `Former member`, and a team that no longer exists is a `Deleted team`
+        that can be removed.
+      operationId: listAgentCollaborators
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: The collaborators
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+    put:
+      tags:
+        - Agents
+      summary: Share a conversation or change who can use it
+      description: |
+        Adds people and teams to a conversation, or changes their level, in one request of up to 50.
+
+        **Rules:**
+
+        - The whole request is checked first; one invalid person or team fails it with
+          `INVALID_PRINCIPAL` and nothing is written.
+        - People must be active members of your organization (not service accounts), and not the owner.
+          A team must be one you belong to.
+        - Sharing with the whole organization (`all_{orgId}`) needs `confirmOrgWide: true`, raises no
+          notifications, and at `write` is allowed only when the platform setting
+          `ALLOW_ORG_WIDE_CHAT_WRITE` is on.
+        - The owner may add, change and (with `DELETE`) remove. An editor may add only, and only when the
+          owner turned on `editorsCanInvite`; changing a level that is already set is
+          `CONVERSATION_OWNER_ONLY`.
+        - A conversation holds at most 200 people and teams (`COLLABORATOR_LIMIT`).
+        - Each change is audited, and new people and teams are told. A direct user is also emailed when
+          the platform sends share emails and they did not turn it off; the email never contains the
+          title or the note.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: putCollaboratorsAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutCollaboratorsRequest'
+      responses:
+        '200':
+          description: The collaborators after the change (the view for the caller)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/CollaborationForbiddenInvite'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          $ref: '#/components/responses/CollaborationConflict'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /agents/{agentKey}/conversations/{conversationId}/collaborators/{principalId}:
+    delete:
+      tags:
+        - Agents
+      summary: Stop sharing with a person or team
+      description: |
+        Removes one person or team. Owner only. Removing someone who is not there succeeds and changes
+        nothing, and a team that no longer exists can be removed. Nobody is notified; the person's earlier
+        unread share notification is archived.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: removeCollaboratorAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+        - name: principalId
+          in: path
+          required: true
+          description: A user id, or a team id
+          schema:
+            type: string
+        - name: principalType
+          in: query
+          required: false
+          description: Whether `principalId` is a user or a team
+          schema:
+            type: string
+            enum: [user, team]
+            default: user
+      responses:
+        '200':
+          description: The collaborators after the change
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /agents/{agentKey}/conversations/{conversationId}/collaboration-settings:
+    patch:
+      tags:
+        - Agents
+      summary: Change who may invite and what the owner shares
+      description: |
+        Updates the collaboration settings. Owner only. At least one setting is required.
+        `respondMode` chooses when the AI answers (see `RespondMode`); it applies only with `ENABLE_CHAT_MENTIONS` on.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: updateCollaborationSettingsAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollaborationSettings'
+      responses:
+        '200':
+          description: The collaborators view with the new settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollaboratorsView'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /agents/{agentKey}/conversations/{conversationId}/mentionables:
+    get:
+      tags:
+        - Agents
+      summary: List what can be mentioned in a conversation
+      description: |
+        The assistant (`PipesHub`), the other people on the conversation and the teams it is shared with, for
+        the composer's `@` list. Everything comes from this conversation's own participants, so nobody
+        outside it appears. Who else is on it is listed only for the owner and an editor allowed to invite;
+        anyone else gets the assistant and the owner. `q` matches the start of any word of the name. At most 20 items.
+
+        Needs `ENABLE_COLLABORATIVE_CHATS` and `ENABLE_CHAT_MENTIONS` (404 otherwise) and the
+        `conversation:read` OAuth scope.
+      operationId: listMentionablesAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 20
+      responses:
+        '200':
+          description: The mentionable people, teams and the assistant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MentionablesResponse'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+
+  /agents/{agentKey}/conversations/{conversationId}/notes:
+    post:
+      tags:
+        - Agents
+      summary: Post a note that mentions people or teams
+      description: |
+        Adds a message that asks nobody: no AI run, no lease and no readiness check, so it can be posted
+        while someone else's turn streams (that turn does not see it). It is ordered by `seq` and bumps the
+        conversation's `rev`, so the feed delivers it. Repeating a `clientMessageId` returns the first note
+        (`200`, `duplicate: true`).
+
+        A team must be on the conversation. A person must be an active member of the caller's
+        organization; one who is not on the conversation is accepted, listed in `nonParticipants` and not
+        notified. The note must be one `respondMode` leaves
+        unanswered: a note that mentions the assistant, any note under `always`, or a note that mentions
+        nobody outside `mention_only`, is `422` `MESSAGE_NOT_NOTE`. Needs `ENABLE_COLLABORATIVE_CHATS` and `ENABLE_CHAT_MENTIONS` (404 otherwise), write
+        access and the `conversation:chat` OAuth scope.
+      operationId: createNoteAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateNoteRequest'
+      responses:
+        '201':
+          description: The note was stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteResponse'
+        '200':
+          description: This `clientMessageId` was already posted; the earlier note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoteResponse'
+        '400':
+          $ref: '#/components/responses/MentionRefused'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenSend'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '409':
+          description: |
+            `DUPLICATE_MESSAGE`: the caller already sent a question with this `clientMessageId`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationErrorResponse'
+        '422':
+          description: |
+            `MESSAGE_NOT_NOTE`: the note would skip an answer `respondMode` asks for. Send it as a message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationErrorResponse'
+        '503':
+          $ref: '#/components/responses/MentionRefused'
+
+  /agents/{agentKey}/conversations/{conversationId}/transfer-ownership:
+    post:
+      tags:
+        - Agents
+      summary: Hand a conversation to someone else
+      description: |
+        Makes an existing editor the owner. Owner only. The previous owner stays on the conversation as an
+        editor and can then leave.
+
+        The new owner must already be on the conversation as a person with `write` access, be an active
+        member of the organization (`INVALID_PRINCIPAL` otherwise), and, when the conversation is linked to
+        a project, have access to that project (`PROJECT_ACCESS_REQUIRED`). Both people are notified and
+        the new owner is emailed when the platform sends share emails. A run in progress is not
+        interrupted.
+
+        Needs the `conversation:share` OAuth scope. Rate limited per user (20 changes a minute).
+      operationId: transferConversationOwnershipAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:share]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+      responses:
+        '200':
+          description: The collaborators after the transfer, as the previous owner now sees them
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CollaboratorsView'
+                  - $ref: '#/components/schemas/CollaboratorsSummary'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/CollaborationForbiddenTransfer'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/CollaborationTeamUnavailable'
+
+  /agents/{agentKey}/conversations/{conversationId}/leave:
+    post:
+      tags:
+        - Agents
+      summary: Leave a shared conversation
+      description: |
+        Removes the caller's own access as a person and hides the conversation from their lists, even when
+        a team still gives them access (they can still open it by link). The owner cannot leave. If the
+        owner shares with the caller directly again later, the conversation comes back.
+
+        Needs the `conversation:write` OAuth scope.
+      operationId: leaveConversationAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Left
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaveConversationResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/CollaborationForbiddenLeave'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+
+  /agents/{agentKey}/conversations/{conversationId}/feed:
+    get:
+      tags:
+        - Agents
+      summary: Poll a shared conversation for new messages
+      description: |
+        A cheap conditional poll for people watching a shared conversation.
+
+        Send the `rev` you last received. While nothing has changed the answer is `304` with an empty body.
+        Otherwise it returns up to 100 messages after `afterSeq` with their authors, the caller's own
+        feedback only, who is running a turn now, and the new `rev`; keep asking with `afterSeq=nextSeq`
+        while `hasMore` is true. `runId` of the active run is shown only to callers who can write.
+
+        Opening the feed records the caller's read position (at most once every 10 seconds), which drives
+        the unread count on lists. A caller who lost access gets `404`, never `304`.
+
+        Rate limited per user (60 a minute).
+      operationId: getConversationFeedAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+        - name: afterSeq
+          in: query
+          required: false
+          description: Return messages with a `seq` above this. Default -1 (from the start).
+          schema:
+            type: integer
+            minimum: -1
+            default: -1
+        - name: rev
+          in: query
+          required: false
+          description: The `rev` of the last answer.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: New messages, or the current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedResponse'
+        '304':
+          description: Nothing changed since `rev`. Empty body.
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
+
+  /agents/{agentKey}/conversations/{conversationId}/readiness:
+    get:
+      tags:
+        - Agents
+      summary: Whether the caller can send a message now
+      description: |
+        Answers for the caller only, so the composer can explain why it is off before a turn is started.
+        A caller with read-only access gets `CONVERSATION_READ_ONLY` and nothing else. Otherwise
+        `reasons` lists `OWNER_INACTIVE`, `PROJECT_ACCESS_REQUIRED`, and for agents
+        `CONNECTOR_SETUP_REQUIRED` with the caller's own `missingToolsets`, or `AGENT_UNAVAILABLE`.
+
+        This is advisory: a send still goes through the same checks.
+
+        Rate limited per user (60 a minute).
+      operationId: getConversationReadinessAgent
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Readiness
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations/{conversationId}/title:
     patch:
@@ -33507,14 +36869,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: |
-            Agent conversation not found for the authenticated user, organization,
-            and agent scope, or the conversation is soft-deleted.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations/{conversationId}/project:
     put:
@@ -33526,7 +36886,7 @@ paths:
         Agent-conversation equivalent of
         `PUT /conversations/{conversationId}/project`. Set
         (`projectId: <id>`) or clear (`projectId: null`) the project this
-        agent conversation belongs to. Initiator-only; linking requires at
+        agent conversation belongs to. Owner-only; linking requires at
         least viewer access to the target project.
       operationId: setAgentConversationProject
       x-pipeshub-sdk: true
@@ -33586,10 +36946,12 @@ paths:
           description: "`projectId` missing or not a valid ObjectId/`null`."
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: |
-            Agent conversation not found or caller is not the initiator, or
-            the target project does not exist or is not visible to the caller.
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations/{conversationId}/project-visibility:
     patch:
@@ -33600,7 +36962,7 @@ paths:
       description: |
         Agent-conversation equivalent of
         `PATCH /conversations/{conversationId}/project-visibility`.
-        Initiator-only; requires the conversation to already be linked to a
+        Owner-only; requires the conversation to already be linked to a
         project.
       operationId: setAgentConversationProjectVisibility
       x-pipeshub-sdk: true
@@ -33656,8 +37018,12 @@ paths:
             to a project.
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
         '404':
-          description: Agent conversation not found or caller is not the initiator.
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations/{conversationId}:
     delete:
@@ -33712,12 +37078,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenOwnerOnly'
+        '404':
+          $ref: '#/components/responses/ConversationNotFound'
         '500':
           description: Internal server error while deleting the agent conversation
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
     get:
       tags:
         - Agents
@@ -33806,8 +37178,12 @@ paths:
                 $ref: '#/components/schemas/AgentConversationDetailResponse'
         '401':
           description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
         '404':
-          description: Conversation not found
+          $ref: '#/components/responses/ConversationNotFound'
+        '503':
+          $ref: '#/components/responses/ConversationTeamResolutionUnavailable'
 
   /agents/{agentKey}/conversations:
     get:
@@ -33817,6 +37193,12 @@ paths:
       description: |
         Paginated list of conversations for the agent (owned and shared-with-me),
         excluding archived threads.
+
+        **Retries** (`ENABLE_COLLABORATIVE_CHATS` on)
+
+        Send a `clientMessageId` to make the call safe to retry: a second call with the same value is refused
+        with `409` `DUPLICATE_MESSAGE` (before any SSE header) and names the conversation that call created in
+        `error.details.conversationId`. The run id of the turn is returned in the `X-Run-Id` response header.
       operationId: listAgentConversations
       x-pipeshub-sdk: true
       security:
@@ -33994,6 +37376,8 @@ paths:
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            X-Run-Id:
+              $ref: '#/components/headers/X-Run-Id'
           content:
             application/json:
               schema:
@@ -34011,6 +37395,8 @@ paths:
           description: Unauthorized — valid bearer token required.
         '403':
           description: Forbidden — the token lacks the `agent:execute` OAuth scope, or the caller cannot use this agent.
+        '409':
+          $ref: '#/components/responses/ConversationConflictCreatePlain'
         '413':
           description: The request is larger than the selected model accepts.
           headers:

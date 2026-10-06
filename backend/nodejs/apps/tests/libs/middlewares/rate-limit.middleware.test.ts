@@ -9,10 +9,15 @@ import {
   SERVICE_AUTHORIZATION_HEADER,
   createAuthRateLimiter,
   createGlobalRateLimiter,
+  createKeyedRateLimiter,
   createOAuthClientRateLimiter,
   createSkillsImportRateLimiter,
 } from '../../../src/libs/middlewares/rate-limit.middleware'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
+import { useRateLimitCache, SharedRateLimitStore, RATE_LIMIT_STORE_RETRY_MS } from '../../../src/libs/middlewares/shared-rate-limit-store'
+import { ICacheService } from '../../../src/libs/services/cache/cacheService.interface'
+import { realIoredis } from '../../helpers/mock-ioredis-global'
+import { COLLAB_FEED_PER_MINUTE } from '../../../src/modules/enterprise_search/routes/collaboration.routes'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { TrustProxySetting } from '../../../src/libs/utils/trust-proxy'
 
@@ -140,12 +145,12 @@ describe('Rate Limit Middleware', () => {
   // -----------------------------------------------------------------------
   describe('createOAuthClientRateLimiter', () => {
     it('should return a function (RequestHandler)', () => {
-      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 10)
+      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 10, 'token')
       expect(limiter).to.be.a('function')
     })
 
     it('should allow requests within the rate limit', (done) => {
-      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 10)
+      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 10, 'token')
       const req = createMockRequest({
         ip: '10.0.1.1',
       })
@@ -161,7 +166,7 @@ describe('Rate Limit Middleware', () => {
     })
 
     it('should use userId as rate limit key when user is authenticated', (done) => {
-      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 10)
+      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 10, 'token')
       const req = createMockRequest({
         ip: '10.0.1.2',
         user: { userId: 'oauth-rate-test-user' },
@@ -292,7 +297,7 @@ describe('Rate Limit Middleware', () => {
     })
 
     it('should return 429 when OAuth client limit is exceeded', (done) => {
-      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1)
+      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1, 'token')
       const ip = '10.0.5.3'
 
       const req1 = createMockRequest({ ip, path: '/oauth/clients' })
@@ -400,7 +405,7 @@ describe('Rate Limit Middleware', () => {
     })
 
     it('should return 429 with user key when authenticated user exceeds OAuth limit', (done) => {
-      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1)
+      const limiter = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1, 'token')
       const user = { userId: 'oauth-rate-exceed-user' }
 
       const req1 = createMockRequest({ ip: '10.0.5.4', user, path: '/oauth/clients' })
@@ -428,6 +433,53 @@ describe('Rate Limit Middleware', () => {
   // -----------------------------------------------------------------------
   // Client IP extraction (GHSA-78gw-g2h7-xvjj)
   // -----------------------------------------------------------------------
+  describe('createKeyedRateLimiter with a code', () => {
+    const exceed = (options: { code?: string }, done: (body: any) => void) => {
+      const limiter = createKeyedRateLimiter(loggerStub as unknown as Logger, { prefix: `p${Math.random()}`, maxRequestsPerMinute: 1, message: 'Slow down', ...options })
+      const first = createMockRequest({ user: { userId: 'u-1' }, path: '/x' })
+      const next1 = createMockNext()
+      next1.callsFake(() => {
+        const res = createMockResponse()
+        res.json.callsFake((body: any) => {
+          expect(res.statusCode).to.equal(429)
+          done(body)
+          return res
+        })
+        limiter(createMockRequest({ user: { userId: 'u-1' }, path: '/x' }), res, createMockNext())
+      })
+      limiter(first, createMockResponse(), next1)
+    }
+
+    it('SEC-17: a 429 carries the code and retryAfter under details', (done) => {
+      exceed({ code: 'RATE_LIMITED' }, (body) => {
+        expect(body.error.code).to.equal('RATE_LIMITED')
+        expect(body.error.details.retryAfter).to.be.a('number')
+        expect(body.error).to.not.have.property('retryAfter')
+        done()
+      })
+    })
+
+    it('without a code the historical body is unchanged', (done) => {
+      exceed({}, (body) => {
+        expect(body.error.code).to.equal('HTTP_TOO_MANY_REQUESTS')
+        expect(body.error).to.have.property('retryAfter')
+        expect(body.error).to.not.have.property('details')
+        done()
+      })
+    })
+
+    it('counts per user, not per address', (done) => {
+      const limiter = createKeyedRateLimiter(loggerStub as unknown as Logger, { prefix: `u${Math.random()}`, maxRequestsPerMinute: 1, message: 'Slow down', code: 'RATE_LIMITED' })
+      const next = createMockNext()
+      next.onFirstCall().callsFake(() => {
+        const other = createMockNext()
+        other.callsFake(() => done())
+        limiter(createMockRequest({ user: { userId: 'u-2' }, ip: '10.9.9.1' }), createMockResponse(), other)
+      })
+      limiter(createMockRequest({ user: { userId: 'u-1' }, ip: '10.9.9.2' }), createMockResponse(), next)
+    })
+  })
+
   describe('Client IP extraction', () => {
     // Real Express + socket so X-Forwarded-For handling and `trust proxy` are
     // exercised end to end rather than through a hand-built req.ip.
@@ -544,6 +596,260 @@ describe('Rate Limit Middleware', () => {
       })
 
       limiter(createMockRequest({ ip, path: '/initAuth' }), createMockResponse(), next1)
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Shared store (PH12-07, SEC-17)
+  // -----------------------------------------------------------------------
+  describe('createKeyedRateLimiter with a shared store', () => {
+    /** Counts like RedisService.increment: INCR, then EXPIRE. */
+    class FakeCache implements ICacheService {
+      readonly counts = new Map<string, number>()
+      readonly ttls = new Map<string, number>()
+      fail = false
+      async get<T>(): Promise<T | null> { return null }
+      async set(): Promise<void> {}
+      async delete(key: string): Promise<void> { this.counts.delete(key) }
+      async increment(key: string, options?: { ttl?: number }): Promise<number> {
+        if (this.fail) throw new Error('redis down')
+        const next = (this.counts.get(key) ?? 0) + 1
+        this.counts.set(key, next)
+        if (options?.ttl !== undefined) this.ttls.set(key, options.ttl)
+        return next
+      }
+      async disconnect(): Promise<void> {}
+      isConnected(): boolean { return !this.fail }
+    }
+
+    const hit = (limiter: any, userId: string): Promise<number> =>
+      new Promise((resolve) => {
+        const res = createMockResponse()
+        res.json.callsFake(() => { resolve(res.statusCode); return res })
+        limiter(createMockRequest({ user: { userId }, path: '/x', method: 'PUT' }), res, () => resolve(200))
+      })
+
+    const build = (prefix: string, max: number) =>
+      createKeyedRateLimiter(loggerStub as unknown as Logger, { prefix, maxRequestsPerMinute: max, message: 'Slow down', code: 'RATE_LIMITED', shared: true })
+
+    afterEach(() => useRateLimitCache(undefined))
+
+    it('PH12-07: 21 PUTs split across two instances give exactly one 429', async () => {
+      useRateLimitCache(new FakeCache())
+      const a = build('collab:mutate', 20)
+      const b = build('collab:mutate', 20)
+      const statuses: number[] = []
+      for (let i = 0; i < 21; i += 1) statuses.push(await hit(i % 2 === 0 ? a : b, 'u-1'))
+      expect(statuses.filter((s) => s === 429)).to.have.length(1)
+      expect(statuses[20]).to.equal(429)
+    })
+
+    it('the feed limit admits two focused devices plus ten background windows polling for a minute, then limits', async () => {
+      const perMinute = 2 * 18.75 + 10 * 5
+      expect(COLLAB_FEED_PER_MINUTE).to.be.at.least(Math.ceil(perMinute))
+      useRateLimitCache(new FakeCache())
+      const feed = build('collab:feed', COLLAB_FEED_PER_MINUTE)
+      for (let i = 0; i < COLLAB_FEED_PER_MINUTE; i += 1) expect(await hit(feed, 'u-1')).to.equal(200)
+      expect(await hit(feed, 'u-1')).to.equal(429)
+      expect(await hit(feed, 'u-2')).to.equal(200)
+    })
+
+    it('counts per user and per prefix, and sets a TTL on the window key', async () => {
+      const cache = new FakeCache()
+      useRateLimitCache(cache)
+      const feed = build('collab:feed', 1)
+      const mutate = build('collab:mutate', 1)
+      expect(await hit(feed, 'u-1')).to.equal(200)
+      expect(await hit(feed, 'u-2')).to.equal(200)
+      expect(await hit(mutate, 'u-1')).to.equal(200)
+      expect(await hit(feed, 'u-1')).to.equal(429)
+      expect([...cache.ttls.values()].every((t) => t >= 60)).to.equal(true)
+    })
+
+    const hitIp = (limiter: any, ip: string): Promise<number> =>
+      new Promise((resolve) => {
+        const res = createMockResponse()
+        res.json.callsFake(() => { resolve(res.statusCode); return res })
+        limiter(createMockRequest({ ip, path: '/initAuth', method: 'POST' }), res, () => resolve(200))
+      })
+
+    it('#19 auth: the per-IP limit counts across two instances', async () => {
+      useRateLimitCache(new FakeCache())
+      const a = createAuthRateLimiter(loggerStub as unknown as Logger, 3)
+      const b = createAuthRateLimiter(loggerStub as unknown as Logger, 3)
+      const statuses: number[] = []
+      for (let i = 0; i < 4; i += 1) statuses.push(await hitIp(i % 2 === 0 ? a : b, '10.9.0.1'))
+      expect(statuses).to.deep.equal([200, 200, 200, 429])
+      expect(await hitIp(a, '10.9.0.2')).to.equal(200)
+    })
+
+    it('#19 oauth-client: the limit counts across two instances of one surface', async () => {
+      useRateLimitCache(new FakeCache())
+      const a = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1, 'pat')
+      const b = createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1, 'pat')
+      expect(await hit(a, 'u-1')).to.equal(200)
+      expect(await hit(b, 'u-1')).to.equal(429)
+    })
+
+    it('#19 oauth-client: different surfaces do not share a bucket', async () => {
+      const cache = new FakeCache()
+      useRateLimitCache(cache)
+      const surfaces = ['token', 'pat', 'service-token', 'clients', 'service-accounts'] as const
+      const limiters = surfaces.map((s) => createOAuthClientRateLimiter(loggerStub as unknown as Logger, 1, s))
+      for (const l of limiters) expect(await hit(l, 'u-1')).to.equal(200)
+      for (const l of limiters) expect(await hit(l, 'u-1')).to.equal(429)
+      const keys = [...cache.counts.keys()]
+      for (const s of surfaces) expect(keys.some((k) => k.startsWith(`ratelimit:oauth-client:${s}:user:u-1:`)), s).to.equal(true)
+      expect(keys).to.have.length(surfaces.length)
+    })
+
+    it('#19 skills-import: the limit counts across two instances', async () => {
+      useRateLimitCache(new FakeCache())
+      const a = createSkillsImportRateLimiter(loggerStub as unknown as Logger, 1)
+      const b = createSkillsImportRateLimiter(loggerStub as unknown as Logger, 1)
+      expect(await hit(a, 'u-1')).to.equal(200)
+      expect(await hit(b, 'u-1')).to.equal(429)
+    })
+
+    it('without a cache each instance counts on its own', async () => {
+      const a = build('solo', 1)
+      const b = build('solo', 1)
+      expect(await hit(a, 'u-1')).to.equal(200)
+      expect(await hit(b, 'u-1')).to.equal(200)
+      expect(await hit(a, 'u-1')).to.equal(429)
+    })
+
+    it('Redis down: falls back in-process, still limits, warns once', async () => {
+      const cache = new FakeCache()
+      cache.fail = true
+      useRateLimitCache(cache)
+      const limiter = build('down', 2)
+      expect(await hit(limiter, 'u-1')).to.equal(200)
+      expect(await hit(limiter, 'u-1')).to.equal(200)
+      expect(await hit(limiter, 'u-1')).to.equal(429)
+      expect(loggerStub.warn.calledWith('Shared rate-limit store failed; counting in-process')).to.equal(true)
+      expect(loggerStub.warn.args.filter((a) => a[0] === 'Shared rate-limit store failed; counting in-process')).to.have.length(1)
+    })
+
+    it('a hung cache times out and the request still proceeds', async () => {
+      const cache = new FakeCache()
+      cache.increment = () => new Promise<number>(() => {})
+      useRateLimitCache(cache)
+      const limiter = build('hung', 5)
+      expect(await hit(limiter, 'u-1')).to.equal(200)
+    }).timeout(3000)
+
+    it('after a failure the cache is skipped for a while, then tried again', async () => {
+      const cache = new FakeCache()
+      let calls = 0
+      const real = cache.increment.bind(cache)
+      cache.increment = (key: string, options?: { ttl?: number }) => { calls += 1; return real(key, options) }
+      cache.fail = true
+      useRateLimitCache(cache)
+      let now = 1_000_000_000_000
+      const store = new SharedRateLimitStore('cb', loggerStub as unknown as Logger, () => now)
+      store.init({ windowMs: 60_000 } as any)
+      await store.increment('k')
+      await store.increment('k')
+      expect(calls).to.equal(1)
+      cache.fail = false
+      now += RATE_LIMIT_STORE_RETRY_MS
+      expect((await store.increment('k')).totalHits).to.equal(1)
+      expect(calls).to.equal(2)
+    })
+
+    it('a new window starts a new count', async () => {
+      useRateLimitCache(new FakeCache())
+      let now = 1_000_000_000_000
+      const store = new SharedRateLimitStore('w', loggerStub as unknown as Logger, () => now)
+      store.init({ windowMs: 60_000 } as any)
+      expect((await store.increment('k')).totalHits).to.equal(1)
+      expect((await store.increment('k')).totalHits).to.equal(2)
+      now += 60_000
+      expect((await store.increment('k')).totalHits).to.equal(1)
+    })
+  })
+
+  // Needs a disposable Redis: RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6390 (the ioredis fake is bypassed).
+  const redisUrl = process.env.RATE_LIMIT_REDIS_URL
+  ;(redisUrl ? describe : describe.skip)('createKeyedRateLimiter against real Redis', () => {
+    let client: any
+    const hit = (limiter: any, userId: string): Promise<number> =>
+      new Promise((resolve) => {
+        const res = createMockResponse()
+        res.json.callsFake(() => { resolve(res.statusCode); return res })
+        limiter(createMockRequest({ user: { userId }, path: '/x', method: 'PUT' }), res, () => resolve(200))
+      })
+
+    before(() => {
+      const Real = (realIoredis as any).Redis ?? (realIoredis as any).default ?? realIoredis
+      client = new Real(redisUrl)
+    })
+    after(async () => {
+      await client.quit()
+      useRateLimitCache(undefined)
+    })
+
+    it('PH12-07: 21 PUTs split across two instances sharing Redis give exactly one 429', async () => {
+      const cache: ICacheService = {
+        get: async () => null,
+        set: async () => {},
+        delete: async (key) => { await client.del(key) },
+        increment: async (key, options) => {
+          const n = await client.incr(key)
+          if (options?.ttl !== undefined) await client.expire(key, options.ttl)
+          return n
+        },
+        disconnect: async () => {},
+        isConnected: () => true,
+      }
+      useRateLimitCache(cache)
+      const prefix = `it${Date.now()}`
+      const mk = () => createKeyedRateLimiter(loggerStub as unknown as Logger, { prefix, maxRequestsPerMinute: 20, message: 'Slow down', code: 'RATE_LIMITED', shared: true })
+      const a = mk()
+      const b = mk()
+      const statuses: number[] = []
+      for (let i = 0; i < 21; i += 1) statuses.push(await hit(i % 2 === 0 ? a : b, 'u-real'))
+      expect(statuses.filter((s) => s === 429)).to.have.length(1)
+      const keys: string[] = await client.keys(`ratelimit:${prefix}:*`)
+      expect(keys).to.have.length(1)
+      expect(await client.ttl(keys[0])).to.be.within(1, 62)
+    })
+
+    it('#19: auth per IP and oauth-client surfaces count in Redis across instances, surfaces stay apart', async () => {
+      const cache: ICacheService = {
+        get: async () => null,
+        set: async () => {},
+        delete: async (key) => { await client.del(key) },
+        increment: async (key, options) => {
+          const n = await client.incr(key)
+          if (options?.ttl !== undefined) await client.expire(key, options.ttl)
+          return n
+        },
+        disconnect: async () => {},
+        isConnected: () => true,
+      }
+      useRateLimitCache(cache)
+      const log = loggerStub as unknown as Logger
+      const ip = `10.${String(Date.now() % 250)}.0.1`
+      const hitIp = (limiter: any): Promise<number> =>
+        new Promise((resolve) => {
+          const res = createMockResponse()
+          res.json.callsFake(() => { resolve(res.statusCode); return res })
+          limiter(createMockRequest({ ip, path: '/initAuth', method: 'POST' }), res, () => resolve(200))
+        })
+      const authA = createAuthRateLimiter(log, 2)
+      const authB = createAuthRateLimiter(log, 2)
+      expect([await hitIp(authA), await hitIp(authB), await hitIp(authA)]).to.deep.equal([200, 200, 429])
+      const userId = `u-${String(Date.now())}`
+      const pat = createOAuthClientRateLimiter(log, 1, 'pat')
+      const clients = createOAuthClientRateLimiter(log, 1, 'clients')
+      expect(await hit(pat, userId)).to.equal(200)
+      expect(await hit(clients, userId)).to.equal(200)
+      expect(await hit(createOAuthClientRateLimiter(log, 1, 'pat'), userId)).to.equal(429)
+      expect(await client.keys(`ratelimit:oauth-client:pat:user:${userId}:*`)).to.have.length(1)
+      expect(await client.keys(`ratelimit:oauth-client:clients:user:${userId}:*`)).to.have.length(1)
+      expect((await client.keys(`ratelimit:auth:ip:${ip}:*`)).length).to.equal(1)
     })
   })
 

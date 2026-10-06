@@ -105,6 +105,10 @@ describe('OAuthScopeNames', () => {
     it('should have CONVERSATION_CHAT as "conversation:chat"', () => {
       expect(OAuthScopeNames.CONVERSATION_CHAT).to.equal('conversation:chat');
     });
+
+    it('should have CONVERSATION_SHARE as "conversation:share"', () => {
+      expect(OAuthScopeNames.CONVERSATION_SHARE).to.equal('conversation:share');
+    });
   });
 
   // Agents
@@ -229,8 +233,8 @@ describe('OAuthScopeNames', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 45 scope entries', () => {
-      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(45);
+    it('should have exactly 46 scope entries', () => {
+      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(46);
     });
 
     it('should contain only the expected keys', () => {
@@ -263,6 +267,7 @@ describe('OAuthScopeNames', () => {
         'CONVERSATION_READ',
         'CONVERSATION_WRITE',
         'CONVERSATION_CHAT',
+        'CONVERSATION_SHARE',
         // Agents
         'AGENT_READ',
         'AGENT_WRITE',

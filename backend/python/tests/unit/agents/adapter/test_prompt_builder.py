@@ -26,6 +26,7 @@ from app.agents.agent_loop.prompt_builder import (
     _ORG_SCOPE_RULE_WITH_DEMO,
     PipesHubPromptBuilder,
 )
+from app.modules.agents.collaboration import CollaborationContext, Participant
 from app.modules.agents.context.source_catalog import (
     DEMO_ONLY_SOURCE_NOTE,
     DEMO_SOURCE_NOTE,
@@ -819,3 +820,53 @@ class TestFullRecordEscalation:
         assert "knowledgegraph__fetch_record" in section
         assert "ranked fragments" in section
         assert "ONE call" in section
+
+
+def _collab(sender: int, names: tuple[str, ...] = ("Alice", "Bob")) -> CollaborationContext:
+    return CollaborationContext(
+        participants=[
+            Participant(ref=f"participant_{i + 1}", displayName=n, isCurrentSender=(i + 1 == sender))
+            for i, n in enumerate(names)
+        ],
+        currentSenderRef=f"participant_{sender}",
+    )
+
+
+def _collab_blocks(collaboration: CollaborationContext | None, user_ctx: str = "USER_CTX") -> tuple[str, str]:
+    spec = AgentSpec(name="pipeshub-agent", system_prompt="BASE_REACT_PROMPT", tool_names=[],
+                     model=ModelSpec(provider="scripted", model="scripted-model"))
+    with patch.multiple(
+        "app.agents.agent_loop.prompt_builder",
+        _build_knowledge_context=MagicMock(return_value=""),
+        build_llm_time_context=MagicMock(return_value=""),
+        build_capability_summary=MagicMock(return_value="CAPS"),
+        _format_user_context=MagicMock(return_value=user_ctx),
+    ), patch("app.modules.agents.context.tool_surface.sandbox_network_enabled", MagicMock(return_value=False)):
+        return PipesHubPromptBuilder(make_context(collaboration=collaboration)).build_blocks(
+            spec, _runtime_for([]), Goal(description="hello"), [], {},
+        )
+
+
+class TestCollaborationPrompt:
+    def test_stable_block_byte_equal_across_senders(self) -> None:
+        stable_a, vol_a = _collab_blocks(_collab(1))
+        stable_b, vol_b = _collab_blocks(_collab(2))
+        assert stable_a == stable_b
+        assert "USER_CTX" not in stable_a
+        assert "participant_1 = Alice" in stable_a and "Shared Conversation" in stable_a
+        assert vol_a != vol_b
+
+    def test_sender_section_and_user_context_in_volatile(self) -> None:
+        _, vol = _collab_blocks(_collab(2))
+        assert "This turn's request is from participant_2 (Bob)." in vol
+        assert vol.index("## Current Sender") < vol.index("USER_CTX")
+        assert "participant_1 (Alice)" not in vol
+
+    def test_rules_follow_capability_summary_in_stable(self) -> None:
+        stable, _ = _collab_blocks(_collab(1))
+        assert stable.index("CAPS") < stable.index("Shared Conversation")
+
+    def test_solo_has_no_collaboration_sections(self) -> None:
+        stable, vol = _collab_blocks(None)
+        assert "Shared Conversation" not in stable and "Current Sender" not in vol
+        assert "USER_CTX" in stable

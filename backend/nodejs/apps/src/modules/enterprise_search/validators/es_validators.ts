@@ -3,20 +3,15 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
+import { OBJECT_ID_REGEX, objectId } from '../../../libs/validators/zod-primitives';
 import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
+import { mentionsFieldSchema } from './mention.validators';
 
 export { REASONING_EFFORT_VALUES };
 
 // ---------------------------------------------------------------------------
 // Primitive validators
 // ---------------------------------------------------------------------------
-
-/** Regular expression for MongoDB ObjectId validation. */
-const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
-
-/** Reusable MongoDB ObjectId string validator with a configurable error label. */
-const objectId = (label: string) =>
-  z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
 
 const appOrKbIdSchema = z.string().uuid({ message: 'Must be a valid UUID' });
 
@@ -136,6 +131,22 @@ const contextFieldsSchema = {
   // {runId}` (see `cancelRunBodySchema`) can target it. Optional — a caller
   // that never sends one just can't be cooperatively cancelled.
   runId: z.string().uuid({ message: 'runId must be a valid UUID' }).optional(),
+  // Turn-pipeline fields (PH-05). Accepted here, enforced by later PRs.
+  clientMessageId: z
+    .string()
+    .min(1, { message: 'clientMessageId must be 1-64 characters' })
+    .max(64, { message: 'clientMessageId must be 1-64 characters' })
+    .optional(),
+  baseSeq: z
+    .number()
+    .int({ message: 'baseSeq must be an integer' })
+    .min(-1, { message: 'baseSeq must be >= -1' })
+    .optional(),
+  filesShared: z.boolean().optional(),
+  shareToolResults: z.boolean().optional(),
+  resume: z
+    .object({ toolCallMessageId: objectId('tool call message ID') })
+    .optional(),
 };
 
 /** Body of `POST .../cancel` — one schema for both the assistant and agent
@@ -258,6 +269,13 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
 });
 
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
+  body: z.object({
+    userIds: userIdsSchema,
+    accessLevel: z.enum(['read', 'write']).optional(),
+  }),
+});
+
+export const conversationUnshareParamsSchema = conversationIdParamsSchema.extend({
   body: z.object({ userIds: userIdsSchema }),
 });
 
@@ -374,6 +392,8 @@ const addMessageBodySchema = z.object({
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
+    // Ids only; the server validates them against the chat (PH-10.4) and ignores them with the flag off.
+    mentions: mentionsFieldSchema.optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });
@@ -421,6 +441,25 @@ export const agentAddMessageParamsSchema = z.object({
   }),
   body: agentAddMessageBodySchema,
 });
+
+/**
+ * Internal (scoped-token) agent stream routes. Slack forwards the caller's
+ * identity to the AI backend (ai-chat-payload.ts::assignCallerContextToAiPayload);
+ * the public schemas strip those keys on purpose, so only these variants keep them.
+ */
+const internalCallerContextSchema = {
+  callerDisplayName: z.string().optional(),
+  callerEmail: z.string().optional(),
+};
+
+export const agentInternalStreamCreateSchema = agentStreamCreateSchema.extend({
+  body: agentStreamCreateBodySchema.extend(internalCallerContextSchema),
+});
+
+export const agentInternalAddMessageParamsSchema =
+  agentAddMessageParamsSchema.extend({
+    body: agentAddMessageBodySchema.extend(internalCallerContextSchema),
+  });
 
 // ---------------------------------------------------------------------------
 // Agent non-streaming: create + add message (`chatMode` defaults to `quick`)
@@ -620,6 +659,30 @@ const agentModelsOptionalSchema = z
     }
   });
 
+/**
+ * @mention handle. Shape only; Python owns reserved words and uniqueness and
+ * answers HANDLE_RESERVED / HANDLE_TAKEN.
+ */
+const agentHandleSchema = z
+  .string()
+  .trim()
+  .regex(/^@?[a-z0-9-]{2,40}$/, {
+    message:
+      'Handle must be 2-40 characters: lowercase letters, digits and hyphens',
+  });
+
+const objectIdString = z.string().regex(/^[0-9a-f]{24}$/i, { message: 'Invalid id' });
+
+/** The chat draft an agent is created from. Node verifies it; Python only ever sees the result. */
+const agentDraftRefSchema = z.object({
+  conversationId: objectIdString,
+  messageId: objectIdString,
+});
+
+const serverSetKey = z.never({
+  message: 'This field is set by the server',
+});
+
 const createAgentBodySchema = z
   .object({
     name: z
@@ -627,6 +690,8 @@ const createAgentBodySchema = z
       .trim()
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' }),
+    /** Optional: derived from the name when omitted. */
+    handle: agentHandleSchema.optional(),
     /**
      * Optional: an agent created without models uses the organization's
      * default LLM at chat time (see get_llm_for_chat fallback chain).
@@ -649,6 +714,11 @@ const createAgentBodySchema = z
       .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
       .optional(),
     sendUserContext: z.boolean().optional(),
+    draftRef: agentDraftRefSchema.optional(),
+    /** Provenance is set from a verified `draftRef`, never accepted from a client. */
+    createdVia: serverSetKey.optional(),
+    sourceConversationId: serverSetKey.optional(),
+    sourceMessageId: serverSetKey.optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -667,6 +737,7 @@ const updateAgentBodySchema = z
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' })
       .optional(),
+    handle: agentHandleSchema.optional(),
     /** Optional; when present, an empty array clears the agent's models
      * and reverts it to the organization default LLM. */
     models: agentModelsOptionalSchema.optional(),
@@ -696,6 +767,10 @@ export const updateAgentSchema = z.object({
 // ---------------------------------------------------------------------------
 // Agent get / list query schemas
 // ---------------------------------------------------------------------------
+
+export const agentHandleAvailabilitySchema = z.object({
+  query: z.object({ handle: z.string().trim().min(1).max(100) }),
+});
 
 export const getAgentParamsSchema = z.object({
   params: z.object(agentKeyParam),
@@ -1132,7 +1207,7 @@ const attachmentUploadBodySchema = z.object({
       (v) => (typeof v === 'string' ? v.trim() : v),
       z.union([
         z.literal(''),
-        z.string().regex(OBJECT_ID_REGEX, { message: 'Invalid conversation ID format' }),
+        objectId('conversation ID'),
       ]),
     )
     .nullable()

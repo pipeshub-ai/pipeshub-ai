@@ -11,6 +11,8 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatSection } from './chat-section';
+import { useFeatureFlagsStore, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
+import { hideAccessLost } from '@/chat/utils/hide-access-lost';
 import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
 
 /**
@@ -39,14 +41,17 @@ export const ChatSections = React.memo(function ChatSections({
   const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
 
-  const conversations = useChatStore((s) => s.conversations);
-  const sharedConversations = useChatStore((s) => s.sharedConversations);
+  const collabEnabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
+  const allConversations = useChatStore((s) => s.conversations);
+  const allSharedConversations = useChatStore((s) => s.sharedConversations);
   const isConversationsLoading = useChatStore((s) => s.isConversationsLoading);
   const conversationsError = useChatStore((s) => s.conversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
   const slots = useChatStore((s) => s.slots);
   const pagination = useChatStore((s) => s.pagination);
   const sharedPagination = useChatStore((s) => s.sharedPagination);
+  const conversations = useMemo(() => hideAccessLost(allConversations, slots, collabEnabled), [allConversations, slots, collabEnabled]);
+  const sharedConversations = useMemo(() => hideAccessLost(allSharedConversations, slots, collabEnabled), [allSharedConversations, slots, collabEnabled]);
 
   // ── Render-reason tracking ──────────────────────────────────────
   debugLog.tick('[sidebar] [ChatSections]');

@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import mongoose from 'mongoose';
 import { ProjectKnowledgeBaseService } from '../../../../src/modules/projects/services/project-kb.service';
 import { Project } from '../../../../src/modules/projects/schema/project.schema';
+import { OutboxEvent } from '../../../../src/libs/services/outbox/outbox.schema';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum';
 import {
@@ -93,9 +94,11 @@ describe('ProjectKnowledgeBaseService', () => {
   // Unmatched calls resolve `undefined`, so a request the test did not expect
   // fails loudly on `response.statusCode` instead of passing silently.
   let exec: sinon.SinonStub;
+  let create: sinon.SinonStub;
 
   beforeEach(() => {
     exec = sinon.stub(connectorUtils, 'executeConnectorCommand');
+    create = sinon.stub(OutboxEvent, 'create').resolves([] as never);
   });
 
   afterEach(() => {
@@ -180,17 +183,16 @@ describe('ProjectKnowledgeBaseService', () => {
       ]);
     });
 
-    it('grants the project owner on the new KB even when someone else created it', async () => {
+    it('queues a sync so the project owner ends up owning a KB someone else created', async () => {
       sinon.stub(Project, 'findOne').resolves(makeProject());
       sinon.stub(Project, 'findOneAndUpdate').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-new' }));
       exec.withArgs(`${KB_URL}/`, HttpMethod.POST).resolves(respond(200, { id: 'kb-new' }));
-      exec.withArgs(permissionsUrl('kb-new'), HttpMethod.POST).resolves(respond(200));
 
       await ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID);
 
-      expect(bodiesSentTo(exec, permissionsUrl('kb-new'), HttpMethod.POST)).to.deep.equal([
-        { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
-      ]);
+      expect(exec.getCalls().map((call) => call.args[0])).to.not.include(permissionsUrl('kb-new'));
+      const payload = JSON.parse(create.firstCall.args[0][0].value).payload;
+      expect(payload).to.include({ kbId: 'kb-new', ownerUserId: OWNER_ID });
     });
 
     it('self-heals a stale link: recreates on 404 and guards the swap on the stale id', async () => {
@@ -297,286 +299,116 @@ describe('ProjectKnowledgeBaseService', () => {
       }
     });
 
-    it('propagates a permission-sync failure instead of reporting the KB as ready', async () => {
+    it('propagates a failed sync enqueue instead of reporting the KB as ready', async () => {
       sinon.stub(Project, 'findOne').resolves(makeProject());
       sinon.stub(Project, 'findOneAndUpdate').resolves(makeProject({ linkedKnowledgeBaseId: 'kb-new' }));
       exec.withArgs(`${KB_URL}/`, HttpMethod.POST).resolves(respond(201, { id: 'kb-new' }));
-      exec.withArgs(permissionsUrl('kb-new'), HttpMethod.POST).resolves(respond(500));
+      create.rejects(new Error('mongo down'));
 
       await expectRejection(
         ProjectKnowledgeBaseService.ensureLinkedKb(appConfig, HEADERS, ORG_ID, PROJECT_ID),
-        InternalServerError,
+        Error,
+        /mongo down/,
       );
     });
   });
 
-  describe('syncMemberPermissions', () => {
+  describe('enqueueSync', () => {
+    function queuedRows(): any[] {
+      return create.getCalls().map((call) => call.args[0][0]);
+    }
+
     it('is a no-op when the project has no linked KB', async () => {
-      await ProjectKnowledgeBaseService.syncMemberPermissions(appConfig, HEADERS, makeProject());
+      await ProjectKnowledgeBaseService.enqueueSync(makeProject());
+
+      expect(create.called).to.equal(false);
+    });
+
+    it('writes one pending projectKbSync row ordered by project, with no HTTP call', async () => {
+      await ProjectKnowledgeBaseService.enqueueSync(makeProject({ linkedKnowledgeBaseId: 'kb-1' }));
 
       expect(exec.called).to.equal(false);
+      const [row] = queuedRows();
+      expect(row).to.include({
+        topic: 'entity-events',
+        key: 'projectKbSync',
+        orderingKey: `project:${PROJECT_ID}`,
+        status: 'pending',
+        attempts: 0,
+      });
+      const event = JSON.parse(row.value);
+      expect(event.eventType).to.equal('projectKbSync');
+      expect(event.timestamp).to.be.a('number');
+      expect(event.payload).to.deep.equal({
+        orgId: ORG_ID,
+        projectId: PROJECT_ID,
+        kbId: 'kb-1',
+        ownerUserId: OWNER_ID,
+        editorUserIds: [],
+        viewerUserIds: [],
+        teams: [],
+        orgVisible: false,
+      });
     });
 
-    it('grants only the owner, as OWNER, for a private project with no members', async () => {
-      exec.resolves(respond(200));
-
-      await ProjectKnowledgeBaseService.syncMemberPermissions(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-      );
-
-      expect(exec.calledOnce).to.equal(true);
-      expect(exec.firstCall.args).to.deep.equal([
-        permissionsUrl('kb-1'),
-        HttpMethod.POST,
-        HEADERS,
-        { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
-      ]);
-    });
-
-    it('maps editors to WRITER, viewers to READER, and sends teams without a role', async () => {
-      const editorA = userMember('editor');
-      const editorB = userMember('editor');
+    it('maps editors to WRITER and viewers to READER through the role table, teams carrying a role', async () => {
+      const editor = userMember('editor');
       const viewer = userMember('viewer');
       const editorTeam = teamMember('editor');
       const viewerTeam = teamMember('viewer');
-      exec.resolves(respond(200));
 
-      await ProjectKnowledgeBaseService.syncMemberPermissions(
-        appConfig,
-        HEADERS,
+      await ProjectKnowledgeBaseService.enqueueSync(
         makeProject({
           linkedKnowledgeBaseId: 'kb-1',
-          members: [editorA.member, viewer.member, editorTeam.member, editorB.member, viewerTeam.member],
+          visibility: 'org',
+          members: [editor.member, viewer.member, editorTeam.member, viewerTeam.member],
         }),
       );
 
-      const bodies = bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST);
-      expect(bodies).to.deep.equal([
-        { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
-        { userIds: [editorA.id, editorB.id], teamIds: [], role: 'WRITER' },
-        { userIds: [viewer.id], teamIds: [], role: 'READER' },
-        { userIds: [], teamIds: [editorTeam.id, viewerTeam.id] },
+      const { payload } = JSON.parse(queuedRows()[0].value);
+      expect(payload.editorUserIds).to.deep.equal([editor.id]);
+      expect(payload.viewerUserIds).to.deep.equal([viewer.id]);
+      expect(payload.teams).to.deep.equal([
+        { teamId: editorTeam.id, role: 'WRITER' },
+        { teamId: viewerTeam.id, role: 'READER' },
       ]);
-      // The KB API rejects a team grant that carries a role.
-      expect(bodies[3]).to.not.have.property('role');
+      expect(payload.orgVisible).to.equal(true);
     });
 
-    it('sends no request for an empty bucket', async () => {
-      const viewer = userMember('viewer');
-      exec.resolves(respond(200));
+    it('lists a removed member nowhere, and never lists the owner as an editor or viewer', async () => {
+      const removed = userMember('viewer');
+      const ownerRow = {
+        principalType: 'user',
+        principalId: new mongoose.Types.ObjectId(OWNER_ID),
+        role: 'editor',
+      };
+      const project = makeProject({ linkedKnowledgeBaseId: 'kb-1', members: [removed.member, ownerRow] });
 
-      await ProjectKnowledgeBaseService.syncMemberPermissions(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1', members: [viewer.member] }),
-      );
+      await ProjectKnowledgeBaseService.enqueueSync(project, undefined, removed.id);
 
-      expect(bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST)).to.deep.equal([
-        { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
-        { userIds: [viewer.id], teamIds: [], role: 'READER' },
-      ]);
+      const { payload } = JSON.parse(queuedRows()[0].value);
+      expect(payload.viewerUserIds).to.deep.equal([]);
+      expect(payload.editorUserIds).to.deep.equal([]);
     });
 
-    it('grants the synthetic all-org team when visibility is "org"', async () => {
-      exec.resolves(respond(200));
+    it('writes the row inside the caller session when one is given, and without one otherwise', async () => {
+      const session = { id: 'session-1' } as unknown as mongoose.ClientSession;
+      const project = makeProject({ linkedKnowledgeBaseId: 'kb-1' });
 
-      await ProjectKnowledgeBaseService.syncMemberPermissions(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1', visibility: 'org' }),
-      );
+      await ProjectKnowledgeBaseService.enqueueSync(project, session);
+      await ProjectKnowledgeBaseService.enqueueSync(project);
 
-      expect(bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST)).to.deep.equal([
-        { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
-        { userIds: [], teamIds: [`all_${ORG_ID}`] },
-      ]);
+      expect(create.firstCall.args[1]).to.deep.equal({ session });
+      expect(create.secondCall.args[1]).to.deep.equal({});
     });
 
-    it('never grants the all-org team for a private project, even one with team members', async () => {
-      const team = teamMember('viewer');
-      exec.resolves(respond(200));
-
-      await ProjectKnowledgeBaseService.syncMemberPermissions(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1', members: [team.member] }),
-      );
-
-      const grantedTeamIds = bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST).flatMap(
-        (body) => body.teamIds,
-      );
-      expect(grantedTeamIds).to.deep.equal([team.id]);
-    });
-
-    it('treats 201 from the permissions endpoint as success', async () => {
-      exec.resolves(respond(201));
-
-      await ProjectKnowledgeBaseService.syncMemberPermissions(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1', visibility: 'org' }),
-      );
-
-      expect(exec.callCount).to.equal(2);
-    });
-
-    it('surfaces a failed user grant and attempts no further grants', async () => {
-      const viewer = userMember('viewer');
-      exec.resolves(respond(403, { detail: 'Not a KB owner' }));
+    it('propagates a failed outbox write so the caller does not report success', async () => {
+      create.rejects(new Error('mongo down'));
 
       await expectRejection(
-        ProjectKnowledgeBaseService.syncMemberPermissions(
-          appConfig,
-          HEADERS,
-          makeProject({ linkedKnowledgeBaseId: 'kb-1', members: [viewer.member], visibility: 'org' }),
-        ),
-        ForbiddenError,
-        /Not a KB owner/,
-      );
-
-      expect(exec.calledOnce).to.equal(true);
-    });
-
-    it('surfaces a failed team grant', async () => {
-      const team = teamMember('editor');
-      exec.onFirstCall().resolves(respond(200));
-      exec.onSecondCall().resolves(respond(500));
-
-      await expectRejection(
-        ProjectKnowledgeBaseService.syncMemberPermissions(
-          appConfig,
-          HEADERS,
-          makeProject({ linkedKnowledgeBaseId: 'kb-1', members: [team.member] }),
-        ),
-        InternalServerError,
-      );
-    });
-  });
-
-  describe('revokePrincipalPermission', () => {
-    const principalId = new mongoose.Types.ObjectId().toString();
-
-    it('is a no-op when the project has no linked KB', async () => {
-      await ProjectKnowledgeBaseService.revokePrincipalPermission(
-        appConfig,
-        HEADERS,
-        makeProject(),
-        principalId,
-        'user',
-      );
-
-      expect(exec.called).to.equal(false);
-    });
-
-    it('revokes a user by userIds', async () => {
-      exec.resolves(respond(200));
-
-      await ProjectKnowledgeBaseService.revokePrincipalPermission(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-        principalId,
-        'user',
-      );
-
-      expect(exec.calledOnce).to.equal(true);
-      expect(exec.firstCall.args).to.deep.equal([
-        permissionsUrl('kb-1'),
-        HttpMethod.DELETE,
-        HEADERS,
-        { userIds: [principalId], teamIds: [] },
-      ]);
-    });
-
-    it('revokes a team by teamIds', async () => {
-      exec.resolves(respond(200));
-
-      await ProjectKnowledgeBaseService.revokePrincipalPermission(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-        principalId,
-        'team',
-      );
-
-      expect(exec.firstCall.args[3]).to.deep.equal({ userIds: [], teamIds: [principalId] });
-    });
-
-    it('treats 404 (the principal never held a KB permission) as success', async () => {
-      exec.resolves(respond(404));
-
-      await ProjectKnowledgeBaseService.revokePrincipalPermission(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-        principalId,
-        'user',
-      );
-    });
-
-    it('surfaces any other failure so a stale permission edge is never left silently', async () => {
-      exec.resolves(respond(500));
-
-      await expectRejection(
-        ProjectKnowledgeBaseService.revokePrincipalPermission(
-          appConfig,
-          HEADERS,
-          makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-          principalId,
-          'user',
-        ),
-        InternalServerError,
-      );
-    });
-  });
-
-  describe('revokeOrgVisibility', () => {
-    it('is a no-op when the project has no linked KB', async () => {
-      await ProjectKnowledgeBaseService.revokeOrgVisibility(appConfig, HEADERS, makeProject());
-
-      expect(exec.called).to.equal(false);
-    });
-
-    it('revokes the synthetic all-org team for the project\'s own org', async () => {
-      exec.resolves(respond(200));
-
-      await ProjectKnowledgeBaseService.revokeOrgVisibility(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-      );
-
-      expect(exec.calledOnce).to.equal(true);
-      expect(exec.firstCall.args).to.deep.equal([
-        permissionsUrl('kb-1'),
-        HttpMethod.DELETE,
-        HEADERS,
-        { userIds: [], teamIds: [`all_${ORG_ID}`] },
-      ]);
-    });
-
-    it('treats 404 (the edge was never granted) as success', async () => {
-      exec.resolves(respond(404));
-
-      await ProjectKnowledgeBaseService.revokeOrgVisibility(
-        appConfig,
-        HEADERS,
-        makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-      );
-    });
-
-    it('surfaces any other failure', async () => {
-      exec.resolves(respond(403, { detail: 'Not a KB owner' }));
-
-      await expectRejection(
-        ProjectKnowledgeBaseService.revokeOrgVisibility(
-          appConfig,
-          HEADERS,
-          makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
-        ),
-        ForbiddenError,
+        ProjectKnowledgeBaseService.enqueueSync(makeProject({ linkedKnowledgeBaseId: 'kb-1' })),
+        Error,
+        /mongo down/,
       );
     });
   });

@@ -20,9 +20,15 @@ then shared by reference across every tool call for the life of the request.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+
+from app.modules.agents.collaboration import (  # noqa: TC001 - pydantic field types
+    CollaborationContext,
+    MentionRef,
+    ResumeRequest,
+)
 
 
 class AgentContext(BaseModel):
@@ -34,6 +40,10 @@ class AgentContext(BaseModel):
     # and re-renders a few KB of routing text; prompt_builder + domain_agents
     # both need the same catalog in one turn.
     _source_catalog: Any = PrivateAttr(default=None)
+
+    # Who is driving this run. `assistant` is the default chat assistant (and Universal
+    # Agent Mode); only it may load `agent_builder`. Defaults to the safe value.
+    invocation: Literal["assistant", "saved_agent", "sub_agent"] = "saved_agent"
 
     # Identity
     org_id: str
@@ -130,6 +140,12 @@ class AgentContext(BaseModel):
 
     # Conversation history (for multi-turn seeding)
     previous_conversations: list[dict[str, Any]] = Field(default_factory=list)
+    # Set only for a multi-participant chat / an ask_user_question resume;
+    # `None` keeps solo behaviour untouched.
+    collaboration: CollaborationContext | None = None
+    resume: ResumeRequest | None = None
+    # Who the current message mentions, as roster refs; empty outside a shared chat.
+    mentions: list[MentionRef] = Field(default_factory=list)
 
     # Populated by `PipesHubToolLoader.load()`: toolset registry name ->
     # `"not_authenticated"` (configured, `ToolsetAuthError`/auth-flavored
@@ -197,6 +213,11 @@ class AgentContext(BaseModel):
     # frames it builds directly (STATE_SNAPSHOT, RUN_FINISHED, RUN_ERROR,
     # CUSTOM). `None` until then; irrelevant for `LegacyFormatter`.
     run_id: str | None = None
+
+    # The chat's `aclVersion` from the Node AI payload (None for callers that
+    # send none). Keys the PDP client's allow cache; preview/download paths
+    # never have one and always ask Node.
+    acl_version: int | None = None
 
     # Stop Generation (Phase 3a): the `CancellationToken` this request's
     # `RunCancellationRegistry` entry was registered with — `None` for
@@ -348,6 +369,7 @@ class AgentContext(BaseModel):
         llm_provider: str = "", context_length: int | None = None,
         is_reasoning_model: bool = False, run_id: str | None = None,
         cancellation_token: Any = None,
+        invocation: Literal["assistant", "saved_agent", "sub_agent"] = "saved_agent",
     ) -> "AgentContext":
         """Builds an `AgentContext` from an already-built `ChatState` dict
         (Phase 8, `stream_bridge.py`) rather than re-deriving every field a
@@ -405,13 +427,18 @@ class AgentContext(BaseModel):
             conversation_id=state.get("conversation_id"),
             has_ui_client=bool(state.get("has_ui_client", False)),
             previous_conversations=state.get("previous_conversations") or [],
+            collaboration=state.get("collaboration"),
+            resume=state.get("resume"),
+            mentions=state.get("mentions") or [],
             event_sink=event_sink,
             protocol=protocol,
             llm_provider=llm_provider,
             context_length=context_length,
             is_reasoning_model=is_reasoning_model,
             run_id=run_id,
+            acl_version=state.get("acl_version"),
             cancellation_token=cancellation_token,
+            invocation=invocation,
             tool_state=state,
         )
 
@@ -465,6 +492,7 @@ class AgentContext(BaseModel):
             "config_service": self.config_service,
             "blob_store": self.blob_store,
             "org_id": self.org_id,
+            "invocation": self.invocation,
             "user_id": self.user_id,
             "user_email": self.user_email,
             "user_info": self.user_info,
@@ -500,6 +528,9 @@ class AgentContext(BaseModel):
             "timezone": self.timezone,
             "current_time": self.current_time,
             "previous_conversations": self.previous_conversations,
+            "collaboration": self.collaboration.model_dump() if self.collaboration else None,
+            "resume": self.resume.model_dump() if self.resume else None,
+            "mentions": [m.model_dump() for m in self.mentions],
             "final_results": [],
             "virtual_record_id_to_result": {},
             # Written by the knowledge tools that surface Record IDs without a

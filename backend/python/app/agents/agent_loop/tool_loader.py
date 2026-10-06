@@ -160,6 +160,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
         and allowed_sql_connector_ids
     ):
         try:
+            from app.services.artifact_registry import Actor
             from app.utils.execute_query import create_execute_query_tool
             execute_query_tool = create_execute_query_tool(
                 config_service=config_service,
@@ -168,6 +169,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 conversation_id=state.get("conversation_id"),
                 blob_store=state.get("blob_store"),
                 user_id=state.get("user_id"),
+                run_id=Actor.from_context(context).run_id,
                 allowed_connector_ids=allowed_sql_connector_ids,
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")

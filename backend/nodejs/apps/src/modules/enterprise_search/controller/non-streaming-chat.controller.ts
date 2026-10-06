@@ -1,5 +1,5 @@
 import { NextFunction, Response } from 'express';
-import mongoose, { Types } from 'mongoose';
+import { Types } from 'mongoose';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import {
@@ -14,28 +14,48 @@ import {
 import { ProjectService } from '../../projects/services/project.service';
 import { IProjectDocument } from '../../projects/types/project.interfaces';
 import { AppConfig } from '../../tokens_manager/config/config';
-import {
-  CONVERSATION_STATUS,
-  EXCLUDE_AGENT,
-  ONLY_AGENT,
-} from '../constants/constants';
-import {
-  IChatSession,
-  IChatSessionDocument,
-} from '../types/conversation.interfaces';
+import { filterOwnedAttachments } from '../utils/attachment-validation';
+import { IChatSessionDocument } from '../types/conversation.interfaces';
 import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
+import { readAclVersion } from '../../authz/cache/acl-version';
 import {
   completeTurn,
-  continueConversation,
   CONVERSATION_ID_HEADER,
-  openConversation,
 } from '../utils/non-streaming-chat';
 import {
-  loadProjectForSession,
-  resolveProjectLink,
-} from '../utils/project-context';
-import { buildUserQueryMessage, extractModelInfo } from '../utils/utils';
+  createFirstTurn,
+  rejectRepeatedFirstSend,
+  rejectResumeOnFirstSend,
+} from '../utils/first-turn';
+import { resolveProjectLink } from '../utils/project-context';
+import { extractModelInfo } from '../utils/utils';
 import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
+import {
+  aiRequestBody,
+  appendFollowUpQuery,
+  followUpContext,
+  FollowUpBody,
+} from '../utils/follow-up-turn';
+import { RunLostError } from '../services/collaboration/domain/errors';
+import { collabEnabledFor } from '../services/collaboration/http/conversation-context';
+import { LeaseLostError } from '../services/collaboration/leases/lease.types';
+import { WireMention } from '../services/collaboration/turn/mention-refs';
+import { withoutMentionTokens } from '../services/collaboration/mentions/mention.parser';
+import { CollaborationPayload } from '../services/collaboration/turn/participant-roster';
+import { ConversationTurnDeps } from '../services/collaboration/turn/turn-deps';
+import {
+  holdLease,
+  openTurnGate,
+  outcomeForError,
+  TurnGate,
+  unleasedGate,
+} from '../services/collaboration/turn/turn-gate';
+import {
+  outcomeForStatus,
+  TurnOutcome,
+} from '../services/collaboration/turn/turn-lifecycle';
+import { TurnRun } from '../services/collaboration/turn/turn-run';
+import { RUN_ID_HEADER } from '../utils/turn-stream';
 
 const logger = Logger.getInstance({ service: 'Non-streaming chat' });
 
@@ -52,28 +72,6 @@ const targetOf = (req: ChatRequest): ChatTarget =>
     ? { kind: 'agent', agentKey: req.params.agentKey }
     : { kind: 'assistant' };
 
-const sessionFields = (
-  target: ChatTarget,
-  body: Record<string, unknown>,
-  userId: Types.ObjectId,
-  orgId: Types.ObjectId,
-): Partial<IChatSession> => ({
-  orgId,
-  userId,
-  initiator: userId,
-  title: String(body.query).slice(0, 100),
-  lastActivityAt: Date.now(),
-  status: CONVERSATION_STATUS.INPROGRESS,
-  modelInfo: extractModelInfo(body),
-  ...(target.kind === 'agent'
-    ? {
-        agentKey: target.agentKey,
-        sessionType: 'agent',
-        conversationSource: 'agent_chat',
-      }
-    : { sessionType: 'chat' }),
-});
-
 /**
  * One handler for the four non-streaming chat routes; `mode` picks between
  * starting a conversation and adding a turn, `:agentKey` between the
@@ -81,7 +79,7 @@ const sessionFields = (
  * resolved to their user first, as the streaming internal routes do.
  */
 const nonStreamingTurn =
-  (appConfig: AppConfig, mode: TurnMode) =>
+  (appConfig: AppConfig, mode: TurnMode, deps: ConversationTurnDeps) =>
   async (
     req: ChatRequest,
     res: Response,
@@ -89,6 +87,9 @@ const nonStreamingTurn =
   ): Promise<void> => {
     const startTime = Date.now();
     const requestId = req.context?.requestId;
+    // `unstarted` until the user's message is stored, so a request that fails earlier leaves the session idle.
+    let outcome: TurnOutcome = 'unstarted';
+    let gate: TurnGate | undefined;
     try {
       const body = req.body as Record<string, unknown>;
       const query = body.query;
@@ -97,44 +98,73 @@ const nonStreamingTurn =
       if (typeof query !== 'string' || query.trim() === '') {
         throw new BadRequestError('Query is required');
       }
-      validateNoXSS(query, 'query');
+      // `<@type:id>` mention tokens look like tags to the filter; they are checked as mentions instead.
+      validateNoXSS(withoutMentionTokens(query), 'query');
       validateNoFormatSpecifiers(query, 'query');
 
       await hydrateScopedRequestAsUser(req, appConfig);
-      const { userId, orgId } = (req as AuthenticatedUserRequest).user as {
+      const { userId, orgId, isServiceAccount } = (
+        req as AuthenticatedUserRequest
+      ).user as {
         userId: Types.ObjectId;
         orgId: Types.ObjectId;
+        isServiceAccount?: boolean;
       };
 
       const target = targetOf(req);
-      const userMessage = buildUserQueryMessage(
-        query,
-        body.appliedFilters as never,
-        body.chatMode as string | undefined,
+      const collab = collabEnabledFor(req);
+      // A lost lease needs no action here: the answer's fenced write is the one that must fail.
+      const onLost = (): void => {
+        logger.warn('Run lost its lease during a non-streaming turn', {
+          requestId,
+          conversationId: req.params.conversationId,
+        });
+      };
+      if (mode === 'create') {
+        rejectResumeOnFirstSend(collab, (body as FollowUpBody).resume);
+        await rejectRepeatedFirstSend(
+          collab,
+          orgId,
+          userId,
+          body.clientMessageId as string | undefined,
+        );
+      } else {
+        gate = openTurnGate(req as AuthenticatedUserRequest, onLost);
+      }
+      const validatedAttachments = await filterOwnedAttachments(
+        appConfig,
+        { userId, orgId, isServiceAccount },
         body.attachments as never,
       );
 
       let conversation: IChatSessionDocument;
       let previousConversations: unknown[];
       let project: IProjectDocument | undefined;
+      let collaboration: CollaborationPayload | undefined;
+      let mentions: WireMention[] | undefined;
+      let run: TurnRun;
       if (mode === 'create') {
         const link = await resolveProjectLink(
           String(orgId),
           String(userId),
           body,
         );
-        conversation = await openConversation(
-          {
-            ...sessionFields(target, body, userId, orgId),
-            ...(link.projectId
-              ? {
-                  projectId: new mongoose.Types.ObjectId(link.projectId),
-                  projectVisibility: link.projectVisibility,
-                }
-              : {}),
-          },
-          userMessage,
-        );
+        const turn = await createFirstTurn({
+          deps,
+          collab,
+          target,
+          userId,
+          orgId,
+          body: body as FollowUpBody,
+          attachments: validatedAttachments,
+          link,
+        });
+        gate = turn.run.lease
+          ? holdLease(turn.run.lease, onLost)
+          : unleasedGate();
+        outcome = 'failed';
+        run = turn.run;
+        conversation = turn.conversation;
         previousConversations = Array.isArray(body.previousConversations)
           ? body.previousConversations
           : [];
@@ -142,29 +172,25 @@ const nonStreamingTurn =
       } else {
         // Project context always comes from the session row, never the
         // request body — a follow-up turn cannot move itself into a project.
-        const continued = await continueConversation(
-          {
-            _id: req.params.conversationId,
-            orgId,
-            userId,
-            isDeleted: false,
-            ...(target.kind === 'agent'
-              ? { agentKey: target.agentKey, ...ONLY_AGENT }
-              : EXCLUDE_AGENT),
-          },
-          userMessage,
-        );
-        conversation = continued.conversation;
-        previousConversations = continued.previousConversations;
-        project = await loadProjectForSession(
-          String(conversation.orgId),
-          String(conversation.userId),
-          conversation.projectId,
-        );
+        const turn = await appendFollowUpQuery({
+          req: req as AuthenticatedUserRequest,
+          target,
+          userId,
+          orgId,
+          body: body as FollowUpBody,
+          attachments: validatedAttachments,
+          gate: gate as TurnGate,
+        });
+        outcome = 'failed';
+        run = turn.run;
+        conversation = turn.conversation;
+        ({ previousConversations, project, collaboration, mentions } =
+          await followUpContext(req as AuthenticatedUserRequest, turn, deps));
       }
 
       const conversationId = String(conversation._id);
       res.setHeader(CONVERSATION_ID_HEADER, conversationId);
+      if (run.lease) res.setHeader(RUN_ID_HEADER, run.lease.runId);
       if (conversation.projectId) {
         void ProjectService.touchActivity(conversation.projectId.toString());
       }
@@ -173,16 +199,27 @@ const nonStreamingTurn =
         target,
         conversation,
         aiBackend: appConfig.aiBackend,
-        request: buildAiChatRequest(target, body, {
-          conversationId,
-          previousConversations,
-          isNewConversation: mode === 'create',
-          project,
-        }),
+        request: buildAiChatRequest(
+          target,
+          aiRequestBody(body as FollowUpBody, validatedAttachments, run),
+          {
+            conversationId,
+            previousConversations,
+            isNewConversation: mode === 'create',
+            aclVersion: readAclVersion(conversation),
+            project,
+            collaboration,
+            mentions,
+          },
+        ),
         headers: req.headers as Record<string, string>,
         modelInfo: extractModelInfo(body),
         requestId,
+        run,
       });
+      outcome = outcomeForStatus(turn.conversation.status as string);
+      // Release before replying: a client that sends again on seeing the answer must not meet our lease.
+      await gate?.settle(outcome);
 
       const meta = {
         requestId,
@@ -208,23 +245,34 @@ const nonStreamingTurn =
         error: error instanceof Error ? error.message : String(error),
         duration: Date.now() - startTime,
       });
-      next(error);
+      const ended = outcomeForError(error);
+      await gate?.settle(ended === 'failed' ? outcome : ended);
+      next(error instanceof LeaseLostError ? new RunLostError() : error);
+    } finally {
+      await gate?.settle(outcome);
     }
   };
 
 /** `POST /conversations/create` and `/conversations/internal/create`. */
-export const createConversation = (appConfig: AppConfig): TurnHandler =>
-  nonStreamingTurn(appConfig, 'create');
+export const createConversation = (
+  appConfig: AppConfig,
+  deps: ConversationTurnDeps,
+): TurnHandler => nonStreamingTurn(appConfig, 'create', deps);
 
 /** `POST /conversations/:conversationId/messages` and its `/internal/` twin. */
-export const addMessage = (appConfig: AppConfig): TurnHandler =>
-  nonStreamingTurn(appConfig, 'continue');
+export const addMessage = (
+  appConfig: AppConfig,
+  deps: ConversationTurnDeps,
+): TurnHandler => nonStreamingTurn(appConfig, 'continue', deps);
 
 /** `POST /agents/:agentKey/conversations`. */
-export const createAgentConversation = (appConfig: AppConfig): TurnHandler =>
-  nonStreamingTurn(appConfig, 'create');
+export const createAgentConversation = (
+  appConfig: AppConfig,
+  deps: ConversationTurnDeps,
+): TurnHandler => nonStreamingTurn(appConfig, 'create', deps);
 
 /** `POST /agents/:agentKey/conversations/:conversationId/messages`. */
 export const addMessageToAgentConversation = (
   appConfig: AppConfig,
-): TurnHandler => nonStreamingTurn(appConfig, 'continue');
+  deps: ConversationTurnDeps,
+): TurnHandler => nonStreamingTurn(appConfig, 'continue', deps);

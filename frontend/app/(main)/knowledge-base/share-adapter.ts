@@ -8,7 +8,7 @@ const BASE = '/api/v1/knowledgeBase';
 
 /**
  * Creates a ShareAdapter for a Knowledge Base (Collection).
- * Supports full CRUD permissions — roles and teams.
+ * Supports full CRUD permissions — roles and teams, each team holding its own role.
  */
 export function createKBShareAdapter(kbId: string): ShareAdapter {
   const profile = useUserStore.getState().profile;
@@ -21,6 +21,7 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
     sidebarTitle: 'Share Collection',
     supportsRoles: true,
     supportsTeams: true,
+    teamRolesEditable: true,
 
     async getSharedMembers(): Promise<SharedMember[]> {
       const { data } = await apiClient.get(`${BASE}/${kbId}/permissions`, { suppressErrorToast: true });
@@ -45,9 +46,7 @@ export function createKBShareAdapter(kbId: string): ShareAdapter {
 
     async share(submission: ShareSubmission): Promise<void> {
       await apiClient.post(`${BASE}/${kbId}/permissions`, {
-        userIds: submission.userIds,
-        teamIds: submission.teamIds,
-        role: submission.role,
+        principals: submission.principals,
       }, { suppressErrorToast: true });
     },
 

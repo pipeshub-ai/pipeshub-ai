@@ -1,6 +1,10 @@
 import { Document, Types, Model } from 'mongoose';
 import { ConfidenceLevel, ReasoningEffort } from '../constants/constants';
 import { ICitation } from '../schema/citation.schema';
+import type {
+  MentionType,
+  RespondMode,
+} from '../services/collaboration/mentions/mention.types';
 
 export interface IFollowUpQuestion {
   question: string;
@@ -147,13 +151,15 @@ export interface IMessagePart {
 }
 
 export interface IMessage {
-  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call';
+  messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call' | 'note';
   content: string;
   contentFormat?: 'MARKDOWN' | 'JSON' | 'HTML';
   /** Set on a `bot_response` persisted from a cancelled/disconnected run. */
   status?: 'stopped';
   citations?: IMessageCitation[];
   confidence?: string;
+  /** Only `Capability Card` (the `@assistant help` answer) is kept; the UI hides the search chrome for it. */
+  answerMatchType?: 'Capability Card';
   followUpQuestions?: IFollowUpQuestion[];
   feedback?: IFeedback[];
   metadata?: IMessageMetadata;
@@ -173,6 +179,20 @@ export interface IMessage {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript for this bot_response turn — see IMessagePart. */
   parts?: IMessagePart[];
+  /** `user_query` and `note`; absent on legacy rows (author = session owner). */
+  authorUserId?: Types.ObjectId;
+  /** `user_query` and `note` only: validated id tokens. Absent when the message mentions nothing. */
+  mentions?: Array<{ type: MentionType; id: string }>;
+  /** `bot_response` / `error` / `tool_call`: the user whose turn produced the row. */
+  requestedBy?: Types.ObjectId;
+  /** The `user_query` `_id` this row answers, same session. */
+  inReplyTo?: Types.ObjectId;
+  clientMessageId?: string;
+  /** Consent snapshot for the turn (D3v2); absent on legacy rows. */
+  filesShared?: boolean;
+  shareToolResults?: boolean;
+  /** Run that produced the row (PH-05 writes, PH-07 reads). */
+  runId?: string;
 }
 
 export interface IConversation {
@@ -183,10 +203,7 @@ export interface IConversation {
   messages: IMessageDocument[];
   isShared?: boolean;
   shareLink?: string;
-  sharedWith?: Array<{
-    userId: Types.ObjectId;
-    accessLevel: 'read' | 'write';
-  }>;
+  sharedWith?: IChatSessionCollaborator[];
   isDeleted?: boolean;
   deletedBy?: Types.ObjectId;
   isArchived?: boolean;
@@ -257,6 +274,30 @@ export interface IConversationModel extends Model<IConversationDocument> {
  * the agent.conversation.schema.ts override `enum: ['agent_chat']`) — this
  * type only ever needs the latter, written on agent sessions.
  */
+/**
+ * One `chatSessions.sharedWith[]` entry. Legacy rows are `{userId, accessLevel}`
+ * only (no `principalType`): readers must infer a user principal from `userId`.
+ */
+export interface IChatSessionCollaborator {
+  principalType?: 'user' | 'team';
+  /** Present iff the principal is a user. */
+  userId?: Types.ObjectId;
+  /** Graph team id (UUID or `all_<orgId>`), present iff the principal is a team. */
+  teamId?: string;
+  accessLevel: 'read' | 'write';
+  addedBy?: Types.ObjectId;
+  addedAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface IChatSessionActiveRun {
+  runId: string;
+  userId: Types.ObjectId;
+  instanceId?: string;
+  startedAt: Date;
+  leaseExpiresAt: Date;
+}
+
 export interface IChatSession {
   userId: Types.ObjectId;
   orgId: Types.ObjectId;
@@ -293,6 +334,29 @@ export interface IChatSession {
   sessionType: 'chat' | 'agent';
   /** Seq allocation counter. Internal (`select: false` in the schema) — never returned in a response. */
   nextSeq?: number;
+  /** Stored-shape version (ADR-004); absent on rows written before it existed. Internal (`select: false`). */
+  schemaVersion?: number;
+  settings?: {
+    editorsCanInvite?: boolean;
+    ownerContentShared?: boolean;
+    respondMode?: RespondMode;
+  };
+  /** Per-user archive / Leave state. Internal (`select: false`). */
+  archivedFor?: Types.ObjectId[];
+  hiddenFor?: Types.ObjectId[];
+  /** Run lease (74 §3); null/absent = idle. */
+  activeRun?: IChatSessionActiveRun | null;
+  /** Bumped on every visible change. Absent on legacy rows. */
+  rev?: number;
+  /** Bumped on every ACL change. Absent on legacy rows = 0. */
+  aclVersion?: number;
+  /** First-send idempotency key. Internal (`select: false`). */
+  creationKey?: string;
+  ownershipHistory?: Array<{
+    fromUserId: Types.ObjectId;
+    toUserId: Types.ObjectId;
+    at: Date;
+  }>;
 
   // ---- Agent-only fields, present only when sessionType === 'agent' ----
   agentKey?: string;
@@ -327,6 +391,8 @@ export interface IChatSessionMessage extends IMessage {
   orgId: Types.ObjectId;
   /** Internal sort key — never returned in a response; gaps are legal. */
   seq: number;
+  /** Stored-shape version (ADR-004); absent on legacy rows. */
+  schemaVersion?: number;
 }
 
 export interface IChatSessionMessageDocument
@@ -345,6 +411,7 @@ export type AnswerMatchType =
   | 'Exact Match'
   | 'Partial Match'
   | 'No Match'
+  | 'Capability Card'
   | 'Error';
 
 export interface IAIResponse {

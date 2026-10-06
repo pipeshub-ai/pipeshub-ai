@@ -644,7 +644,7 @@ async def _capture_code_artifact(context: "AgentContext", registry: Any, ctx: To
     language = ctx.tool_input.get("language") or "typescript"
     ext = _CODE_EXT_BY_LANGUAGE.get(language, "ts")
     logical_name = f"code_{_code_artifact_token(ctx.tool_use_id)}.{ext}"
-    actor = Actor(org_id=context.org_id, user_id=context.user_id)
+    actor = Actor.from_context(context)
     try:
         # STAGING: the captured program source never gets a download card
         # (it isn't SSE'd or marker-delivered anywhere in this module) — it
@@ -681,7 +681,7 @@ async def _resolve_input_artifacts(
     When `inmemory_store` is provided, refs are tried there FIRST (fast,
     in-process lookup for context-compacted tool results like ``artifact_4``)
     before falling back to ``ArtifactRegistryService`` (blob-backed)."""
-    actor = Actor(org_id=context.org_id, user_id=context.user_id)
+    actor = Actor.from_context(context)
     files: dict[str, bytes] = {}
     resolved: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -1074,7 +1074,7 @@ async def _register_and_deliver(
     `context.artifacts_registered_this_run` list — a rescued scratch file
     is indistinguishable, from every downstream consumer's point of view,
     from a normal `$OUTPUT_DIR` deliverable."""
-    actor = Actor(org_id=context.org_id, user_id=context.user_id)
+    actor = Actor.from_context(context)
     registered: list[ArtifactMetadata] = []
     model_blocks: list[dict[str, Any]] = []
     legacy_entries: list[dict[str, Any]] = []

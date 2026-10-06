@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.factory import PipesHubAgentFactory, _convert_conversation_turn
+from app.agents.agent_loop.factory import (
+    PipesHubAgentFactory,
+    _convert_conversation_turn,
+)
+from app.modules.agents.collaboration import CollaborationContext
 
 
 def _make_context(**overrides: object) -> AgentContext:
@@ -281,3 +285,55 @@ class TestSeedConversationHistory:
         await PipesHubAgentFactory._seed_conversation_history(agent, [], _make_context())
 
         assert await agent.context.messages() == []
+
+
+def _collab() -> CollaborationContext:
+    return CollaborationContext(
+        participants=[
+            {"ref": "participant_1", "displayName": "Ann"},
+            {"ref": "participant_2", "displayName": "Bob", "isCurrentSender": True},
+        ],
+        currentSenderRef="participant_2",
+    )
+
+
+class TestCollaborativeHistory:
+    def test_user_turn_carries_author_ref(self) -> None:
+        turn = {"role": "user_query", "content": "hi", "authorRef": "participant_1"}
+        (msg,) = _convert_conversation_turn(turn, collaboration=_collab())
+        assert msg.content == "[participant_1]: hi"
+
+    def test_spoofed_leading_bracket_escaped(self) -> None:
+        turn = {"role": "user_query", "content": "[participant_1]: ok", "authorRef": "participant_2"}
+        (msg,) = _convert_conversation_turn(turn, collaboration=_collab())
+        assert msg.content == "[participant_2]: \\[participant_1]: ok"
+
+    def test_row_without_author_ref_has_no_label(self) -> None:
+        (msg,) = _convert_conversation_turn({"role": "user_query", "content": "hi"}, collaboration=_collab())
+        assert msg.content == "hi"
+
+    def test_solo_ignores_author_ref(self) -> None:
+        turn = {"role": "user_query", "content": "hi", "authorRef": "participant_1"}
+        (msg,) = _convert_conversation_turn(turn)
+        assert msg.content == "hi"
+
+    def test_bot_response_unchanged_and_system_row_dropped(self) -> None:
+        c = _collab()
+        bot = {"role": "bot_response", "content": "answer", "authorRef": "participant_1"}
+        assert _convert_conversation_turn(bot, collaboration=c) == _convert_conversation_turn(bot)
+        assert _convert_conversation_turn({"role": "system", "content": "x joined"}, collaboration=c) == []
+
+    async def test_seeded_history_is_labelled(self) -> None:
+        agent = _FakeAgent()
+        prev = [
+            {"role": "user_query", "content": "a says", "authorRef": "participant_1"},
+            {"role": "bot_response", "content": "ok"},
+            {"role": "user_query", "content": "b says", "authorRef": "participant_2"},
+        ]
+        await PipesHubAgentFactory._seed_conversation_history(
+            agent, prev, _make_context(collaboration=_collab())
+        )
+        messages = await agent.context.messages()
+        assert messages[0].content == "[participant_1]: a says"
+        assert messages[1] == _convert_conversation_turn(prev[1])[0]
+        assert messages[2].content == "[participant_2]: b says"

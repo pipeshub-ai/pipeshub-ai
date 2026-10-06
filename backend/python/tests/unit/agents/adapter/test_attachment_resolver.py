@@ -21,7 +21,6 @@ from app.agents.agent_loop.hooks.attachment_resolver import (
     shape_retrieved_image_injection,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -716,3 +715,71 @@ class TestShapeRetrievedImageInjection:
 
         image_parts = [p for p in ctx.messages[0].content if isinstance(p, ImagePart)]
         assert len(image_parts) == 1
+
+
+# ---------------------------------------------------------------------------
+# PH07-10: another user's attachment in history is decided by the PDP
+# ---------------------------------------------------------------------------
+
+
+class _RecordingPdp:
+    def __init__(self, result: bool) -> None:
+        self.result = result
+        self.reqs: list[Any] = []
+
+    async def can_read_chat_content(self, req) -> bool:
+        self.reqs.append(req)
+        return self.result
+
+
+def _bs_attachment_graph() -> tuple[object, str]:
+    from tests.unit.modules.authz.pdp_fakes import ORG, B, Graph
+
+    graph = Graph()
+    graph.user(B)
+    graph.attachment("rec-vrid-1")
+    graph.vrid_map["vrid-1"] = ["rec-vrid-1"]
+    return graph, ORG
+
+
+class TestHistoryAttachmentViaPdp:
+    async def _run(self, pdp, **ctx_over) -> tuple[object, object, object]:
+        from app.modules.authz.node_pdp_client import set_node_pdp_client
+
+        graph, org = _bs_attachment_graph()
+        blob = AsyncMock()
+        blob.get_record_from_storage = AsyncMock(return_value=_fake_record())
+        ctx_data, goal = _make_turn_ctx()
+        context = _make_context(
+            org_id=org,
+            user_id="user-c",
+            previous_conversations=[
+                {"role": "user_query", "content": "q", "attachments": [_pdf_attachment()]},
+            ],
+            blob_store=blob,
+            tool_state={},
+            graph_provider=graph,
+            **ctx_over,
+        )
+        set_node_pdp_client(pdp)
+        try:
+            with patch("app.utils.chat_helpers.record_to_message_content", return_value=([], None)):
+                await attachment_rehydration(context)(ctx_data, _noop_next)
+        finally:
+            set_node_pdp_client(None)
+        return context, blob, goal
+
+    async def test_deny_omits_the_block_and_reads_no_blob(self) -> None:
+        pdp = _RecordingPdp(False)
+        context, blob, _ = await self._run(pdp)
+        blob.get_record_from_storage.assert_not_awaited()
+        assert "vrid-1" not in context.tool_state.get("virtual_record_id_to_result", {})
+        assert len(pdp.reqs) == 1
+
+    async def test_allow_includes_it_and_forwards_conversation_and_acl_version(self) -> None:
+        pdp = _RecordingPdp(True)
+        context, blob, _ = await self._run(pdp, acl_version=7)
+        blob.get_record_from_storage.assert_awaited_once()
+        assert "vrid-1" in context.tool_state["virtual_record_id_to_result"]
+        (req,) = pdp.reqs
+        assert (req.conversation_id, req.acl_version, req.user_id) == ("conv-1", 7, "user-c")

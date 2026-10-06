@@ -1,4 +1,6 @@
 import { IProjectDocument } from '../../projects/types/project.interfaces';
+import { WireMention } from '../services/collaboration/turn/mention-refs';
+import { CollaborationPayload } from '../services/collaboration/turn/participant-roster';
 import { applyProjectScope } from './project-context';
 
 export const parseChatMode = (
@@ -75,7 +77,13 @@ export interface AiChatTurnContext {
   previousConversations: unknown[];
   /** Set on the turn that creates the conversation; follow-ups drop `recordIds`. */
   isNewConversation: boolean;
+  /** The chat's ACL version; the AI backend keys its chat-content decision cache by it. */
+  aclVersion: number;
   project?: IProjectDocument;
+  /** Only a leased turn of a shared chat with two or more people has one; solo and flag-off turns send none. */
+  collaboration?: CollaborationPayload;
+  /** Roster refs of who the question mentions; never sent without `collaboration`. */
+  mentions?: WireMention[];
 }
 
 export interface AiChatRequest {
@@ -85,6 +93,18 @@ export interface AiChatRequest {
 }
 
 const nullable = (value: unknown): unknown => value || null;
+
+/** The card a follow-up answers; the AI backend ignores it until it reads it. */
+const resumeOf = (
+  body: Record<string, unknown>,
+  context: AiChatTurnContext,
+): { resume?: { toolCallMessageId: string } } => {
+  const id = (body.resume as { toolCallMessageId?: unknown } | undefined)
+    ?.toolCallMessageId;
+  return !context.isNewConversation && typeof id === 'string'
+    ? { resume: { toolCallMessageId: id } }
+    : {};
+};
 
 /**
  * The AI-backend request for one chat turn, shared by the streaming and
@@ -114,6 +134,12 @@ export const buildAiChatRequest = (
     currentTime: nullable(body.currentTime),
     conversationId: nullable(context.conversationId),
     runId: nullable(body.runId),
+    aclVersion: context.aclVersion,
+    ...resumeOf(body, context),
+    ...(context.collaboration && { collaboration: context.collaboration }),
+    ...(context.collaboration &&
+      context.mentions &&
+      context.mentions.length > 0 && { mentions: context.mentions }),
   };
 
   let path: string;

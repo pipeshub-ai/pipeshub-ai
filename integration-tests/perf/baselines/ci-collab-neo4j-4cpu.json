@@ -1,0 +1,6 @@
+{
+  "placeholder": true,
+  "benchmark": "collab_poll",
+  "label": "ci-collab-neo4j-4cpu",
+  "note": "Placeholder: no run on the CI runner has been recorded yet, so the feed-poll numbers are reported but not judged. Replace this file with collab-poll.json from a trusted workflow_dispatch run of Sustained Load with suite=collab (4-CPU runner, 200 viewers, 300 s, 200,000 seeded sessions, seed 1337). A run on a developer machine is in perf/results/collab-poll-200.json for reference only."
+}
