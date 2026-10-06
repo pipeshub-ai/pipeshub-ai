@@ -1461,6 +1461,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_custom_args(self):
@@ -1477,6 +1478,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
 
@@ -1621,6 +1623,7 @@ class TestRunWorkersWarning:
                 log_level="info",
                 reload=True,
                 workers=1,
+                timeout_worker_healthcheck=60,
             )
 
     def test_workers_gt_one_without_reload(self):
@@ -1640,6 +1643,7 @@ class TestRunWorkersWarning:
             log_level="info",
             reload=False,
             workers=4,
+            timeout_worker_healthcheck=60,
         )
 
     def test_workers_from_env_default(self):

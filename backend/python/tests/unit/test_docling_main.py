@@ -545,6 +545,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_defaults(self):
@@ -561,6 +562,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_reload_with_multiple_workers_forces_single_worker(self):
@@ -580,6 +582,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_no_reload_with_multiple_workers_keeps_workers(self):
@@ -599,6 +602,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=4,
+            timeout_worker_healthcheck=60,
         )
 
 

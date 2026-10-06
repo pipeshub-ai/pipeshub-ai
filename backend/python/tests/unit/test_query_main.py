@@ -824,6 +824,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_defaults(self):
@@ -849,6 +850,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
 
@@ -885,6 +887,7 @@ class TestRunWorkersWarning:
                 log_level="info",
                 reload=True,
                 workers=1,
+                timeout_worker_healthcheck=60,
             )
 
     def test_falls_back_to_one_worker_when_exec_fails(self) -> None:
@@ -972,7 +975,7 @@ class TestRunWorkersWarning:
         mock_execvp.assert_called_once()
         argv = mock_execvp.call_args[0][1]
         assert argv[1:4] == ["-m", "uvicorn", "app.query_main:app"]
-        assert argv[-2:] == ["--workers", "4"]
+        assert argv[-4:] == ["--workers", "4", "--timeout-worker-healthcheck", "60"]
 
     def test_single_worker_does_not_exec(self) -> None:
         """The default path must stay in-process -- no exec, no behaviour change."""
