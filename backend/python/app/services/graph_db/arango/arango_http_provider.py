@@ -838,6 +838,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 taxonomy_collection,
                 ["orgId", "normalizedAliases[*]"],
             )
+            # Consolidation seeks the nodes redirecting to a node; few nodes
+            # are merged, so the index is sparse.
+            await self.http_client.ensure_persistent_index(
+                taxonomy_collection, ["mergedInto"], sparse=True,
+            )
 
         # ==================== ENTITY INDEX SOURCES ====================
         # The entity index rebuild pages each source by scope, then key; without
@@ -19283,6 +19288,51 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@edges": TAXONOMY_EDGE_COLLECTIONS[collection],
                 "org_id": org_id,
                 # Never null: a constant filter lets the optimizer drop the bound.
+                "after_key": after_key or "",
+                "limit": max(1, int(limit)),
+            },
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def find_merged_taxonomy_nodes_with_edges(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_merged_taxonomy_nodes_with_edges`."""
+        if not is_taxonomy_collection(collection):
+            raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not org_id:
+            return []
+        # Walks the org's nodes (or the sparse mergedInto index, whichever
+        # the optimizer picks); a merged node holds only edges linked since
+        # its merge, so the per-node count stays small. Offline use only.
+        rows = await self.http_client.execute_aql(
+            """
+            FOR n IN @@nodes
+                FILTER n.mergedInto != null AND n.orgId == @org_id AND n._key > @after_key
+                SORT n._key
+                LET records = LENGTH(
+                    FOR e IN @@edges
+                        FILTER e._to == n._id
+                        LET rec = DOCUMENT(e._from)
+                        FILTER rec != null AND rec.orgId == @org_id
+                        RETURN DISTINCT e._from
+                )
+                FILTER records > 0
+                LIMIT @limit
+                RETURN { _key: n._key, name: n.name, mergedInto: n.mergedInto, records: records }
+            """,
+            bind_vars={
+                "@nodes": collection,
+                "@edges": TAXONOMY_EDGE_COLLECTIONS[collection],
+                "org_id": org_id,
+                # Never null: a constant-true filter lets the optimizer sort
+                # by walking every tenant's nodes in _key order.
                 "after_key": after_key or "",
                 "limit": max(1, int(limit)),
             },

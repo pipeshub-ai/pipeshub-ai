@@ -231,29 +231,38 @@ class EntityResolver:
         """``{key: winner node}`` for the ``keys`` that are merged nodes of
         ``org_id`` whose redirect chain ends at a live node of the org."""
         fields = ["id", "name", "aliases", "orgId", MERGED_INTO_FIELD]
-        rows = await self.graph_provider.get_nodes_by_field_in(
-            collection, "id", sorted(set(keys)), return_fields=fields, raise_on_error=True,
-        )
+
+        async def lookup(ids: set[str]) -> dict[str, dict[str, Any]]:
+            rows = await self.graph_provider.get_nodes_by_field_in(
+                collection, "id", sorted(ids), return_fields=fields, raise_on_error=True,
+            )
+            return {
+                key: row for row in rows or []
+                if (key := str(row.get("id") or row.get("_key") or "")) and row.get("orgId") == org_id
+            }
+
+        # Every chain advances together, one lookup per hop for all keys.
+        at: dict[str, str] = {}
+        seen: dict[str, set[str]] = {}
+        for key, row in (await lookup(set(keys))).items():
+            if hop := row.get(MERGED_INTO_FIELD):
+                at[key], seen[key] = str(hop), {key}
         out: dict[str, dict[str, Any]] = {}
-        for row in rows or []:
-            key = str(row.get("id") or row.get("_key") or "")
-            hop = row.get(MERGED_INTO_FIELD)
-            if not key or not hop or row.get("orgId") != org_id:
-                continue
-            seen = {key}
-            while hop and hop not in seen and len(seen) <= MAX_MERGE_REDIRECT_HOPS:
-                seen.add(hop)
-                (node,) = (
-                    await self.graph_provider.get_nodes_by_field_in(
-                        collection, "id", [hop], return_fields=fields, raise_on_error=True,
-                    )
-                ) or [None]
-                if node is None or node.get("orgId") != org_id:
-                    break
+        while at:
+            nodes = await lookup(set(at.values()))
+            moving: dict[str, str] = {}
+            for key, hop in at.items():
+                node = nodes.get(hop)
+                if node is None:
+                    continue
                 if not node.get(MERGED_INTO_FIELD):
                     out[key] = {**node, "id": hop}
-                    break
-                hop = node.get(MERGED_INTO_FIELD)
+                    continue
+                seen[key].add(hop)
+                nxt = str(node[MERGED_INTO_FIELD])
+                if nxt not in seen[key] and len(seen[key]) <= MAX_MERGE_REDIRECT_HOPS:
+                    moving[key] = nxt
+            at = moving
         return out
 
     # ---- collection --------------------------------------------------

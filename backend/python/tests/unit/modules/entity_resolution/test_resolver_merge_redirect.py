@@ -103,3 +103,34 @@ async def test_unmerged_new_names_cost_one_lookup_and_stay_new(
     assert entity.is_new and entity.decision == "new"
     lookups = [args for name, args in fake_graph.calls if name == "get_nodes_by_field_in"]
     assert lookups == [(LANGUAGES, "id", [_english_key()])]
+
+
+async def test_redirects_cost_one_lookup_per_hop_not_per_name(
+    make_resolver, fake_graph, metadata_factory, ctx_factory,
+) -> None:
+    names = ["english", "french", "german", "spanish"]
+    for i, name in enumerate(names):
+        _node(fake_graph, taxonomy_node_key(ORG, LANGUAGES, name), name.title(), merged_into=f"mid{i}")
+        _node(fake_graph, f"mid{i}", f"{name} (old)", merged_into="end")
+    _node(fake_graph, "end", "Language")
+    resolution = await make_resolver().resolve(ctx_factory("r1", ORG, metadata_factory(languages=names)))
+    assert [e.key for e in resolution.entries.values()] == ["end"]
+    lookups = [args for name, args in fake_graph.calls if name == "get_nodes_by_field_in"]
+    # The keys, then each hop's frontier: two hops, whatever the name count.
+    assert [args[2] for args in lookups] == [
+        sorted(taxonomy_node_key(ORG, LANGUAGES, n) for n in names),
+        [f"mid{i}" for i in range(4)],
+        ["end"],
+    ]
+
+
+async def test_a_redirect_cycle_keeps_the_new_node(
+    make_resolver, fake_graph, metadata_factory, ctx_factory,
+) -> None:
+    _node(fake_graph, _english_key(), "English", merged_into="a")
+    _node(fake_graph, "a", "A", merged_into="b")
+    _node(fake_graph, "b", "B", merged_into="a")
+    resolution = await make_resolver().resolve(ctx_factory("r1", ORG, metadata_factory(languages=["english"])))
+    (entity,) = resolution.entries.values()
+    assert entity.is_new and entity.key == _english_key()
+    assert len([1 for name, _ in fake_graph.calls if name == "get_nodes_by_field_in"]) <= 4

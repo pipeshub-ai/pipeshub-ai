@@ -696,6 +696,11 @@ class Neo4jProvider(IGraphDBProvider):
                 f"CREATE INDEX {taxonomy_label.lower()}_org_id IF NOT EXISTS "
                 f"FOR (n:{taxonomy_label}) ON (n.orgId)"
             )
+            # Consolidation seeks the nodes redirecting to a node.
+            indexes.append(
+                f"CREATE INDEX {taxonomy_label.lower()}_merged_into IF NOT EXISTS "
+                f"FOR (n:{taxonomy_label}) ON (n.mergedInto)"
+            )
 
         # ==================== ENTITY INDEX SOURCES ====================
         # The entity index rebuild pages each source by scope, then keyset on
@@ -18332,6 +18337,40 @@ class Neo4jProvider(IGraphDBProvider):
             LIMIT $limit
             """,
             parameters={"org_id": org_id, "limit": max(1, int(limit)), "after_key": after_key or ""},
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def find_merged_taxonomy_nodes_with_edges(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_merged_taxonomy_nodes_with_edges`."""
+        if not is_taxonomy_collection(collection):
+            raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not org_id:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(collection)
+        rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label})
+            WHERE n.mergedInto IS NOT NULL AND n.orgId = $org_id
+              AND ($after_key IS NULL OR n.id > $after_key)
+            MATCH (r:Record)-[:{rel}]->(n)
+            WHERE r.orgId = $org_id
+            WITH n, count(DISTINCT r) AS records
+            RETURN n.id AS _key, n.name AS name, n.mergedInto AS mergedInto, records
+            ORDER BY _key
+            LIMIT $limit
+            """,
+            parameters={"org_id": org_id, "limit": max(1, int(limit)), "after_key": after_key},
             txn_id=transaction,
         )
         return [dict(row) for row in rows or []]

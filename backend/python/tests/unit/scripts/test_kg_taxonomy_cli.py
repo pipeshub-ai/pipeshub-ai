@@ -13,6 +13,7 @@ from app.modules.entity_resolution.consolidation import (
     LegacyNode,
     MergeResult,
     MigrationResult,
+    StrayNode,
     TaxonomyNode,
 )
 from app.scripts.kg_taxonomy import (
@@ -37,6 +38,8 @@ def _consolidator() -> MagicMock:
     c.legacy_nodes = AsyncMock(side_effect=lambda coll, org: [LegacyNode("L", "Pricing", 4)] if coll == TOPICS else [])
     c.migrate_legacy = AsyncMock(side_effect=lambda *a, dry_run: MigrationResult("T", 4, dry_run))
     c.unmigrate_legacy = AsyncMock(side_effect=lambda *a, dry_run: MigrationResult("T", 4, dry_run))
+    c.stray_nodes = AsyncMock(side_effect=lambda coll, org: [StrayNode("l", "bug-bash", "w", 1)] if coll == TOPICS else [])
+    c.sweep = AsyncMock(side_effect=lambda *a, dry_run: MergeResult(1, dry_run))
     return c
 
 
@@ -225,3 +228,24 @@ async def test_a_failed_schema_step_stops_an_apply_before_any_write() -> None:
     consolidator.duplicate_groups.assert_not_awaited()
     consolidator.merge.assert_not_awaited()
     provider.disconnect.assert_awaited_once()
+
+
+async def test_strays_are_listed_and_swept() -> None:
+    _, lines, c = await _run(["strays", "--org", "o"])
+    assert lines == [{"collection": TOPICS, "node": "l", "name": "bug-bash", "merged_into": "w", "records": 1}]
+    c.sweep.assert_not_awaited()
+    code, lines, c = await _run(["sweep-strays", "--org", "o"])
+    assert code == 0
+    assert lines == [{"action": "sweep", "collection": TOPICS, "node": "l", "edges": 1,
+                      "dry_run": True, "index_refreshed": True}]
+    c.sweep.assert_awaited_once_with(TOPICS, "o", "l", dry_run=True)
+    _, _, c = await _run(["sweep-strays", "--org", "o", "--collection", TOPICS, "--apply"])
+    c.sweep.assert_awaited_once_with(TOPICS, "o", "l", dry_run=False)
+
+
+async def test_a_failed_sweep_is_reported_and_partial() -> None:
+    consolidator, out = _consolidator(), io.StringIO()
+    consolidator.sweep = AsyncMock(side_effect=RuntimeError("graph down"))
+    code = await run(build_parser().parse_args(["sweep-strays", "--org", "o", "--apply"]), consolidator, out)
+    (line,) = [json.loads(x) for x in out.getvalue().splitlines()]
+    assert code == 1 and line["node"] == "l" and "graph down" in line["error"]

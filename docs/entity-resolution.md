@@ -100,6 +100,8 @@ python -m app.scripts.kg_taxonomy merge|unmerge ...
 python -m app.scripts.kg_taxonomy legacy --org ORG
 python -m app.scripts.kg_taxonomy migrate-legacy --org ORG [--apply]
 python -m app.scripts.kg_taxonomy unmigrate-legacy ...
+python -m app.scripts.kg_taxonomy strays --org ORG
+python -m app.scripts.kg_taxonomy sweep-strays --org ORG [--apply]
 ```
 
 - `consolidate` only merges nodes of one org and collection whose names share
@@ -151,7 +153,10 @@ python -m app.scripts.kg_taxonomy unmigrate-legacy ...
   - Aliases the winner learned are kept after `unmerge`. On Neo4j, the alias
     nodes then point at both nodes.
   - Indexing that resolved to the loser just before the merge can link to it
-    after the merge finished; re-running the merge moves those edges.
+    after the merge finished. `strays` lists merged nodes the org's records
+    still link to, and `sweep-strays` moves those edges on to where each node
+    redirects. A sweep is a re-run of the merge, so `unmerge` still restores
+    the swept edges.
   - Category hierarchy edges are not moved; nothing reads them today.
 
 ## Entity index rebuild

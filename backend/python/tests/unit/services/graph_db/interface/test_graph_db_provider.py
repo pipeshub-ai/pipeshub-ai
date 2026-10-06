@@ -230,6 +230,7 @@ class TestAbstractMethodInventory:
         "get_records_pending_duplicate_reconcile",
         "move_taxonomy_edges",
         "find_legacy_taxonomy_nodes",
+        "find_merged_taxonomy_nodes_with_edges",
         "update_node_fields_if_match",
         "get_entity_index_candidate",
         "page_entity_index_source",
