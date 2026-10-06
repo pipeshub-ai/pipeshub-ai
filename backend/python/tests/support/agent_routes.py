@@ -345,6 +345,17 @@ class InMemoryGraph:
         ]
         return len(self.edges[collection]) < before
 
+    async def batch_delete_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> int:
+        self._enter("batch_delete_edges", edges, collection)
+        targets = {
+            (f"{e['from_collection']}/{e['from_id']}", f"{e['to_collection']}/{e['to_id']}") for e in edges
+        }
+        before = len(self.edges.get(collection, []))
+        self.edges[collection] = [
+            e for e in self.edges.get(collection, []) if (e["_from"], e["_to"]) not in targets
+        ]
+        return before - len(self.edges[collection])
+
     async def get_edges_from_node(self, node_id: str, edge_collection: str, transaction: str | None = None) -> list[dict]:
         self._enter("get_edges_from_node", node_id, edge_collection)
         return copy.deepcopy(self.edges_from(edge_collection, node_id))

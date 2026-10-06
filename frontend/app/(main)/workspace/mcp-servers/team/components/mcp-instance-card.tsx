@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
+import { isMcpInstanceDisabled, McpDisabledBadge } from '../../components';
 
 interface McpInstanceCardProps {
   instance: McpMyServerEntry;
@@ -100,6 +101,9 @@ export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardP
 
 function StatusBadge({ instance }: { instance: McpMyServerEntry }) {
   const { t } = useTranslation();
+  if (isMcpInstanceDisabled(instance)) {
+    return <McpDisabledBadge instance={instance} />;
+  }
   if (instance.authMode === 'none' || instance.useAdminAuth || instance.isAuthenticated) {
     return (
       <Badge color="green" size="1">
