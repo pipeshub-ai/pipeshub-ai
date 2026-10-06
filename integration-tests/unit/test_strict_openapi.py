@@ -174,3 +174,19 @@ def test_a_request_the_validator_rejects_must_be_one_the_spec_forbids() -> None:
 def test_a_rejection_that_is_not_from_the_validator_is_not_judged() -> None:
     assert _request_problems({"name": "a"}, status=400) == []
     assert _request_problems({"name": "a"}, status=404) == []
+
+
+def test_fields_described_by_any_composition_branch_are_documented() -> None:
+    doc = adapt_document({
+        "paths": {"/x": {"get": {"responses": {"500": {"content": {"application/json": {"schema": {"oneOf": [
+            {"type": "object", "properties": {"error": {"type": "object", "properties": {"code": {"type": "string"}}}}},
+            {"type": "object", "properties": {"error": {"type": "string"}}},
+        ]}}}}}}}},
+    })
+    body = json.dumps({"error": {"code": "E"}}).encode()
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 500, "application/json", body) == []
+
+
+def test_a_repeated_or_malformed_scalar_parameter_is_one_the_spec_forbids() -> None:
+    assert "sent 2 times" in _request_problems({"name": "a"}, query="kind=a&kind=b")[0]
+    assert _request_problems({"name": "a"}, query="kind=a&kind=b", status=400, rejected=["query.kind"]) == []
