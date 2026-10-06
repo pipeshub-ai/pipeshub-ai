@@ -59,6 +59,16 @@ async def test_an_issue_and_a_merge_request_with_a_dash_or_cjk_title_still_strea
     assert json.loads(await body_of(merge_request))["block_groups"]
 
 
+async def test_a_title_with_a_quote_or_a_backslash_is_escaped_in_the_download_name(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    gitlab.add_issue(WEB, 1, 'Fix "login" on C:\\app', "2026-09-01T10:00:00Z", author=ALICE, description="Steps")
+    connector = await harness.sync()
+
+    response = await connector.stream_record(db.records["11001"])
+
+    assert response.headers["content-disposition"] == 'attachment; filename="Fix \\"login\\" on C:\\\\app"'
+
+
 async def test_an_attachment_streams_its_bytes(harness, gitlab, db) -> None:
     build_acme(gitlab)
     gitlab.uploads[SPEC] = b"%PDF-1.7 spec"

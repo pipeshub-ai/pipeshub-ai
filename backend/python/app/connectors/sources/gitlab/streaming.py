@@ -26,7 +26,11 @@ if TYPE_CHECKING:
 
 def _blocks_download_headers(record: Record) -> dict[str, str]:
     # Titles are free text; a header value outside latin-1 fails the response.
-    filename = sanitize_filename_for_content_disposition(record.record_name or "", fallback="record")
+    filename = sanitize_filename_for_content_disposition(
+        record.record_name or "", fallback="record"
+    )
+    # Inside a quoted header parameter, a quote or backslash has to be escaped.
+    filename = filename.replace("\\", "\\\\").replace('"', '\\"')
     return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
