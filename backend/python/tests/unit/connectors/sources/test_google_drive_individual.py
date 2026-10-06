@@ -975,10 +975,8 @@ class TestStreamRecord:
         ) as mock_stream, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
 
             mock_dl_inst = MagicMock()
             status_mock = MagicMock()
@@ -1061,10 +1059,8 @@ class TestStreamRecord:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
@@ -1094,10 +1090,8 @@ class TestStreamRecord:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
@@ -2628,10 +2622,8 @@ class TestStreamRecordFullCoverage:
         ) as mock_stream, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
 
             mock_dl_inst = MagicMock()
             status_mock = MagicMock()
@@ -2711,10 +2703,8 @@ class TestStreamRecordFullCoverage:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
@@ -2744,10 +2734,8 @@ class TestStreamRecordFullCoverage:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
