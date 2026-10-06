@@ -3569,6 +3569,7 @@ class DataSourceEntitiesProcessor:
                         # so the idempotent re-link is a no-op unless they were missing.
                         await self._link_kb_record_to_app(new_record, tx_store)
                         await self._handle_record_permissions(new_record, permissions, tx_store)
+                        await self._handle_record_people(new_record, tx_store)
                         # The move itself is the last write and a single one: the record
                         # (its externalParentId) and its PARENT_CHILD edge, re-pointed by
                         # _key, or removed for the KB root. On Neo4j each statement commits
@@ -3612,6 +3613,7 @@ class DataSourceEntitiesProcessor:
                         self._note_full_sync_seen(
                             new_record.connector_id, CollectionNames.RECORD_GROUPS.value, record_group_id
                         )
+                        await self._handle_record_people(new_record, tx_store)
 
             # Compute and attempt the storage move for every record that was
             # actually moved (not new) BEFORE publishing any Kafka event below
