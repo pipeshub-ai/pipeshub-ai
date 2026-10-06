@@ -1057,6 +1057,8 @@ export function MessageList() {
                   supersededDraftIds={supersededDraftIds}
                   feedbackInfo={pair.feedbackInfo}
                   status={pair.status}
+                  failed={pair.failed}
+                  onRetry={handleAskMoreClick}
                   unanswered={pair.unanswered}
                   author={pair.author}
                   requestedBy={pair.requestedBy}

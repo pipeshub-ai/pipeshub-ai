@@ -1351,7 +1351,9 @@
         "askedByYouAnswered": "Asked by you · answered using your access",
         "waitingFor": "Waiting for {{name}} to answer",
         "respondingAgent": "Agent",
-        "respondingAgentAria": "Answered by {{name}}"
+        "respondingAgentAria": "Answered by {{name}}",
+        "forPerson": "For {{name}} · their access",
+        "answeringPerson": "Answering {{name}}…"
       },
       "timeline": {
         "today": "Today",
@@ -1361,7 +1363,9 @@
         "messageAria": "{{name}}, {{time}}",
         "messageAriaNoTime": "{{name}}",
         "logLabel": "Conversation",
-        "answerViews": "Answer views"
+        "answerViews": "Answer views",
+        "answerFailedTitle": "This answer failed",
+        "answerFailedRetry": "Try again"
       },
       "consent": {
         "audience_one": "Visible to {{count}} person · the owner can add more · files you add are shared",

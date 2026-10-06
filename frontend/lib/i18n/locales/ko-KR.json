@@ -1432,7 +1432,9 @@
         "askedByYouAnswered": "내가 질문 · 내 권한으로 답변",
         "waitingFor": "{{name}}님의 답변을 기다리는 중",
         "respondingAgent": "에이전트",
-        "respondingAgentAria": "{{name}}의 답변"
+        "respondingAgentAria": "{{name}}의 답변",
+        "forPerson": "{{name}}님을 위해 · 해당 권한 사용",
+        "answeringPerson": "{{name}}님에게 답변 중…"
       },
       "timeline": {
         "today": "오늘",
@@ -1442,7 +1444,9 @@
         "messageAria": "{{name}}, {{time}}",
         "messageAriaNoTime": "{{name}}",
         "logLabel": "대화",
-        "answerViews": "답변 보기"
+        "answerViews": "답변 보기",
+        "answerFailedTitle": "이 답변을 생성하지 못했습니다",
+        "answerFailedRetry": "다시 시도"
       },
       "consent": {
         "audience_other": "{{count}}명에게 표시됨 · 소유자가 더 추가할 수 있음 · 추가한 파일은 공유됨",

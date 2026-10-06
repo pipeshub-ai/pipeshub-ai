@@ -33,6 +33,8 @@ export interface MessagePair {
   agentDraftMessageId?: string;
   /** Set when this response was cut short by a user-initiated Stop. */
   status?: 'stopped';
+  /** The run failed: `answer` holds the error text, not an answer. */
+  failed?: boolean;
   /** No assistant row follows this question — render the question alone, no answer area. */
   unanswered?: boolean;
   /** Who sent the question (collaborative chats); `null` is a former member. */
@@ -72,6 +74,7 @@ type AssistantCustom = {
   agentDraftAuthor?: string;
   agentDraftMessageId?: string;
   status?: 'stopped';
+  failed?: boolean;
   requestedBy?: MessageAuthor | null;
   respondingAgent?: RespondingAgent;
   createdAt?: string;
@@ -248,6 +251,7 @@ export function buildMessagePairs(
             }
           : {}),
         status: metadata?.status,
+        ...(metadata?.failed ? { failed: true } : {}),
         ...(userMsgCustom?.author !== undefined ? { author: userMsgCustom.author } : {}),
         ...(metadata?.requestedBy !== undefined ? { requestedBy: metadata.requestedBy } : {}),
         ...(metadata?.respondingAgent ? { respondingAgent: metadata.respondingAgent } : {}),

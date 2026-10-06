@@ -20,6 +20,8 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { AuthorChip } from '../collaboration/author-chip';
 import { AnsweredAsLabel } from '../collaboration/answered-as-label';
+import { AnswerFailed } from './timeline/answer-failed';
+import { AnsweringLine } from './timeline/answering-line';
 import { HumanMessage } from './timeline/human-message';
 import { ReplyMessage } from './timeline/reply-message';
 import { AgentAnswerHeader } from '../collaboration/agent-answer-header';
@@ -144,6 +146,10 @@ interface ChatResponseProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
   status?: 'stopped';
+  /** The run failed: `answer` is the error text. */
+  failed?: boolean;
+  /** Resend a question; offered on a failed last answer to the person it was run for. */
+  onRetry?: (question: string) => void;
   /**
    * No assistant row exists for this question (see `buildMessagePairs`). The
    * question is drawn on its own: an answer area, tabs and message actions
@@ -197,6 +203,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   supersededDraftIds,
   feedbackInfo,
   status,
+  failed = false,
+  onRetry,
   unanswered = false,
   author,
   requestedBy,
@@ -604,13 +612,28 @@ export const ChatResponse = React.memo(function ChatResponse({
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
 
+  const canRetry = isLastMessage && onRetry !== undefined && regenerateAllowed(
+    collabAccess,
+    collabAccess.collabEnabled,
+    { requestedBy, author },
+    meUserId,
+  );
+  const hideConfidence = rowMode !== 'both' && (confidence === 'High' || confidence === 'Very High');
+
   const renderTabContent = () => {
     switch (activeTab) {
       case 'answer':
+        if (failed && !isStreaming) {
+          return (
+            <Box style={{ padding: rowMode === 'reply' ? 'var(--space-1) 0' : 'var(--space-4) 0' }}>
+              <AnswerFailed message={answer} onRetry={canRetry ? () => onRetry?.(question) : undefined} />
+            </Box>
+          );
+        }
         return (
           <Box style={{ padding: rowMode === 'reply' ? 'var(--space-1) 0' : 'var(--space-4) 0' }}>
             {/* Show confidence only when not streaming and has answer */}
-            {!isStreaming && !isCapabilityCard && confidence && <ConfidenceIndicator confidence={confidence} />}
+            {!isStreaming && !isCapabilityCard && confidence && !hideConfidence && <ConfidenceIndicator confidence={confidence} />}
 
             {/* Agent activity timeline — thinking / tool calls / sub-agents,
                 streamed live or rendered from the persisted transcript.
@@ -982,9 +1005,22 @@ export const ChatResponse = React.memo(function ChatResponse({
   }
 
   if (rowMode === 'reply') {
+    const showAsker = attributionVisible(collabActive, collabAccess.collabEnabled, asker, meUserId);
+    const askerIsMe = asker != null && asker.userId === meUserId;
+    const headerExtra = !showAsker ? null : isStreaming ? (
+      askerIsMe ? null : <AnsweringLine name={asker?.displayName || t('chat.collab.attribution.formerMember')} />
+    ) : activeTab === 'answer' ? (
+      <AnsweredAsLabel asker={asker} meUserId={meUserId} />
+    ) : null;
     const showChips = !unanswered && !isCapabilityCard && (sourcesCount > 0 || citationCount > 0 || activeTab !== 'answer') && !(askQuestionMatchesRow || persistedAskUserQuestion);
     const reply = (
-      <ReplyMessage respondingAgent={respondingAgent} time={answeredAt} replyingTo={replyingTo} meUserId={meUserId}>
+      <ReplyMessage
+        respondingAgent={respondingAgent}
+        time={answeredAt}
+        replyingTo={replyingTo}
+        meUserId={meUserId}
+        headerExtra={headerExtra}
+      >
         {renderTabContent()}
         {showChips ? (
           <ResponseTabs
@@ -995,7 +1031,7 @@ export const ChatResponse = React.memo(function ChatResponse({
             citationCount={citationCount}
           />
         ) : null}
-        {activeTab === 'answer' && (
+        {activeTab === 'answer' && !(failed && !isStreaming) && (
           <MessageActions
             compact
             allowRegenerate={regenerateAllowed(
@@ -1014,9 +1050,6 @@ export const ChatResponse = React.memo(function ChatResponse({
             appliedFilters={appliedFilters}
             feedbackInfo={feedbackInfo}
           />
-        )}
-        {!isStreaming && activeTab === 'answer' && attributionVisible(collabActive, collabAccess.collabEnabled, asker, meUserId) && (
-          <AnsweredAsLabel asker={asker} meUserId={meUserId} />
         )}
       </ReplyMessage>
     );

@@ -146,7 +146,7 @@ describe('human message row', () => {
 });
 
 describe('reply row', () => {
-  it('names the assistant "PipesHub" and holds the answer, with the asked-by line under it', () => {
+  it('names the assistant "PipesHub" and holds the answer, with a compact access note in its header', () => {
     setup();
     row({ rowMode: 'reply', author: bob, requestedBy: bob });
     const article = screen.getByRole('article');
@@ -154,7 +154,9 @@ describe('reply row', () => {
     expect(within(article).getByTestId('message-author').textContent).toBe('PipesHub');
     expect(within(article).getByTestId('answer').textContent).toContain('chicken');
     const label = within(article).getByTestId('answered-as-label');
-    expect(label.textContent).toBe("Asked by Bob Builder · answered using Bob Builder's access");
+    expect(label.textContent).toBe('For Bob Builder · their access');
+    expect(label.getAttribute('aria-label')).toBe("Asked by Bob Builder · answered using Bob Builder's access");
+    expect(within(article).getByTestId('message-author').parentElement?.contains(label)).toBe(true);
     expect(within(article).queryByText('tell me a joke')).toBeNull();
   });
 
@@ -166,10 +168,10 @@ describe('reply row', () => {
     expect(article.getAttribute('style')).toMatch(/grid-template-columns: minmax\(0(px)?, 1fr\) 32px/);
     const block = within(article).getByTestId('message-body-block');
     expect(block.getAttribute('style')).toMatch(/margin-inline-start: auto/);
-    expect(block.getAttribute('style')).toMatch(/max-width: 85%/);
+    expect(block.getAttribute('style')).toMatch(/(^|[ ;])width: 85%/);
     expect(block.getAttribute('style')).toMatch(/text-align: start/);
     expect(block.contains(within(article).getByTestId('answer'))).toBe(true);
-    expect(block.contains(within(article).getByTestId('answered-as-label'))).toBe(true);
+    expect(block.contains(within(article).getByTestId('answered-as-label'))).toBe(false);
   });
 
   it('names the chat\'s own agent', () => {
@@ -197,7 +199,8 @@ describe('reply row', () => {
     expect(screen.queryByTestId('replying-to')).toBeNull();
     unmount();
     row({ rowMode: 'reply', replyingTo: bob });
-    expect(screen.getByTestId('replying-to').textContent).toBe('Replying to Bob Builder');
+    expect(screen.getByTestId('replying-to').textContent).toContain('Replying to Bob Builder');
+    expect(screen.getByTestId('message-body-block').contains(screen.getByTestId('replying-to'))).toBe(true);
   });
 
   it('keeps the answer actions and swaps the big tabs for chips that switch the view', () => {
@@ -260,11 +263,47 @@ describe('reply row', () => {
       expect(article.getAttribute('data-side')).toBe('right');
       expect(article.getAttribute('style')).toMatch(/grid-template-columns: minmax\(0(px)?, 1fr\) 24px/);
       const block = screen.getByTestId('message-body-block');
-      expect(block.getAttribute('style')).toMatch(/margin-inline-start: 20%/);
+      expect(block.getAttribute('style')).toMatch(/margin-inline-start: var\(--space-6\)/);
       expect(block.getAttribute('style')).toMatch(/background: var\(--olive-2\)/);
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('reply chrome', () => {
+  const confident = (confidence: 'High' | 'Medium') => ({ rowMode: 'reply' as const, confidence });
+
+  it('hides a High confidence chip but keeps a Medium one', () => {
+    setup();
+    const { unmount } = row(confident('High'));
+    expect(screen.queryByText('High')).toBeNull();
+    unmount();
+    row(confident('Medium'));
+    expect(screen.getByText('Medium')).toBeTruthy();
+  });
+
+  it('says whom the answer streams for in the header, and nothing when the viewer asked', () => {
+    setup();
+    const { unmount } = row({ rowMode: 'reply', isStreaming: true, answeredAt: undefined, author: bob, requestedBy: bob });
+    expect(screen.getByTestId('answering-line').textContent).toContain('Answering Bob Builder');
+    expect(screen.queryByTestId('answered-as-label')).toBeNull();
+    unmount();
+    row({ rowMode: 'reply', isStreaming: true, answeredAt: undefined });
+    expect(screen.queryByTestId('answering-line')).toBeNull();
+  });
+
+  it('draws a failed answer as an error and retries the question for the asker only', () => {
+    setup();
+    const onRetry = vi.fn();
+    const { unmount } = row({ rowMode: 'reply', failed: true, answer: 'The model is unavailable', onRetry });
+    expect(screen.getByTestId('answer-failed').textContent).toContain('The model is unavailable');
+    fireEvent.click(screen.getByTestId('answer-failed-retry'));
+    expect(onRetry).toHaveBeenCalledWith('tell me a joke');
+    unmount();
+    row({ rowMode: 'reply', failed: true, answer: 'The model is unavailable', onRetry, author: bob, requestedBy: bob });
+    expect(screen.getByTestId('answer-failed')).toBeTruthy();
+    expect(screen.queryByTestId('answer-failed-retry')).toBeNull();
   });
 });
 

@@ -1390,3 +1390,27 @@ th code {
   .ph-collab-access-slot .rt-Button .rt-Text { display: none; }
   .ph-collab-access-slot .rt-Button { min-width: 28px; min-height: 28px; justify-content: center; }
 }
+
+/* Collaborative chat: "Answering X…" typing indicator */
+.pcc-typing-dots {
+  display: inline-flex;
+  gap: 2px;
+  margin-inline-start: 2px;
+  vertical-align: baseline;
+}
+.pcc-typing-dots > span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pcc-typing-pulse 1.2s ease-in-out infinite;
+}
+.pcc-typing-dots > span:nth-child(2) { animation-delay: 0.2s; }
+.pcc-typing-dots > span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes pcc-typing-pulse {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pcc-typing-dots > span { animation: none; opacity: 0.6; }
+}

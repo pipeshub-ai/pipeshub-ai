@@ -1432,7 +1432,9 @@
         "askedByYouAnswered": "由您提问 · 使用您的权限回答",
         "waitingFor": "正在等待 {{name}} 回答",
         "respondingAgent": "智能体",
-        "respondingAgentAria": "由 {{name}} 回答"
+        "respondingAgentAria": "由 {{name}} 回答",
+        "forPerson": "为 {{name}} · 使用其权限",
+        "answeringPerson": "正在回答 {{name}}…"
       },
       "timeline": {
         "today": "今天",
@@ -1442,7 +1444,9 @@
         "messageAria": "{{name}}，{{time}}",
         "messageAriaNoTime": "{{name}}",
         "logLabel": "对话",
-        "answerViews": "回答视图"
+        "answerViews": "回答视图",
+        "answerFailedTitle": "此回答失败",
+        "answerFailedRetry": "重试"
       },
       "consent": {
         "audience_other": "{{count}} 人可见 · 拥有者可添加更多人 · 您添加的文件将被共享",

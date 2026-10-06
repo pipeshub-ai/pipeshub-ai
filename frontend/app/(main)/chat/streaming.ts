@@ -268,12 +268,20 @@ function withStreamingErrorMessage(
   if (last?.role === 'assistant' && getThreadMessagePlainText(last).trim() === '') {
     return [
       ...currentMessages.slice(0, -1),
-      { ...last, content: [{ type: 'text' as const, text: errorText }] },
+      {
+        ...last,
+        content: [{ type: 'text' as const, text: errorText }],
+        metadata: { ...last.metadata, custom: { ...last.metadata?.custom, failed: true } },
+      },
     ];
   }
   return [
     ...currentMessages,
-    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }] },
+    {
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: errorText }],
+      metadata: { custom: { failed: true } },
+    },
   ];
 }
 

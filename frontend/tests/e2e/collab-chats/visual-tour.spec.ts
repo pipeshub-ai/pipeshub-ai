@@ -182,9 +182,9 @@ for (const combo of COMBOS) {
       await composer(bob.page).fill(Q2);
       await bob.page.getByRole('button', { name: 'Send message' }).click();
       await expect(bob.page.getByText('Team plan stays at')).toBeVisible({ timeout: 40_000 });
-      await expect(bob.page.getByTestId('answered-as-label')).toHaveCount(2);
+      await expect(bob.page.getByTestId('answered-as-label')).toHaveCount(1);
       await bob.page.getByTestId('human-message').first().scrollIntoViewIfNeeded();
-      await shot(bob.page, '13', 'history-bob-tab', 'Bob\'s tab: Alice\'s turn (chip "User Owner", "Asked by User Owner · answered using ...") and Bob\'s own turn ("You", "Asked by you · answered using your access").');
+      await shot(bob.page, '13', 'history-bob-tab', 'Bob\'s tab: Alice\'s turn (chip "User Owner", header note "For User Owner · their access") and Bob\'s own turn ("You", no access note).');
       await bob.page.getByTestId('human-message').last().scrollIntoViewIfNeeded();
       await openChat(alice.page, chat);
       await expect(alice.page.getByText('Team plan stays at')).toBeVisible({ timeout: 30_000 });

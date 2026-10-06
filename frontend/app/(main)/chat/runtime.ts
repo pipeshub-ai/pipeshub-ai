@@ -665,6 +665,7 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
+            failed: true,
           },
         },
       });

@@ -103,15 +103,17 @@ describe('attribution (UX-10)', () => {
     row();
 
     expect(screen.getByTestId('author-chip')).toHaveProperty('textContent', 'BBob');
-    expect(screen.getByTestId('answered-as-label').textContent).toBe("Asked by Bob · answered using Bob's access");
+    const label = screen.getByTestId('answered-as-label');
+    expect(label.textContent).toBe('For Bob · their access');
+    expect(label.getAttribute('aria-label')).toBe("Asked by Bob · answered using Bob's access");
   });
 
-  it('says "You" for the viewer\'s own turn', () => {
+  it('says "You" for the viewer\'s own turn and drops the access note', () => {
     setup();
     row({ author: alice, requestedBy: alice });
 
     expect(screen.getByTestId('author-chip').textContent).toContain('You');
-    expect(screen.getByTestId('answered-as-label').textContent).toBe('Asked by you · answered using your access');
+    expect(screen.queryByTestId('answered-as-label')).toBeNull();
   });
 
   it('names a null author "Former member"', () => {
@@ -135,7 +137,9 @@ describe('attribution (UX-10)', () => {
     row();
 
     expect(screen.getByTestId('author-chip').textContent).toContain('Bob');
-    expect(screen.getByTestId('answered-as-label').textContent).toBe("Asked by Bob · answered using Bob's access");
+    const label = screen.getByTestId('answered-as-label');
+    expect(label.textContent).toBe('For Bob · their access');
+    expect(label.getAttribute('aria-label')).toBe("Asked by Bob · answered using Bob's access");
   });
 
   it('shows neither with the flag off, even in a shared chat', () => {
@@ -263,7 +267,9 @@ describe('the guest agent that answered (M2)', () => {
     expect(header.getAttribute('aria-label')).toBe('Answered by Joke Buddy');
     expect(screen.getByTestId('agent-answer-name').textContent).toBe('Joke Buddy');
     await waitFor(() => expect(screen.getByTestId('agent-answer-avatar').textContent).toBe('J'));
-    expect(screen.getByTestId('answered-as-label').textContent).toBe("Asked by Bob · answered using Bob's access");
+    const label = screen.getByTestId('answered-as-label');
+    expect(label.textContent).toBe('For Bob · their access');
+    expect(label.getAttribute('aria-label')).toBe("Asked by Bob · answered using Bob's access");
 
     fireEvent.focus(header);
     fireEvent.pointerMove(header);

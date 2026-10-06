@@ -1351,7 +1351,9 @@
         "askedByYouAnswered": "Von Ihnen gefragt · mit Ihrem Zugriff beantwortet",
         "waitingFor": "Warten auf die Antwort von {{name}}",
         "respondingAgent": "Agent",
-        "respondingAgentAria": "Beantwortet von {{name}}"
+        "respondingAgentAria": "Beantwortet von {{name}}",
+        "forPerson": "Für {{name}} · mit deren Zugriff",
+        "answeringPerson": "Antwortet {{name}} …"
       },
       "timeline": {
         "today": "Heute",
@@ -1361,7 +1363,9 @@
         "messageAria": "{{name}}, {{time}}",
         "messageAriaNoTime": "{{name}}",
         "logLabel": "Unterhaltung",
-        "answerViews": "Ansichten der Antwort"
+        "answerViews": "Ansichten der Antwort",
+        "answerFailedTitle": "Diese Antwort ist fehlgeschlagen",
+        "answerFailedRetry": "Erneut versuchen"
       },
       "consent": {
         "audience_one": "Sichtbar für {{count}} Person · der Eigentümer kann weitere hinzufügen · von Ihnen hinzugefügte Dateien werden geteilt",

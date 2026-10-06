@@ -1351,7 +1351,9 @@
         "askedByYouAnswered": "आपने पूछा · आपकी पहुँच से उत्तर दिया गया",
         "waitingFor": "{{name}} के उत्तर की प्रतीक्षा है",
         "respondingAgent": "एजेंट",
-        "respondingAgentAria": "{{name}} द्वारा उत्तर दिया गया"
+        "respondingAgentAria": "{{name}} द्वारा उत्तर दिया गया",
+        "forPerson": "{{name}} के लिए · उनकी पहुँच से",
+        "answeringPerson": "{{name}} को उत्तर दिया जा रहा है…"
       },
       "timeline": {
         "today": "आज",
@@ -1361,7 +1363,9 @@
         "messageAria": "{{name}}, {{time}}",
         "messageAriaNoTime": "{{name}}",
         "logLabel": "बातचीत",
-        "answerViews": "उत्तर के दृश्य"
+        "answerViews": "उत्तर के दृश्य",
+        "answerFailedTitle": "यह उत्तर विफल रहा",
+        "answerFailedRetry": "फिर से कोशिश करें"
       },
       "consent": {
         "audience_one": "{{count}} व्यक्ति को दिखेगा · स्वामी अन्य लोगों को भी जोड़ सकते हैं · आपके द्वारा जोड़ी गई फ़ाइलें साझा होती हैं",

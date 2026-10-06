@@ -1368,7 +1368,9 @@
         "askedByYouAnswered": "Preguntado por ti · respondido con tu acceso",
         "waitingFor": "Esperando la respuesta de {{name}}",
         "respondingAgent": "Agente",
-        "respondingAgentAria": "Respondido por {{name}}"
+        "respondingAgentAria": "Respondido por {{name}}",
+        "forPerson": "Para {{name}} · con su acceso",
+        "answeringPerson": "Respondiendo a {{name}}…"
       },
       "timeline": {
         "today": "Hoy",
@@ -1378,7 +1380,9 @@
         "messageAria": "{{name}}, {{time}}",
         "messageAriaNoTime": "{{name}}",
         "logLabel": "Conversación",
-        "answerViews": "Vistas de la respuesta"
+        "answerViews": "Vistas de la respuesta",
+        "answerFailedTitle": "Esta respuesta ha fallado",
+        "answerFailedRetry": "Reintentar"
       },
       "consent": {
         "audience_one": "Visible para {{count}} persona · el propietario puede añadir más · los archivos que añadas se comparten",

@@ -19,15 +19,17 @@ interface MessageRowProps {
   testId: string;
   /** Hover/focus toolbar, drawn at the row's top right. */
   actions?: (active: boolean) => React.ReactNode;
-  /** A line above the header, in the content column ("Replying to X"). */
+  /** A line above the answer inside an AI reply's block ("Replying to X"). */
   lead?: React.ReactNode;
+  /** Drawn after the time in the header line (an AI reply's access note or live status). */
+  headerExtra?: React.ReactNode;
   /** Shown when hovering the name (an agent's handle). */
   nameTooltip?: string;
   children: React.ReactNode;
 }
 
 /** The Slack-style row shared by people's messages and AI replies: gutter, header line, body. */
-export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, testId, actions, lead, nameTooltip, children }: MessageRowProps) {
+export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, testId, actions, lead, headerExtra, nameTooltip, children }: MessageRowProps) {
   const { t } = useTranslation();
   const size = useAvatarSize();
   const [hovered, setHovered] = useState(false);
@@ -63,15 +65,14 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
         position: 'relative',
       }}
     >
-      {lead ? <Box style={{ gridColumn: bodyCol, gridRow: 1, marginTop: 'var(--space-1)', marginBottom: 2, textAlign: right ? 'end' : undefined }}>{lead}</Box> : null}
-      <Flex justify="center" align="start" style={{ paddingTop: showHeader ? 0 : 2, gridColumn: gutterCol, gridRow: lead ? 2 : 1 }}>
+      <Flex justify="center" align="start" style={{ paddingTop: showHeader ? 0 : 2, gridColumn: gutterCol, gridRow: 1 }}>
         {showHeader ? (
           <MessageAvatar name={name} tone={tone} size={size} src={avatarSrc} />
         ) : time ? (
           <MessageTime iso={time} compact visible={active} />
         ) : null}
       </Flex>
-      <Box style={{ minWidth: 0, gridColumn: bodyCol, gridRow: lead ? 2 : 1 }}>
+      <Box style={{ minWidth: 0, gridColumn: bodyCol, gridRow: 1 }}>
         {showHeader ? (
           <Flex align="baseline" gap="2" wrap="wrap" justify={right ? 'end' : undefined} style={{ marginBottom: 2 }}>
             {nameTooltip ? (
@@ -86,6 +87,7 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
               </Text>
             )}
             {time ? <MessageTime iso={time} /> : null}
+            {headerExtra}
           </Flex>
         ) : null}
         {right ? (
@@ -94,8 +96,8 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
             data-compact={compactWidth ? 'true' : undefined}
             style={{
               ...(compactWidth
-                ? { width: 'auto', marginInlineStart: '20%' }
-                : { width: 'fit-content', maxWidth: '85%', marginInlineStart: 'auto' }),
+                ? { width: 'auto', marginInlineStart: 'var(--space-6)' }
+                : { width: '85%', marginInlineStart: 'auto' }),
               minWidth: 0,
               textAlign: 'start',
               background: 'var(--olive-2)',
@@ -104,6 +106,7 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
               padding: 'var(--space-3)',
             }}
           >
+            {lead}
             {children}
           </Box>
         ) : (
