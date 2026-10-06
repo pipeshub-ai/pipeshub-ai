@@ -24,6 +24,7 @@ import { SharedChatItemMenu } from './shared-chat-item-menu';
 import { ChatRowBadges } from './chat-row-badges';
 import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog, LeaveChatDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
+import { displayTitle } from '@/lib/utils/display-title';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -78,11 +79,12 @@ interface ChatSectionElementProps {
  */
 export function ChatSectionElement({ conversation, isActive, onClick, agentId, projectId }: ChatSectionElementProps) {
   const { t } = useTranslation();
+  const shownTitle = displayTitle(conversation.title) ?? '';
 
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(conversation.title);
+  const [renameValue, setRenameValue] = useState(shownTitle);
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
@@ -137,14 +139,14 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
 
   const handleStartRename = () => {
     if (convStreamingBlocksSidebarMutation()) return;
-    setRenameValue(conversation.title);
+    setRenameValue(shownTitle);
     setIsRenaming(true);
   };
 
   const handleRenameBlur = async () => {
     if (!isRenaming || isSavingRename) return;
     if (convStreamingBlocksSidebarMutation()) {
-      setRenameValue(conversation.title);
+      setRenameValue(shownTitle);
       setIsRenaming(false);
       return;
     }
@@ -425,11 +427,11 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
       <SidebarItem
         label={
           isConversationStreaming ? (
-            <StreamingTitleLabel title={conversation.title} />
+            <StreamingTitleLabel title={shownTitle} />
           ) : isTypingTitle ? (
-            <TypingTitle title={conversation.title} />
+            <TypingTitle title={shownTitle} />
           ) : (
-            conversation.title
+            shownTitle
           )
         }
         isActive={isActive}
@@ -455,7 +457,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleConfirmDelete}
-        chatTitle={conversation.title}
+        chatTitle={shownTitle}
         isDeleting={isDeleting}
       />
 
@@ -463,7 +465,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
         open={archiveDialogOpen}
         onOpenChange={setArchiveDialogOpen}
         onConfirm={handleConfirmArchive}
-        chatTitle={conversation.title}
+        chatTitle={shownTitle}
         isArchiving={isArchiving}
       />
 

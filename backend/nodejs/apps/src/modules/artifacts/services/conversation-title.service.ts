@@ -1,3 +1,4 @@
+import { displayTitle } from '../../enterprise_search/services/collaboration/mentions/mention.parser';
 import { FilterQuery, Types } from 'mongoose';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
 import { IChatSession } from '../../enterprise_search/types/conversation.interfaces';
@@ -28,7 +29,7 @@ export class ConversationTitleService {
     return new Map(
       (sessions || []).map((session) => [
         String(session._id),
-        session.title ?? 'Untitled',
+        displayTitle(session.title) ?? 'Untitled',
       ]),
     );
   }

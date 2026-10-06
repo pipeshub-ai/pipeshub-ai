@@ -8,6 +8,7 @@ import { Conversation } from '../types';
 import { Flex, Box, Text, Button, IconButton } from '@radix-ui/themes';
 import { PipesHubIcon } from '@/app/components/ui';
 import { useTranslation } from 'react-i18next';
+import { displayTitle } from '@/lib/utils/display-title';
 
 //TODO: Refactor to separate files
 
@@ -113,7 +114,7 @@ const ChatItem = ({ conversation, isActive, onClick }: ChatItemProps) => (
         textAlign: 'left',
       }}
     >
-      {conversation.title}
+      {displayTitle(conversation.title)}
     </span>
   </Button>
 );

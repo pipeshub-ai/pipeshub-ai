@@ -78,6 +78,8 @@ export interface ConversationCreatedFrame {
   runId?: string;
   /** Colleagues the message mentions who are not in the chat (follow-ups only). */
   nonParticipants?: readonly string[];
+  /** The message asked nobody: it was stored as a note and no run follows. */
+  note?: true;
 }
 
 /** The `conversation_created` frame that links the stream to its conversation (and, with a lease, its run). */

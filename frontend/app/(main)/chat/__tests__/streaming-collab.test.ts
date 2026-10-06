@@ -516,6 +516,31 @@ describe('the first send of a new chat that has draft collaborators (M2)', () =>
   });
 });
 
+describe('a first message that mentions only people', () => {
+  const noteRow = stored({ _id: 'n1', messageType: 'note', content: '@Dana can you look?', seq: 0, mentions: [{ type: 'user', id: 'u-dana' }] } as never);
+
+  function noteStream() {
+    return sseResponse([
+      frame('CUSTOM', { name: 'conversation_created', value: { conversationId: 'conv-9', title: '@Dana can you look?', note: true } }),
+      frame('RUN_FINISHED', { result: { conversation: { ...conversation([noteRow]), _id: 'conv-9', title: '@Dana can you look?' } } }),
+    ]);
+  }
+
+  it('settles on the stored note as a human row: no assistant row, no thinking state, the chat created', async () => {
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.setState({ activeSlotId: slotId });
+    fetchMock.mockResolvedValueOnce(noteStream());
+    await streamMessageForSlot(slotId, '<@user:u-dana> can you look?', request({ query: '<@user:u-dana> can you look?' }));
+    const s = slot(slotId);
+    expect(s.isStreaming).toBe(false);
+    expect(s.currentStatusMessage ?? null).toBeNull();
+    expect(s.streamingParts).toEqual([]);
+    expect(s.messages.map((m) => [m.role, (m.metadata?.custom as { messageType?: string } | undefined)?.messageType])).toEqual([['system', 'note']]);
+    expect(s.convId).toBe('conv-9');
+    expect(useChatStore.getState().conversations.some((c) => c.id === 'conv-9' && c.title === '@Dana can you look?')).toBe(true);
+  });
+});
+
 describe('the guest agent that answered, on the stream that created the answer (M2)', () => {
   const answer = (extra: Partial<ConversationMessage> = {}) => [
     ...base,

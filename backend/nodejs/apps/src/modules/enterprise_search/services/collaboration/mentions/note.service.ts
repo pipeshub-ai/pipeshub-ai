@@ -64,6 +64,28 @@ const isDuplicateKey = (error: unknown): boolean =>
       String((error as { message?: unknown }).message),
   );
 
+/** The row a note is stored as, by the notes route and by a first send that mentions only people. */
+export function buildNoteMessage(args: {
+  query: string;
+  authorUserId: Types.ObjectId;
+  clientMessageId?: string;
+  mentions: readonly MentionRef[];
+  now: Date;
+}): IMessage {
+  return {
+    messageType: 'note',
+    content: inertUnlistedTokens(args.query, args.mentions),
+    contentFormat: 'MARKDOWN',
+    authorUserId: args.authorUserId,
+    ...(args.clientMessageId !== undefined && {
+      clientMessageId: args.clientMessageId,
+    }),
+    mentions: [...args.mentions],
+    createdAt: args.now,
+    updatedAt: args.now,
+  };
+}
+
 const viewOf = (row: NoteRow): NoteView => ({
   id: row._id.toString(),
   seq: row.seq,
@@ -117,16 +139,13 @@ export class NoteService implements INoteService {
     }
 
     const now = new Date();
-    const message: IMessage = {
-      messageType: 'note',
-      content: inertUnlistedTokens(input.query, mentions),
-      contentFormat: 'MARKDOWN',
+    const message = buildNoteMessage({
+      query: input.query,
       authorUserId: new Types.ObjectId(caller.userId),
       clientMessageId: input.clientMessageId,
-      mentions: [...mentions],
-      createdAt: now,
-      updatedAt: now,
-    };
+      mentions,
+      now,
+    });
     let row: NoteRow;
     try {
       row = await inShortTransaction(async (dbSession) => {

@@ -61,6 +61,7 @@ import {
   prepareCollabSend,
 } from './utils/collab-send';
 import { clearDraft } from './utils/draft-storage';
+import { displayTitle } from '@/lib/utils/display-title';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -774,6 +775,16 @@ export async function streamMessageForSlot(
             }
           }
         }
+        // The server answered that nobody was asked: no thinking state, the stored note follows.
+        if ((data as SSEConnectedEvent | undefined)?.note) {
+          cancelPendingStatus();
+          stopIdleStatus();
+          useChatStore.getState().updateSlot(slotId, {
+            currentStatusMessage: null,
+            streamingParts: [],
+          });
+          return;
+        }
         scheduleStatus(statusMessageFromConnectedEvent(data));
       },
 
@@ -1082,7 +1093,7 @@ export async function streamMessageForSlot(
             slotId,
             {
               id: newConvId,
-              title: data.conversation.title,
+              title: displayTitle(data.conversation.title) ?? data.conversation.title,
               createdAt: data.conversation.createdAt,
               updatedAt: data.conversation.updatedAt,
               isShared: data.conversation.isShared,

@@ -645,6 +645,8 @@ export interface SSEConnectedEvent {
   title?: string;
   /** Collaborative chats: the first frame carries the run's id (same value as the `X-Run-Id` header). */
   runId?: string;
+  /** The first message asked nobody (it mentions only people): stored as a note, no run follows. */
+  note?: boolean;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */

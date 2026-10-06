@@ -22,7 +22,7 @@ import {
   validateFirstSendShare,
 } from '../utils/first-send-share';
 import { UpsertInput } from '../services/collaboration/conversation-collaboration.service';
-import { turnGuestAgentOf, turnMentionsOf } from '../services/collaboration/mentions/turn-mentions';
+import { turnGuestAgentOf, turnMentionsOf, turnNonParticipantsOf } from '../services/collaboration/mentions/turn-mentions';
 import { responderFor } from '../services/collaboration/turn/turn-responder';
 import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
 import { readAclVersion } from '../../authz/cache/acl-version';
@@ -50,6 +50,8 @@ import { LeaseLostError } from '../services/collaboration/leases/lease.types';
 import { WireMention } from '../services/collaboration/turn/mention-refs';
 import { withoutMentionTokens } from '../services/collaboration/mentions/mention.parser';
 import { CollaborationPayload } from '../services/collaboration/turn/participant-roster';
+import { callerIdentityOf } from '../../../libs/types/caller-identity';
+import { firstSendNoteView, notifyFirstSendNote } from '../utils/first-send-note';
 import { ConversationTurnDeps } from '../services/collaboration/turn/turn-deps';
 import {
   holdLease,
@@ -187,7 +189,8 @@ const nonStreamingTurn =
           attachments: validatedAttachments,
           link,
           guestAgentKey: responder.respondingAgentKey,
-        mentions: turnMentionsOf(req),
+          mentions: turnMentionsOf(req),
+          identity: callerIdentityOf(req as AuthenticatedUserRequest),
         });
         await applyFirstSendShare(
           deps,
@@ -195,6 +198,22 @@ const nonStreamingTurn =
           turn.conversation,
           share,
         );
+        if (turn.asNote) {
+          await notifyFirstSendNote(deps, req as AuthenticatedUserRequest, turn);
+          res.setHeader(CONVERSATION_ID_HEADER, String(turn.conversation._id));
+          const nonParticipants = turnNonParticipantsOf(req);
+          res.status(HTTP_STATUS.CREATED).json({
+            conversation: firstSendNoteView(turn),
+            note: true,
+            ...(nonParticipants.length > 0 && { nonParticipants }),
+            meta: {
+              requestId,
+              timestamp: new Date().toISOString(),
+              duration: Date.now() - startTime,
+            },
+          });
+          return;
+        }
         gate = turn.run.lease
           ? holdLease(turn.run.lease, onLost)
           : unleasedGate();

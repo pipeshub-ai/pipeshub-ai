@@ -23,6 +23,7 @@ import { SidebarItem } from './sidebar-item';
 import { ChatSectionElement, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';
 import { SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE } from '../constants';
+import { displayTitle } from '@/lib/utils/display-title';
 
 const YOUR_CHATS_SKELETON_COUNT = 3;
 
@@ -47,7 +48,7 @@ function toConversation(
 ): Conversation {
   return {
     id: row._id,
-    title: row.title || '',
+    title: displayTitle(row.title) || '',
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     isShared: row.isShared,

@@ -47,6 +47,7 @@ describe('describeCollabNotification context', () => {
   });
 
   it('keeps markup in a title as literal text', () => {
+    expect(msg(row('chat.shared', { chatTitle: '<@agent:abc-1> Q3 plan' }))).toBe('“Q3 plan” was shared with you. You can continue it.');
     expect(msg(row('chat.mentioned', { chatTitle: '<b>x</b>', actorName: 'A&B' }))).toBe('A&B mentioned you in “<b>x</b>”.');
   });
 });

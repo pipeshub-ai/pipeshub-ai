@@ -60,8 +60,8 @@ def chats_of(stack, owner) -> int:  # noqa: ANN001
     return stack.db["chatSessions"].count_documents({"userId": owner.oid})
 
 
-def bell(stack, who, chat: str) -> list[dict]:  # noqa: ANN001
-    return list(stack.db["notifications"].find({"assignedTo": who.oid, "type": "chat.shared", "redirectLink": {"$regex": chat}}))
+def bell(stack, who, chat: str, kind: str = "chat.shared") -> list[dict]:  # noqa: ANN001
+    return list(stack.db["notifications"].find({"assignedTo": who.oid, "type": kind, "redirectLink": {"$regex": chat}}))
 
 
 def wait_for(predicate, what: str, timeout: float = 30):  # noqa: ANN001, ANN201
@@ -162,6 +162,31 @@ def test_j15_a_draft_collaborator_mentioned_in_the_first_message_is_a_participan
     assert call.status == 200, call.text[:300]
     created = next(e for e in call.events if e.event == "CUSTOM" and e.data.get("name") == "conversation_created")
     assert created.data["value"]["nonParticipants"] == [reader.user_id]
+
+
+def test_j15_a_first_message_that_tags_only_the_shared_colleague_is_a_note_nobody_answers(stack, api, fake, world) -> None:  # noqa: ANN001
+    owner, writer, _reader = world
+    mark = fake.mark()
+
+    call = send(
+        api,
+        owner,
+        {"collaborators": [collaborator(writer)]},
+        query=f"<@user:{writer.user_id}> can you look at this?",
+        mentions=[{"type": "user", "id": writer.user_id}],
+    )
+
+    assert call.status == 200 and call.result is not None, call.text[:400]
+    created = next(e for e in call.events if e.event == "CUSTOM" and e.data.get("name") == "conversation_created")
+    assert created.data["value"]["note"] is True and "runId" not in created.data["value"]
+    chat = call.conversation_id
+    session = session_doc(stack.db, chat)
+    assert [r["messageType"] for r in messages_of(stack.db, chat)] == ["note"]
+    assert "<@" not in session["title"] and session["title"].endswith("can you look at this?"), session["title"]
+    assert fake.since(mark, "chat_stream") == [], "no bot reply was asked for"
+    wait_for(lambda: bell(stack, writer, chat, "chat.mentioned"), "the mention notification")
+    assert len(bell(stack, writer, chat, "chat.mentioned")) == 1
+    assert bell(stack, owner, chat, "chat.mentioned") == []
 
 
 def test_j15_with_collaborative_chats_off_a_share_block_is_a_404_and_nothing_is_created(stack, api, flags, world) -> None:  # noqa: ANN001

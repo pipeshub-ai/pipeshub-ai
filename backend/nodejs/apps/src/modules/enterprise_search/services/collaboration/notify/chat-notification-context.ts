@@ -1,3 +1,4 @@
+import { displayTitle } from '../mentions/mention.parser';
 import { Types } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../../../libs/middlewares/types';
 import { Logger } from '../../../../../libs/services/logger.service';
@@ -85,7 +86,7 @@ const isEligible = (row: ContextRow): boolean =>
   row.type.startsWith('chat.') && row.type !== 'chat.deleted';
 
 const capTitle = (title: string | undefined): string | undefined => {
-  const chars = Array.from((title ?? '').trim());
+  const chars = Array.from((displayTitle(title) ?? '').trim());
   return chars.length === 0
     ? undefined
     : chars.slice(0, CHAT_TITLE_MAX_CHARS).join('');

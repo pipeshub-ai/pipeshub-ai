@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next';
 import type { NotificationListItem } from './api';
+import { displayTitle } from '@/lib/utils/display-title';
 
 export const COLLAB_NOTIFICATION_TYPES = [
   'chat.shared',
@@ -42,7 +43,7 @@ export function collabSessionId(n: NotificationListItem): string | undefined {
 function contextOf(n: NotificationListItem): { chat?: string; actor?: string } {
   const ctx = n.context && typeof n.context === 'object' ? n.context : undefined;
   const clean = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-  return { chat: clean(ctx?.chatTitle), actor: clean(ctx?.actorName) };
+  return { chat: clean(displayTitle(ctx?.chatTitle)), actor: clean(ctx?.actorName) };
 }
 
 /** Picks the most specific i18n key for the context fields present, e.g. `bodyNamed` / `bodyNamedChat` / `bodyNamedActor`. */

@@ -813,6 +813,25 @@ describe('Enterprise Search Utils', () => {
     })
   })
 
+  describe('stored token titles', () => {
+    const dirty = '<@agent:6d9fb183-3e58-441e-ab1f-796f21e6da8f> hi; <@assistant:self> Can you tell jokes'
+    const clean = 'hi; Can you tell jokes'
+    it('a list row comes back clean', () => {
+      const row: any = { _id: 'c', title: dirty, initiator: new mongoose.Types.ObjectId(VALID_OID), sharedWith: [] }
+      expect(addComputedFields(row, VALID_OID).title).to.equal(clean)
+      expect(row.title).to.equal(dirty)
+    })
+    it('a row without a title stays without one', () => {
+      const row: any = { _id: 'c', initiator: new mongoose.Types.ObjectId(VALID_OID), sharedWith: [] }
+      expect(addComputedFields(row, VALID_OID)).to.not.have.property('title')
+    })
+    it('the conversation detail comes back clean', () => {
+      const conversation: any = { _id: 'c', title: dirty, initiator: new mongoose.Types.ObjectId(VALID_OID), sharedWith: [], messages: [] }
+      const pagination = { page: 1, limit: 20, skip: 0, totalMessages: 0, hasNextPage: false, hasPrevPage: false }
+      expect(buildConversationResponse(conversation, VALID_OID, pagination, []).title).to.equal(clean)
+    })
+  })
+
   describe('addComputedFields', () => {
     it('should add computed fields to a conversation', () => {
       const conversation: any = {

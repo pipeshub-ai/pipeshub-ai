@@ -29,6 +29,7 @@ import {
 } from '../utils/ai-chat-payload';
 import { userFacingChatError } from '../utils/chat-error-messages';
 import { filterOwnedAttachments } from '../utils/attachment-validation';
+import { notifyFirstSendNote, writeFirstSendNoteResult } from '../utils/first-send-note';
 import {
   createFirstTurn,
   rejectRepeatedFirstSend,
@@ -153,6 +154,7 @@ export const firstSendStream = (
         link,
         guestAgentKey: responder.respondingAgentKey,
         mentions: turnMentionsOf(req),
+        identity: callerIdentityOf(req as AuthenticatedUserRequest),
       });
       const { conversation, run } = turn;
       await applyFirstSendShare(
@@ -168,6 +170,19 @@ export const firstSendStream = (
           })
         : unleasedGate();
       const conversationId = String(conversation._id);
+      if (turn.asNote) {
+        await notifyFirstSendNote(deps, req as AuthenticatedUserRequest, turn);
+        writeSseHead(res);
+        writeConversationCreated(res, {
+          conversationId,
+          title: conversation.title || undefined,
+          projectId: link.projectId,
+          nonParticipants: turnNonParticipantsOf(req),
+          note: true,
+        });
+        writeFirstSendNoteResult(res, turn, startTime, requestId);
+        return;
+      }
       logger.debug('Initial conversation created', {
         requestId,
         conversationId,

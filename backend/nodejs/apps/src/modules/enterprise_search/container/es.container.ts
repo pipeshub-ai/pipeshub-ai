@@ -15,6 +15,7 @@ import { SubjectTeamResolver } from '../../authz/subject-team.resolver';
 import { PlatformFeatureFlags } from '../../configuration_manager/services/platform-feature-flags.service';
 import { ProjectServiceAccessAdapter } from '../../projects/services/project-access.adapter';
 import { getTeamIdsCache } from '../../user_management/services/cached-team-directory';
+import { ConnectorTeamLookup } from '../../user_management/services/team-lookup.service';
 import { teamDirectoryFor } from '../../user_management/services/team-directory.service';
 import { MongoUserDirectory } from '../../user_management/services/user-directory.service';
 import { COLLAB_TYPES } from '../services/collaboration/collab.types';
@@ -218,6 +219,7 @@ export class EnterpriseSearchAgentContainer {
           leases,
           mentions: mentionGate,
           agents: agentDirectory,
+          teamLookup: new ConnectorTeamLookup(appConfig),
           // Resolved per call: the collaboration service is bound further down.
           sharing: {
             validate: (...args) =>

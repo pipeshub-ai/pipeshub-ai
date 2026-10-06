@@ -34,6 +34,7 @@ import { normalizeAccessView } from './utils/conversation-access';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { pickCollabSendFields } from './utils/collab-send-fields';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
+import { displayTitle } from '@/lib/utils/display-title';
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -117,7 +118,7 @@ async function runChatStream(
 export function mapApiConversationToConversation(conv: ConversationApiResponse): Conversation {
   return {
     id: conv._id,
-    title: conv.title,
+    title: displayTitle(conv.title) ?? conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     isShared: conv.isShared,

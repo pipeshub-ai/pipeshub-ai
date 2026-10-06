@@ -1,3 +1,4 @@
+import { displayTitle } from '../services/collaboration/mentions/mention.parser';
 import {
   AIServiceResponse,
   IAIModel,
@@ -1067,8 +1068,10 @@ export const addComputedFields = <
   userId: string,
   access?: AccessView,
 ) => {
+  const cleaned = withoutErrorStacks(conversation);
   return {
-    ...withoutErrorStacks(conversation),
+    ...cleaned,
+    ...('title' in cleaned && { title: displayTitle(cleaned.title as string | undefined) }),
     isOwner: conversation.initiator.toString() === userId,
     accessLevel:
       access?.accessLevel ??
@@ -1724,7 +1727,7 @@ export const buildConversationResponse = (
 
   return {
     id: conversation._id,
-    title: conversation.title,
+    title: displayTitle(conversation.title),
     initiator: conversation.initiator,
     createdAt: conversation.createdAt,
     isShared: conversation.isShared,

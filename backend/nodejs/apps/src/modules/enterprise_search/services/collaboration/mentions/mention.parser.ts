@@ -83,7 +83,80 @@ const ANY_TOKEN = new RegExp(
   `<\\\\?@(?:${MENTION_TYPES.join('|')}):[\\w.-]{1,${String(MENTION_ID_MAX_LENGTH)}}>`,
   'g',
 );
+const ANY_TOKEN_TEST = new RegExp(ANY_TOKEN.source);
 
 /** The text with every mention token, live or escaped, blanked: what an HTML-tag filter should look at. */
 export const withoutMentionTokens = (text: string): string =>
   text.replace(ANY_TOKEN, ' ');
+
+export const CHAT_TITLE_MAX_LENGTH = 100;
+
+// Stands in for the space inside a label so a cut never splits `@Joke Buddy`.
+const LABEL_SPACE = '';
+// A dropped token right before punctuation: eats the space in front of it.
+const GLUE_LEFT = '\uE001';
+const TITLE_LEADING_JUNK = /^[\s;,:.\-–—|/\\]+/;
+const TITLE_TRAILING_JUNK = /[\s;,:\-–—|/\\]+$/;
+// Titles saved before this clean-up were cut at 100 characters, which can leave half a token at the end.
+const CUT_TOKEN_TAIL = /<\\?@\w*(?::[\w.-]*)?$/;
+const ATTACHES_LEFT = /^[,;:.!?)]/;
+
+/**
+ * A chat title from the first message: user, team and agent tokens become `@label` when `labels`
+ * (keyed `type:id`, see `mentionKey`) knows them and vanish otherwise; the assistant token and
+ * escaped literals always vanish. Whitespace is collapsed, left-over edge punctuation trimmed, and
+ * the cut at `CHAT_TITLE_MAX_LENGTH` falls on a word boundary. Empty when nothing is left.
+ */
+export function titleFromQuery(
+  query: string,
+  labels: ReadonlyMap<string, string> = new Map(),
+): string {
+  const text = query.replace(
+    ANY_TOKEN,
+    (token: string, ...rest: unknown[]): string => {
+      const offset = rest[rest.length - 2] as number;
+      const whole = rest[rest.length - 1] as string;
+      const escaped = token.startsWith('<\\');
+      const [type, id] = token.slice(escaped ? 3 : 2, -1).split(':') as [
+        string,
+        string,
+      ];
+      const label = escaped || type === 'assistant' ? undefined : labels.get(`${type}:${id}`);
+      const clean = label?.replace(/\s+/g, ' ').trim();
+      const next = whole.charAt(offset + token.length);
+      const closesUp = ATTACHES_LEFT.test(next);
+      if (!clean) return closesUp ? GLUE_LEFT : ' ';
+      return ` @${clean.replace(/ /g, LABEL_SPACE)}${closesUp ? '' : ' '}`;
+    },
+  );
+  const tidy = text
+    .replace(/\s*\uE001/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(TITLE_LEADING_JUNK, '')
+    .replace(TITLE_TRAILING_JUNK, '');
+  return cutOnWord(tidy, CHAT_TITLE_MAX_LENGTH)
+    .replace(TITLE_TRAILING_JUNK, '')
+    .split(LABEL_SPACE).join(' ');
+}
+
+function cutOnWord(text: string, max: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= max) return text;
+  if (/\s/.test(chars[max] as string)) return chars.slice(0, max).join('');
+  const head = chars.slice(0, max).join('');
+  const space = head.search(/\s\S*$/);
+  return space > 0 ? head.slice(0, space) : head;
+}
+
+/** Read-time clean-up of a stored title: tokens removed (no lookups), then the same tidying. */
+export function displayTitle(title: string): string;
+export function displayTitle(title: string | undefined | null): string | undefined;
+export function displayTitle(title: string | undefined | null): string | undefined {
+  if (typeof title !== 'string') return undefined;
+  if (!ANY_TOKEN_TEST.test(title) && !CUT_TOKEN_TAIL.test(title)) return title;
+  const text = title
+    .replace(ANY_TOKEN, ' ')
+    .replace(CUT_TOKEN_TAIL, ' ')
+    .replace(/\s+/g, ' ');
+  return text.replace(TITLE_LEADING_JUNK, '').replace(TITLE_TRAILING_JUNK, '');
+}

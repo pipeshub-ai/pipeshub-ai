@@ -121,6 +121,12 @@ describe('collaboration/notify/chat-notification-context', () => {
     expect((await ctx.resolve(req, [row('chat.shared', id)])).get(0)?.chatTitle).to.equal('New');
   });
 
+  it('shows a stored token title without its tokens', async () => {
+    const id = oid();
+    seeds = [{ id, title: '<@agent:abc-1> hi; <@assistant:self> plan the quarter' }];
+    expect((await build().resolve(req, [row('chat.shared', id)])).get(0)?.chatTitle).to.equal('hi; plan the quarter');
+  });
+
   it('gives no context for a deleted chat or a chat.deleted row', async () => {
     const gone = oid();
     const live = oid();
