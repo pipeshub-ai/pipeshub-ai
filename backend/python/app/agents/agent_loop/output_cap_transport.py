@@ -7,11 +7,18 @@ itself inside a tool call's arguments then streams until something else gives
 out, with every fragment held in memory for the final message.
 
 The cap counts the characters one turn has streamed -- text, reasoning and
-tool-call arguments together -- and ends the stream once they pass it. The
-turn is reported exactly as a provider reports one it cut off itself
-(`truncated`, `StopReason.MAX_TOKENS`), so the agent loop's existing recovery
-tells the model its reply was too long and lets it try again: no new failure
-path, and no error text for the user to see.
+tool-call arguments together -- and ends the stream once they pass it. What
+happens next depends on what the model was writing:
+
+* A tool call. The turn is reported exactly as a provider reports one it cut
+  off itself (`truncated`, `StopReason.MAX_TOKENS`), so the agent loop's
+  existing recovery applies: the call is not run and the model is told its
+  reply was too long and to try again.
+* Plain text or reasoning only. The loop's recovery for cut-off text is "carry
+  on from where you stopped", which needs that text in the next prompt, and
+  an overrun this size does not fit in one. There is nothing sound to hand
+  back, so the turn fails the way any mid-stream provider failure does and
+  the user gets the standard "something went wrong, please try again" answer.
 
 A decorator for the same reason `CancellationAwareTransport` and
 `CappedImagesTransport` are: the policy is PipesHub's, and it has to hold for
@@ -24,7 +31,8 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.core.messages import AssistantMessage, TextPart, ToolCall
+from app.agent_loop_lib.core.exceptions import TransportError
+from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall
 from app.agent_loop_lib.core.responses import ModelResponse, StopReason, TokenUsage
 from app.agent_loop_lib.core.streaming import (
     StreamCompleteEvent,
@@ -122,7 +130,6 @@ class OutputCappedTransport(LLMTransport):
             messages, tools, system, model, thinking_budget, effort, system_blocks,
         ).__aiter__()
         streamed = 0
-        text_parts: list[str] = []
         # Insertion-ordered by first appearance, which is the order the model
         # made the calls in.
         calls: dict[int, dict[str, str | None]] = {}
@@ -131,10 +138,7 @@ class OutputCappedTransport(LLMTransport):
                 if isinstance(event, StreamCompleteEvent):
                     yield event
                     return
-                if isinstance(event, TextDeltaEvent):
-                    streamed += len(event.delta)
-                    text_parts.append(event.delta)
-                elif isinstance(event, ThinkingDeltaEvent):
+                if isinstance(event, (TextDeltaEvent, ThinkingDeltaEvent)):
                     streamed += len(event.delta)
                 elif isinstance(event, ToolCallDeltaEvent):
                     streamed += len(event.arguments_delta)
@@ -143,9 +147,7 @@ class OutputCappedTransport(LLMTransport):
                     call["name"] = call["name"] or event.name
                 yield event
                 if streamed > self._max_chars:
-                    yield StreamCompleteEvent(
-                        response=self._cut_off_response(text_parts, calls, model),
-                    )
+                    yield StreamCompleteEvent(response=self._cut_off_response(calls, model))
                     return
         finally:
             # Explicit close, not left to GC: this is what stops the provider
@@ -154,33 +156,38 @@ class OutputCappedTransport(LLMTransport):
                 await stream_iter.aclose()
 
     def _cut_off_response(
-        self,
-        text_parts: list[str],
-        calls: dict[int, dict[str, str | None]],
-        model: str | None,
+        self, calls: dict[int, dict[str, str | None]], model: str | None,
     ) -> ModelResponse:
+        """The cut-off turn to hand the agent loop, or a `TransportError` when
+        the turn held no tool call for the loop to answer."""
         model_name = model or self._inner.model_name
         logger.warning(
             "Model %s streamed more than %d characters in one turn without "
-            "finishing, so the stream was stopped and the turn treated as cut "
-            "off. Raise %s if replies this long are expected; 0 turns the limit off.",
+            "finishing, so the stream was stopped. Raise %s if replies this "
+            "long are expected; 0 turns the limit off.",
             model_name or "?", self._max_chars, MAX_TURN_OUTPUT_CHARS_ENV_VAR,
         )
-        # Each call keeps its name and id so the loop can answer it with its
-        # "not executed, your reply was cut off" note. The arguments are
-        # dropped: they are incomplete, were never going to run, and are most
-        # of what would make this turn too large to send back to the model.
         tool_calls = [
             ToolCall(id=call["id"] or f"call_{index}", name=call["name"])
             for index, call in calls.items()
             if call["name"]
         ]
+        if not tool_calls:
+            # No number or model name in the text: the user-facing error is
+            # chosen by matching this string, and "500" or "429" inside a
+            # limit or a model name would pick the wrong one.
+            raise TransportError(
+                "The model kept writing past the per-turn output cap without "
+                "finishing its reply.",
+                retryable=False,
+            )
+        # Each call keeps its name and id so the loop can answer it with its
+        # "not executed, your reply was cut off" note. Its arguments are
+        # dropped: incomplete, never going to run, and most of what would make
+        # this turn too large to send back to the model. Text that preceded the
+        # call is dropped for the same reason; it was narration, already shown.
         return ModelResponse(
-            message=AssistantMessage(
-                content=[TextPart(text="".join(text_parts))] if text_parts else [],
-                tool_calls=tool_calls or None,
-                truncated=True,
-            ),
+            message=AssistantMessage(tool_calls=tool_calls, truncated=True),
             usage=TokenUsage(),
             stop_reason=StopReason.MAX_TOKENS,
             model=model_name,

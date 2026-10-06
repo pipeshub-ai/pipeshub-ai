@@ -1,7 +1,8 @@
 """`OutputCappedTransport` (`app/agents/agent_loop/output_cap_transport.py`):
-a streamed turn that never ends is stopped at the per-turn output cap and
-handled as a reply the provider cut off, while a normal long answer passes
-through untouched."""
+a streamed turn that never ends is stopped at the per-turn output cap. A
+runaway tool call is handled as a reply the provider cut off, so the model
+tries again; runaway text ends the answer with the standard error. A normal
+long answer passes through untouched."""
 
 from __future__ import annotations
 
@@ -15,10 +16,10 @@ from langchain_core.messages import AIMessageChunk
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
+from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,
-    TextPart,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -36,6 +37,7 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop import factory
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.output_cap_transport import (
     DEFAULT_MAX_TURN_OUTPUT_CHARS,
@@ -166,7 +168,9 @@ class TestRunawayToolCallIsStopped:
         assert len(events) == inner.pulled + 1
         assert inner.closed == 1
 
-    async def test_text_already_shown_is_kept_and_arguments_are_dropped(self) -> None:
+    async def test_nothing_of_the_overrun_is_sent_back_to_the_model(self) -> None:
+        """Neither the unfinished arguments nor the text before the call: at
+        the default cap either one is larger than a prompt can hold."""
         inner = _Streams(itertools.chain(
             [
                 TextDeltaEvent(delta="Here is "),
@@ -178,8 +182,8 @@ class TestRunawayToolCallIsStopped:
 
         final = (await _events(with_output_cap(inner, 500)))[-1]
 
-        assert final.response.message.content == [TextPart(text="Here is the answer.")]
-        assert final.response.message.tool_calls[0].arguments == {}
+        assert final.response.message.content == []
+        assert final.response.message.tool_calls == [ToolCall(id="call_1", name="final_answer")]
 
     async def test_every_call_in_the_turn_is_kept_in_the_order_it_was_made(self) -> None:
         inner = _Streams(itertools.chain(
@@ -200,27 +204,52 @@ class TestRunawayToolCallIsStopped:
         ]
 
 
-class TestRunawayTextIsStopped:
-    async def test_text_is_kept_and_the_turn_is_cut_off(self) -> None:
-        inner = _Streams(TextDeltaEvent(delta=_FRAGMENT) for _ in itertools.count())
+class TestRunawayTextEndsTheAnswer:
+    """Cut-off text is recovered by asking the model to carry on from it, which
+    needs that text in the next prompt. An overrun does not fit in one, so
+    there is no tool call to answer and nothing to continue."""
 
-        events = await _events(with_output_cap(inner, 100))
+    @pytest.mark.parametrize("event_type", [TextDeltaEvent, ThinkingDeltaEvent])
+    async def test_stream_is_closed_and_the_turn_fails_without_a_retry(
+        self, event_type: type[TextDeltaEvent] | type[ThinkingDeltaEvent],
+    ) -> None:
+        inner = _Streams(event_type(delta=_FRAGMENT) for _ in itertools.count())
+        capped = with_output_cap(inner, 100)
+        events: list[StreamEvent] = []
 
-        final = events[-1]
-        assert final.response.message.truncated is True
-        assert final.response.stop_reason == StopReason.MAX_TOKENS
-        assert final.response.message.text == _FRAGMENT * 21
-        assert final.response.message.tool_calls is None
+        with pytest.raises(TransportError) as raised:
+            async for event in capped.stream(_MESSAGES):
+                events.append(event)  # noqa: PERF401
+
+        assert raised.value.retryable is False
+        assert len(events) == inner.pulled == 21
+        assert not any(isinstance(event, StreamCompleteEvent) for event in events)
         assert inner.closed == 1
 
-    async def test_reasoning_counts_towards_the_cap(self) -> None:
-        inner = _Streams(ThinkingDeltaEvent(delta=_FRAGMENT) for _ in itertools.count())
+    @pytest.mark.parametrize("cap", [100, 429, 500, 500_000, 1_000_000])
+    async def test_user_sees_the_standard_plain_language_error(self, cap: int) -> None:
+        """Whatever the cap is set to: a number in the error text could match
+        the "500"/"429" hints and tell the user the provider is down."""
+        inner = _Streams(TextDeltaEvent(delta="x" * (cap + 1)) for _ in itertools.count())
 
-        events = await _events(with_output_cap(inner, 100))
+        with pytest.raises(TransportError) as raised:
+            await _events(with_output_cap(inner, cap))
 
-        assert events[-1].response.message.truncated is True
-        assert events[-1].response.message.content == []
-        assert inner.pulled == 21
+        code, message = classify_error(f"LLM call failed: {raised.value}")
+        assert code == "unknown"
+        assert message.startswith("Something went wrong while answering. Please try again")
+        assert str(raised.value) not in message
+
+    async def test_a_call_that_never_got_a_name_cannot_be_retried_either(self) -> None:
+        inner = _Streams(itertools.chain(
+            [ToolCallDeltaEvent(index=0, id="call_1", name=None, arguments_delta="")],
+            _endless_arguments(),
+        ))
+
+        with pytest.raises(TransportError):
+            await _events(with_output_cap(inner, 100))
+
+        assert inner.closed == 1
 
 
 class TestConfiguration:
@@ -339,3 +368,30 @@ class TestAgentRecoversFromACappedTurn:
         [note] = [m for m in retry_messages if isinstance(m, ToolMessage)]
         assert note.tool_call_id == "n1"
         assert "Tool call not executed" in note.text
+
+    async def test_runaway_text_ends_the_run_without_reaching_the_prompt_or_the_answer(self) -> None:
+        inner = _Streams(
+            (TextDeltaEvent(delta=_FRAGMENT) for _ in itertools.count()),
+            [TextDeltaEvent(delta="never asked for"), _complete("never asked for")],
+        )
+        transports = TransportRegistry()
+        transports.register("scripted", lambda: with_output_cap(inner, 1_000))
+        agent = Agent(
+            AgentSpec(
+                name="capped-agent",
+                system_prompt="You are a helpful assistant.",
+                model=ModelSpec(provider="scripted", model="scripted-model"),
+                loop=ReActLoop(),
+                max_turns=4,
+            ),
+            AgentRuntime(transport_registry=transports, tool_registry=ToolRegistry()),
+        )
+
+        _ = [event async for event in agent.stream(Goal(description="Summarise the quarter"))]
+        result = agent.last_stream_result
+
+        assert result.success is False
+        assert len(inner.calls) == 1
+        assert _FRAGMENT not in (result.output or "")
+        assert classify_error(result.error)[0] == "unknown"
+        assert _FRAGMENT not in classify_error(result.error)[1]

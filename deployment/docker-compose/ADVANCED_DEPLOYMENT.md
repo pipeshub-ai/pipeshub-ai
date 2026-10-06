@@ -404,12 +404,13 @@ failing to start.
 writing, most often one stuck repeating itself inside a tool call on a gateway or local
 server that sets no output limit of its own. It counts the characters a single agent turn
 streams (answer text, reasoning and tool-call arguments together). Past the limit the
-stream is closed and the turn is handled like any reply the provider cut off: the
-unfinished tool call is not run and the model is asked for a shorter reply. The default
-is about twice the longest reply any supported provider can produce, so normal answers
-never reach it; raise it only if you see the "streamed more than ... characters in one
-turn" warning in the query-service log for replies you expected. Blank or a value that is
-not a number falls back to the default.
+stream is closed. If the model was in the middle of a tool call, the call is not run and
+the model is asked for a shorter one, as with any reply a provider cuts off. If it was
+writing plain text, the answer ends with the usual "Something went wrong while answering.
+Please try again" message. The default is about twice the longest reply any supported
+provider can produce, so normal answers never reach it; raise it only if you see the
+"streamed more than ... characters in one turn" warning in the query-service log for
+replies you expected. Blank or a value that is not a number falls back to the default.
 
 These are read from the container environment, so on an existing install add them to
 `.env` yourself — `install.sh --upgrade` reuses your current `.env` and does not append
