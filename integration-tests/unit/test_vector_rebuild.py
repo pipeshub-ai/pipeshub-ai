@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,6 +19,7 @@ import requests
 
 from helper import vector_rebuild
 from helper.vector_rebuild import (
+    MODEL_CHANGE_REFUSED,
     VECTOR_STORE_REBUILD_FLAG,
     EmbeddingModel,
     PlatformSettings,
@@ -127,3 +129,14 @@ def test_in_flight_records_skip_folders_and_page_past_them() -> None:
 def test_only_folders_in_flight_counts_as_idle() -> None:
     graph = _Graph({"QUEUED": [{"_key": "f", "mimeType": "application/vnd.google-apps.folder"}]})
     assert asyncio.run(vector_rebuild.records_in_flight(graph)) == []
+
+
+def test_the_expected_model_change_refusal_is_the_one_the_gateway_sends() -> None:
+    """The gateway rewrites the AI service's refusal; the journey must expect the rewrite."""
+    controller = (
+        Path(__file__).resolve().parents[2]
+        / "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts"
+    ).read_text()
+    flat = " ".join(controller.split())
+
+    assert MODEL_CHANGE_REFUSED in flat

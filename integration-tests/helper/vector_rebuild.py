@@ -63,9 +63,11 @@ DELETE_REFUSED_PHRASE = "embedding your indexed content"
 # that runs on every model change embeds a sample with it.
 MODEL_CHANGE_TIMEOUT = 660
 
+# What the gateway answers (EMBEDDING_MODEL_IN_USE_MESSAGE in cm_controller.ts): it
+# replaces the AI service's own refusal text with this one.
 MODEL_CHANGE_REFUSED = (
-    "Embedding model cannot be changed while the vector store contains data "
-    "indexed with a different model"
+    "This model is embedding your indexed content. Delete the embeddings in Labs "
+    "first, then change or delete the model and re-embed."
 )
 
 
