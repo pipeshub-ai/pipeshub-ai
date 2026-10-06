@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { Box, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { MessageAvatar } from './message-avatar';
+import { AVATAR_SIZE_MOBILE, MessageAvatar } from './message-avatar';
 import { MessageTime, formatClock } from './message-time';
 import { useAvatarSize } from './use-compact-avatar';
 
@@ -33,6 +33,10 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const active = hovered || focused;
+  const right = tone === 'ai';
+  const compactWidth = size <= AVATAR_SIZE_MOBILE;
+  const bodyCol = right ? 1 : 2;
+  const gutterCol = right ? 2 : 1;
   const clock = time ? formatClock(time) : '';
   const label = clock ? t('chat.collab.timeline.messageAria', { name, time: clock }) : t('chat.collab.timeline.messageAriaNoTime', { name });
 
@@ -40,6 +44,7 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
     <article
       aria-label={label}
       data-testid={testId}
+      data-side={right ? 'right' : 'left'}
       data-grouped={showHeader ? undefined : 'true'}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -49,7 +54,7 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
       }}
       style={{
         display: 'grid',
-        gridTemplateColumns: `${size}px minmax(0, 1fr)`,
+        gridTemplateColumns: right ? `minmax(0, 1fr) ${size}px` : `${size}px minmax(0, 1fr)`,
         columnGap: size <= 24 ? 'var(--space-2)' : 'var(--space-3)',
         padding: `${showHeader ? 'var(--space-2)' : '1px'} var(--space-2) ${tone === 'ai' ? 'var(--space-3)' : showHeader ? 'var(--space-2)' : '1px'}`,
         margin: '0 calc(var(--space-2) * -1)',
@@ -58,17 +63,17 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
         position: 'relative',
       }}
     >
-      {lead ? <Box style={{ gridColumn: 2, gridRow: 1, marginTop: 'var(--space-1)', marginBottom: 2 }}>{lead}</Box> : null}
-      <Flex justify="center" align="start" style={{ paddingTop: showHeader ? 0 : 2, gridColumn: 1, gridRow: lead ? 2 : 1 }}>
+      {lead ? <Box style={{ gridColumn: bodyCol, gridRow: 1, marginTop: 'var(--space-1)', marginBottom: 2, textAlign: right ? 'end' : undefined }}>{lead}</Box> : null}
+      <Flex justify="center" align="start" style={{ paddingTop: showHeader ? 0 : 2, gridColumn: gutterCol, gridRow: lead ? 2 : 1 }}>
         {showHeader ? (
           <MessageAvatar name={name} tone={tone} size={size} src={avatarSrc} />
         ) : time ? (
           <MessageTime iso={time} compact visible={active} />
         ) : null}
       </Flex>
-      <Box style={{ minWidth: 0, gridColumn: 2, gridRow: lead ? 2 : 1 }}>
+      <Box style={{ minWidth: 0, gridColumn: bodyCol, gridRow: lead ? 2 : 1 }}>
         {showHeader ? (
-          <Flex align="baseline" gap="2" wrap="wrap" style={{ marginBottom: 2 }}>
+          <Flex align="baseline" gap="2" wrap="wrap" justify={right ? 'end' : undefined} style={{ marginBottom: 2 }}>
             {nameTooltip ? (
               <Tooltip content={nameTooltip}>
                 <Text size="2" weight="bold" data-testid="message-author" style={{ color: 'var(--slate-12)' }}>
@@ -83,10 +88,19 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
             {time ? <MessageTime iso={time} /> : null}
           </Flex>
         ) : null}
-        {children}
+        {right ? (
+          <Box
+            data-testid="message-body-block"
+            style={{ width: 'fit-content', maxWidth: compactWidth ? '100%' : '85%', minWidth: 0, marginInlineStart: 'auto', textAlign: 'start' }}
+          >
+            {children}
+          </Box>
+        ) : (
+          children
+        )}
       </Box>
       {actions ? (
-        <Box style={{ position: 'absolute', top: 4, right: 'var(--space-2)' }} data-testid="message-row-actions">
+        <Box style={{ position: 'absolute', top: 4, insetInlineEnd: 'var(--space-2)' }} data-testid="message-row-actions">
           {actions(active)}
         </Box>
       ) : null}

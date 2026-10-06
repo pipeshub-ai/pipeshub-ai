@@ -1342,3 +1342,13 @@ th code {
   color: var(--accent-contrast);
   font-weight: 600;
 }
+
+/* Collaborative timeline: an AI reply sits on the inline-end side, so its chips, actions and attribution line end at the block's edge. */
+[data-side="right"] [data-testid="response-chips"],
+[data-side="right"] [data-testid="message-actions"] {
+  justify-content: flex-end !important;
+  column-gap: var(--space-3);
+}
+[data-side="right"] [data-testid="answered-as-label"] {
+  text-align: end;
+}

@@ -108,6 +108,8 @@ describe('human message row', () => {
     const article = screen.getByRole('article');
     expect(article.getAttribute('aria-label')).toContain('Alex Rivera');
     expect(article.getAttribute('style')).not.toMatch(/row-reverse|flex-end/);
+    expect(article.getAttribute('data-side')).toBe('left');
+    expect(within(article).queryByTestId('message-body-block')).toBeNull();
   });
 
   it('collapses the avatar and name for a continued message and offers the time in the gutter', () => {
@@ -154,6 +156,20 @@ describe('reply row', () => {
     const label = within(article).getByTestId('answered-as-label');
     expect(label.textContent).toBe("Asked by Bob Builder · answered using Bob Builder's access");
     expect(within(article).queryByText('tell me a joke')).toBeNull();
+  });
+
+  it('is mirrored to the right: avatar and body block on the end side, text left-aligned inside', () => {
+    setup();
+    row({ rowMode: 'reply', author: bob, requestedBy: bob, replyingTo: bob });
+    const article = screen.getByRole('article');
+    expect(article.getAttribute('data-side')).toBe('right');
+    expect(article.getAttribute('style')).toMatch(/grid-template-columns: minmax\(0(px)?, 1fr\) 32px/);
+    const block = within(article).getByTestId('message-body-block');
+    expect(block.getAttribute('style')).toMatch(/margin-inline-start: auto/);
+    expect(block.getAttribute('style')).toMatch(/max-width: 85%/);
+    expect(block.getAttribute('style')).toMatch(/text-align: start/);
+    expect(block.contains(within(article).getByTestId('answer'))).toBe(true);
+    expect(block.contains(within(article).getByTestId('answered-as-label'))).toBe(true);
   });
 
   it('names the chat\'s own agent', () => {
