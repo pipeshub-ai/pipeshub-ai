@@ -1,6 +1,7 @@
 import { HttpMethod } from '../../enums/http-methods.enum';
 import { Logger } from '../../services/logger.service';
 import { BaseCommand } from '../command.interface';
+import { InternalServerError } from '../../errors/http.errors';
 import { Readable } from 'stream';
 import { logSafeUrl } from '../log-safe-url';
 
@@ -23,7 +24,9 @@ const logger = Logger.getInstance({
   service: 'ConnectorServiceCommand',
 });
 
-export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResponse<T>> {
+export class ConnectorServiceCommand<T> extends BaseCommand<
+  ConnectorServiceResponse<T>
+> {
   private method: HttpMethod;
   private body?: any;
 
@@ -33,14 +36,28 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
     this.body = this.sanitizeBody(options.body);
     this.headers = this.sanitizeHeaders(options.headers || {});
   }
-  
+
   // Execute the HTTP request based on the provided options.
   public async execute(): Promise<ConnectorServiceResponse<T>> {
     const url = this.buildUrl();
+    const parsedTarget = new URL(url);
+
+    if (!process.env.CONNECTOR_BACKEND) {
+      throw new InternalServerError('CONNECTOR_BACKEND is not configured');
+    }
+    const configuredOrigin = new URL(process.env.CONNECTOR_BACKEND).origin;
+
+    if (parsedTarget.origin !== configuredOrigin) {
+      throw new InternalServerError(
+        'Blocked connector request to an untrusted origin',
+      );
+    }
+
     const requestOptions: RequestInit = {
       method: this.method,
       headers: this.headers,
       body: this.body,
+      redirect: 'error',
     };
 
     try {
@@ -58,13 +75,13 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
 
       // Assuming the response is JSON; adjust if needed.
       const data = await response.json();
-      
+
       // Convert Headers object to plain object
       const responseHeaders: Record<string, string> = {};
       response.headers.forEach((value, key) => {
         responseHeaders[key] = value;
       });
-      
+
       return {
         statusCode: response.status,
         data: data,
@@ -114,7 +131,7 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
 
       // Convert ReadableStream to Node.js Readable
       const readable = new Readable({
-        read() {}
+        read() {},
       });
 
       const reader = response.body.getReader();
@@ -124,12 +141,12 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
         try {
           while (true) {
             const { done, value } = await reader.read();
-            
+
             if (done) {
               readable.push(null);
               break;
             }
-            
+
             const chunk = decoder.decode(value, { stream: true });
             readable.push(chunk);
           }

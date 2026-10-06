@@ -35,6 +35,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
   let baseUrl: string
   let home: string
   let defaultEndpoint: string
+  let previousConnectorBackend: string | undefined
   const documents = new Map<string, InstanceType<typeof DocumentModel>>()
 
   const upload = async (
@@ -56,7 +57,18 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
   }
 
   const filesOnDisk = (): string[] => {
-    const root = path.join(home, '.local', MOUNT)
+    let root = ''
+    switch (process.platform) {
+      case 'darwin':
+        root = path.join(home, 'Library', MOUNT)
+        break
+      case 'win32':
+        root = path.join(home, 'AppData', MOUNT)
+        break
+      default:
+        root = path.join(home, '.local', MOUNT)
+        break
+    }
     if (!fs.existsSync(root)) return []
     return (fs.readdirSync(root, { recursive: true }) as string[])
       .filter((p) => fs.statSync(path.join(root, p)).isFile())
@@ -70,6 +82,8 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
 
     backend = new FakeBackend()
     await backend.start()
+    previousConnectorBackend = process.env.CONNECTOR_BACKEND
+    process.env.CONNECTOR_BACKEND = backend.url
     backend.on('GET', '/api/v1/configurationManager/internal/storageConfig', {
       status: 200,
       body: { storageType: 'local', mountName: MOUNT },
@@ -126,6 +140,11 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })
+    if (previousConnectorBackend === undefined) {
+      delete process.env.CONNECTOR_BACKEND
+    } else {
+      process.env.CONNECTOR_BACKEND = previousConnectorBackend
+    }
   })
 
   it('stores the file and answers with its download link', async () => {
