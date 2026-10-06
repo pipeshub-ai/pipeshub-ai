@@ -1527,7 +1527,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # periodic sampler noticing the pressure it already caused.
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
-    # Large text, code, CSV and JSON files are parsed in worker processes
+    # Large text, code and CSV files are parsed in worker processes
     # sized from this governor, so they cannot stall the consumer's loop.
     from app.modules.parsers import parse_pool
     parse_pool.set_resource_governor(governor)
