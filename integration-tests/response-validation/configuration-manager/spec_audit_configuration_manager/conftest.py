@@ -17,10 +17,52 @@ from helper.clients.config_client import ConfigClient  # noqa: E402
 from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
 from configuration_manager_audit_support import (  # noqa: E402
+    GuardSavedConfig,
     MetricsCollectionConfig,
     SeedSlackBot,
+    forget_stored_config,
     slack_bot_body,
 )
+
+
+@pytest.fixture
+def guard_saved_config(config_client: ConfigClient) -> Iterator[GuardSavedConfig]:
+    """Factory: snapshot a saved config before a test overwrites it; it is put back afterwards.
+
+    ``guard_saved_config(sub_path, kv_path, derived=())`` returns what ``GET sub_path``
+    answers now. ``derived`` names the fields that GET adds or computes and POST does not
+    take. On teardown a config that existed is posted back; one that did not is removed
+    from the key-value store at ``kv_path``, because no route deletes it.
+    """
+    guarded: list[tuple[str, str, tuple[str, ...], dict[str, Any]]] = []
+
+    def _guard(sub_path: str, kv_path: str, derived: tuple[str, ...] = ()) -> dict[str, Any]:
+        resp = config_client.get(sub_path)
+        assert resp.status_code == 200, f"could not read {sub_path}: {resp.status_code} {resp.text[:300]}"
+        before: dict[str, Any] = resp.json()
+        guarded.append((sub_path, kv_path, derived, before))
+        return dict(before)
+
+    try:
+        yield _guard
+    finally:
+        failures = []
+        for sub_path, kv_path, derived, before in reversed(guarded):
+            now = config_client.get(sub_path)
+            if now.status_code == 200 and now.json() == before:
+                continue
+            saved = {key: value for key, value in before.items() if key not in derived}
+            if saved:
+                restored = config_client.post(sub_path, json=saved)
+                if restored.status_code != 200:
+                    failures.append(f"POST {sub_path}: {restored.status_code} {restored.text[:200]}")
+                    continue
+            else:
+                forget_stored_config(kv_path)
+            after = config_client.get(sub_path)
+            if after.status_code != 200 or after.json() != before:
+                failures.append(f"GET {sub_path} after restore: {after.status_code} {after.text[:200]}")
+        assert not failures, f"saved configs not restored: {failures}"
 
 
 @pytest.fixture

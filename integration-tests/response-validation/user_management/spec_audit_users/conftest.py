@@ -25,6 +25,8 @@ from users_audit_support import (  # noqa: E402
     MintScopedToken,
     SeededUser,
     SeedUser,
+    delete_credentials,
+    insert_blocked_credentials,
     mint_scoped_token,
     request_with_token,
     scoped_jwt_secret,
@@ -36,13 +38,13 @@ def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
     """Factory: ``scoped_token(USER_LOOKUP_SCOPE)`` -> a service token the deployment accepts.
 
     Extra positional scopes and keyword claims are passed through; ``userId`` and
-    ``orgId`` default to the shared admin's. Skips when SCOPED_JWT_SECRET is unset
+    ``orgId`` default to the shared admin's. Fails when SCOPED_JWT_SECRET is unset
     or is not the secret the deployment verifies with, since nothing can then get
     past a scoped route's signature check.
     """
     secret = scoped_jwt_secret()
     if not secret:
-        pytest.skip(
+        pytest.fail(
             "SCOPED_JWT_SECRET is not set: this route accepts only scoped service tokens"
         )
 
@@ -61,7 +63,7 @@ def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
         json={"email": f"spec-audit-probe-{uuid.uuid4().hex[:10]}@test-pipeshub.com"},
     )
     if probe.status_code == 401:
-        pytest.skip(
+        pytest.fail(
             "SCOPED_JWT_SECRET is not the secret this deployment verifies scoped "
             f"tokens with (a correctly scoped probe token got 401: {probe.text[:120]})"
         )
@@ -71,7 +73,7 @@ def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
 
 @pytest.fixture(scope="session")
 def smtp_relay_reachable() -> None:
-    """Skip when nothing accepts connections on SMTP_HOST:SMTP_PORT.
+    """Fail when nothing accepts connections on SMTP_HOST:SMTP_PORT.
 
     Saving an SMTP config does not check the relay, so a route that really sends
     mail answers 500 when the configured relay is down.
@@ -79,11 +81,11 @@ def smtp_relay_reachable() -> None:
     host = os.getenv("SMTP_HOST", "").strip()
     port = os.getenv("SMTP_PORT", "").strip()
     if not host or not port.isdigit():
-        pytest.skip("SMTP_HOST/SMTP_PORT not set: no relay to deliver the mail to")
+        pytest.fail("SMTP_HOST/SMTP_PORT not set: no relay to deliver the mail to")
     try:
         socket.create_connection((host, int(port)), timeout=5).close()
     except OSError as exc:
-        pytest.skip(f"no SMTP relay is listening on {host}:{port} ({exc})")
+        pytest.fail(f"no SMTP relay is listening on {host}:{port} ({exc})")
 
 
 @pytest.fixture
@@ -117,3 +119,16 @@ def seed_user(users_client: UsersClient) -> Iterator[SeedUser]:
             if resp.status_code >= 400 and resp.status_code != 404:
                 leftovers.append(f"{user_id}: {resp.status_code} {resp.text[:200]}")
         assert not leftovers, f"seeded users were not removed: {leftovers}"
+
+
+@pytest.fixture
+def blocked_user(
+    seed_user: SeedUser, pipeshub_client: PipeshubClient
+) -> Iterator[SeededUser]:
+    """A seeded member whose credential row is locked out, as after too many wrong passwords."""
+    user = seed_user()
+    insert_blocked_credentials(pipeshub_client.org_id, str(user["_id"]))
+    try:
+        yield user
+    finally:
+        delete_credentials(str(user["_id"]))

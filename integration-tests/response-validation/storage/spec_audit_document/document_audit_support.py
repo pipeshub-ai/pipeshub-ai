@@ -19,6 +19,9 @@ FETCH_CONFIG_SCOPE = "fetch:config"
 STORAGE_TOKEN_SCOPE = "storage:token"
 MALFORMED_TOKEN = "not.a.jwt"
 
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+
 
 def scoped_jwt_secret() -> str:
     """The deployment's scoped JWT secret, or "" when the run was not given one."""

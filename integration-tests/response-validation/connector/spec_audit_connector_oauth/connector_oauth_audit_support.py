@@ -14,6 +14,8 @@ OAUTH_BASE = "/api/v1/oauth"
 
 # Registered in the Python OAuth config registry; the lookup is case-sensitive.
 SEED_CONNECTOR_TYPE = "Confluence"
+# A second registered type: a config id is only valid under the type it was created for.
+OTHER_CONNECTOR_TYPE = "Jira"
 UNKNOWN_CONNECTOR_TYPE = "SpecAuditNoSuchConnector"
 # Config ids are uuid4 strings; nothing validates their format, so an unknown one is a 404.
 MISSING_CONFIG_ID = "00000000-0000-4000-8000-000000000000"
@@ -21,6 +23,38 @@ MISSING_CONFIG_ID = "00000000-0000-4000-8000-000000000000"
 UNSAFE_PATH_SEGMENT = "bad%25id"
 
 NAME_PREFIX = "spec-audit-oauth-"
+
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+
+# Query strings the shared page/limit/search validator refuses, on every route that uses it.
+INVALID_PAGING_QUERIES: list[Any] = [
+    {"page": 0},
+    {"page": -1},
+    {"page": "abc"},
+    {"page": "1.5"},
+    # An empty value is not "absent": it reaches the number check as undefined and fails it.
+    {"page": ""},
+    {"limit": 0},
+    {"limit": 201},
+    {"limit": "ten"},
+    {"limit": ""},
+    [("page", 1), ("page", 2)],
+    [("search", "a"), ("search", "b")],
+]
+INVALID_PAGING_IDS = [
+    "page-zero",
+    "page-negative",
+    "page-not-a-number",
+    "page-fraction",
+    "page-empty",
+    "limit-zero",
+    "limit-above-max",
+    "limit-not-a-number",
+    "limit-empty",
+    "page-repeated",
+    "search-repeated",
+]
 
 
 class SeededOAuthConfig(TypedDict):
@@ -37,6 +71,10 @@ class ConnectorOAuthClient(APIClient):
     """Client for /api/v1/oauth (connector OAuth app configs), acting as the shared org admin."""
 
     BASE = OAUTH_BASE
+
+    def send(self, method: str, path: str = "", **kwargs: Any) -> requests.Response:
+        """Any verb on a router-relative path, for cases that differ only by method."""
+        return self._client.request(method, self._path(path), **kwargs)
 
     def registry(self, *, auth: bool = True, **params: Any) -> requests.Response:
         return self.get("/registry", auth=auth, params=params)
@@ -110,6 +148,24 @@ def request_as(
         headers=user.headers,
         **kwargs,
     )
+
+
+def validation_error_fields(resp: requests.Response) -> list[str]:
+    """Field paths a 400 from the Node request validator names; empty for any other reply."""
+    try:
+        error = resp.json()["error"]
+        if error.get("code") != "VALIDATION_ERROR":
+            return []
+        return [str(entry.get("field")) for entry in error["metadata"]["errors"]]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return []
+
+
+def error_code(resp: requests.Response) -> str | None:
+    try:
+        return resp.json()["error"]["code"]
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def bearer(token: str) -> dict[str, str]:

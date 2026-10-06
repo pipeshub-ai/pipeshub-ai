@@ -2,13 +2,30 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import io
+import json
+import os
 from typing import Any, Callable
 
 import requests
+from pymongo import MongoClient
 
+from helper.agui_sse import (
+    AGUI,
+    conversation_created_value,
+    is_conversation_created,
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_error_message,
+    run_finished_result,
+)
 from helper.clients.conversations_client import ConversationsClient
+from helper.config import MONGO_DB_NAME, MONGO_URI
 from helper.second_user import SecondUser
+from helper.openapi_search_validator import assert_matches_component_schema
 
 CONVERSATIONS_BASE = "/api/v1/conversations"
 
@@ -28,6 +45,36 @@ PROJECT_VISIBILITIES = ("private", "project")
 
 # Set explicitly in chat.session.schema.ts; holds chat and agent sessions alike.
 COLLECTION = "chatSessions"
+
+CREATE_ROUTE = f"{CONVERSATIONS_BASE}/create"
+STREAM_ROUTE = f"{CONVERSATIONS_BASE}/stream"
+LIST_ROUTE = CONVERSATIONS_BASE
+BY_ID_ROUTE = f"{CONVERSATIONS_BASE}/:conversationId"
+MESSAGES_ROUTE = f"{CONVERSATIONS_BASE}/:conversationId/messages"
+MESSAGES_STREAM_ROUTE = f"{CONVERSATIONS_BASE}/:conversationId/messages/stream"
+UPLOAD_ROUTE = f"{CONVERSATIONS_BASE}/attachments/upload"
+DELETE_ATTACHMENT_ROUTE = f"{CONVERSATIONS_BASE}/attachments/:recordId"
+
+JSON_HEADERS = {"Content-Type": "application/json"}
+MALFORMED_JSON_BODY = "{not json"
+INVALID_AUTH_HEADERS = {"Authorization": "Bearer not-a-jwt"}
+
+# A token of the suite's own OAuth client without any conversation:* scope.
+NARROW_SCOPE = "org:read"
+
+# Short questions with short answers keep each real LLM turn cheap.
+CHEAP_QUERY = "Reply with only the word pong."
+CHEAP_FOLLOW_UP = "Reply with only the word ping."
+LLM_TIMEOUT_SECONDS = 600
+
+UNIVERSAL_CHAT_MODES = ("agent", "internal_search", "web_search")
+# Accepted by the non-streaming routes and run as internal search.
+LEGACY_CHAT_MODES = ("deep", "quick", "verification", "auto")
+REASONING_EFFORTS = ("none", "low", "medium", "high", "max")
+
+SOME_UUID = "5f1c7c4e-2b4a-4b8e-9a51-3d6f0c2a7e11"
+
+APPLIED_NODE = {"id": SOME_UUID, "name": "Spec audit", "nodeType": "app", "connector": "KB"}
 
 MultipartFiles = list[tuple[str, tuple[str, io.BytesIO, str]]]
 SeedConversation = Callable[..., str]
@@ -111,3 +158,117 @@ def request_as(
         headers=headers,
         **kwargs,
     )
+
+
+def _without(node: dict[str, Any], key: str) -> dict[str, Any]:
+    return {k: v for k, v in node.items() if k != key}
+
+
+# Bodies every chat turn route (create, stream, messages, messages/stream) refuses in its
+# validator: (fields merged over a valid body, or None to drop a key; field the 400 names).
+INVALID_TURN_FIELDS: list[tuple[str, dict[str, Any], str]] = [
+    ("missing-query", {"query": None}, "body.query"),
+    ("empty-query", {"query": ""}, "body.query"),
+    ("query-over-100000-chars", {"query": "a" * 100_001}, "body.query"),
+    ("query-not-a-string", {"query": 42}, "body.query"),
+    *[
+        (f"applied-app-without-{key}", {"appliedFilters": {"apps": [_without(APPLIED_NODE, key)]}}, f"body.appliedFilters.apps.0.{key}")
+        for key in ("id", "name", "nodeType", "connector")
+    ],
+    *[
+        (f"applied-kb-without-{key}", {"appliedFilters": {"kb": [_without(APPLIED_NODE, key)]}}, f"body.appliedFilters.kb.0.{key}")
+        for key in ("id", "name", "nodeType", "connector")
+    ],
+    ("filter-app-not-a-uuid", {"filters": {"apps": ["not-a-uuid"]}}, "body.filters.apps.0"),
+    ("filter-kb-not-a-uuid", {"filters": {"kb": ["not-a-uuid"]}}, "body.filters.kb.0"),
+    ("attachment-without-record-id", {"attachments": [{"recordName": "x.txt"}]}, "body.attachments.0.recordId"),
+    ("attachment-empty-record-id", {"attachments": [{"recordId": ""}]}, "body.attachments.0.recordId"),
+    ("attachment-unknown-source", {"attachments": [{"recordId": SOME_UUID, "source": "clipboard"}]}, "body.attachments.0.source"),
+    ("unknown-reasoning-effort", {"reasoningEffort": "extreme"}, "body.reasoningEffort"),
+    ("empty-model-key", {"modelKey": ""}, "body.modelKey"),
+    ("empty-model-name", {"modelName": ""}, "body.modelName"),
+    ("empty-model-friendly-name", {"modelFriendlyName": ""}, "body.modelFriendlyName"),
+    ("empty-timezone", {"timezone": ""}, "body.timezone"),
+    ("current-time-not-iso", {"currentTime": "yesterday"}, "body.currentTime"),
+    ("current-time-without-zone", {"currentTime": "2026-04-12T16:00:00"}, "body.currentTime"),
+    ("empty-tool-name", {"tools": [""]}, "body.tools.0"),
+    ("protocol-not-agui", {"protocol": "sse"}, "body.protocol"),
+    ("agent-capability-not-boolean", {"agentCapabilities": {"webSearch": "yes"}}, "body.agentCapabilities.webSearch"),
+    ("run-id-not-a-uuid", {"runId": "not-a-uuid"}, "body.runId"),
+    ("chat-mode-agent-with-sub-mode", {"chatMode": "agent:quick"}, "body.chatMode"),
+    ("unknown-chat-mode", {"chatMode": "turbo"}, "body.chatMode"),
+]
+
+
+def turn_body(base: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """``base`` with ``fields`` merged in; a ``None`` value removes that key."""
+    body = copy.deepcopy(base)
+    for key, value in fields.items():
+        if value is None:
+            body.pop(key, None)
+        else:
+            body[key] = value
+    return body
+
+
+def validation_fields(resp: requests.Response) -> list[str]:
+    """The fields a Node ``VALIDATION_ERROR`` names; fails on any other body."""
+    error = resp.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR", resp.text[:500]
+    return [str(e["field"]) for e in error["metadata"]["errors"]]
+
+
+def mint_narrow_scope_token(base_url: str, timeout: int = 60) -> str:
+    """A client-credentials token of the suite's own OAuth client, limited to NARROW_SCOPE."""
+    resp = requests.post(
+        f"{base_url}/api/v1/oauth2/token",
+        json={
+            "grant_type": "client_credentials",
+            "client_id": os.environ["CLIENT_ID"],
+            "client_secret": os.environ["CLIENT_SECRET"],
+            "scope": NARROW_SCOPE,
+        },
+        timeout=timeout,
+    )
+    assert resp.status_code == 200, f"minting a {NARROW_SCOPE} token: {resp.status_code} {resp.text[:300]}"
+    granted = resp.json().get("scope")
+    assert granted == NARROW_SCOPE, f"asked for {NARROW_SCOPE!r}, the token carries {granted!r}"
+    return str(resp.json()["access_token"])
+
+
+def forget_access_token(token: str) -> None:
+    """Remove the stored row of an access token this suite minted (there is no delete API)."""
+    client: MongoClient[dict[str, Any]] = MongoClient(MONGO_URI)
+    try:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        client[MONGO_DB_NAME]["oauthAccessTokens"].delete_one({"tokenHash": token_hash})
+    finally:
+        client.close()
+
+
+class StreamRun:
+    """A conversation stream read to its end; every frame checked against ``event_schema``."""
+
+    def __init__(self, resp: requests.Response, event_schema: str, *, status: int = 200) -> None:
+        assert resp.status_code == status, resp.text[:500]
+        assert resp.headers["Content-Type"].startswith("text/event-stream"), resp.headers
+        self.events: list[tuple[str, Any]] = []
+        self.created: dict[str, Any] = {}
+        self.result: dict[str, Any] | None = None
+        self.error: str | None = None
+        self.error_code: str | None = None
+        for envelope in iter_sse_envelopes(resp):
+            payload = json.loads(envelope["data"])
+            assert_matches_component_schema({"event": envelope["event"], "data": payload}, event_schema)
+            self.events.append((envelope["event"], payload))
+            if envelope["event"] == AGUI.CUSTOM and is_conversation_created(payload):
+                self.created = conversation_created_value(payload)
+            elif is_root_finished(envelope["event"], payload):
+                self.result = run_finished_result(payload)
+            elif is_root_error(envelope["event"], payload):
+                self.error = run_error_message(payload)
+                self.error_code = payload.get("code")
+
+    @property
+    def names(self) -> list[str]:
+        return [name for name, _ in self.events]

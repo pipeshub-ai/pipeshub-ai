@@ -6,15 +6,21 @@ get_all_oauth_configs, which has no admin gate and returns the same stripped row
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from connector_oauth_audit_support import (
+    INVALID_PAGING_IDS,
+    INVALID_PAGING_QUERIES,
     OAUTH_BASE,
+    UNKNOWN_CONNECTOR_TYPE,
     ConnectorOAuthClient,
     SeedOAuthConfig,
     bearer,
     request_as,
+    validation_error_fields,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
@@ -54,7 +60,21 @@ def test_admin_search_lists_seeded_config_without_secrets(
     assert pagination["limit"] == 200
     assert pagination["search"] == cfg["name"]
     assert pagination["totalItems"] >= 1
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_config_of_an_unregistered_type_is_not_listed(
+    connector_oauth_client: ConnectorOAuthClient, seed_oauth_config: SeedOAuthConfig
+) -> None:
+    # The listing walks the registry's types, so a config stored under any other name is skipped.
+    cfg = seed_oauth_config(UNKNOWN_CONNECTOR_TYPE)
+
+    resp = connector_oauth_client.list_all(search=cfg["name"], limit=200)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["oauthConfigs"] == []
+    assert resp.json()["pagination"]["totalItems"] == 0
 
 
 def test_member_lists_with_default_pagination(second_user: SecondUser) -> None:
@@ -68,7 +88,21 @@ def test_member_lists_with_default_pagination(second_user: SecondUser) -> None:
     assert body["pagination"]["page"] == 1
     assert body["pagination"]["limit"] == 20
     assert body["pagination"]["search"] is None
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_member_sees_the_same_credential_free_rows(
+    second_user: SecondUser, seed_oauth_config: SeedOAuthConfig
+) -> None:
+    cfg = seed_oauth_config()
+
+    resp = request_as(second_user, "GET", params={"search": cfg["name"], "limit": 200})
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    rows = [row for row in resp.json()["oauthConfigs"] if row["_id"] == cfg["id"]]
+    assert len(rows) == 1, resp.text[:500]
+    assert set(rows[0]) == LISTED_FIELDS, rows[0].keys()
 
 
 def test_list_without_token_is_unauthorized(
@@ -77,7 +111,7 @@ def test_list_without_token_is_unauthorized(
     resp = connector_oauth_client.list_all(auth=False)
 
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_list_without_connector_read_scope_is_forbidden(
@@ -88,13 +122,24 @@ def test_list_without_connector_read_scope_is_forbidden(
     )
 
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
-def test_list_limit_above_validator_max_is_rejected(
-    connector_oauth_client: ConnectorOAuthClient,
+@pytest.mark.parametrize("query", INVALID_PAGING_QUERIES, ids=INVALID_PAGING_IDS)
+def test_list_rejects_invalid_paging_query(
+    connector_oauth_client: ConnectorOAuthClient, query: Any
 ) -> None:
-    resp = connector_oauth_client.list_all(limit=201)
+    resp = connector_oauth_client.get("", params=query)
 
     assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert validation_error_fields(resp), resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_unknown_query_parameter_is_ignored(connector_oauth_client: ConnectorOAuthClient) -> None:
+    # `scope` belongs to GET /oauth/{connectorType}; here it is not even validated.
+    with outside_request_contract("the validator passes unknown query parameters through"):
+        resp = connector_oauth_client.list_all(limit=1, scope="org")
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["pagination"]["limit"] == 1

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -14,17 +13,31 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from helper.clients.users_client import UsersClient  # noqa: E402
+from helper import local_auth, mailpit  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
 from user_account_audit_support import (  # noqa: E402
     MISSING_USER_ID,
+    OAUTH_SETTING,
     OTHER_SCOPE,
     VALIDATE_EMAIL_SCOPE,
+    Account,
     DisposableMember,
     MintEmailChangeToken,
+    MintUserToken,
+    OAuthProviderStub,
+    SignInPolicy,
+    Tokens,
     UserAccountAuditClient,
+    bearer,
+    configure_oauth,
+    create_account,
+    create_member,
+    delete_member,
+    forget_email_activity,
+    forget_mail,
     mint_scoped_token,
+    preserved_setting,
     scoped_jwt_secret,
     unused_email,
     user_action_key,
@@ -37,20 +50,18 @@ def user_account_audit_client(pipeshub_client: PipeshubClient) -> UserAccountAud
 
 
 @pytest.fixture(scope="session")
-def email_change_token(
+def user_token(
     pipeshub_client: PipeshubClient, user_account_audit_client: UserAccountAuditClient
-) -> MintEmailChangeToken:
-    """Factory: ``email_change_token(user_id, new_email)`` -> a token validateEmailChange accepts.
+) -> MintUserToken:
+    """Factory: ``user_token(scope, user_id, **claims)`` -> a token signed like the ones Node hands users.
 
-    Signed like the link in the verification mail. ``scopes=[...]``, ``ttl_seconds=``
-    and extra claims override the defaults; ``orgId`` defaults to the shared org.
-    Skips when SCOPED_JWT_SECRET is unset or is not the secret this deployment
-    verifies with, since the token cannot be forged then.
+    ``scopes=[...]`` and ``ttl_seconds=`` override the defaults; ``orgId`` defaults to the shared org.
     """
     secret = scoped_jwt_secret()
     if not secret:
-        pytest.skip(
-            "SCOPED_JWT_SECRET is not set: validateEmailChange accepts only an email:validate token"
+        pytest.fail(
+            "SCOPED_JWT_SECRET is not set in the test environment: reset-link, refresh and "
+            "email-change tokens cannot be minted without the deployment's scoped JWT secret"
         )
     key = user_action_key(secret)
 
@@ -67,15 +78,14 @@ def email_change_token(
     )
     assert probe.status_code == 401, probe.text[:500]
     if probe.json()["error"]["message"] != "Invalid scope":
-        pytest.skip(
-            "SCOPED_JWT_SECRET is not the scoped JWT secret this deployment verifies "
-            "with (it answers 'Invalid token' to a token signed with it), so an "
-            "email:validate token cannot be minted"
+        pytest.fail(
+            "SCOPED_JWT_SECRET is not the scoped JWT secret this deployment verifies with "
+            "(it answers 'Invalid token' to a token signed with it), so user tokens cannot be minted"
         )
 
     def _mint(
+        scope: str,
         user_id: str,
-        new_email: str,
         *,
         scopes: list[str] | None = None,
         ttl_seconds: int = 1200,
@@ -84,32 +94,107 @@ def email_change_token(
         claims.setdefault("orgId", pipeshub_client.org_id)
         return mint_scoped_token(
             key,
-            [VALIDATE_EMAIL_SCOPE] if scopes is None else scopes,
+            [scope] if scopes is None else scopes,
             ttl_seconds=ttl_seconds,
             userId=user_id,
-            newEmail=new_email,
             **claims,
         )
 
     return _mint
 
 
+@pytest.fixture(scope="session")
+def email_change_token(user_token: MintUserToken) -> MintEmailChangeToken:
+    """Factory: ``email_change_token(user_id, new_email)`` -> a token validateEmailChange accepts."""
+
+    def _mint(user_id: str, new_email: str, **overrides: Any) -> str:
+        return user_token(VALIDATE_EMAIL_SCOPE, user_id, newEmail=new_email, **overrides)
+
+    return _mint
+
+
 @pytest.fixture
-def disposable_member(
-    users_client: UsersClient, pipeshub_client: PipeshubClient
-) -> Iterator[DisposableMember]:
+def disposable_member(pipeshub_client: PipeshubClient) -> Iterator[DisposableMember]:
     """A member whose email a test may change; the shared admin's must never be."""
-    email = unused_email("spec-audit-member")
-    resp = users_client.create_user(email, f"Spec Audit {uuid.uuid4().hex[:8]}")
-    assert resp.status_code in (200, 201), f"createUser failed: {resp.status_code} {resp.text[:300]}"
-    user = resp.json()
-    user_id = str(user.get("_id") or user.get("id") or "")
-    assert user_id, f"createUser response has no id: {sorted(user)}"
+    member = create_member(pipeshub_client)
     try:
-        yield DisposableMember(
-            user_id=user_id,
-            org_id=str(user.get("orgId") or pipeshub_client.org_id),
-            email=email,
-        )
+        yield member
     finally:
-        users_client.delete_user(user_id)
+        delete_member(pipeshub_client, member)
+
+
+@pytest.fixture
+def account(pipeshub_client: PipeshubClient) -> Iterator[Account]:
+    """A member with a password, for tests that change or end its sessions."""
+    created = create_account(pipeshub_client)
+    try:
+        yield created
+    finally:
+        delete_member(pipeshub_client, created)
+        forget_mail(created.email)
+
+
+@pytest.fixture(scope="module")
+def module_account(pipeshub_client: PipeshubClient) -> Iterator[Account]:
+    """One member with a password for a whole file; only for tests that leave it able to sign in."""
+    created = create_account(pipeshub_client)
+    try:
+        yield created
+    finally:
+        delete_member(pipeshub_client, created)
+        forget_mail(created.email)
+
+
+@pytest.fixture(scope="module")
+def module_tokens(
+    user_account_audit_client: UserAccountAuditClient, module_account: Account
+) -> Tokens:
+    return user_account_audit_client.sign_in(module_account)
+
+
+@pytest.fixture
+def stray_email() -> Iterator[str]:
+    """An address with no account; the activity rows written for it are removed afterwards."""
+    email = unused_email("spec-audit-nobody")
+    try:
+        yield email
+    finally:
+        forget_email_activity(email)
+        forget_mail(email)
+
+
+@pytest.fixture(scope="session")
+def admin_session_headers(pipeshub_client: PipeshubClient) -> dict[str, str]:
+    """The shared admin signed in with a password: orgAuthConfig accepts only a session token."""
+    return bearer(local_auth.obtain_user_session_token(pipeshub_client.base_url))
+
+
+@pytest.fixture(scope="session")
+def sign_in_policy(
+    pipeshub_client: PipeshubClient, admin_session_headers: dict[str, str]
+) -> SignInPolicy:
+    return SignInPolicy(pipeshub_client, admin_session_headers)
+
+
+@pytest.fixture(scope="session")
+def mailbox() -> None:
+    """Mailpit must answer, or nothing about delivered mail can be asserted."""
+    try:
+        mailpit.message_ids("nobody@example.com")
+    except mailpit.MailpitUnavailable as exc:
+        pytest.fail(f"{exc}. Set MAILPIT_URL to Mailpit's web API.")
+
+
+@pytest.fixture(scope="module")
+def oauth_provider(pipeshub_client: PipeshubClient) -> Iterator[OAuthProviderStub]:
+    """A local OAuth provider saved as the org's generic OAuth sign-in, with JIT off.
+
+    The stored setting is put back when the file is done.
+    """
+    stub = OAuthProviderStub()
+    try:
+        with preserved_setting(OAUTH_SETTING):
+            configure_oauth(pipeshub_client, stub.config())
+            yield stub
+    finally:
+        stub.close()

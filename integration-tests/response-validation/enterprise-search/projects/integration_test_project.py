@@ -39,11 +39,11 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from helper.clients.conversations_client import ConversationsClient
-from helper.clients.kb_client import KBClient
-from helper.clients.projects_client import ProjectsClient
-from helper.second_user import SecondUser
-from openapi_schema_validator import (
+from helper.clients.conversations_client import ConversationsClient  # noqa: E402
+from helper.clients.kb_client import KBClient  # noqa: E402
+from helper.clients.projects_client import ProjectsClient  # noqa: E402
+from helper.second_user import SecondUser  # noqa: E402
+from openapi_schema_validator import (  # noqa: E402
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
 )
@@ -273,7 +273,7 @@ class ProjectTestBase:
 
     def _create_project(self, **kwargs: Any) -> dict[str, Any]:
         kwargs.setdefault("name", f"it-project-{uuid4().hex[:8]}")
-        resp = self.projects.create_project(timeout=self.timeout, **kwargs)
+        resp = self.projects.create_project(**kwargs)
         assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
         body = _response_json(resp)
         project = body.get("project")

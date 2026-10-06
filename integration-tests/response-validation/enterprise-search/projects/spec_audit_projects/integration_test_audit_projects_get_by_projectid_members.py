@@ -11,8 +11,9 @@ from projects_audit_support import (
     MISSING_PROJECT_ID,
     SeedProject,
     request_as,
+    validation_fields,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -26,7 +27,7 @@ def test_owner_and_added_member_list_members(
 
     empty = projects_client.list_members(project_id)
     assert empty.status_code == 200, empty.text[:500]
-    assert_strict_openapi_response(empty, MEMBERS_TEMPLATE)
+    assert_strict_openapi_exchange(empty, MEMBERS_TEMPLATE)
     # The owner is implicit and never stored as a member row.
     assert empty.json() == {"members": []}
 
@@ -37,7 +38,7 @@ def test_owner_and_added_member_list_members(
 
     resp = projects_client.list_members(project_id)
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, MEMBERS_TEMPLATE)
+    assert_strict_openapi_exchange(resp, MEMBERS_TEMPLATE)
     members = resp.json()["members"]
     assert len(members) == 1
     assert members[0]["principalId"] == second_user.user_id
@@ -46,7 +47,7 @@ def test_owner_and_added_member_list_members(
 
     as_member = request_as(second_user, "GET", f"/{project_id}/members")
     assert as_member.status_code == 200, as_member.text[:500]
-    assert_strict_openapi_response(as_member, MEMBERS_TEMPLATE)
+    assert_strict_openapi_exchange(as_member, MEMBERS_TEMPLATE)
     assert as_member.json()["members"] == members
 
 
@@ -60,14 +61,14 @@ def test_outsider_gets_not_found_until_project_is_org_visible(
     # 404 rather than 403, so a non-member cannot probe which project ids exist.
     hidden = request_as(second_user, "GET", f"/{project_id}/members")
     assert hidden.status_code == 404, hidden.text[:500]
-    assert_strict_openapi_response(hidden, MEMBERS_TEMPLATE)
+    assert_strict_openapi_exchange(hidden, MEMBERS_TEMPLATE)
 
     shared = projects_client.update_project(project_id, visibility="org")
     assert shared.ok, f"could not share the project: {shared.status_code} {shared.text[:300]}"
 
     visible = request_as(second_user, "GET", f"/{project_id}/members")
     assert visible.status_code == 200, visible.text[:500]
-    assert_strict_openapi_response(visible, MEMBERS_TEMPLATE)
+    assert_strict_openapi_exchange(visible, MEMBERS_TEMPLATE)
     assert visible.json() == {"members": []}
 
 
@@ -83,7 +84,9 @@ def test_list_members_rejects_bad_project_id(
 ) -> None:
     resp = projects_client.list_members(project_id)
     assert resp.status_code == expected_status, resp.text[:500]
-    assert_strict_openapi_response(resp, MEMBERS_TEMPLATE)
+    assert_strict_openapi_exchange(resp, MEMBERS_TEMPLATE)
+    if expected_status == 400:
+        assert validation_fields(resp) == {"params.projectId"}
 
 
 def test_list_members_without_token_is_unauthorized(
@@ -91,4 +94,4 @@ def test_list_members_without_token_is_unauthorized(
 ) -> None:
     resp = projects_client.get(f"/{MISSING_PROJECT_ID}/members", auth=False)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, MEMBERS_TEMPLATE)
+    assert_strict_openapi_exchange(resp, MEMBERS_TEMPLATE)

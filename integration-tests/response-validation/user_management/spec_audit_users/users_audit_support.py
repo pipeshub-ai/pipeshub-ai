@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import base64
 import datetime
 import os
+import struct
+import uuid
+import zlib
 from typing import Any, Callable
 
 import jwt
 import requests
+from pymongo import MongoClient
+from pymongo.collection import Collection
 
+from helper.config import MONGO_DB_NAME, MONGO_URI
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
 
@@ -78,3 +85,89 @@ def request_as(
         headers=user.headers,
         **kwargs,
     )
+
+
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+
+# safeParsePagination's MAX_PAGE: floor(Number.MAX_SAFE_INTEGER / 100).
+MAX_LIST_PAGE = 90071992547409
+
+DEMO_EMAIL_DOMAIN = "acme-demo.example"
+STRONG_PASSWORD = "Spec#Audit1"
+
+# A 1x1 red PNG.
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+)
+
+
+def unique_email(domain: str = "test-pipeshub.com") -> str:
+    return f"spec-audit-{uuid.uuid4().hex[:10]}@{domain}"
+
+
+def png_bytes(width: int, height: int) -> bytes:
+    """A grey-gradient PNG; large dimensions stay small as PNG but not as JPEG."""
+    row = bytes([0]) + bytes((x * 255 // max(width - 1, 1)) for x in range(width))
+    raw = row * height
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+    header = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
+def put_display_picture(
+    user: SecondUser, files: Any = None, **kwargs: Any
+) -> requests.Response:
+    """PUT /users/dp as the member, multipart when ``files`` is given."""
+    headers = {"Authorization": f"Bearer {user.token}", **kwargs.pop("headers", {})}
+    return requests.put(
+        f"{user.base_url}{USERS_BASE}/dp",
+        headers=headers,
+        files=files,
+        timeout=user.timeout,
+        **kwargs,
+    )
+
+
+def credentials_collection(client: MongoClient) -> Collection:
+    return client[MONGO_DB_NAME].userCredentials
+
+
+def insert_blocked_credentials(org_id: str, user_id: str) -> Any:
+    """A credential row as the login lockout leaves it; returns its _id for cleanup."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    with MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000) as client:
+        return credentials_collection(client).insert_one(
+            {
+                "userId": str(user_id),
+                "orgId": str(org_id),
+                "ipAddress": "127.0.0.1",
+                "wrongCredentialCount": 5,
+                "isBlocked": True,
+                "forceNewPasswordGeneration": False,
+                "isDeleted": False,
+                "createdAt": now,
+                "updatedAt": now,
+            }
+        ).inserted_id
+
+
+def read_credentials(user_id: str) -> list[dict[str, Any]]:
+    with MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000) as client:
+        return list(credentials_collection(client).find({"userId": str(user_id)}))
+
+
+def delete_credentials(user_id: str) -> None:
+    with MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000) as client:
+        credentials_collection(client).delete_many({"userId": str(user_id)})

@@ -15,19 +15,22 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from helper.second_user import second_user  # noqa: E402, F401 - fixture
-
 from toolsets_audit_support import (  # noqa: E402
     AGENTS_BASE,
+    DeleteInstanceLater,
     JsonObject,
     SeedAgent,
     SeedToolsetInstance,
     ToolsetsClient,
+    forget_access_token,
     instance_body,
+    mint_narrow_scope_token,
     oauth_instance_body,
     toolset_store_lock,
 )
+
+from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
 logger = logging.getLogger("toolsets-audit")
 
@@ -37,8 +40,52 @@ def toolsets_client(pipeshub_client: PipeshubClient) -> ToolsetsClient:
     return ToolsetsClient(pipeshub_client)
 
 
+@pytest.fixture(scope="session")
+def narrow_scope_headers(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]]:
+    """Headers of an OAuth token without any ``connector:*`` or ``agent:*`` scope.
+
+    The suite's own token is an OAuth client-credentials token too, so Python checks
+    scopes for it; this one is the same client asking for less.
+    """
+    token = mint_narrow_scope_token(pipeshub_client.base_url, pipeshub_client.timeout_seconds)
+    try:
+        yield {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    finally:
+        forget_access_token(token)
+
+
+def _delete_instances(toolsets_client: ToolsetsClient, records: list[JsonObject]) -> None:
+    """Delete instances (with the credentials saved against them), then their OAuth configs.
+
+    Instances go first: a config still linked to one of them cannot be deleted.
+    """
+    with toolset_store_lock():
+        for record in records:
+            deleted = toolsets_client.delete_instance(record["_id"])
+            if deleted.status_code >= 300 and deleted.status_code != 404:
+                logger.warning("could not delete toolset instance %s: %s", record["_id"], deleted.text[:300])
+        for toolset_type, oauth_config_id in sorted(
+            {(r["toolsetType"], r["oauthConfigId"]) for r in records if r.get("oauthConfigId")}
+        ):
+            removed = toolsets_client.delete_oauth_config(toolset_type, oauth_config_id)
+            if removed.status_code >= 300 and removed.status_code != 404:
+                logger.warning("could not delete OAuth config %s: %s", oauth_config_id, removed.text[:300])
+
+
 @pytest.fixture
-def seed_toolset_instance(toolsets_client: ToolsetsClient) -> Iterator[SeedToolsetInstance]:
+def delete_instance_later(toolsets_client: ToolsetsClient) -> Iterator[DeleteInstanceLater]:
+    """Register an instance record a test created itself; it is deleted on teardown."""
+    created: list[JsonObject] = []
+    try:
+        yield created.append
+    finally:
+        _delete_instances(toolsets_client, created)
+
+
+@pytest.fixture
+def seed_toolset_instance(
+    toolsets_client: ToolsetsClient, delete_instance_later: DeleteInstanceLater
+) -> SeedToolsetInstance:
     """Factory: create one toolset instance and return its stored record (``_id`` is the id).
 
     ``seed_toolset_instance(oauth=False, **overrides)`` merges camelCase overrides into
@@ -46,7 +93,6 @@ def seed_toolset_instance(toolsets_client: ToolsetsClient) -> Iterator[SeedTools
     carries ``oauthConfigId``. On teardown every instance is deleted, which removes the
     user and agent credentials saved against it, and then its OAuth config.
     """
-    created: list[JsonObject] = []
 
     def _seed(oauth: bool = False, **overrides: Any) -> JsonObject:
         body = oauth_instance_body(**overrides) if oauth else instance_body(**overrides)
@@ -57,30 +103,12 @@ def seed_toolset_instance(toolsets_client: ToolsetsClient) -> Iterator[SeedTools
         record: JsonObject = resp.json().get("instance") or {}
         if not record.get("_id"):
             pytest.fail(f"instance create returned no instance._id: {resp.text[:500]}")
-        created.append(record)
+        delete_instance_later(record)
         if oauth and not record.get("oauthConfigId"):
             pytest.fail(f"OAuth instance was created without an OAuth config: {resp.text[:500]}")
         return record
 
-    try:
-        yield _seed
-    finally:
-        for record in created:
-            with toolset_store_lock():
-                deleted = toolsets_client.delete_instance(record["_id"])
-                if deleted.status_code >= 300 and deleted.status_code != 404:
-                    logger.warning(
-                        "could not delete toolset instance %s: %s", record["_id"], deleted.text[:300]
-                    )
-                oauth_config_id = record.get("oauthConfigId")
-                if oauth_config_id:
-                    removed = toolsets_client.delete_oauth_config(
-                        record["toolsetType"], oauth_config_id
-                    )
-                    if removed.status_code >= 300 and removed.status_code != 404:
-                        logger.warning(
-                            "could not delete OAuth config %s: %s", oauth_config_id, removed.text[:300]
-                        )
+    return _seed
 
 
 @pytest.fixture

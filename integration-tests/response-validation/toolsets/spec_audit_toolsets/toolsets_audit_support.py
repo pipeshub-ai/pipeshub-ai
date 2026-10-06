@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
+import os
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+import redis
 import requests
 from filelock import FileLock
+from pymongo import MongoClient
 
+from helper.config import MONGO_DB_NAME, MONGO_URI
 from helper.http.api_client import APIClient
+from helper.oauth_token_helper import _decrypt, _derive_key, _encrypt
 from helper.second_user import SecondUser
 
 TOOLSETS_BASE = "/api/v1/toolsets"
@@ -19,6 +27,8 @@ AGENTS_BASE = "/api/v1/agents"
 # In the registry on every edition, with both an OAUTH and an API_TOKEN auth type.
 TOOLSET_TYPE = "jira"
 MISSING_TOOLSET_TYPE = "spec-audit-no-such-toolset"
+# Supports OAUTH and runs no setup check against the provider once a flow completes.
+OAUTH_ONLY_LOCAL_TOOLSET_TYPE = "github"
 
 # Instance ids, OAuth config ids and agent keys are uuid4 strings; no store validates
 # the format, so an unknown one is a plain 404 from Python.
@@ -42,9 +52,31 @@ OAUTH_CLIENT_AUTH: dict[str, str] = {
     "clientSecret": "spec-audit-client-secret",
 }
 
+# The legacy /:toolsetId/* routes paste the id into a Python URL. These three ids turn
+# that URL into one Python does serve (or serves for another method only).
+INSTANCES_SEGMENT = "instances"
+OAUTH_CONFIGS_SEGMENT = "oauth-configs"
+AGENTS_SEGMENT = "agents"
+RESERVED_SEGMENTS = (INSTANCES_SEGMENT, OAUTH_CONFIGS_SEGMENT, AGENTS_SEGMENT)
+
+# What FastAPI answers for a URL no Python route matches, relayed by Node.
+NO_BACKEND_ROUTE = "Not Found"
+INSTANCE_NOT_FOUND = "This toolset was removed, or you no longer have access. Refresh the page and try again."
+# What Python's OAuth-config list answers for a toolset type that has none.
+NO_OAUTH_CONFIGS: dict[str, Any] = {"status": "success", "oauthConfigs": [], "total": 0}
+
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+# The global sanitizer refuses any query or body string that holds markup.
+HTML_VALUE = "<b>spec-audit</b>"
+HTML_REFUSAL = "HTML tags, scripts, and XSS content are not allowed"
+# A scope the suite's OAuth client holds and no toolsets route accepts.
+NARROW_SCOPE = "org:read"
+
 JsonObject = dict[str, Any]
 SeedToolsetInstance = Callable[..., JsonObject]
 SeedAgent = Callable[..., str]
+DeleteInstanceLater = Callable[[JsonObject], None]
 
 
 def toolset_store_lock() -> FileLock:
@@ -107,6 +139,109 @@ class ToolsetsClient(APIClient):
         return self.delete(f"/oauth-configs/{toolset_type}/{oauth_config_id}", auth=auth)
 
 
+def mint_narrow_scope_token(base_url: str, timeout: int = 60) -> str:
+    """A client-credentials token of the suite's own OAuth client, limited to NARROW_SCOPE."""
+    resp = requests.post(
+        f"{base_url}/api/v1/oauth2/token",
+        json={
+            "grant_type": "client_credentials",
+            "client_id": os.environ["CLIENT_ID"],
+            "client_secret": os.environ["CLIENT_SECRET"],
+            "scope": NARROW_SCOPE,
+        },
+        timeout=timeout,
+    )
+    assert resp.status_code == 200, f"minting a {NARROW_SCOPE} token: {resp.status_code} {resp.text[:300]}"
+    granted = resp.json().get("scope")
+    assert granted == NARROW_SCOPE, f"asked for {NARROW_SCOPE!r}, the token carries {granted!r}"
+    return str(resp.json()["access_token"])
+
+
+def forget_access_token(token: str) -> None:
+    """Remove the stored row of an access token this suite minted (there is no delete API).
+
+    Node keeps one row per issued token, keyed by the token's SHA-256; without the row
+    the token is refused as revoked.
+    """
+    client: MongoClient[JsonObject] = MongoClient(MONGO_URI)
+    try:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        client[MONGO_DB_NAME]["oauthAccessTokens"].delete_one({"tokenHash": token_hash})
+    finally:
+        client.close()
+
+
+def oauth_state(instance_id: str, user_id: str, *, state: str = "spec-audit-state", is_agent: bool = False) -> str:
+    """An OAuth callback ``state`` in the encoding Python's authorize routes produce.
+
+    For an agent flow ``user_id`` carries the agent key.
+    """
+    data: JsonObject = {"state": state, "instance_id": instance_id, "user_id": user_id}
+    if is_agent:
+        data["is_agent"] = True
+    return base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
+
+
+def mark_code_as_exchanged(instance_id: str, user_id: str, code: str) -> None:
+    """Rewrite the user's stored OAuth record so that ``code`` reads as already exchanged.
+
+    A real exchange needs the provider's token endpoint, which the registry fixes and no
+    request can redirect. What the exchange leaves behind is a token and the code in
+    ``used_codes``; with both in place the callback takes its "duplicate callback" branch
+    and completes without calling the provider. The record must exist already (the
+    authorize route creates it) and is deleted with the instance.
+    """
+    secret = os.environ.get("SECRET_KEY")
+    assert secret, "SECRET_KEY (the backend's) is needed to rewrite a stored OAuth record"
+    key_bytes = _derive_key(secret)
+    client = redis.Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", "6379")),
+        password=os.environ.get("REDIS_PASSWORD") or None,
+        db=int(os.environ.get("REDIS_DB", "0")),
+    )
+    try:
+        # Matched by suffix: the namespace and key prefix are the backend's own settings.
+        keys = list(client.scan_iter(match=f"*/services/toolsets/{instance_id}/{user_id}", count=1000))
+        assert len(keys) == 1, f"expected one stored OAuth record for the instance and user, found {len(keys)}"
+        stored = client.get(keys[0])
+        assert isinstance(stored, bytes)
+        record = json.loads(_decrypt(key_bytes, json.loads(stored.decode())))
+        record["credentials"] = {"access_token": "spec-audit-access-token", "token_type": "Bearer"}
+        record.setdefault("oauth", {})["used_codes"] = [code]
+        client.set(keys[0], json.dumps(_encrypt(key_bytes, json.dumps(record))).encode())
+    finally:
+        client.close()
+
+
+def error_of(resp: requests.Response) -> JsonObject:
+    """The ``error`` object of an ErrorResponse body."""
+    body = resp.json()
+    assert isinstance(body, dict) and isinstance(body.get("error"), dict), resp.text[:500]
+    return body["error"]
+
+
+def assert_backend_failure(resp: requests.Response) -> None:
+    """A 500 Node made out of a backend answer it does not relay (a 405, or a crash)."""
+    assert resp.status_code == 500, resp.text[:500]
+    error = error_of(resp)
+    assert error["code"] == "HTTP_INTERNAL_SERVER_ERROR", resp.text[:500]
+    assert error["message"].startswith("Something went wrong while PipesHub tried to "), resp.text[:500]
+
+
+def assert_not_found(resp: requests.Response, message: str) -> None:
+    assert resp.status_code == 404, resp.text[:500]
+    error = error_of(resp)
+    assert (error["code"], error["message"]) == ("HTTP_NOT_FOUND", message), resp.text[:500]
+
+
+def rejected_fields(resp: requests.Response) -> set[str]:
+    """Field paths the Node request validator named in a 400 VALIDATION_ERROR."""
+    error = error_of(resp)
+    assert error["code"] == "VALIDATION_ERROR", resp.text[:500]
+    return {entry["field"] for entry in error["metadata"]["errors"]}
+
+
 def agent_path(agent_key: str, instance_id: str | None = None, suffix: str = "") -> str:
     """Router-relative path of an agent-scoped route, e.g. ``agent_path(k, i, "/credentials")``."""
     if instance_id is None:
@@ -125,3 +260,25 @@ def request_as(
         headers=user.headers,
         **kwargs,
     )
+
+
+# One reachable URL per operation, for the behaviours every operation shares:
+# (id, method, path relative to the router, route template relative to the router).
+SHARED_BEHAVIOUR_OPERATIONS: list[tuple[str, str, str, str]] = [
+    ("registry", "GET", "/registry", "/registry"),
+    ("registry_schema", "GET", f"/registry/{TOOLSET_TYPE}/schema", "/registry/:toolsetType/schema"),
+    ("legacy_create", "POST", "", ""),
+    ("configured", "GET", "/configured", "/configured"),
+    ("legacy_status", "GET", f"/{MISSING_TOOLSET_ID}/status", "/:toolsetId/status"),
+    ("legacy_config_get", "GET", f"/{MISSING_TOOLSET_ID}/config", "/:toolsetId/config"),
+    ("legacy_config_save", "POST", f"/{MISSING_TOOLSET_ID}/config", "/:toolsetId/config"),
+    ("legacy_config_update", "PUT", f"/{MISSING_TOOLSET_ID}/config", "/:toolsetId/config"),
+    ("legacy_config_delete", "DELETE", f"/{MISSING_TOOLSET_ID}/config", "/:toolsetId/config"),
+    ("legacy_reauthenticate", "POST", f"/{MISSING_TOOLSET_ID}/reauthenticate", "/:toolsetId/reauthenticate"),
+    ("legacy_authorize", "GET", f"/{MISSING_TOOLSET_ID}/oauth/authorize", "/:toolsetId/oauth/authorize"),
+    ("oauth_callback", "GET", "/oauth/callback", "/oauth/callback"),
+    ("my_toolsets", "GET", "/my-toolsets", "/my-toolsets"),
+    ("instances_list", "GET", "/instances", "/instances"),
+    ("instances_create", "POST", "/instances", "/instances"),
+    ("instance_get", "GET", f"/instances/{MISSING_INSTANCE_ID}", "/instances/:instanceId"),
+]

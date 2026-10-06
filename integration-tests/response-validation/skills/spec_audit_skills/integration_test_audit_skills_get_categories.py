@@ -7,7 +7,7 @@ import uuid
 import pytest
 from skills_audit_support import SeedSkill, SkillsClient, request_as
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -26,7 +26,7 @@ def test_categories_map_each_category_to_its_subcategories(
 
     resp = skills_client.get("/categories")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     body = resp.json()
     assert set(body) == {"categories", "tags"}
@@ -47,7 +47,7 @@ def test_member_does_not_see_categories_of_another_users_skill(
 
     resp = request_as(second_user, "GET", "/categories")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     body = resp.json()
     # A category without subcategories is still listed, with an empty list.
@@ -59,7 +59,7 @@ def test_member_does_not_see_categories_of_another_users_skill(
 def test_categories_without_token_is_unauthorized(skills_client: SkillsClient) -> None:
     resp = skills_client.get("/categories", auth=False)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_categories_with_invalid_token_is_unauthorized(
@@ -69,4 +69,12 @@ def test_categories_with_invalid_token_is_unauthorized(
         "/categories", auth=False, headers={"Authorization": "Bearer not-a-jwt"}
     )
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_categories_ignore_query_parameters(skills_client: SkillsClient) -> None:
+    with outside_request_contract("the route documents no query parameter; this shows one is ignored"):
+        resp = skills_client.get("/categories", params={"category": "spec-audit-ignored"})
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+    assert set(resp.json()) == {"categories", "tags"}
