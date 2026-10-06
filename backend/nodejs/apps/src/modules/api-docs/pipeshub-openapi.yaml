@@ -23936,11 +23936,6 @@ paths:
               description: IDP SSO URL, carrying `SAMLRequest` and a base64 JSON `RelayState`
               schema:
                 type: string
-          content:
-            text/plain:
-              schema:
-                type: string
-                description: Express redirect notice, `Found. Redirecting to <Location>`
         '404':
           description: Organisation sign-in configuration not found, or SAML SSO is not configured
           content:
