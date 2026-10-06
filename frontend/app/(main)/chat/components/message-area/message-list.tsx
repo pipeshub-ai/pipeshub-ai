@@ -1050,7 +1050,17 @@ export function MessageList() {
     />
   );
 
-  const timelineGroups = useMemo(() => (collabActive ? buildTimeline(messagePairs) : []), [collabActive, messagePairs]);
+  // A chat with a note, or with a message someone else wrote, is a conversation between people even
+  // before it is shared (a tag in an unshared chat posts a note), so it gets the timeline too.
+  const timelineActive = useMemo(
+    () =>
+      collabActive ||
+      messagePairs.some(
+        (p) => p.note === true || (p.author != null && meUserId != null && p.author.userId !== meUserId),
+      ),
+    [collabActive, messagePairs, meUserId],
+  );
+  const timelineGroups = useMemo(() => (timelineActive ? buildTimeline(messagePairs) : []), [timelineActive, messagePairs]);
 
   return (
     <Box
@@ -1095,7 +1105,7 @@ export function MessageList() {
             </Flex>
           )}
 
-          {collabActive ? (
+          {timelineActive ? (
             <div
               role="log"
               aria-live="polite"

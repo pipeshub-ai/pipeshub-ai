@@ -157,4 +157,25 @@ describe('solo chat and flag off', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].getAttribute('data-mode')).toBe('both');
   });
+
+  it('switches to message rows once an unshared chat has a note (tagging a person posts one)', () => {
+    open(false);
+    thread.messages = [
+      user('u1', 'tell me a joke', day(18, 10, 0)),
+      reply('a1', 'Knock knock', day(18, 10, 1)),
+      note('n1', 'can you check this', day(18, 10, 2), alice),
+    ];
+    renderList();
+    expect(screen.getByRole('log')).toBeTruthy();
+    expect(screen.queryByTestId('note-bubble')).toBeNull();
+    const modes = screen.getAllByTestId('response').map((r) => r.getAttribute('data-mode'));
+    expect(modes).toEqual(['human', 'reply', 'human']);
+  });
+
+  it('switches to message rows when someone else wrote a message, even if the access view is not collaborative yet', () => {
+    open(false);
+    thread.messages = [user('u1', 'hello there', day(18, 10, 0), bob), reply('a1', 'Hi', day(18, 10, 1))];
+    renderList();
+    expect(screen.getByRole('log')).toBeTruthy();
+  });
 });
