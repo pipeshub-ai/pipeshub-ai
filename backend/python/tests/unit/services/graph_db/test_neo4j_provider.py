@@ -5864,6 +5864,9 @@ class TestRecordMoveIsOneStatement:
         steps = [
             # Before any write: a parent that is gone, or in the trash, leaves no row to write for.
             "MATCH (parent:Record {id: $parent_id})",
+            # Its write lock before its trash state is read, so a trash still being written is waited for.
+            "SET parent.moveLock = true",
+            "REMOVE parent.moveLock",
             "WHERE (parent.isDeleted IS NULL OR parent.isDeleted = false)",
             "trashedExternalRecordId: holder.externalRecordId",
             "MERGE (n:Record {id: node.id})",

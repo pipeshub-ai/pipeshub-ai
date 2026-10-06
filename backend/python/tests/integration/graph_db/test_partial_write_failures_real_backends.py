@@ -58,6 +58,7 @@ Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -1130,3 +1131,42 @@ async def test_a_folder_in_the_trash_takes_no_new_folder_and_no_upload(
     assert made.get("success") is True, made
     w.ids.add(made["id"])
     assert (await kb.service.validate_folder_for_upload(kb.kb_id, kb.old, kb.owner, w.org_id))["valid"] is True
+
+
+async def test_a_kb_move_waits_for_a_trash_of_its_folder_still_being_written(world: _World) -> None:
+    """The trash marks the folder in a transaction still open when the move is checked and written.
+
+    The service's check reads the folder as live, since the trash has not committed.
+    The move must then wait for the trash and see it, not read the folder as live
+    before taking its lock and put the item under it once the trash commits.
+    """
+    w = world
+    if not w.neo4j:
+        pytest.skip("ArangoDB reads the parent without a lock; see upsert_record_under_parent")
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    session = w.graph.client.driver.session(database=w.graph.client.database)
+    trash = await session.begin_transaction()
+    try:
+        marked = await (await trash.run(
+            "MATCH (n:Record) WHERE n.id IN $ids SET n.isDeleted = true, n.deletedAtTimestamp = $now "
+            "RETURN count(n) AS n",
+            {"ids": [kb.new, *await _children(w, kb.new)], "now": get_epoch_timestamp_in_ms()},
+        )).single()
+        assert marked["n"] == 2, marked
+        move = asyncio.create_task(kb.service.move_record(kb.kb_id, kb.reports, kb.new, kb.owner))
+        await asyncio.sleep(3)
+        assert not move.done(), await move
+        await trash.commit()
+    finally:
+        await session.close()
+
+    result = await asyncio.wait_for(move, timeout=30)
+    assert result == {"success": False, "code": 409, "reason": _in_trash("New", "move items into it")}
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+    stored = await w.graph.get_document(kb.new, CollectionNames.RECORDS.value)
+    assert not any("lock" in key.lower() for key in stored), stored
