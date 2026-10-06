@@ -365,7 +365,7 @@ class MockTransactionStore:
 
     # -- users ---
 
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("email") == email:
                 return User(
@@ -376,6 +376,20 @@ class MockTransactionStore:
                     is_active=doc.get("isActive", True),
                 )
         return None
+
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False
+    ) -> Person | None:
+        for doc in self._s.collections.get(CollectionNames.PEOPLE.value, {}).values():
+            if doc.get("email") == email.lower() and doc.get("orgId") == org_id:
+                return Person.from_arango_person(doc)
+        return None
+
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        existing = await self.get_person_by_email(person.email, person.org_id)
+        if existing:
+            return existing.id
+        return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         results = []
@@ -465,6 +479,50 @@ class MockTransactionStore:
         self._s.delete_edges_to(collection, to_id, to_collection)
         for edge in edges:
             self._s.add_edge(collection, edge)
+
+    async def replace_record_permissions(
+        self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
+    ) -> None:
+        await self.replace_edges_to(
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value
+        )
+        if not inherit:
+            inherit_edges = self._s.edges.get(CollectionNames.INHERIT_PERMISSIONS.value, [])
+            self._s.edges[CollectionNames.INHERIT_PERMISSIONS.value] = [
+                e for e in inherit_edges
+                if not (
+                    e.get("_from") == f"{CollectionNames.RECORDS.value}/{record_id}"
+                    and (e.get("_to") or "").startswith(f"{CollectionNames.RECORD_GROUPS.value}/")
+                )
+            ]
+        elif record_group_id:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+
+    async def link_record_to_group(
+        self,
+        record_id: str,
+        record_group_id: str | None,
+        *,
+        inherit: bool | None,
+        leaving_group_id: str | None = None,
+    ) -> None:
+        if leaving_group_id:
+            self._s.delete_edge(
+                CollectionNames.BELONGS_TO.value,
+                record_id, CollectionNames.RECORDS.value,
+                leaving_group_id, CollectionNames.RECORD_GROUPS.value,
+            )
+            await self._set_inheritance(record_id, leaving_group_id, inherit=False)
+        if record_group_id:
+            await self.create_record_group_relation(record_id, record_group_id)
+            if inherit is not None:
+                await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+
+    async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> None:
+        if inherit:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+        else:
+            await self.delete_inherit_permissions_relation_record_group(record_id, record_group_id)
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
@@ -1591,13 +1649,21 @@ class TestPermissionSyncWorkflow:
         assert len(perm_edges) >= 1
 
     @pytest.mark.asyncio
-    async def test_missing_user_skips_permission(self, processor, graph_store):
-        """If user doesn't exist in graph, permission edge is skipped (not created)."""
+    async def test_an_email_outside_the_workspace_gets_a_person_and_the_permission(
+        self, processor, graph_store
+    ) -> None:
+        """A grant to someone who is not a user is kept, on a Person created for the email.
+
+        This used to assert that the edge was skipped. It only was because the fake
+        store had no Person lookups, and the AttributeError that caused was swallowed.
+        """
         file_rec = make_file_record(external_id="perm-missing-user-001", record_group_ext_id="drive-perms")
         perm = make_permission(email="nonexistent@example.com", perm_type=PermissionType.READ)
         await processor.on_new_records([(file_rec, [perm])])
-        perm_edges = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
-        assert len(perm_edges) == 0
+        (person,) = graph_store.collections[CollectionNames.PEOPLE.value].values()
+        assert person["email"] == "nonexistent@example.com"
+        (edge,) = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
+        assert edge["_from"] == f"{CollectionNames.PEOPLE.value}/{person['_key']}"
 
     @pytest.mark.asyncio
     async def test_missing_group_skips_permission(self, processor, graph_store):

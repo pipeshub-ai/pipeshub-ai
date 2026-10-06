@@ -611,3 +611,62 @@ class TestConcreteMethodCalls:
         result = await instance.get_record_path("rec1", transaction="tx123")
         assert result == "Root/Child/File.pdf"
         instance.get_record_path.assert_called_once_with("rec1", transaction="tx123")
+
+
+class TestRecordLinkDefaults:
+    """What a provider with real transactions (ArangoDB) runs for the writes Neo4j does in one statement."""
+
+    @staticmethod
+    def _edge(record_id: str, group_id: str) -> dict:
+        return {"from_id": record_id, "from_collection": "records", "to_id": group_id,
+                "to_collection": "recordGroups"}
+
+    @pytest.mark.asyncio
+    async def test_replace_record_permissions_turning_inheritance_off(self) -> None:
+        instance = _make_concrete_class()()
+        edges = [{"from_id": "u1", "to_id": "r1"}]
+
+        await instance.replace_record_permissions("r1", edges, "g1", inherit=False, transaction="tx")
+
+        instance.delete_edges_to.assert_awaited_once_with("r1", "records", "permission", "tx")
+        instance.batch_create_edges.assert_awaited_once_with(edges, "permission", "tx")
+        # Every record group, not only g1: the edge to a group that can no longer be
+        # looked up must go too.
+        instance.delete_edges_between_collections.assert_awaited_once_with(
+            "r1", "records", "inheritPermissions", "recordGroups", "tx"
+        )
+        instance.delete_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inheritance_is_turned_off_without_a_group(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.replace_record_permissions("r1", [], None, inherit=False, transaction="tx")
+
+        instance.delete_edges_between_collections.assert_awaited_once_with(
+            "r1", "records", "inheritPermissions", "recordGroups", "tx"
+        )
+
+    @pytest.mark.asyncio
+    async def test_replace_record_permissions_turning_inheritance_on(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.replace_record_permissions("r1", [], "g1", inherit=True, transaction="tx")
+
+        instance.batch_create_edges.assert_not_awaited()
+        instance.create_inherit_permissions_relation_record_group.assert_awaited_once_with("r1", "g1", "tx")
+        instance.delete_edges_between_collections.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_between_groups(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.link_record_to_group("r1", "new", inherit=None, leaving_group_id="old", transaction="tx")
+
+        assert [call.args[:2] for call in instance.batch_delete_edges.await_args_list] == [
+            ([self._edge("r1", "old")], "belongsTo"),
+            ([self._edge("r1", "old")], "inheritPermissions"),
+        ]
+        instance.create_record_group_relation.assert_awaited_once_with("r1", "new", "tx")
+        instance.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        instance.delete_edge.assert_not_awaited()

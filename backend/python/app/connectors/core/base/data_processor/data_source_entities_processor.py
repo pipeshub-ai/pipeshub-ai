@@ -715,23 +715,32 @@ class DataSourceEntitiesProcessor:
         re-sync where nothing changed.
         """
         moved = False
+        leaving_group_id = None
 
         if existing_record and existing_record.record_group_id and existing_record.record_group_id != record_group_id:
             moved = True
-            await tx_store.delete_edge(existing_record.id, CollectionNames.RECORDS.value, existing_record.record_group_id, CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
-            await tx_store.delete_inherit_permissions_relation_record_group(existing_record.id, existing_record.record_group_id)
+            leaving_group_id = existing_record.record_group_id
 
-        if record.id and record_group_id:
-            # Create a edge between the record and the record group if it doesn't exist
-            await tx_store.create_record_group_relation(record.id, record_group_id)
-
+        joining_group_id = record_group_id if record.id else None
+        if joining_group_id or leaving_group_id:
             if record.inherit_permissions:
-                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+                inherit = True
             elif existing_record is not None:
+                inherit = False
+            else:
                 # A record created moments ago cannot carry an inherit-permissions
                 # edge yet, so deleting one is a guaranteed no-op round trip —
                 # one per record, on the hot path of every full sync.
-                await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
+                inherit = None
+            # Leaving the old group and joining the new one are one write: on Neo4j
+            # each statement commits on its own, so a failure in between left the
+            # record out of its old group but still inheriting that group's permissions.
+            await tx_store.link_record_to_group(
+                existing_record.id if leaving_group_id else record.id,
+                joining_group_id,
+                inherit=inherit,
+                leaving_group_id=leaving_group_id,
+            )
 
         if record.shared_with_me_record_group_ids:
             # create_record_group_relation is an idempotent upsert and cannot
@@ -1174,74 +1183,83 @@ class DataSourceEntitiesProcessor:
         return tuple(owned)
 
     async def _handle_record_permissions(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> None:
+        # A failure is raised, not logged: caught here, the surrounding write went on
+        # to commit the record with no permissions and nothing ever retried it.
+        record_permissions = await self._record_permission_edges(record, permissions, tx_store)
+        if record_permissions:
+            await tx_store.batch_create_edges(
+                record_permissions, collection=CollectionNames.PERMISSION.value
+            )
+
+    async def _record_permission_edges(
+        self, record: Record, permissions: list[Permission], tx_store: TransactionStore
+    ) -> list[dict]:
+        """The PERMISSION edges into the record for every permission whose principal is in the graph."""
         record_permissions = []
 
-        try:
-            for permission in permissions:
-                # Permission edges: Entity (User/Group) → Record
-                to_id = record.id
-                to_collection = CollectionNames.RECORDS.value
-                from_id = None
-                from_collection = None
+        for permission in permissions:
+            # Permission edges: Entity (User/Group) → Record
+            to_id = record.id
+            to_collection = CollectionNames.RECORDS.value
+            from_id = None
+            from_collection = None
 
-                if permission.entity_type == EntityType.USER.value:
-                    if permission.email:
-                        resolved = await self._resolve_principal(permission.email, tx_store)
-                        if resolved:
-                            from_id, from_collection = resolved
+            if permission.entity_type == EntityType.USER.value:
+                if permission.email:
+                    resolved = await self._resolve_principal(permission.email, tx_store)
+                    if resolved:
+                        from_id, from_collection = resolved
 
-                elif permission.entity_type == EntityType.GROUP.value:
-                    user_group = None
-                    if permission.external_id:
-                        # Look up group by external_id
-                        user_group = await tx_store.get_user_group_by_external_id(
-                            connector_id=record.connector_id,
-                            external_id=permission.external_id
-                        )
+            elif permission.entity_type == EntityType.GROUP.value:
+                user_group = None
+                if permission.external_id:
+                    # Look up group by external_id
+                    user_group = await tx_store.get_user_group_by_external_id(
+                        connector_id=record.connector_id,
+                        external_id=permission.external_id,
+                        raise_on_error=True,
+                    )
 
-                    if user_group:
-                        from_id = user_group.id
-                        from_collection = CollectionNames.GROUPS.value
-                    else:
-                        self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
-                        continue
-                elif permission.entity_type == EntityType.ROLE.value:
-                    user_role = None
-                    if permission.external_id:
-                        user_role = await tx_store.get_app_role_by_external_id(external_id=permission.external_id, connector_id=record.connector_id)
-                    if user_role:
-                        from_id = user_role.id
-                        from_collection = CollectionNames.ROLES.value
-                    else:
-                        self.logger.warning(f"User role with external ID {permission.external_id} for {record.connector_name} and connector_id {record.connector_id} not found in database")
-                        continue
-                elif permission.entity_type == EntityType.ORG.value:
-                    from_id = self.org_id
-                    from_collection = CollectionNames.ORGS.value
+                if user_group:
+                    from_id = user_group.id
+                    from_collection = CollectionNames.GROUPS.value
+                else:
+                    self.logger.warning(f"User group with external ID {permission.external_id} not found in database")
+                    continue
+            elif permission.entity_type == EntityType.ROLE.value:
+                user_role = None
+                if permission.external_id:
+                    user_role = await tx_store.get_app_role_by_external_id(
+                        external_id=permission.external_id, connector_id=record.connector_id, raise_on_error=True
+                    )
+                if user_role:
+                    from_id = user_role.id
+                    from_collection = CollectionNames.ROLES.value
+                else:
+                    self.logger.warning(f"User role with external ID {permission.external_id} for {record.connector_name} and connector_id {record.connector_id} not found in database")
+                    continue
+            elif permission.entity_type == EntityType.ORG.value:
+                from_id = self.org_id
+                from_collection = CollectionNames.ORGS.value
 
-                # elif permission.entity_type == EntityType.DOMAIN.value:
-                #     domain = await tx_store.get_domain_by_external_id(permission.external_id)
-                #     if domain:
-                #         from_id = domain.id
-                #         from_collection = CollectionNames.DOMAINS.value
+            # elif permission.entity_type == EntityType.DOMAIN.value:
+            #     domain = await tx_store.get_domain_by_external_id(permission.external_id)
+            #     if domain:
+            #         from_id = domain.id
+            #         from_collection = CollectionNames.DOMAINS.value
 
-                # elif permission.entity_type == EntityType.ANYONE.value:
-                #     from_id = None  # Anyone doesn't have an ID
-                #     from_collection = CollectionNames.ANYONE.value
+            # elif permission.entity_type == EntityType.ANYONE.value:
+            #     from_id = None  # Anyone doesn't have an ID
+            #     from_collection = CollectionNames.ANYONE.value
 
-                # elif permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
-                #     from_id = None  # Anyone with link doesn't have an ID
-                #     from_collection = CollectionNames.ANYONE_WITH_LINK.value
+            # elif permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
+            #     from_id = None  # Anyone with link doesn't have an ID
+            #     from_collection = CollectionNames.ANYONE_WITH_LINK.value
 
-                if from_id and from_collection:
-                    record_permissions.append(permission.to_arango_permission(from_id, from_collection, to_id, to_collection))
+            if from_id and from_collection:
+                record_permissions.append(permission.to_arango_permission(from_id, from_collection, to_id, to_collection))
 
-            if record_permissions:
-                await tx_store.batch_create_edges(
-                    record_permissions, collection=CollectionNames.PERMISSION.value
-                )
-        except Exception as e:
-            self.logger.error("Failed to create permission edge: %s", e)
+        return record_permissions
 
     @staticmethod
     async def _write_permission_edges(
@@ -1283,30 +1301,31 @@ class DataSourceEntitiesProcessor:
         one query per user permission per record, so resolving every time costs no more
         than before for members, and at most two extra queries for an external
         collaborator — which is the only case that reaches past the first branch.
+
+        None means the email has no principal. A lookup that fails raises instead:
+        every caller writes the principals it is given, several by replacing what was
+        there, so "could not be read" answered as None took a grant or a membership
+        away without an error or a retry.
         """
-        try:
-            user = await tx_store.get_user_by_email(email)
-            if user:
-                return (user.id, CollectionNames.USERS.value)
+        user = await tx_store.get_user_by_email(email, raise_on_error=True)
+        if user:
+            return (user.id, CollectionNames.USERS.value)
 
-            person = await tx_store.get_person_by_email(email, self.org_id)
-            if person:
-                return (person.id, CollectionNames.PEOPLE.value)
+        person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
+        if person:
+            return (person.id, CollectionNames.PEOPLE.value)
 
-            if not create_if_missing:
-                return None
-
-            person_id = await tx_store.upsert_person_by_email(
-                Person(email=email.lower(), org_id=self.org_id)
-            )
-            if person_id:
-                self.logger.debug("Created person for external email: %s", email)
-                return (person_id, CollectionNames.PEOPLE.value)
-
+        if not create_if_missing:
             return None
-        except Exception as e:
-            self.logger.error(f"Failed to resolve principal for {email}: {e}")
-            return None
+
+        person_id = await tx_store.upsert_person_by_email(
+            Person(email=email.lower(), org_id=self.org_id), raise_on_error=True
+        )
+        if person_id:
+            self.logger.debug("Created person for external email: %s", email)
+            return (person_id, CollectionNames.PEOPLE.value)
+
+        return None
 
     @retry_on_deadlock()
     async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
@@ -1384,40 +1403,22 @@ class DataSourceEntitiesProcessor:
                                 external_group_id,
                             )
 
-                # Step 1: Delete all existing permission edges that point TO this record.
-                deleted_count = await tx_store.delete_edges_to(
-                    to_id=record.id,
-                    to_collection=CollectionNames.RECORDS.value,
-                    collection=CollectionNames.PERMISSION.value
+                # Every principal and the group are looked up first, then the old edges,
+                # the new ones and the inherit edge go in one write: on Neo4j each
+                # statement commits on its own, so a failure partway left the new
+                # permissions beside an inherit edge the record should have lost.
+                edges = await self._record_permission_edges(record, permissions, tx_store) if permissions else []
+                record_group = await tx_store.get_record_group_by_external_id(
+                    connector_id=record.connector_id,
+                    external_id=record.external_record_group_id,
                 )
-                self.logger.debug("Deleted %d old permission edge(s) for record: %s", deleted_count, record.id)
-
-                # Step 2: Add the new permissions by reusing the existing helper method.
-                if permissions:
-                    self.logger.debug("Adding %d new permission edge(s) for record: %s", len(permissions), record.id)
-                    await self._handle_record_permissions(record, permissions, tx_store)
-                # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
-                if record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
-                                                                      external_id=record.external_record_group_id)
-
-                    if record_group:
-                        await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
-
-                if not record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
-                                                                      external_id=record.external_record_group_id)
-                    if record_group:
-                        # Delete the INHERIT_PERMISSIONS edge
-                        await tx_store.delete_edge(
-                            from_id=record.id,
-                            from_collection=CollectionNames.RECORDS.value,
-                            to_id=record_group.id,
-                            to_collection=CollectionNames.RECORD_GROUPS.value,
-                            collection=CollectionNames.INHERIT_PERMISSIONS.value
-                        )
-                else:
-                    self.logger.info(f"No new permissions to add for record: {record.id}")
+                self.logger.debug("Replacing permissions of record %s with %d edge(s)", record.id, len(edges))
+                await tx_store.replace_record_permissions(
+                    record.id,
+                    edges,
+                    record_group.id if record_group else None,
+                    inherit=bool(record.inherit_permissions),
+                )
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
@@ -3071,7 +3072,8 @@ class DataSourceEntitiesProcessor:
                             if permission.external_id:
                                 user_group = await tx_store.get_user_group_by_external_id(
                                     connector_id=record_group.connector_id,
-                                    external_id=permission.external_id
+                                    external_id=permission.external_id,
+                                    raise_on_error=True,
                                 )
 
                             if user_group:
@@ -3085,7 +3087,8 @@ class DataSourceEntitiesProcessor:
                             if permission.external_id:
                                 user_role = await tx_store.get_app_role_by_external_id(
                                     connector_id=record_group.connector_id,
-                                    external_id=permission.external_id
+                                    external_id=permission.external_id,
+                                    raise_on_error=True,
                                 )
 
                             if user_role:
@@ -3465,8 +3468,9 @@ class DataSourceEntitiesProcessor:
                     for member in members:
                         user = None
                         if member.email:
-                            # Find the user's internal DB ID
-                            user = await tx_store.get_user_by_email(member.email)
+                            # Find the user's internal DB ID. A read that fails is raised:
+                            # answered as "no such user", the rewrite below dropped the member.
+                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True)
 
                         if not user:
                             self.logger.warning(f"Could not find user with email {member.email} for AppRole permission.")
@@ -3619,13 +3623,8 @@ class DataSourceEntitiesProcessor:
                     new_level = PERMISSION_HIERARCHY.get(new_role, 0)
                     if existing_level >= new_level:
                         return existing_edge
-                await tx_store.delete_edge(
-                    from_id=from_id,
-                    from_collection=from_collection,
-                    to_id=to_id,
-                    to_collection=to_collection,
-                    collection=CollectionNames.PERMISSION.value,
-                )
+            # No delete first: the upsert below overwrites the edge in place, and on
+            # Neo4j a delete committed on its own, so a failed create lost the grant.
             edge_data = permission.to_arango_permission(
                 from_id=from_id,
                 from_collection=from_collection,
@@ -4123,16 +4122,9 @@ class DataSourceEntitiesProcessor:
                     new_role_level = PERMISSION_HIERARCHY.get(permission_type.value, 0)
 
                     if new_role_level > existing_role_level:
-                        # Delete old edge and create new one with upgraded permission
-                        await tx_store.delete_edge(
-                            from_id=user.id,
-                            from_collection=CollectionNames.USERS.value,
-                            to_id=target_id,
-                            to_collection=target_collection,
-                            collection=CollectionNames.PERMISSION.value
-                        )
-
-                        # Create new edge with upgraded permission
+                        # The batch upsert below overwrites the edge in place. A delete
+                        # here committed on its own on Neo4j, so a failure before that
+                        # batch left the user with no permission at all.
                         permission = Permission(
                             email=user_email,
                             type=permission_type,
@@ -4446,23 +4438,29 @@ class DataSourceEntitiesProcessor:
         """Delete permissions from a record."""
 
         async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_email(user_email)
+            # A user who could not be read is not a user who is not there: returning
+            # here on a failed read would leave the permission in place unreported.
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
             if not user:
                 self.logger.warning(f"User with email {user_email} not found in database")
                 return
 
-            success = await tx_store.delete_edge(
-                from_id=user.id,
-                from_collection=CollectionNames.USERS.value,
-                to_id=record_id,
-                to_collection=CollectionNames.RECORDS.value,
-                collection=CollectionNames.PERMISSION.value
+            # Not delete_edge: ArangoDB's answers False when the delete fails, which
+            # read here as "nothing to delete" and left the user with the permission.
+            deleted = await tx_store.batch_delete_edges(
+                [{
+                    "from_id": user.id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                }],
+                collection=CollectionNames.PERMISSION.value,
             )
 
-            if success:
+            if deleted:
                 self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
             else:
-                self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
+                self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
 
     async def get_app_creator_user(self, connector_id: str) -> User | None:
         """

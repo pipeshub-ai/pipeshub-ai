@@ -1652,17 +1652,10 @@ class Neo4jProvider(IGraphDBProvider):
             grouped.setdefault(key, []).append({"from_key": from_key, "to_key": to_key, "props": props})
         return grouped
 
-    async def replace_edges_to(
-        self,
-        to_id: str,
-        to_collection: str,
-        edges: list[dict],
-        collection: str,
-        transaction: str | None = None,
-    ) -> None:
-        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
-        # off (the default) a separate delete committed before the new edges were
-        # written, and a group whose rewrite failed was left with no members.
+    def _replace_edges_to_cypher(
+        self, to_id: str, to_collection: str, edges: list[dict], collection: str
+    ) -> tuple[str, dict[str, Any]]:
+        """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write."""
         relationship_type = edge_collection_to_relationship(collection)
         parameters: dict[str, Any] = {"to_id": to_id}
         creates = []
@@ -1676,16 +1669,124 @@ class Neo4jProvider(IGraphDBProvider):
                 MERGE (from)-[r:{relationship_type}]->(to)
                 SET r = edge.props
             }}""")
-        await self.client.execute_query(
-            f"""
+        return f"""
             OPTIONAL MATCH ()-[old:{relationship_type}]->(:{collection_to_label(to_collection)} {{id: $to_id}})
             DELETE old
             WITH count(*) AS _
-            {"".join(creates)}
-            RETURN count(*) AS done
-            """,
-            parameters=parameters,
-            txn_id=transaction,
+            {"".join(creates)}""", parameters
+
+    async def replace_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
+        # off (the default) a separate delete committed before the new edges were
+        # written, and a group whose rewrite failed was left with no members.
+        statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection)
+        await self.client.execute_query(
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+        )
+
+    @staticmethod
+    def _record_group_link_cypher(collection: str, *, create: bool) -> str:
+        """A subquery writing or removing one edge from $record_id to the record group $group_id."""
+        relationship_type = edge_collection_to_relationship(collection)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        group_label = collection_to_label(CollectionNames.RECORD_GROUPS.value)
+        if create:
+            return f"""
+            CALL {{
+                MATCH (record:{record_label} {{id: $record_id}})
+                MATCH (record_group:{group_label} {{id: $group_id}})
+                MERGE (record)-[link:{relationship_type}]->(record_group)
+                SET link = $link_props
+            }}"""
+        return f"""
+            CALL {{
+                MATCH (:{record_label} {{id: $record_id}})-[link:{relationship_type}]->(:{group_label} {{id: $group_id}})
+                DELETE link
+            }}"""
+
+    async def replace_record_permissions(
+        self,
+        record_id: str,
+        edges: list[dict],
+        record_group_id: str | None,
+        *,
+        inherit: bool,
+        transaction: str | None = None,
+    ) -> None:
+        # One statement: written apart, a failure on the inherit edge left the new
+        # permissions beside the old inheritance, so a group that had just lost the
+        # record could still read it.
+        statement, parameters = self._replace_edges_to_cypher(
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value
+        )
+        if not inherit:
+            # Every record group, not only the one passed: the record must not keep
+            # inheriting from a group that could not be looked up.
+            parameters["record_id"] = record_id
+            statement += f"""
+            CALL {{
+                MATCH (:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
+                    -[link:{edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value)}]->
+                    (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)})
+                DELETE link
+            }}"""
+        elif record_group_id:
+            now = get_epoch_timestamp_in_ms()
+            statement += self._record_group_link_cypher(CollectionNames.INHERIT_PERMISSIONS.value, create=True)
+            parameters.update(
+                record_id=record_id,
+                group_id=record_group_id,
+                link_props={"createdAtTimestamp": now, "updatedAtTimestamp": now},
+            )
+        await self.client.execute_query(
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+        )
+
+    async def link_record_to_group(
+        self,
+        record_id: str,
+        record_group_id: str | None,
+        *,
+        inherit: bool | None,
+        leaving_group_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        # One statement: written apart, a record could leave its old group and keep
+        # the inherit edge to it, which the old group's members still read through.
+        now = get_epoch_timestamp_in_ms()
+        parameters: dict[str, Any] = {
+            "record_id": record_id,
+            "group_id": record_group_id,
+            "link_props": {"createdAtTimestamp": now, "updatedAtTimestamp": now},
+        }
+        parts = []
+        if leaving_group_id:
+            parameters["leaving_group_id"] = leaving_group_id
+            belongs_to = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
+            inherits = edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value)
+            parts.append(f"""
+            OPTIONAL MATCH (:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
+                -[old:{belongs_to}|{inherits}]->
+                (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $leaving_group_id}})
+            DELETE old
+            WITH count(*) AS _""")
+        if record_group_id:
+            parts.append(self._record_group_link_cypher(CollectionNames.BELONGS_TO.value, create=True))
+            if inherit is not None:
+                parts.append(
+                    self._record_group_link_cypher(CollectionNames.INHERIT_PERMISSIONS.value, create=inherit)
+                )
+        if not parts:
+            return
+        await self.client.execute_query(
+            f"{''.join(parts)}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
         )
 
     async def batch_create_edges(
@@ -3986,7 +4087,9 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_user_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> User | None:
         """Get user by email"""
         try:
@@ -4012,6 +4115,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_by_source_id(
@@ -15524,6 +15629,8 @@ class Neo4jProvider(IGraphDBProvider):
         email: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Person | None:
         """Get a person by (org_id, email) — Person's business key, same as User's."""
         try:
@@ -15548,12 +15655,16 @@ class Neo4jProvider(IGraphDBProvider):
             return Person.from_arango_person(person_dict)
         except Exception as e:
             self.logger.error(f"❌ Get person by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def upsert_person_by_email(
         self,
         person: Person,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """
         Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
@@ -15590,6 +15701,8 @@ class Neo4jProvider(IGraphDBProvider):
             return results[0]["id"] if results else None
         except Exception as e:
             self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def ensure_app_membership(

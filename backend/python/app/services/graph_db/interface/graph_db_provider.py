@@ -13,7 +13,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
-from app.config.constants.arangodb import DeleteSource, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    DeleteSource,
+    ProgressStatus,
+)
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -909,6 +913,97 @@ class IGraphDBProvider(ABC):
         await self.delete_edges_to(to_id, to_collection, collection, transaction)
         if edges:
             await self.batch_create_edges(edges, collection, transaction)
+
+    async def replace_record_permissions(
+        self,
+        record_id: str,
+        edges: list[dict],
+        record_group_id: str | None,
+        *,
+        inherit: bool,
+        transaction: str | None = None,
+    ) -> None:
+        """Replace the PERMISSION edges into the record and set whether it inherits from its group.
+
+        *inherit* true writes the INHERIT_PERMISSIONS edge to *record_group_id*, when
+        there is one. False removes the record's inherit edge to every record group,
+        so one to a group that can no longer be looked up goes too; its inherit edges
+        to a parent record or an app stay. Concrete for the same reason as
+        ``replace_edges_to``: on Neo4j a failure between the separate calls left the
+        new permissions beside an inherit edge that should have gone.
+        """
+        await self.replace_edges_to(
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction
+        )
+        if not inherit:
+            await self._stop_inheriting_from_record_groups(record_id, transaction)
+        elif record_group_id:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
+
+    async def _stop_inheriting_from_record_groups(
+        self, record_id: str, transaction: str | None
+    ) -> None:
+        """Remove the record's INHERIT_PERMISSIONS edges to record groups. Must raise when it cannot."""
+        await self.delete_edges_between_collections(
+            record_id,
+            CollectionNames.RECORDS.value,
+            CollectionNames.INHERIT_PERMISSIONS.value,
+            CollectionNames.RECORD_GROUPS.value,
+            transaction,
+        )
+
+    async def link_record_to_group(
+        self,
+        record_id: str,
+        record_group_id: str | None,
+        *,
+        inherit: bool | None,
+        leaving_group_id: str | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """Take the record out of *leaving_group_id*, then put it in *record_group_id*.
+
+        Leaving removes its BELONGS_TO and INHERIT_PERMISSIONS edges to that group.
+        Joining writes BELONGS_TO, and INHERIT_PERMISSIONS when *inherit* is true;
+        false removes that edge and None leaves it alone. Either group may be None.
+        Neo4j overrides it with one statement: a record that left its group but
+        kept the inherit edge stayed readable to the old group's members.
+        """
+        if leaving_group_id:
+            await self._delete_record_group_edge(
+                record_id, leaving_group_id, CollectionNames.BELONGS_TO.value, transaction
+            )
+            await self._set_record_group_inheritance(record_id, leaving_group_id, transaction, inherit=False)
+        if record_group_id:
+            await self.create_record_group_relation(record_id, record_group_id, transaction)
+            if inherit is not None:
+                await self._set_record_group_inheritance(record_id, record_group_id, transaction, inherit=inherit)
+
+    async def _set_record_group_inheritance(
+        self, record_id: str, record_group_id: str, transaction: str | None, *, inherit: bool
+    ) -> None:
+        if inherit:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
+        else:
+            await self._delete_record_group_edge(
+                record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
+            )
+
+    async def _delete_record_group_edge(
+        self, record_id: str, record_group_id: str, collection: str, transaction: str | None
+    ) -> None:
+        # Not delete_edge: ArangoDB's answers False when the delete fails, so the
+        # transaction went on to commit the rest beside an edge that should have gone.
+        await self.batch_delete_edges(
+            [{
+                "from_id": record_id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": record_group_id,
+                "to_collection": CollectionNames.RECORD_GROUPS.value,
+            }],
+            collection,
+            transaction,
+        )
 
     @abstractmethod
     async def delete_edges_to_groups(
@@ -2189,10 +2284,16 @@ class IGraphDBProvider(ABC):
     async def get_user_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['User']:
         """
         Get a user by email address.
+
+        None means there is no such user. A read that fails also answers None unless
+        ``raise_on_error`` is set, which a caller needs when it would act on "no such
+        user" (replacing a record's permissions without them, say).
 
         Args:
             email (str): User email
@@ -2875,9 +2976,13 @@ class IGraphDBProvider(ABC):
         email: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['Person']:
         """
         Get a person by (org_id, email) — Person's business key, same as User's.
+
+        A read that fails answers None unless ``raise_on_error`` is set.
 
         Args:
             email (str): Email address; matched case-insensitively
@@ -2894,9 +2999,13 @@ class IGraphDBProvider(ABC):
         self,
         person: Person,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """
         Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
+
+        A write that fails answers None unless ``raise_on_error`` is set.
 
         Callers must use the returned id rather than ``person.id``: on a match the
         existing node wins and its id is what every edge must point at. Never updates
