@@ -20,7 +20,7 @@ vi.mock('@/lib/navigation', () => ({
   ),
 }));
 
-import { NotificationRow, chatConversationIdFromHref } from '../notification-row';
+import { NotificationRow, chatConversationIdFromHref, isExternalNotificationHref } from '../notification-row';
 import type { NotificationListItem } from '../api';
 
 function renderRow(redirectLink: string, onOpenLink = vi.fn(), onMarkRead = vi.fn()) {
@@ -76,6 +76,30 @@ describe('NotificationRow link', () => {
     const { onOpenLink } = renderRow('https://example.com/report');
     expect(onOpenLink).not.toHaveBeenCalled();
   });
+
+  it.each(['//other.example/chat/?conversationId=abc', '/\\other.example/chat/?conversationId=abc'])(
+    'treats the protocol-relative link %s as external: new tab, not reported',
+    (redirectLink) => {
+      const { onOpenLink } = renderRow(redirectLink);
+      expect(onOpenLink).not.toHaveBeenCalled();
+      const link = screen.getByText('Alice shared a conversation').closest('a');
+      expect(link?.getAttribute('target')).toBe('_blank');
+      expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
+    },
+  );
+});
+
+describe('isExternalNotificationHref', () => {
+  it.each([
+    ['https://example.com/x', true],
+    ['HTTP://example.com/x', true],
+    ['//example.com/x', true],
+    ['/\\example.com/x', true],
+    ['/chat/?conversationId=abc', false],
+    ['chat/?conversationId=abc', false],
+  ])('%s is external: %s', (href, expected) => {
+    expect(isExternalNotificationHref(href)).toBe(expected);
+  });
 });
 
 describe('chatConversationIdFromHref', () => {
@@ -92,6 +116,8 @@ describe('chatConversationIdFromHref', () => {
     '/knowledge-base?conversationId=abc',
     '/chatroom?conversationId=abc',
     'https://demo.example.com/chat/?conversationId=abc',
+    '//demo.example.com/chat/?conversationId=abc',
+    '/\\demo.example.com/chat/?conversationId=abc',
   ])('finds no conversation in %s', (href) => {
     expect(chatConversationIdFromHref(href)).toBeNull();
   });
