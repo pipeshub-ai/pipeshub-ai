@@ -28,10 +28,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 async def _snapshot(graph_provider, vector_store, connector_id: str, files: list[str]) -> dict[str, Any]:
     # Compared edge for edge and point for point, so enrichment must be done too.
     records = await fp.wait_for_connector_records(graph_provider, connector_id, files, enriched=True)
+    graph = await fp.graph_footprint_of_connector(graph_provider, connector_id)
     return {
         "connector_id": connector_id,
         "records": records,
-        "graph": await fp.graph_footprint_of_connector(graph_provider, connector_id),
+        "graph": graph,
+        # The LLM may read one more topic into the same text, so its edges are not compared.
+        "edges_without_classification": await graph_provider.count_edges_touching(
+            graph.handles, excluding=fp.CLASSIFICATION_EDGES
+        ),
         "summary": await graph_provider.graph_summary(connector_id),
         "record_count": await graph_provider.count_records(connector_id),
         # Records only: entity points are shared taxonomy nodes whose connector
@@ -103,7 +108,7 @@ class TestCreateDeleteCreate:
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_second_sync_builds_the_same_graph(self, recreated) -> None:
-        """Same records, no duplicates, the same nodes and edges around them."""
+        """Same records, no duplicates, the same nodes and the same edges the sync writes around them."""
         first, second = recreated["first"], recreated["second"]
         assert second["record_count"] == first["record_count"], (
             f"Record count: first {first['record_count']}, second {second['record_count']}"
@@ -111,9 +116,14 @@ class TestCreateDeleteCreate:
         assert second["summary"] == first["summary"], (
             f"Graph shape: first {first['summary']}, second {second['summary']}"
         )
-        assert (len(second["graph"].handles), second["graph"].edges) == (
-            len(first["graph"].handles), first["graph"].edges
-        ), f"Nodes and edges: first {first['graph']}, second {second['graph']}"
+        assert (len(second["graph"].handles), second["edges_without_classification"]) == (
+            len(first["graph"].handles), first["edges_without_classification"]
+        ), (
+            f"Nodes and edges other than classification: first {len(first['graph'].handles)} node(s), "
+            f"{first['edges_without_classification']} edge(s); second {len(second['graph'].handles)} "
+            f"node(s), {second['edges_without_classification']} edge(s). All edges, classification "
+            f"included: first {first['graph'].edges}, second {second['graph'].edges}"
+        )
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_the_second_instance_indexes_every_record_itself(self, recreated) -> None:

@@ -42,6 +42,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
 
+from app.config.constants.arangodb import CollectionNames
 from helper.cleanup_errors import StoreNotEmptied
 from helper.mongo_store import is_within, records_folder
 
@@ -55,6 +56,18 @@ logger = logging.getLogger("delete-footprint")
 
 POLL = 5
 RECORDS_COLLECTION = "records"
+
+# Enrichment writes these from what the LLM reads in a document, so two runs over the
+# same text can differ by a topic or a sub-category.
+CLASSIFICATION_EDGES = tuple(
+    c.value
+    for c in (
+        CollectionNames.BELONGS_TO_DEPARTMENT,
+        CollectionNames.BELONGS_TO_CATEGORY,
+        CollectionNames.BELONGS_TO_LANGUAGE,
+        CollectionNames.BELONGS_TO_TOPIC,
+    )
+)
 
 # Statuses after which indexing will not touch a record again on its own.
 SETTLED_STATUSES = frozenset({
