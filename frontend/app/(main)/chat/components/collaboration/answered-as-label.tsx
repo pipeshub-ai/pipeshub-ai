@@ -28,7 +28,14 @@ export function AnsweredAsLabel({ asker, meUserId }: AnsweredAsLabelProps) {
         aria-label={full}
         title={full}
         data-testid="answered-as-label"
-        style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap' }}
+        style={{
+          color: 'var(--slate-11)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          minWidth: 0,
+          display: 'block',
+        }}
       >
         {t('chat.collab.attribution.forPerson', { name })}
       </Text>

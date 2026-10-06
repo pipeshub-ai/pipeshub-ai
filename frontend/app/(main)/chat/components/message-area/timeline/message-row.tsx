@@ -62,21 +62,22 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
       }}
     >
       {showHeader ? (
-        <Flex align="center" gap="2" wrap="wrap" justify={right ? 'end' : undefined} style={{ marginBottom: 2 }}>
+        <Flex align="center" gap="2" wrap="nowrap" justify={right ? 'end' : undefined} style={{ marginBottom: 2, minWidth: 0 }}>
           <MessageAvatar name={name} tone={tone} size={size} src={avatarSrc} />
           {nameTooltip ? (
             <Tooltip content={nameTooltip}>
-              <Text size="2" weight="bold" data-testid="message-author" style={{ color: 'var(--slate-12)' }}>
+              <Text size="2" weight="bold" data-testid="message-author" style={{ color: 'var(--slate-12)', flexShrink: 0 }}>
                 {name}
               </Text>
             </Tooltip>
           ) : (
-            <Text size="2" weight="bold" data-testid="message-author" style={{ color: 'var(--slate-12)' }}>
+            <Text size="2" weight="bold" data-testid="message-author" style={{ color: 'var(--slate-12)', flexShrink: 0 }}>
               {name}
             </Text>
           )}
-          {time ? <MessageTime iso={time} /> : null}
-          {headerExtra}
+          {time ? <Box style={{ flexShrink: 0 }}><MessageTime iso={time} /></Box> : null}
+          {/* Only the extra note gives way on a narrow header, so it truncates instead of wrapping onto a line of its own. */}
+          {headerExtra ? <Box style={{ minWidth: 0, flexShrink: 1, display: 'flex' }}>{headerExtra}</Box> : null}
         </Flex>
       ) : time ? (
         <Box
