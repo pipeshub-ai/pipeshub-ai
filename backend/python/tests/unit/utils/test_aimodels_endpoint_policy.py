@@ -3,8 +3,10 @@
 By default any http(s) endpoint is accepted except link-local and cloud metadata
 addresses, because a self-hosted install runs its models on localhost or a private
 network. With PIPESHUB_BLOCK_PRIVATE_ADDRESSES on, private and internal endpoints are
-refused as well. A name is looked up where a config is tested before it is saved, and a
-client built on a configured endpoint does not follow that server's redirects.
+refused as well. A name is looked up where a config is tested before it is saved (and one
+that does not resolve is refused), and a client built on a configured endpoint does not
+follow that server's redirects. What a name resolves to when the client connects is covered
+in test_model_egress.py.
 """
 
 from __future__ import annotations
@@ -71,6 +73,9 @@ NEVER_ALLOWED = [
     "http://169。254。169。254/",
     "http://169.254｡169.254/",
     "169.254.169.254/latest//meta-data",
+    "http://0.0.0.0:11434",
+    "http://[::]:11434",
+    "http://[::ffff:0.0.0.0]/",
 ]
 NOT_HTTP = ["file:///etc/hosts", "ftp://models.example/x", "gopher://models.example/", "http://[bad"]
 # Left over in a config whose provider never reads the endpoint; there is no host to judge.
@@ -93,13 +98,17 @@ def blocked_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def dns(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
-    """What each name resolves to; a name not listed resolves to a public address."""
-    answers: dict[str, list[str]] = {}
+    """What each name resolves to; a name not listed resolves to a public address. An
+    exception as the answer is raised, as the real lookup raises when DNS fails."""
+    answers: dict[str, list[str] | Exception] = {}
     looked_up: list[str] = []
 
     def resolve(host: str) -> list:
         looked_up.append(host)
-        return [ipaddress.ip_address(a) for a in answers[host]] if host in answers else [PUBLIC_ADDRESS]
+        answer = answers.get(host, [str(PUBLIC_ADDRESS)])
+        if isinstance(answer, Exception):
+            raise answer
+        return [ipaddress.ip_address(a) for a in answer]
 
     monkeypatch.setattr(aimodels, "_resolved_addresses", resolve)
     answers["__looked_up__"] = looked_up  # type: ignore[assignment]
@@ -143,7 +152,10 @@ class TestAddressHelpers:
 
     @pytest.mark.parametrize(
         "address",
-        ["169.254.169.254", "169.254.0.1", "fe80::1", "::ffff:169.254.169.254", "fd00:ec2::254", "64:ff9b::a9fe:a9fe", "100.100.100.200", "168.63.129.16"],
+        [
+            "169.254.169.254", "169.254.0.1", "fe80::1", "::ffff:169.254.169.254", "fd00:ec2::254",
+            "64:ff9b::a9fe:a9fe", "100.100.100.200", "168.63.129.16", "0.0.0.0", "::", "::ffff:0.0.0.0",
+        ],
     )
     def test_link_local_and_metadata_addresses_are_never_allowed(self, address: str) -> None:
         assert is_never_allowed_address(literal_ip(address)) is True
@@ -246,9 +258,40 @@ class TestRequirePublicEndpoint:
         await require_public_endpoint("models.example:8443")
         assert dns["__looked_up__"] == ["models.example"]
 
-    async def test_a_name_that_does_not_resolve_is_left_to_fail_when_called(self, blocked_mode: None, dns: dict) -> None:
-        dns["typo.example"] = []
-        await require_public_endpoint("https://typo.example/v1")
+    @pytest.mark.parametrize("answer", [[], socket.gaierror(socket.EAI_NONAME, "Name or service not known")], ids=["no_records", "nxdomain"])
+    @pytest.mark.parametrize("switch", ["", "true"], ids=["default", "blocked"])
+    async def test_a_name_that_does_not_resolve_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, dns: dict, switch: str, answer: object
+    ) -> None:
+        monkeypatch.setenv(PRIVATE_ADDRESS_SWITCH_ENV, switch)
+        dns["typo.example"] = answer
+        with pytest.raises(ValueError, match="does not resolve"):
+            await require_public_endpoint("https://typo.example/v1")
+
+    async def test_a_transient_dns_failure_is_refused_with_a_retry_message(self, default_mode: None, dns: dict) -> None:
+        dns["models.example"] = socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+        with pytest.raises(ValueError, match="temporary DNS failure. Try again") as refusal:
+            await require_public_endpoint("https://models.example/v1")
+        assert "does not resolve" not in str(refusal.value)
+
+    async def test_unresolvable_name_is_accepted_when_an_env_proxy_applies(
+        self, default_mode: None, monkeypatch: pytest.MonkeyPatch, dns: dict
+    ) -> None:
+        """The proxy resolves the name; the local resolver may not know it at all."""
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        dns["models.internal.example"] = socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        await require_public_endpoint("https://models.internal.example/v1")
+
+    async def test_a_name_excluded_by_no_proxy_must_still_resolve(
+        self, default_mode: None, monkeypatch: pytest.MonkeyPatch, dns: dict
+    ) -> None:
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+        monkeypatch.setenv("NO_PROXY", "internal.example")
+        dns["models.internal.example"] = socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        with pytest.raises(ValueError, match="does not resolve"):
+            await require_public_endpoint("https://models.internal.example/v1")
 
     @pytest.mark.parametrize("endpoint", ["http://10.0.0.5:8000", "http://169.254.169.254/", "http://8.8.8.8/", None, "", "http://"])
     async def test_an_address_is_judged_by_its_text_without_a_lookup(
@@ -265,15 +308,17 @@ class TestRequirePublicEndpoint:
         await require_public_endpoint("http://ollama:11434")
         assert dns["__looked_up__"] == []
 
-    def test_the_lookup_reads_every_answer_and_treats_a_failed_one_as_no_answer(self) -> None:
+    def test_the_lookup_reads_every_answer_and_lets_a_failure_through(self) -> None:
         answers = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
             (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1%eth0", 0, 0, 2)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
         ]
         with patch.object(socket, "getaddrinfo", return_value=answers):
             assert [str(ip) for ip in _resolved_addresses("models.example")] == ["93.184.216.34", "fe80::1%eth0"]
         with patch.object(socket, "getaddrinfo", side_effect=socket.gaierror("no such host")):
-            assert _resolved_addresses("typo.example") == []
+            with pytest.raises(socket.gaierror):
+                _resolved_addresses("typo.example")
 
 
 def _config(endpoint: str | None, **configuration: object) -> dict:
@@ -430,7 +475,7 @@ class TestClientsDoNotFollowRedirects:
 
 
 class TestSpeechAndImageClients:
-    """These build their client per request, so they look the name up each time."""
+    """These build their client per request."""
 
     CALLS = {
         "tts": lambda: get_tts_model("litellmProxy", _config(ENDPOINT)).synthesize("hello"),
@@ -451,14 +496,14 @@ class TestSpeechAndImageClients:
         assert b"from the internal host" not in (returned if isinstance(returned, bytes) else str(returned).encode())
 
     @pytest.mark.parametrize("call", CALLS.values(), ids=CALLS.keys())
-    async def test_a_name_now_on_a_metadata_address_is_refused_before_any_request(
+    async def test_the_name_is_not_looked_up_before_the_request(
         self, default_mode: None, monkeypatch: pytest.MonkeyPatch, dns: dict, call
     ) -> None:
-        requested = _redirecting_network(monkeypatch, 200, "")
-        dns["models.example"] = ["169.254.169.254"]
-        with pytest.raises(ValueError, match="never allowed"):
+        """The client checks the name as it connects; a lookup here would be a second one."""
+        _redirecting_network(monkeypatch, 303, "https://models.example/elsewhere")
+        with contextlib.suppress(Exception):
             await call()
-        assert requested == []
+        assert dns["__looked_up__"] == []
 
 
 class TestVertexFieldsThatBecomeUrls:
@@ -500,14 +545,22 @@ class TestDownloadProviderImage:
             with pytest.raises(ValueError):
                 await aimodels._download_provider_image(url)
 
-    async def test_default_mode_downloads_directly(self, default_mode: None) -> None:
-        response = MagicMock(content=b"png")
-        client = AsyncMock()
-        client.get.return_value = response
-        with patch("httpx.AsyncClient") as factory:
-            factory.return_value.__aenter__.return_value = client
-            assert await aimodels._download_provider_image("https://cdn.example/x.png") == b"png"
-        response.raise_for_status.assert_called_once()
+    async def test_default_mode_downloads_directly(self, default_mode: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def answer(self: object, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"png")
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", answer)
+        assert await aimodels._download_provider_image("https://cdn.example/x.png") == b"png"
+
+    async def test_default_mode_download_raises_on_an_error_status(
+        self, default_mode: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def answer(self: object, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, request=request)
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", answer)
+        with pytest.raises(httpx.HTTPStatusError):
+            await aimodels._download_provider_image("https://cdn.example/x.png")
 
     async def test_blocked_mode_uses_the_pinned_public_fetcher(self, blocked_mode: None) -> None:
         fetched = MagicMock(status_code=200, content=b"png")

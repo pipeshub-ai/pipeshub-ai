@@ -290,6 +290,15 @@ tags:
   - name: Toolset OAuth
     description: OAuth 2.0 authorization flow for toolsets requiring user consent
 
+  - name: MCP Servers
+    description: |
+      Catalog and org-scoped instances of external MCP servers that agents can call.
+
+      Catalog servers always run the command, arguments and transport from the
+      PipesHub catalog. Custom servers using the `stdio` transport run a command on
+      the PipesHub server itself, so they are available only when the deployment
+      operator sets `MCP_ALLOW_CUSTOM_STDIO=true` (Helm: `config.mcpAllowCustomStdio`).
+
   # Configuration Manager
   - name: Storage Configuration
     description: Configure storage backend for file uploads and documents. Supports AWS S3, Azure Blob Storage, or local filesystem.
@@ -10239,6 +10248,182 @@ components:
                   tool's `fullName` is no longer in the runtime tool registry
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
+
+    McpTransport:
+      type: string
+      enum: [stdio, sse, streamable_http]
+
+    McpAuthMode:
+      type: string
+      enum: [none, api_token, oauth, headers]
+
+    McpCatalogTemplate:
+      type: object
+      additionalProperties: true
+      description: A catalog entry. Pure metadata; never carries credentials.
+      required: [typeId, displayName, description, transport, defaultAuthMode]
+      properties:
+        typeId:
+          type: string
+          example: slack
+        displayName:
+          type: string
+        description:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        defaultAuthMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        supportedAuthModes:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpAuthMode'
+        command:
+          type: string
+          nullable: true
+          description: STDIO only. Always the command an instance of this server runs.
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        optionalEnv:
+          type: array
+          items:
+            type: string
+        defaultUrl:
+          type: string
+          nullable: true
+
+    McpServerInstanceRequest:
+      type: object
+      additionalProperties: true
+      description: |
+        Create/update body. With `typeId`, `transport` must match the catalog
+        server's and `command`/`args` must be omitted or equal the catalog values
+        (otherwise 400). Without `typeId` and with `transport: stdio`, the request
+        is refused with 403 unless the operator set `MCP_ALLOW_CUSTOM_STDIO=true`.
+        Env var names (`requiredEnv`, keys of `env`) must match
+        `^[A-Z][A-Z0-9_]{0,63}$` and may not be loader/runtime variables such as
+        `PATH`, `LD_*`, `NODE_*` or `PYTHON*` (otherwise 400).
+      required: [name, transport, authMode]
+      properties:
+        name:
+          type: string
+        typeId:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        authMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        useAdminAuth:
+          type: boolean
+        description:
+          type: string
+          nullable: true
+        command:
+          type: string
+          nullable: true
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        url:
+          type: string
+          nullable: true
+        headerName:
+          type: string
+          nullable: true
+        authorizationUrl:
+          type: string
+          nullable: true
+        tokenUrl:
+          type: string
+          nullable: true
+        scopes:
+          type: array
+          items:
+            type: string
+
+    McpServerInstance:
+      type: object
+      additionalProperties: true
+      description: Stored instance metadata. No secrets.
+      required: [_id, orgId, createdBy, name, transport, authMode, isCustom]
+      properties:
+        _id:
+          type: string
+        orgId:
+          type: string
+        createdBy:
+          type: string
+        name:
+          type: string
+        typeId:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        authMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        useAdminAuth:
+          type: boolean
+        description:
+          type: string
+          nullable: true
+        command:
+          type: string
+          nullable: true
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        optionalEnv:
+          type: array
+          items:
+            type: string
+        url:
+          type: string
+          nullable: true
+        isCustom:
+          type: boolean
+        createdAt:
+          type: integer
+          format: int64
+        updatedAt:
+          type: integer
+          format: int64
+        hasOAuthClientConfig:
+          type: boolean
+          description: Set on list/get responses only.
+        disabledReason:
+          type: string
+          nullable: true
+          enum: [custom_stdio_disabled, null]
+          description: |
+            Set on list/get responses only. `custom_stdio_disabled` means this is a
+            custom STDIO server and the deployment does not allow those
+            (`MCP_ALLOW_CUSTOM_STDIO` is not `true`): it will not connect, and its
+            tools are not offered to agents, until the operator enables the flag.
 
     McpServer:
       type: object
@@ -43078,6 +43263,246 @@ paths:
           description: No organisations found in the system
         '500':
           description: Internal server error
+
+  /mcp-servers/catalog:
+    get:
+      tags:
+        - MCP Servers
+      summary: List MCP server catalog
+      operationId: listMcpCatalog
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Catalog page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates, total, page, limit, customStdioAllowed]
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpCatalogTemplate'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  customStdioAllowed:
+                    type: boolean
+                    description: |
+                      Whether this deployment accepts custom servers with the `stdio`
+                      transport (operator setting `MCP_ALLOW_CUSTOM_STDIO`).
+        '401':
+          description: Unauthorized
+        '403':
+          description: MCP is disabled for this organization
+
+  /mcp-servers/instances:
+    get:
+      tags:
+        - MCP Servers
+      summary: List MCP server instances
+      description: List the organization's MCP server instances (admin only).
+      operationId: listMcpInstances
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Instances
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpServerInstance'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not an administrator, or MCP is disabled for this organization
+    post:
+      tags:
+        - MCP Servers
+      summary: Create MCP server instance
+      description: Create an MCP server instance (admin only).
+      operationId: createMcpInstance
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpServerInstanceRequest'
+      responses:
+        '201':
+          description: Instance created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '400':
+          description: |
+            Invalid request: unknown `typeId`, a catalog server's transport,
+            command or args overridden, a missing command/url, or a disallowed
+            env var name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            Not an administrator, MCP is disabled for this organization, or a
+            custom `stdio` server was requested and the deployment does not allow
+            them (`MCP_ALLOW_CUSTOM_STDIO`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp-servers/instances/{instanceId}:
+    get:
+      tags:
+        - MCP Servers
+      summary: Get MCP server instance
+      operationId: getMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not an administrator, or MCP is disabled for this organization
+        '404':
+          description: Instance not found
+    put:
+      tags:
+        - MCP Servers
+      summary: Update MCP server instance
+      description: Replace an MCP server instance's configuration (admin only). Same rules as create.
+      operationId: updateMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpServerInstanceRequest'
+      responses:
+        '200':
+          description: Instance updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '400':
+          description: Invalid request (see create)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            Not an administrator, MCP is disabled for this organization, or a
+            custom `stdio` server was requested and the deployment does not allow them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Instance not found
+
+  /mcp-servers/my-mcp-servers:
+    get:
+      tags:
+        - MCP Servers
+      summary: List MCP servers for the current user
+      description: Org MCP server instances merged with the caller's auth status and, optionally, live tools.
+      operationId: getMyMcpServers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: includeTools
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Instances with the caller's status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/McpServerInstance'
+                        - type: object
+                          properties:
+                            isAuthenticated:
+                              type: boolean
+                            tools:
+                              type: array
+                              items:
+                                type: object
+                                additionalProperties: true
+                            toolsError:
+                              type: string
+                              nullable: true
+        '401':
+          description: Unauthorized
+        '403':
+          description: MCP is disabled for this organization
 
   # ── MCP (Model Context Protocol) ──────────────────────────────────
   # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).

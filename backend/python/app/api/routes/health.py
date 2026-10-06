@@ -389,7 +389,8 @@ async def _endpoint_refusal(config: dict) -> JSONResponse | None:
     if not isinstance(configuration, dict):
         return None  # the health check that follows reports the malformed config
     try:
-        await require_public_endpoint(configuration.get("endpoint"))
+        for field in ("endpoint", "baseUrl"):
+            await require_public_endpoint(configuration.get(field))
     except ValueError as e:
         return _config_error(str(e), config, configuration.get("model", ""))
     return None
@@ -570,6 +571,20 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
+
+
+@router.post("/model-endpoint-check")
+async def model_endpoint_check(model_configs: list[dict] = Body(...)) -> JSONResponse:
+    """Whether this deployment may call each config's endpoint, without calling the model.
+    For model types saved without a health check of their own."""
+    for model_config in model_configs:
+        refusal = await _endpoint_refusal(model_config)
+        if refusal is not None:
+            return refusal
+    return JSONResponse(
+        status_code=200,
+        content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+    )
 
 
 @router.post("/llm-health-check")

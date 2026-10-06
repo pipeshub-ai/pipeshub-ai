@@ -13,9 +13,8 @@ from app.sources.client.resilience import ResiliencePolicy
 # bearer scheme ("PAT") and there is no OAuth or basic-auth endpoint.
 SUPPORTED_AUTH_TYPES = ("API_TOKEN",)
 API_VERSION = "1"
-# Plain JSON only. The spec never mentions a vendor media type, and both Onyx and
-# AnythingLLM read every endpoint with this, so anything more is a guess that can
-# only earn a 406.
+# Plain JSON only. The spec never mentions a vendor media type, so anything more is
+# a guess that can only earn a 406.
 ACCEPT_HEADER = "application/json"
 _API_SUFFIXES = ("/api/rest", "/api/spec", "/api")
 
