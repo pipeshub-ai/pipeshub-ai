@@ -207,6 +207,11 @@ export const ChatResponse = React.memo(function ChatResponse({
   const isMobile = useIsMobile();
   const { collabActive, access: collabAccess, meUserId } = useCollabMessageContext();
   const asker = askerOf({ requestedBy, author });
+  // In a solo chat the timeline names the viewer "You" (the feed sends their full name, an optimistic row nothing).
+  const soloSelf = (a: MessageAuthor | null | undefined) =>
+    collabAccess.collabEnabled && !collabActive && meUserId && (a === undefined || a?.userId === meUserId)
+      ? { userId: meUserId, displayName: null }
+      : a;
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
   const streamingFallbackStatus = useMemo(
@@ -956,7 +961,7 @@ export const ChatResponse = React.memo(function ChatResponse({
       <>
         <HumanMessage
           text={question}
-          author={author}
+          author={soloSelf(author)}
           meUserId={meUserId}
           time={createdAt}
           showHeader={showHeader}

@@ -91,7 +91,18 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
         {right ? (
           <Box
             data-testid="message-body-block"
-            style={{ width: 'fit-content', maxWidth: compactWidth ? '100%' : '85%', minWidth: 0, marginInlineStart: 'auto', textAlign: 'start' }}
+            data-compact={compactWidth ? 'true' : undefined}
+            style={{
+              ...(compactWidth
+                ? { width: 'auto', marginInlineStart: '20%' }
+                : { width: 'fit-content', maxWidth: '85%', marginInlineStart: 'auto' }),
+              minWidth: 0,
+              textAlign: 'start',
+              background: 'var(--olive-2)',
+              border: '1px solid var(--olive-a4)',
+              borderRadius: 'var(--radius-4)',
+              padding: 'var(--space-3)',
+            }}
           >
             {children}
           </Box>

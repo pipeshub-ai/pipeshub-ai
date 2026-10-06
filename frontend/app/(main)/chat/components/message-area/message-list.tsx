@@ -58,7 +58,7 @@ const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
 export function MessageList() {
   const meUserId = useUserStore((s) => s.profile?.userId ?? null);
-  const { collabActive } = useCollabMessageContext();
+  const { collabActive, access: collabAccess } = useCollabMessageContext();
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
@@ -1050,15 +1050,16 @@ export function MessageList() {
     />
   );
 
-  // A chat with a note, or with a message someone else wrote, is a conversation between people even
-  // before it is shared (a tag in an unshared chat posts a note), so it gets the timeline too.
+  // Flag on: every chat gets the timeline, so a solo chat splits you from the AI too. Flag off: only a chat with a
+  // note or with a message someone else wrote (a tag in an unshared chat posts a note) does.
   const timelineActive = useMemo(
     () =>
       collabActive ||
+      collabAccess.collabEnabled ||
       messagePairs.some(
         (p) => p.note === true || (p.author != null && meUserId != null && p.author.userId !== meUserId),
       ),
-    [collabActive, messagePairs, meUserId],
+    [collabActive, collabAccess.collabEnabled, messagePairs, meUserId],
   );
   const timelineGroups = useMemo(() => (timelineActive ? buildTimeline(messagePairs) : []), [timelineActive, messagePairs]);
 

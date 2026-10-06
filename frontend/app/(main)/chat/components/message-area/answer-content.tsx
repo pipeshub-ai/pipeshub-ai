@@ -1062,7 +1062,7 @@ export function createMarkdownComponents(
           <Text
             size="1"
             as="span"
-            style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
+            style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
           >
             {alt}
           </Text>

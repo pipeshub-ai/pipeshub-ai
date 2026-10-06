@@ -535,8 +535,8 @@ export function AskUserQuestionCard({
           ? t('askUserQuestion.questionAskedSingular')
           : t('askUserQuestion.questionAskedPlural');
     return (
-      <Card size="2">
-        <Flex direction="column" gap="3" p="4">
+      <Card size="2" data-ask-user-card="">
+        <Flex direction="column" gap="3" p="4" data-ask-user-card-body="">
           <Flex direction="column" gap="1">
             {normalized.userIntent ? (
               <Text size="2" color="gray">
@@ -643,13 +643,14 @@ export function AskUserQuestionCard({
     <Card
       size="2"
       variant="surface"
+      data-ask-user-card=""
       style={{
         marginTop: 'var(--space-4)',
         borderRadius: 'var(--radius-4)',
         border: '1px solid var(--accent-a6)',
       }}
     >
-      <Flex direction="column" gap="4" p="4">
+      <Flex direction="column" gap="4" p="4" data-ask-user-card-body="">
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
             {normalized.userIntent ? (

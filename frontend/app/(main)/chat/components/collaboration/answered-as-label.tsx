@@ -24,7 +24,7 @@ export function AnsweredAsLabel({ asker, meUserId }: AnsweredAsLabelProps) {
       as="p"
       size="1"
       data-testid="answered-as-label"
-      style={{ color: 'var(--slate-10)', margin: 'var(--space-2) 0 0' }}
+      style={{ color: 'var(--slate-11)', margin: 'var(--space-2) 0 0' }}
     >
       {text}
     </Text>

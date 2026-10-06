@@ -147,6 +147,57 @@ for (const combo of COMBOS) {
       await own.close();
     });
 
+    test('a solo chat: you on the left, the AI on the right, in every state', async ({ browser }) => {
+      const own = makeCast(browser, combo, { owner: await fake.freshActor(`m2solo${Date.now().toString(36)}`) });
+      const alice = await own.open('owner');
+      const { page } = alice;
+      const send = async (text: string) => {
+        await composer(page).click();
+        await page.keyboard.type(text);
+        await page.getByRole('button', { name: 'Send message' }).click();
+      };
+      const fresh = async (what: string) => {
+        await openConversation(page, await alice.api.startChat(key(what)));
+      };
+      await stage('30', 'solo-answer', async () => {
+        await fresh('solo');
+        await fake.script('chat_stream', { kind: 'stream_answer', text: 'Why do programmers prefer dark mode? Because light attracts bugs.' });
+        await send('tell me a joke');
+        await expect(page.getByText('light attracts bugs')).toBeVisible({ timeout: 45_000 });
+        await expect(page.getByTestId('reply-message').last()).toBeVisible();
+        await expect(page.getByTestId('answered-as-label')).toHaveCount(0);
+        await shot(page, '30', 'solo-answer', 'A solo chat with the flag on: "You" and the question on the left, the PipesHub reply on the right inside a tinted block; no "Asked by" line.');
+      }, page);
+      await stage('31', 'solo-streaming', async () => {
+        await fresh('stream');
+        await fake.script('chat_stream', { kind: 'held_stream', gate: `solo-${Date.now()}`, text: 'Streaming the first part of the answer', runId: 'run-solo' });
+        await send('summarize the launch plan');
+        await expect(page.getByTestId('reply-message').last()).toBeVisible({ timeout: 30_000 });
+        await shot(page, '31', 'solo-streaming', 'A solo chat mid-stream (held): the reply row on the right with the tinted block, the question on the left.');
+      }, page);
+      await stage('32', 'solo-error', async () => {
+        await fresh('error');
+        await fake.script('chat_stream', { kind: 'run_error', message: 'The model is unavailable' });
+        await send('this one fails');
+        await expect(page.getByText(/unavailable|went wrong|error/i).first()).toBeVisible({ timeout: 45_000 });
+        await shot(page, '32', 'solo-error', 'A solo chat whose run failed: the error state sits inside the reply block on the right.');
+      }, page);
+      await stage('33', 'solo-ask-user-question', async () => {
+        await fresh('ask');
+        await fake.script('chat_stream', {
+          kind: 'ask_user_question',
+          toolData: {
+            userIntent: 'Deploy the pricing page',
+            questions: [{ question: 'Which environment should I deploy to?', options: ['staging', 'production'], multiSelect: false }],
+          },
+        });
+        await send('deploy the pricing page');
+        await expect(page.getByText('Which environment should I deploy to?')).toBeVisible({ timeout: 40_000 });
+        await shot(page, '33', 'solo-ask-user-question', 'A solo chat with a pending question card: the card sits inside the tinted reply block on the right.');
+      }, page);
+      await own.close();
+    });
+
     test('people from the whole organization, the Add people row and its drawer', async () => {
       const alice = await cast.open('owner');
       const { page } = alice;

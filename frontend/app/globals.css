@@ -1352,3 +1352,24 @@ th code {
 [data-side="right"] [data-testid="answered-as-label"] {
   text-align: end;
 }
+
+/* An ask-user-question card inside an AI reply block: the block is already a bordered surface,
+   so the card sits closer, and on phones it drops its own frame instead of nesting a box in a box. */
+[data-side="right"] [data-ask-user-card] {
+  margin-top: var(--space-2) !important;
+}
+@media (max-width: 640px) {
+  [data-side="right"] [data-ask-user-card] {
+    --card-padding: 0;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+  [data-side="right"] [data-ask-user-card]::after {
+    display: none;
+  }
+  [data-side="right"] [data-ask-user-card-body] {
+    padding: var(--space-1) 0 0 !important;
+  }
+}

@@ -143,9 +143,20 @@ describe('collaborative chat', () => {
   });
 });
 
-describe('solo chat and flag off', () => {
+describe('solo chat', () => {
+  it('uses the timeline with the flag on: you on one side, the AI reply on the other', () => {
+    open(false);
+    thread.messages = [user('u1', 'tell me a joke', day(18, 10, 0)), reply('a1', 'Knock knock', day(18, 10, 1))];
+    renderList();
+    expect(screen.getByRole('log')).toBeTruthy();
+    expect(screen.getAllByTestId('response').map((r) => r.getAttribute('data-mode'))).toEqual(['human', 'reply']);
+    expect(screen.queryByText(/Asked by/)).toBeNull();
+  });
+});
+
+describe('flag off', () => {
   it.each([
-    ['a solo chat', false, true],
+    ['a solo chat with the flag off', false, false],
     ['a shared chat with the flag off', true, false],
   ])('keeps one block per turn in %s', (_name, collaborative, flag) => {
     open(collaborative, flag);

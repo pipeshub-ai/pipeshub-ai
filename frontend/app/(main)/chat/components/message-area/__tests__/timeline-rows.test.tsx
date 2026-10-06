@@ -232,6 +232,53 @@ describe('reply row', () => {
     expect(article.getAttribute('aria-label')).toBe('PipesHub');
     expect(within(article).getByTestId('answer').textContent).toContain('Thinking about it');
     expect(within(article).queryByTestId('message-time')).toBeNull();
+    expect(article.getAttribute('data-side')).toBe('right');
+    expect(within(article).getByTestId('message-body-block').contains(within(article).getByTestId('answer'))).toBe(true);
+  });
+
+  it('gives the body block a tinted surface and leaves human rows plain', () => {
+    setup();
+    row({ rowMode: 'reply' });
+    const style = screen.getByTestId('message-body-block').getAttribute('style') ?? '';
+    expect(style).toMatch(/background: var\(--olive-2\)/);
+    expect(style).toMatch(/border-radius: var\(--radius-4\)/);
+    expect(style).toMatch(/padding: var\(--space-3\)/);
+    cleanup();
+    row({ rowMode: 'human' });
+    expect(screen.queryByTestId('message-body-block')).toBeNull();
+    expect(screen.getByTestId('human-message').getAttribute('style') ?? '').not.toMatch(/olive-2/);
+  });
+
+  it('indents the block from the left on a phone, with the avatar still on the right', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {},
+    }));
+    try {
+      setup();
+      row({ rowMode: 'reply' });
+      const article = screen.getByRole('article');
+      expect(article.getAttribute('data-side')).toBe('right');
+      expect(article.getAttribute('style')).toMatch(/grid-template-columns: minmax\(0(px)?, 1fr\) 24px/);
+      const block = screen.getByTestId('message-body-block');
+      expect(block.getAttribute('style')).toMatch(/margin-inline-start: 20%/);
+      expect(block.getAttribute('style')).toMatch(/background: var\(--olive-2\)/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('solo chats in the timeline', () => {
+  it('names you on the left and shows no asked-by line under the reply', () => {
+    setup({ collaborative: false });
+    row({ rowMode: 'human', author: undefined });
+    expect(screen.getByTestId('message-author').textContent).toBe('You');
+    cleanup();
+    row({ rowMode: 'human', author: alice });
+    expect(screen.getByTestId('message-author').textContent).toBe('You');
+    cleanup();
+    row({ rowMode: 'reply', author: alice, requestedBy: alice });
+    expect(screen.queryByTestId('answered-as-label')).toBeNull();
   });
 });
 
