@@ -54,7 +54,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
+from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record, matches_visibility
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
 from app.services.graph_db.interface.graph_db_provider import MoveDestinationMissing
 
@@ -548,8 +548,10 @@ class MockTransactionStore:
         return before - len(self._s.edges[CollectionNames.RECORD_RELATIONS.value])
 
     async def upsert_record_under_parent(self, record: Record, parent_record_id: str | None) -> None:
-        if parent_record_id and self._s.get_node(CollectionNames.RECORDS.value, parent_record_id) is None:
-            raise MoveDestinationMissing(record.id, parent_record_id)
+        if parent_record_id:
+            parent = self._s.get_node(CollectionNames.RECORDS.value, parent_record_id)
+            if parent is None or not is_live_record(parent):
+                raise MoveDestinationMissing(record.id, parent_record_id)
         await self.delete_parent_child_edge_to_record(record.id)
         await self.batch_upsert_records([record], release_trashed_external_ids=True)
         if parent_record_id:
@@ -2632,6 +2634,20 @@ class TestKbMoveWorkflow:
         to_nowhere = report.model_copy(update={"parent_external_record_id": "deleted-folder"})
         with pytest.raises(MoveDestinationMissing):
             await processor.on_records_moved([(report.external_record_id, to_nowhere, [])])
+
+        assert self._parents(graph_store, report.id) == [old.id]
+        assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] == old.id
+
+    @pytest.mark.asyncio
+    async def test_a_move_under_a_folder_in_the_trash_moves_nothing(self, processor, graph_store) -> None:
+        old, trashed = self._kb_item("Old", is_file=False), self._kb_item("Trashed", is_file=False)
+        report = self._kb_item("q3.pdf", old.id)
+        await processor.on_new_records([(old, []), (trashed, []), (report, [])])
+        graph_store.get_node(CollectionNames.RECORDS.value, trashed.id)["isDeleted"] = True
+
+        to_trash = report.model_copy(update={"parent_external_record_id": trashed.id})
+        with pytest.raises(MoveDestinationMissing):
+            await processor.on_records_moved([(report.external_record_id, to_trash, [])])
 
         assert self._parents(graph_store, report.id) == [old.id]
         assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] == old.id

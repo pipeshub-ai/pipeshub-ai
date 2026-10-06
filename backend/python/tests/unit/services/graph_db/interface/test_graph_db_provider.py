@@ -711,6 +711,18 @@ class TestRecordLinkDefaults:
         assert calls == []
 
     @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_in_the_trash_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = {"_key": "folder-2", "isDeleted": True}
+
+        with pytest.raises(RuntimeError, match="folder-2 is not in the graph or is in the trash") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
+
+    @pytest.mark.asyncio
     async def test_a_move_whose_old_edge_cannot_be_deleted_writes_nothing_more(self) -> None:
         instance = _make_concrete_class()()
         instance.delete_parent_child_edge_to_record.side_effect = RuntimeError("write-write conflict")

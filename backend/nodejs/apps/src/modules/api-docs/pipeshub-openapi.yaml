@@ -25714,7 +25714,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Folder with this name already exists at the knowledge base root or within the parent folder
+          description: |
+            Conflict. Possible reasons:
+
+            - A folder with this name already exists at the knowledge base root or within the parent folder
+            - The parent folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -26012,6 +26016,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -26493,6 +26503,12 @@ paths:
             - Knowledge base does not exist
             - Record does not exist in the knowledge base
             - Target folder does not exist in the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The target folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:

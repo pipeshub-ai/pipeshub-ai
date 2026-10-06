@@ -20,7 +20,10 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.models.entities import Person
-from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
 
 FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
     "Records were moved into this folder while it was being deleted, so nothing was deleted. "
@@ -33,11 +36,12 @@ class FolderChangedDuringDelete(RuntimeError):
 
 
 class MoveDestinationMissing(RuntimeError):
-    """The parent a record was being moved under is not in the graph; nothing was written."""
+    """The parent a record was being moved under is not in the graph, or is in the trash; nothing was written."""
 
     def __init__(self, record_id: str, parent_record_id: str) -> None:
         super().__init__(
-            f"Record {record_id} was not moved: its new parent {parent_record_id} is not in the graph"
+            f"Record {record_id} was not moved: its new parent {parent_record_id} "
+            "is not in the graph or is in the trash"
         )
 
 
@@ -2657,8 +2661,15 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         folder_id: str,
         transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> bool:
-        """Validate that a folder exists and belongs to the KB."""
+        """Validate that a folder exists, belongs to the KB and matches *visibility*.
+
+        LIVE, the default, refuses a folder in the trash, which is never a place to
+        put something. DELETED tells a folder in the trash from one that is not
+        there, so the caller can say which.
+        """
         pass
 
 
@@ -3484,19 +3495,22 @@ class IGraphDBProvider(ABC):
         """Upsert a moved *record* and make *parent_record_id* its only PARENT_CHILD parent.
 
         None leaves it under no parent: the root of its knowledge base. A parent
-        that is not in the graph raises ``MoveDestinationMissing`` before anything
-        is written: a folder deleted while the move was on its way would take the
-        item out of its old folder and put it in none. Records in the trash holding
+        that is not in the graph, or is in the trash, raises ``MoveDestinationMissing``
+        before anything is written: a folder deleted while the move was on its way
+        would take the item out of its old folder and put it in none, and one moved
+        to the trash would hide it there. Records in the trash holding
         the record's external id give it up, as in ``batch_upsert_records``.
         Concrete by design: a provider with real transactions keeps the separate
         calls. Neo4j overrides it with one statement: with the old edge deleted on
         its own, a move that failed afterwards left the item, and everything
         beneath it, in no folder at all.
         """
-        if parent_record_id and not await self.get_document(
-            parent_record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
-        ):
-            raise MoveDestinationMissing(record.id, parent_record_id)
+        if parent_record_id:
+            parent = await self.get_document(
+                parent_record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
+            if not parent or not is_live_record(parent):
+                raise MoveDestinationMissing(record.id, parent_record_id)
         await self.delete_parent_child_edge_to_record(record.id, transaction)
         await self.batch_upsert_records([record], transaction, release_trashed_external_ids=True)
         if parent_record_id:

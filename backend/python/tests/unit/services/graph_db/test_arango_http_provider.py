@@ -37,6 +37,7 @@ import uuid
 from app.services.graph_db.arango.arango_http_provider import (
     MAX_REINDEX_DEPTH,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -10373,6 +10374,22 @@ class TestValidateFolderInKb:
             result = await connected_provider.validate_folder_in_kb("kb1", "f1")
             assert result is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("call", "clause"),
+        [
+            ({}, "folder_record.isDeleted != true"),
+            ({"visibility": RecordVisibility.DELETED}, "folder_record.isDeleted == true"),
+        ],
+        ids=["live-by-default", "in-the-trash"],
+    )
+    async def test_the_folder_is_matched_by_visibility(self, connected_provider, call: dict, clause: str) -> None:
+        with patch.object(
+            connected_provider, "execute_query", new_callable=AsyncMock, return_value=[True]
+        ) as query:
+            assert await connected_provider.validate_folder_in_kb("kb1", "f1", **call) is True
+        assert f"FILTER folder_record != null AND {clause}" in query.await_args.args[0]
+
 
 # ---------------------------------------------------------------------------
 # validate_folder_exists_in_kb
@@ -10388,6 +10405,14 @@ class TestValidateFolderExistsInKb:
         ):
             result = await connected_provider.validate_folder_exists_in_kb("kb1", "f1")
             assert result is True
+
+    @pytest.mark.asyncio
+    async def test_a_folder_in_the_trash_still_counts(self, connected_provider) -> None:
+        with patch.object(
+            connected_provider, "execute_query", new_callable=AsyncMock, return_value=[True]
+        ) as query:
+            assert await connected_provider.validate_folder_exists_in_kb("kb1", "f1") is True
+        assert "isDeleted" not in query.await_args.args[0]
 
     @pytest.mark.asyncio
     async def test_not_valid(self, connected_provider):
@@ -12728,6 +12753,28 @@ class TestValidateUploadContext:
         )
         assert result["valid"] is True
         assert result["upload_target"] == "folder"
+
+    @pytest.mark.asyncio
+    async def test_a_folder_in_the_trash_is_refused_and_says_so(self, connected_provider) -> None:
+        connected_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "userId": "u1"}
+        )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        connected_provider.get_and_validate_folder_in_kb = AsyncMock(
+            return_value={"_key": "f1", "recordName": "Reports", "isDeleted": True}
+        )
+
+        result = await connected_provider._validate_upload_context(
+            "kb1", "u1", "org1", parent_folder_id="f1"
+        )
+
+        assert result == {
+            "valid": False,
+            "success": False,
+            "code": 409,
+            "reason": "'Reports' is in Recently deleted, so you can't upload files to it. "
+            "Restore it first, or choose another folder.",
+        }
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):

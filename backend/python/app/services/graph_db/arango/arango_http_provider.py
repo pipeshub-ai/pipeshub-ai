@@ -223,6 +223,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import folder_in_trash
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -13547,12 +13548,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         kb_id: str,
         folder_id: str,
         transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> bool:
-        """Validate that a folder exists and belongs to the KB."""
+        """Validate that the folder exists, belongs to the KB and matches *visibility*."""
         try:
-            query = """
+            query = f"""
             LET folder_record = DOCUMENT(@@records_collection, @folder_id)
-            FILTER folder_record != null
+            FILTER folder_record != null AND {aql_record_visibility("folder_record", visibility)}
             LET folder_file = FIRST(
                 FOR isEdge IN @@is_of_type
                     FILTER isEdge._from == folder_record._id
@@ -13594,48 +13597,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         folder_id: str,
         transaction: str | None = None
     ) -> bool:
-        """
-        Validate folder exists in specific KB.
-        Uses edge traversal to check BELONGS_TO relationship.
-        """
-        try:
-            query = """
-            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
-            FILTER folder_record != null
-            LET folder_file = FIRST(
-                FOR isEdge IN @@is_of_type
-                    FILTER isEdge._from == folder_record._id
-                    LET f = DOCUMENT(isEdge._to)
-                    FILTER f != null AND f.isFile == false
-                    RETURN f
-            )
-            LET folder_valid = folder_record != null AND folder_file != null
-            LET relationship = folder_valid ? FIRST(
-                FOR edge IN @@belongs_to_collection
-                    FILTER edge._from == @folder_from
-                    FILTER edge._to == @kb_to
-                    FILTER edge.entityType == @entity_type
-                    RETURN 1
-            ) : null
-            RETURN folder_valid AND relationship != null
-            """
-            results = await self.execute_query(
-                query,
-                bind_vars={
-                    "folder_id": folder_id,
-                    "folder_from": f"records/{folder_id}",
-                    "kb_to": f"apps/{kb_id}",
-                    "entity_type": Connectors.KNOWLEDGE_BASE.value,
-                    "@records_collection": CollectionNames.RECORDS.value,
-                    "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
-                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                },
-                transaction=transaction,
-            )
-            return bool(results and results[0])
-        except Exception as e:
-            self.logger.error(f"❌ Failed to validate folder exists in KB: {str(e)}")
-            return False
+        """Validate folder exists in specific KB, in the trash or not."""
+        return await self.validate_folder_in_kb(
+            kb_id, folder_id, transaction, visibility=RecordVisibility.ALL
+        )
 
 
     async def get_uploaded_document_ids(
@@ -15819,6 +15784,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         404,
                         f"Folder {folder_label} was not found in knowledge base {kb_label}. "
                         "The folder may not exist or may belong to a different knowledge base.",
+                    )
+                if not is_live_record(parent_folder):
+                    return self._validation_error(
+                        409, folder_in_trash(parent_folder.get("recordName"), "upload files to it")
                     )
                 parent_path = parent_folder.get("path", "/")
             return {

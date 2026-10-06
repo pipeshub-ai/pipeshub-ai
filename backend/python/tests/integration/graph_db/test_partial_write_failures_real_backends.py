@@ -22,6 +22,11 @@ write below is now one statement on Neo4j:
   rewritten and the new parent edge created in three writes, so a failure left
   the item, and everything beneath it, in no folder at all.
 
+A knowledge-base move into a folder in the trash is refused too, with a 409 that
+says so, whether the folder was in the trash when the move was checked or went
+there before it was written; nothing moves. Creating a folder in it, or uploading
+to it, is refused the same way.
+
 A failed permission write is also raised now on both stores, where it used to
 be logged and the surrounding write committed without the permissions. On
 ArangoDB the same goes for a failed delete of a record's inherit-permissions or
@@ -65,8 +70,12 @@ import pytest
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    DeleteSource,
     OriginTypes,
     ProgressStatus,
+)
+from app.connectors.core.base.data_processor import (
+    data_source_entities_processor as processor_module,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -874,6 +883,7 @@ async def _failed_kb_move(
     new_parent_id: str | None,
     *,
     code: int = 500,
+    reason: str | None = None,
     before_write: Callable[[], Awaitable[object]] | None = None,
 ) -> str:
     """Move Reports through the KB service, which answers a failure instead of raising it; return its cause.
@@ -898,6 +908,8 @@ async def _failed_kb_move(
     finally:
         w.processor.on_records_moved = write
     assert result["success"] is False and result["code"] == code, result
+    if reason is not None:
+        assert result["reason"] == reason, result
     assert len(causes) == 1, causes
     return causes[0]
 
@@ -1006,3 +1018,115 @@ async def test_a_kb_move_into_a_folder_deleted_on_the_way_moves_nothing(world: _
         "path_of_its_file": ["Reports", "q3.pdf"],
     }
 
+
+
+def _in_trash(folder: str, action: str) -> str:
+    return f"'{folder}' is in Recently deleted, so you can't {action}. Restore it first, or choose another folder."
+
+
+async def _trash(w: _World, kb: _KbTree, folder_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put the folder, and everything in it, in the trash as its owner's delete does."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(processor_module, "notify_kb_records_changed", AsyncMock())
+    result = await w.processor.on_records_deleted_cascade(
+        [folder_id], kb.kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=kb.owner
+    )
+    assert result["success"] is True and result["softDeleted"] is True, result
+    assert (await w.graph.get_document(folder_id, CollectionNames.RECORDS.value))["isDeleted"] is True
+
+
+async def _children(w: _World, record_id: str) -> set[str]:
+    """The record at the other end of each PARENT_CHILD edge out of the record."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (:Record {id: $id})-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
+            parameters={"id": record_id},
+        )
+        return {row["id"] for row in rows or []}
+    return set(await w.graph.http_client.execute_aql(
+        "FOR e IN recordRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
+        "RETURN PARSE_IDENTIFIER(e._to).key",
+        {"from": f"records/{record_id}"},
+    ) or [])
+
+
+@pytest.mark.parametrize("item", ["folder", "file"])
+async def test_a_kb_move_into_a_folder_in_the_trash_is_refused(
+    world: _World, item: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    await _trash(w, kb, kb.new, monkeypatch)
+    in_trash = await _children(w, kb.new)
+    moving, home = (kb.reports, kb.old) if item == "folder" else (kb.report, kb.reports)
+    before = await _kb_place(w, kb)
+
+    result = await kb.service.move_record(kb.kb_id, moving, kb.new, kb.owner)
+
+    assert result == {"success": False, "code": 409, "reason": _in_trash("New", "move items into it")}
+    assert await _parents(w, moving) == [home]
+    assert (await w.graph.get_document(moving, CollectionNames.RECORDS.value))["externalParentId"] == home
+    assert await _kb_place(w, kb) == before
+    assert await _children(w, kb.new) == in_trash
+    kb.storage_moves.assert_not_awaited()
+
+    # A live folder still takes it.
+    made = await kb.service.create_folder_in_kb(kb.kb_id, "Live", kb.owner, w.org_id)
+    assert made.get("success") is True, made
+    w.ids.add(made["id"])
+    moved = await kb.service.move_record(kb.kb_id, moving, made["id"], kb.owner)
+    assert moved["success"] is True, moved
+    assert await _parents(w, moving) == [made["id"]]
+    assert (await w.graph.get_document(moving, CollectionNames.RECORDS.value))["externalParentId"] == made["id"]
+
+
+async def test_a_kb_move_into_a_folder_trashed_on_the_way_moves_nothing(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    # The new folder is live when the service checks it and in the trash when the move is written.
+    async def trash_the_new_folder() -> None:
+        await _trash(w, kb, kb.new, monkeypatch)
+
+    cause = await _failed_kb_move(
+        w, kb, kb.new, code=409, reason=_in_trash("New", "move items into it"), before_write=trash_the_new_folder
+    )
+    assert f"its new parent {kb.new} is not in the graph or is in the trash" in cause
+
+    assert await _kb_place(w, kb) == in_old
+    assert kb.reports not in await _children(w, kb.new)
+    kb.storage_moves.assert_not_awaited()
+
+
+async def test_a_folder_in_the_trash_takes_no_new_folder_and_no_upload(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    await _trash(w, kb, kb.new, monkeypatch)
+    in_trash = await _children(w, kb.new)
+
+    made = await kb.service.create_nested_folder(kb.kb_id, kb.new, "Q4", kb.owner, w.org_id)
+    assert made == {"success": False, "code": 409, "reason": _in_trash("New", "create a folder in it")}
+
+    upload_refused = {"code": 409, "reason": _in_trash("New", "upload files to it")}
+    checked = await kb.service.validate_folder_for_upload(kb.kb_id, kb.new, kb.owner, w.org_id)
+    assert checked["valid"] is False and {k: checked[k] for k in upload_refused} == upload_refused, checked
+    files = [{"filePath": "q4.pdf", "record": {"recordName": "q4.pdf"}, "fileRecord": {"name": "q4.pdf"}}]
+    uploaded = await kb.service.upload_records_to_folder(kb.kb_id, kb.new, kb.owner, w.org_id, files)
+    assert uploaded["success"] is False and {k: uploaded[k] for k in upload_refused} == upload_refused, uploaded
+
+    assert await _children(w, kb.new) == in_trash
+
+    # A live folder still takes both.
+    made = await kb.service.create_nested_folder(kb.kb_id, kb.old, "Q4", kb.owner, w.org_id)
+    assert made.get("success") is True, made
+    w.ids.add(made["id"])
+    assert (await kb.service.validate_folder_for_upload(kb.kb_id, kb.old, kb.owner, w.org_id))["valid"] is True

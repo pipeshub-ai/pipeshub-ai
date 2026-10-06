@@ -525,6 +525,7 @@ async def upload_records_to_kb(
         400: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
     dependencies=[Depends(require_scopes(OAuthScopes.KB_UPLOAD))],
@@ -631,6 +632,7 @@ async def upload_records_to_folder(
         400: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
     dependencies=[Depends(require_scopes(OAuthScopes.KB_UPLOAD))],
@@ -736,7 +738,7 @@ async def create_folder_in_kb_root(
 @kb_router.post(
     "/{kb_id}/folder/{parent_folder_id}/subfolder",
     response_model=CreateFolderResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
     dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
@@ -1733,6 +1735,7 @@ async def list_all_records(
         400: {"model": ErrorResponse},
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
     dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],

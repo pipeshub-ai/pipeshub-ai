@@ -28,7 +28,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH, RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
@@ -36,7 +36,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
+from app.utils.user_messages import PEOPLE_GONE, action_failed, folder_in_trash, not_found
 
 if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -89,6 +89,7 @@ FOLDER_DEPTH_LIMIT_REASON = (
     f"Folders can be nested at most {KB_MAX_FOLDER_DEPTH} levels deep. "
     "Move this content higher up, or flatten some of the folders."
 )
+MOVE_INTO_ACTION = "move items into it"
 
 
 def folder_levels_in_path(file_path: str) -> int:
@@ -192,6 +193,29 @@ class KnowledgeBaseService:
             return {"success": False, "code": code, "reason": result["reason"]}
         self.logger.error("❌ Graph provider could not %s: %s", action, result)
         return {"success": False, "code": 500, "reason": action_failed(action)}
+
+    async def _destination_folder_refusal(
+        self, kb_id: str, folder_id: str, action: str, missing_reason: str
+    ) -> dict:
+        """The answer for a destination folder that is not a live folder of this KB.
+
+        A folder in the trash gets a 409 that says so and how to get past it; one
+        that is not there at all keeps its 404. *action* completes "you can't …".
+        """
+        if not await self.graph_provider.validate_folder_in_kb(
+            kb_id, folder_id, visibility=RecordVisibility.DELETED
+        ):
+            return {"success": False, "code": 404, "reason": missing_reason}
+        try:
+            folder = await self.graph_provider.get_document(folder_id, CollectionNames.RECORDS.value)
+        except Exception as e:
+            self.logger.warning("Could not read the name of folder %s in the trash: %s", folder_id, e)
+            folder = None
+        return {
+            "success": False,
+            "code": 409,
+            "reason": folder_in_trash((folder or {}).get("recordName"), action),
+        }
 
     async def _exceeds_folder_depth(self, parent_folder_id: Optional[str], added_levels: int) -> bool:
         """Would adding *added_levels* folder levels under *parent_folder_id*
@@ -1116,14 +1140,13 @@ class KnowledgeBaseService:
             if not validation_result["valid"]:
                 return self._validation_failure(validation_result, "create this folder")
 
-            # Additional validation for parent folder
-            folder_valid = await self.graph_provider.validate_folder_exists_in_kb(kb_id, parent_folder_id)
-            if not folder_valid:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}"
-                }
+            if not await self.graph_provider.validate_folder_in_kb(kb_id, parent_folder_id):
+                return await self._destination_folder_refusal(
+                    kb_id,
+                    parent_folder_id,
+                    "create a folder in it",
+                    f"Parent folder {parent_folder_id} not found in KB {kb_id}",
+                )
 
             if await self._exceeds_folder_depth(parent_folder_id, 1):
                 return {"success": False, "code": 400, "reason": FOLDER_DEPTH_LIMIT_REASON}
@@ -1183,7 +1206,9 @@ class KnowledgeBaseService:
 
             # Scope the folder to THIS KB before reading (the folder_id is caller-supplied;
             # without this a member of any KB could read another KB's folder contents).
-            if not await self.graph_provider.validate_folder_in_kb(kb_id, folder_id):
+            if not await self.graph_provider.validate_folder_in_kb(
+                kb_id, folder_id, visibility=RecordVisibility.ALL
+            ):
                 self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
                 return {"success": False, "code": 404, "reason": "Folder not found in knowledge base"}
 
@@ -1233,7 +1258,9 @@ class KnowledgeBaseService:
             name = name.strip()
 
             # Validate that folder exists and belongs to the KB
-            folder_exists = await self.graph_provider.validate_folder_in_kb(kb_id, folder_id)
+            folder_exists = await self.graph_provider.validate_folder_in_kb(
+                kb_id, folder_id, visibility=RecordVisibility.ALL
+            )
             if not folder_exists:
                 self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
                 return {
@@ -1326,7 +1353,9 @@ class KnowledgeBaseService:
             if err:
                 return err
             # Validate that folder exists and belongs to the KB
-            folder_exists = await self.graph_provider.validate_folder_in_kb(kb_id, folder_id)
+            folder_exists = await self.graph_provider.validate_folder_in_kb(
+                kb_id, folder_id, visibility=RecordVisibility.ALL
+            )
             if not folder_exists:
                 self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
                 return {
@@ -2896,7 +2925,9 @@ class KnowledgeBaseService:
 
             # Scope the folder to THIS KB before reading (the folder_id is caller-supplied;
             # without this a member of any KB could read another KB's folder contents).
-            if not await self.graph_provider.validate_folder_in_kb(kb_id, folder_id):
+            if not await self.graph_provider.validate_folder_in_kb(
+                kb_id, folder_id, visibility=RecordVisibility.ALL
+            ):
                 self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
                 return {"success": False, "code": 404, "reason": "Folder not found in knowledge base"}
 
@@ -3267,13 +3298,13 @@ class KnowledgeBaseService:
 
             # ── 6. Validate target folder (if not moving to root) ────────────
             if new_parent_id is not None:
-                folder_valid = await self.graph_provider.validate_folder_in_kb(kb_id, new_parent_id)
-                if not folder_valid:
-                    return {
-                        "success": False,
-                        "code": 404,
-                        "reason": f"Target folder {new_parent_id} not found in KB {kb_id}",
-                    }
+                if not await self.graph_provider.validate_folder_in_kb(kb_id, new_parent_id):
+                    return await self._destination_folder_refusal(
+                        kb_id,
+                        new_parent_id,
+                        MOVE_INTO_ACTION,
+                        f"Target folder {new_parent_id} not found in KB {kb_id}",
+                    )
 
                 # Circular-reference guard (only relevant when moving a folder)
                 if new_parent_id == record_id:
@@ -3362,12 +3393,14 @@ class KnowledgeBaseService:
             }
 
         except MoveDestinationMissing:
-            # The target folder was deleted after step 6 found it; nothing was moved.
-            return {
-                "success": False,
-                "code": 404,
-                "reason": f"Target folder {new_parent_id} not found in KB {kb_id}",
-            }
+            # The target folder was deleted or put in the trash after step 6 found it;
+            # nothing was moved. The write cannot say which, so it is looked up again.
+            return await self._destination_folder_refusal(
+                kb_id,
+                new_parent_id,
+                MOVE_INTO_ACTION,
+                f"Target folder {new_parent_id} not found in KB {kb_id}",
+            )
         except Exception as e:
             self.logger.error(
                 f"❌ move_record failed: record={record_id} target={new_parent_id!r} "

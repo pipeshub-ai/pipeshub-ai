@@ -389,7 +389,7 @@ class TestKnowledgeBaseService:
         svc.graph_provider._validate_folder_creation = AsyncMock(
             return_value={"valid": True}
         )
-        svc.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=False)
+        svc.graph_provider.validate_folder_in_kb = AsyncMock(return_value=False)
 
         result = await svc.create_nested_folder("kb-1", "parent-1", "Sub", "user-1", "org-1")
         assert result["success"] is False

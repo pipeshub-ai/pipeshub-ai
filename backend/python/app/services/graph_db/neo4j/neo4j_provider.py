@@ -170,6 +170,7 @@ from app.services.graph_db.vector_membership_queries import (
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import folder_in_trash
 
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
@@ -6789,10 +6790,12 @@ class Neo4jProvider(IGraphDBProvider):
         carried = "n"
         if parent_record_id:
             # The parent is matched before anything is written, so one that is gone
-            # (a folder deleted while the move was on its way) leaves no row to write
-            # for. The edge is then created from that same node, not looked up again.
+            # or in the trash (a folder deleted while the move was on its way) leaves
+            # no row to write for. The edge is then created from that same node, not
+            # looked up again.
             statement = f"""
             MATCH (parent:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $parent_id}})
+            WHERE {cypher_live_record("parent")}
             CALL {{{statement}
                 RETURN n
             }}"""
@@ -13091,11 +13094,25 @@ class Neo4jProvider(IGraphDBProvider):
         folder_id: str,
         transaction: str | None = None
     ) -> bool:
-        """Validate that a folder exists in a knowledge base"""
+        """Validate that a folder exists in a knowledge base, in the trash or not"""
+        return await self.validate_folder_in_kb(
+            kb_id, folder_id, transaction, visibility=RecordVisibility.ALL
+        )
+
+    async def validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> bool:
+        """Validate that a folder exists in a knowledge base and matches *visibility*"""
         try:
-            query = """
-            MATCH (folder:Record {id: $folder_id})-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
+            query = f"""
+            MATCH (folder:Record {{id: $folder_id}})-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
             WHERE folder.mimeType = "application/vnd.folder"
+              AND {cypher_record_visibility("folder", visibility)}
             RETURN count(folder) AS count
             """
 
@@ -13110,15 +13127,6 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to validate folder exists: {str(e)}")
             return False
-
-    async def validate_folder_in_kb(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: str | None = None
-    ) -> bool:
-        """Validate that a folder exists and belongs to a knowledge base"""
-        return await self.validate_folder_exists_in_kb(kb_id, folder_id, transaction)
 
     async def _validate_folder_creation(
         self,
@@ -13253,6 +13261,13 @@ class Neo4jProvider(IGraphDBProvider):
                             f"Folder {folder_label} was not found in knowledge base {kb_label}. "
                             "The folder may not exist or may belong to a different knowledge base."
                         ),
+                    }
+                if not is_live_record(parent_folder):
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "code": 409,
+                        "reason": folder_in_trash(parent_folder.get("recordName"), "upload files to it"),
                     }
                 return {
                     "valid": True,
