@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -393,6 +394,34 @@ class TestAbandonedJobs:
         await running
         # Had the cancelled job run, it would have killed the worker.
         governor.report_memory_incident.assert_not_called()
+
+
+# -- a worker holds the service's secrets no more loosely than the service ------
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl is Linux-only")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses the dumpable check"
+)
+async def test_a_workers_environment_cannot_be_read_by_another_process_of_the_same_user(
+    governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker is started with the service's environment: database passwords,
+    the JWT secret. The service marks itself non-dumpable so that tools it runs
+    under the same uid cannot read /proc/<pid>/environ, and exec resets that
+    mark, so each worker has to set it again for itself."""
+    secret = f"s3cr3t-{uuid.uuid4().hex}"
+    monkeypatch.setenv("PIPESHUB_FAKE_SECRET_KEY", secret)
+    worker_pid = await parse_pool.submit(os.getpid)
+
+    # The worker really was handed the secret; it is only others who cannot read it.
+    assert await parse_pool.submit(os.getenv, "PIPESHUB_FAKE_SECRET_KEY") == secret
+    sibling = subprocess.run(
+        ["/bin/sh", "-c", f"tr '\\0' '\\n' < /proc/{worker_pid}/environ"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert secret not in sibling.stdout
+    assert sibling.returncode != 0
 
 
 # -- lifecycle -----------------------------------------------------------------

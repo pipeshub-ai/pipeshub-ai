@@ -5,7 +5,7 @@
 ``multiprocessing`` worker re-imports its parent's main module, which for the
 indexing service costs 1.3 GB and fifteen to twenty seconds before the first byte is
 parsed. This one imports only what the functions it is sent need, so keep this
-file's own imports to the standard library.
+file's own imports to the standard library and modules as light as it.
 
 Each message is an 8-byte length and then a pickle, so a request that fails to
 unpickle (a module that will not import) is answered instead of leaving the
@@ -20,6 +20,8 @@ import struct
 import sys
 import traceback
 from typing import BinaryIO
+
+from app.utils.process_hardening import mark_process_non_dumpable
 
 _LENGTH = struct.Struct("!Q")
 
@@ -67,6 +69,10 @@ def _answer(request: bytearray) -> tuple[bool, object, str]:
 
 
 def main(request_fd: int, reply_fd: int) -> None:
+    # This process was handed the service's environment, secrets included, and
+    # exec reset the non-dumpable mark the service set on itself. Without it a
+    # same-uid process (a tool the service runs) can read /proc/<pid>/environ.
+    mark_process_non_dumpable()
     # Ctrl-C in a terminal reaches the whole process group; the parent decides
     # when a worker stops, and a worker whose parent is gone sees its pipe close.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
