@@ -322,6 +322,10 @@ config:
   accessibleRecordsCacheTtl: 300
   # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
   signedUrlCacheSeconds: 0
+  # Most characters one agent turn may stream (text, reasoning and tool-call
+  # arguments together) before it is stopped as a runaway and the model is asked
+  # for a shorter reply. "" keeps the built-in 1000000; 0 removes the limit.
+  agentMaxTurnOutputChars: ""
   # Which coding sandbox `run_code` executes in. Left unset the service falls
   # back to "local", which runs model-generated code as a subprocess of the
   # query service itself — no network namespace and no filesystem boundary

@@ -158,6 +158,10 @@ from app.agents.agent_loop.loops.plan_execute import (
     register_planning_tools,
 )
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
+from app.agents.agent_loop.output_cap_transport import (
+    max_turn_output_chars,
+    with_output_cap,
+)
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
 from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
@@ -330,17 +334,22 @@ class PipesHubAgentFactory:
             provider=context.llm_provider, is_multimodal=context.is_multimodal_llm,
         ).max_images_per_request
 
+        output_cap = max_turn_output_chars()
+
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
             traced_transport_factory(
-                lambda: LangChainTransport(
-                    llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
-                    max_images_per_request=image_cap,
-                    # Stop Generation (Phase 3b): per-chunk cancellation
-                    # check inside `stream()`. `None` for requests that
-                    # never registered a `runId` — the check is then a no-op.
-                    cancellation_token=context.cancellation_token,
+                lambda: with_output_cap(
+                    LangChainTransport(
+                        llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                        max_images_per_request=image_cap,
+                        # Stop Generation (Phase 3b): per-chunk cancellation
+                        # check inside `stream()`. `None` for requests that
+                        # never registered a `runId` — the check is then a no-op.
+                        cancellation_token=context.cancellation_token,
+                    ),
+                    output_cap,
                 ),
                 opik_active=opik_active,
                 project_name=opik_project_name,
@@ -378,13 +387,17 @@ class PipesHubAgentFactory:
                 # `context.cancellation_token` is `None` (no `runId`
                 # registered for this request).
                 return with_cancellation(
-                    with_image_cap(direct, image_cap), context.cancellation_token,
+                    with_output_cap(with_image_cap(direct, image_cap), output_cap),
+                    context.cancellation_token,
                 )
-            return LangChainTransport(
-                llm, model_name=model_name,
-                opik_project_name=opik_project_name, model_key=model_key,
-                max_images_per_request=image_cap,
-                cancellation_token=context.cancellation_token,
+            return with_output_cap(
+                LangChainTransport(
+                    llm, model_name=model_name,
+                    opik_project_name=opik_project_name, model_key=model_key,
+                    max_images_per_request=image_cap,
+                    cancellation_token=context.cancellation_token,
+                ),
+                output_cap,
             )
 
         transport_registry.register(
