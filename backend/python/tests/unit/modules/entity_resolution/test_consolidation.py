@@ -23,6 +23,7 @@ from app.modules.entity_resolution.consolidation import (
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.normalizer import normalize_name
 from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -97,7 +98,7 @@ class FakeGraph:
         ]
 
     async def add_taxonomy_aliases(self, collection: str, key: str, aliases: list[str],
-                                   normalized: list[str], *, org_id: str, max_aliases: int = 20,
+                                   normalized: list[str], *, org_id: str, max_aliases: int = MAX_TAXONOMY_ALIASES,
                                    transaction: str | None = None) -> None:
         node = self.nodes.get((collection, key))
         if node is None or node.get("orgId") != org_id:
@@ -655,3 +656,12 @@ class TestUndoReportsTheIndex:
         # The target lost its only records, so its point goes.
         assert (ORG, EntityType.TOPIC.value, [target]) in store.deletes
 
+
+
+async def test_the_graph_double_caps_aliases_at_the_providers_limit_when_none_is_given() -> None:
+    # Consolidation omits max_aliases, so the double must default as the providers do.
+    graph = FakeGraph()
+    graph.nodes[(CollectionNames.TOPICS.value, "t1")] = {"name": "Pricing", "orgId": "acme"}
+    names = [f"pricing {i}" for i in range(25)]
+    await graph.add_taxonomy_aliases(CollectionNames.TOPICS.value, "t1", names, names, org_id="acme")
+    assert len(graph.nodes[(CollectionNames.TOPICS.value, "t1")]["aliases"]) == 25 <= MAX_TAXONOMY_ALIASES
