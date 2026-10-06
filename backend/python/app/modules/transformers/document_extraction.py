@@ -5,7 +5,7 @@ import logging
 from typing import List, Optional
 
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, SemanticMetadata
@@ -97,6 +97,10 @@ class SubCategories(BaseModel):
     level2: str = Field(description="Level 2 subcategory")
     level3: str = Field(description="Level 3 subcategory")
 
+# Organisations kept per record; more is a listing, not what the record is about.
+MAX_EXTRACTED_ORGANIZATIONS = 10
+
+
 class DocumentClassification(BaseModel):
     departments: List[str] = Field(
         description="The list of departments this document belongs to", max_items=3
@@ -111,6 +115,14 @@ class DocumentClassification(BaseModel):
     topics: List[str] = Field(
         description="List of key topics/themes extracted from the document"
     )
+    organizations: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Organizations the document names as parties, customers, vendors, "
+            "partners, employers, regulators or institutions, verbatim. Not "
+            "people, products, teams or the application the document came from."
+        ),
+    )
     summary: str = Field(
         description=(
             "Retrieval-facing summary. Sentence 1 must state document type, "
@@ -124,6 +136,40 @@ class DocumentClassification(BaseModel):
             "recommendations, or unsupported claims."
         )
     )
+
+    @field_validator("organizations", mode="before")
+    @classmethod
+    def _clean_organizations(cls, value: object) -> list[str]:
+        # Capped here rather than with max_items: a rejected list would fail
+        # the whole parse and lose every other field to the summary fallback.
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        names: list[str] = []
+        for raw in value:
+            name = raw.strip() if isinstance(raw, str) else ""
+            if name and name.casefold() not in seen:
+                seen.add(name.casefold())
+                names.append(name)
+        return names[:MAX_EXTRACTED_ORGANIZATIONS]
+
+
+def semantic_metadata_from(classification: DocumentClassification) -> SemanticMetadata:
+    """The record's semantic metadata from one classification result; shared
+    by in-process indexing and the extraction service."""
+    organizations = getattr(classification, "organizations", None)
+    return SemanticMetadata(
+        departments=classification.departments,
+        languages=classification.languages,
+        topics=classification.topics,
+        organizations=list(organizations) if isinstance(organizations, list) else [],
+        summary=classification.summary,
+        categories=[classification.category],
+        sub_category_level_1=classification.subcategories.level1,
+        sub_category_level_2=classification.subcategories.level2,
+        sub_category_level_3=classification.subcategories.level3,
+    )
+
 
 class DocumentExtraction(Transformer):
     def __init__(self, logger, graph_provider: IGraphDBProvider, config_service) -> None:
@@ -145,16 +191,7 @@ class DocumentExtraction(Transformer):
         if document_classification is None:
             record.semantic_metadata = None
             return
-        record.semantic_metadata = SemanticMetadata(
-            departments=document_classification.departments,
-            languages=document_classification.languages,
-            topics=document_classification.topics,
-            summary=document_classification.summary,
-            categories=[document_classification.category],
-            sub_category_level_1=document_classification.subcategories.level1,
-            sub_category_level_2=document_classification.subcategories.level2,
-            sub_category_level_3=document_classification.subcategories.level3,
-        )
+        record.semantic_metadata = semantic_metadata_from(document_classification)
         self.logger.debug("🎯 Document extraction completed successfully")
 
 

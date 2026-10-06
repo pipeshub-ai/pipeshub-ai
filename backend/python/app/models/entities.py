@@ -2840,7 +2840,14 @@ class Org(BaseModel):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             **({"parentOrgId": self.parent_org_id} if self.parent_org_id else {}),
+            **({"normalizedName": self._organization_key()} if self.is_external else {}),
         }
+
+    def _organization_key(self) -> str:
+        # Imported here: app.modules.entity_resolution imports this module.
+        from app.modules.entity_resolution.organizations import organization_key
+
+        return organization_key(self.name)
 
     @staticmethod
     def from_arango_org(data: dict[str, Any]) -> 'Org':

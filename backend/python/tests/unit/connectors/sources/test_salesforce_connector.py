@@ -7327,6 +7327,87 @@ class TestSyncAccountsRemaining:
         assert "001000000000001AAA" not in ids
 
     @pytest.mark.asyncio
+    async def test_an_account_adopts_the_organisation_documents_named_before(self):
+        """KG-13 3b: documents named "Globex Corp" before the CRM synced its
+        "Globex Corporation" account; the account takes that node over, so
+        the records that named it link to the account."""
+        from app.modules.entity_resolution.keys import taxonomy_node_key
+
+        connector = _make_connector()
+        tenant = connector.data_entities_processor.org_id
+        extracted = taxonomy_node_key(tenant, "organizations", "globex")
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_all_orgs = AsyncMock(side_effect=[
+            [{"name": "Globex Corp", "_key": extracted, "isExternal": True, "parentOrgId": tenant}],
+            [{"name": "Globex Corp", "id": extracted, "isExternal": True, "parentOrgId": tenant}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.delete_edges_from = AsyncMock()
+        mock_tx.batch_upsert_orgs = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+
+        account = SalesforceAccount.model_validate({
+            "Id": "001000000000001AAA", "Name": "Globex Corporation", "Type": "Customer",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            "Opportunities": {"records": []},
+        })
+        await connector._sync_accounts(_async_iter_pages([account]))
+        (written,) = mock_tx.batch_upsert_orgs.await_args.args[0]
+        assert (written["_key"], written["name"], written["normalizedName"]) == (extracted, "Globex Corporation", "globex")
+
+    @pytest.mark.asyncio
+    async def test_on_a_name_shared_with_an_extracted_organisation_the_account_keeps_its_node(self):
+        """An account synced before it was keyed and an organisation documents
+        named with the same name: the account must not move onto the
+        extracted node, whatever order the graph returns them in."""
+        from app.modules.entity_resolution.keys import taxonomy_node_key
+
+        connector = _make_connector()
+        tenant = connector.data_entities_processor.org_id
+        extracted = taxonomy_node_key(tenant, "organizations", "globex")
+        rows = [
+            {"name": "Globex Corporation", "_key": "acc-1", "id": "acc-1", "isExternal": True, "parentOrgId": tenant},
+            {"name": "Globex Corporation", "_key": extracted, "id": extracted, "isExternal": True, "parentOrgId": tenant},
+        ]
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_all_orgs = AsyncMock(return_value=rows)
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.delete_edges_from = AsyncMock()
+        mock_tx.batch_upsert_orgs = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+        account = SalesforceAccount.model_validate({
+            "Id": "001000000000003AAA", "Name": "Globex Corporation", "Type": "Customer",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            "Opportunities": {"records": []},
+        })
+        await connector._sync_accounts(_async_iter_pages([account]))
+        (written,) = mock_tx.batch_upsert_orgs.await_args.args[0]
+        assert written["_key"] == "acc-1"
+
+    @pytest.mark.asyncio
+    async def test_two_accounts_sharing_a_key_stay_two(self):
+        """Only a node extraction made is adopted by key: "Acme Inc" and an
+        existing "Acme LLC" account are separate CRM accounts."""
+        connector = _make_connector()
+        tenant = connector.data_entities_processor.org_id
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_all_orgs = AsyncMock(return_value=[
+            {"name": "Acme LLC", "_key": "acc-llc", "id": "acc-llc", "isExternal": True, "parentOrgId": tenant},
+        ])
+        mock_tx.delete_edges_to = AsyncMock()
+        mock_tx.delete_edges_from = AsyncMock()
+        mock_tx.batch_upsert_orgs = AsyncMock()
+        mock_tx.batch_create_edges = AsyncMock()
+        account = SalesforceAccount.model_validate({
+            "Id": "001000000000002AAA", "Name": "Acme Inc", "Type": "Customer",
+            "CreatedDate": "2024-01-01T00:00:00.000+0000", "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+            "Opportunities": {"records": []},
+        })
+        await connector._sync_accounts(_async_iter_pages([account]))
+        (written,) = mock_tx.batch_upsert_orgs.await_args.args[0]
+        assert written["_key"] != "acc-llc"
+
+    @pytest.mark.asyncio
     async def test_skips_account_when_processing_raises(self):
         connector = _make_connector()
         mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value

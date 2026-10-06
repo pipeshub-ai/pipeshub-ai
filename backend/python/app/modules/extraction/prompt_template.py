@@ -24,7 +24,7 @@ Return ONLY the extracted and converted text. No preamble, no explanations, no c
 
 prompt_for_document_extraction = """
 # Task:
-You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, and topics, and to write a summary that a retrieval system will use to decide whether this document is relevant to a user's query.
+You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, and topics, to list the organizations it names, and to write a summary that a retrieval system will use to decide whether this document is relevant to a user's query.
 Instructions must be strictly followed.
 
 # File Metadata:
@@ -65,7 +65,14 @@ Use the file metadata as supporting evidence — a name like "invoice_2024_ACME.
    - Be concise and avoid duplicates or near-duplicates.
    - Provide **3 to 6** unique, highly relevant topics.
 
-5. **Summary**:
+5. **Organizations**:
+   - List the organizations the document names: companies, customers, vendors, partners, employers, investors, regulators, government bodies, universities, non-profits.
+   - Copy each name as written ("Acme Corp", "University of Oxford"). List each organization once, even if it appears under several spellings; prefer its fullest name.
+   - Do NOT list people, products or services (a product named after its maker counts as the product, e.g. "Jira" is not "Atlassian"), teams or departments, locations, generic words ("the client", "the vendor"), or the application the document came from (a Slack message is not about "Slack").
+   - Include the author's own organization only if the document names it explicitly.
+   - At most 10. Leave the list empty if the document names none.
+
+6. **Summary**:
    - This is the single most important field. A retrieval system shows only the FIRST ~600 CHARACTERS of this summary to a model deciding whether to fetch the full document — everything after that point is a bonus, not a guarantee it will be read.
    - **Sentence 1 is load-bearing.** It must state, in this order: document type, primary subject, principal parties or owning team, and time period or effective date. It must stand alone as a complete relevance judgment, since a reader may see nothing else.
    - **Length is tiered to document depth, not fixed:**

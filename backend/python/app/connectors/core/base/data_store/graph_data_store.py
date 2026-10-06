@@ -411,6 +411,9 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str) -> None:
         return await self.graph_provider.delete_edges_between_collections(from_id, from_collection, edge_collection, to_collection, transaction=self.txn)
 
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        return await self.graph_provider.delete_record_entity_relations(record_id, to_collection, origin, transaction=self.txn)
+
     async def delete_edges_by_relationship_types(
         self,
         from_id: str,

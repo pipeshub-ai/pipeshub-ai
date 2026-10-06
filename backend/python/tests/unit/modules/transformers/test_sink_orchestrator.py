@@ -307,6 +307,9 @@ class TestSyncRecordGroupEntity:
         orch.graph_provider.get_record_organizations = AsyncMock(return_value=[
             {"id": "acme", "name": "Acme"}, {"id": "blank", "name": " "},
         ])
+        orch.graph_provider.get_organization_record_reach = AsyncMock(return_value={
+            "acme": {"records": 0, "inferred": True}, "blank": {"records": 0, "inferred": True},
+        })
         ctx = self._make_ctx_with_group(record_group_id="rg-1")
         ctx.record.record_type = "DEAL"
 
@@ -318,6 +321,27 @@ class TestSyncRecordGroupEntity:
         assert [(e.entity_id, e.name) for e in linked.args[0]] == [("acme", "Acme")]
         assert linked.args[0][0].connector_ids == ["conn-1"]
         orch.graph_provider.get_record_organizations.assert_awaited_once_with("rec-001", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_an_organisation_the_record_only_names_waits_for_a_second_record(self) -> None:
+        """KG-13 3b: a deal that names "Stray Co" once must not make it
+        searchable at index time, before the threshold allows it."""
+        orch = self._make_orchestrator_with_evs()
+        orch.graph_provider.get_record_people = AsyncMock(return_value=[])
+        orch.graph_provider.get_record_organizations = AsyncMock(return_value=[
+            {"id": "acme", "name": "Acme"}, {"id": "stray", "name": "Stray Co"},
+        ])
+        orch.graph_provider.get_organization_record_reach = AsyncMock(return_value={
+            "acme": {"records": 0, "inferred": True}, "stray": {"records": 1, "inferred": False},
+        })
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+        ctx.record.record_type = "DEAL"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        calls = orch.entity_vector_store.upsert_entities_batch.await_args_list
+        linked = next(c for c in calls if c.args[0][0].entity_type == EntityType.ORGANIZATION)
+        assert [e.entity_id for e in linked.args[0]] == ["acme"]
 
     @pytest.mark.asyncio
     async def test_only_account_records_look_up_an_account(self) -> None:

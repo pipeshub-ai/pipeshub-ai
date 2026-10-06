@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityType
 from app.modules.entity_resolution.normalizer import normalize_name
+from app.modules.entity_resolution.organizations import organization_key
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 
 MAX_ALIASES_PER_NODE = MAX_TAXONOMY_ALIASES
@@ -59,11 +60,23 @@ SUBCATEGORY_3 = TaxonomyKind(
 TOPIC = TaxonomyKind("topic", CollectionNames.TOPICS.value, EntityType.TOPIC)
 LANGUAGE = TaxonomyKind("language", CollectionNames.LANGUAGES.value, EntityType.LANGUAGE)
 
+# Organisations a document names (KG-13 slice 3b). Resolved with taxonomy, but
+# they live in ``organizations`` beside CRM accounts, not in a taxonomy
+# collection, so they are in neither tuple below.
+ORGANIZATION = TaxonomyKind("organizations", CollectionNames.ORGS.value, EntityType.ORGANIZATION)
+
 SUBCATEGORY_CHAIN: tuple[TaxonomyKind, ...] = (SUBCATEGORY_1, SUBCATEGORY_2, SUBCATEGORY_3)
 RESOLVED_KINDS: tuple[TaxonomyKind, ...] = (CATEGORY, *SUBCATEGORY_CHAIN, TOPIC)
 KINDS_BY_COLLECTION: dict[str, TaxonomyKind] = {
     kind.collection: kind for kind in (*RESOLVED_KINDS, LANGUAGE)
 }
+
+
+def name_key(collection: str, name: str) -> str:
+    """The key two spellings of a name in ``collection`` are matched on."""
+    if collection == ORGANIZATION.collection:
+        return organization_key(name)
+    return normalize_name(name)
 
 
 @dataclass
@@ -149,7 +162,7 @@ class EntityResolution:
         self.entries[(entity.kind.collection, entity.normalized)] = entity
 
     def get(self, collection: str, name: str) -> ResolvedEntity | None:
-        return self.entries.get((collection, normalize_name(name)))
+        return self.entries.get((collection, name_key(collection, name)))
 
     def decisions_for_log(self) -> list[dict[str, Any]]:
         """What was decided, by id and count: extracted names are document
@@ -193,6 +206,7 @@ class MergeDecisions(BaseModel):
 
 __all__ = [
     "CATEGORY",
+    "ORGANIZATION",
     "KINDS_BY_COLLECTION",
     "LANGUAGE",
     "MAX_ALIASES_PER_NODE",

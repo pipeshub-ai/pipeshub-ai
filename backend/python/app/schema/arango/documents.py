@@ -24,6 +24,9 @@ orgs_schema = {
             "isExternal": {"type": "boolean", "default": False},
             # The tenant an external organisation (a CRM account) belongs to.
             "parentOrgId": {"type": ["string", "null"]},
+            # organization_key of the name (app.modules.entity_resolution.organizations):
+            # how an extracted name finds an external organisation.
+            "normalizedName": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},

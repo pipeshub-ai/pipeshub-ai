@@ -33,6 +33,7 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
     DeleteSource,
     DepartmentNames,
+    EntityOrigin,
     OriginTypes,
     PermissionModel,
     PersonMigrationMode,
@@ -215,6 +216,11 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
+
+
+def _record_cap(cap: int | None) -> int:
+    # LIMIT needs a number; uncapped counts every record.
+    return max(1, int(cap)) if cap is not None else 2**31 - 1
 # Idempotent shared writes retried on a deadlock or lock timeout.
 _TRANSIENT_WRITE_ATTEMPTS = 6
 _WRITE_CONFLICT_CODES = frozenset({
@@ -701,6 +707,13 @@ class Neo4jProvider(IGraphDBProvider):
                 f"CREATE INDEX {taxonomy_label.lower()}_merged_into IF NOT EXISTS "
                 f"FOR (n:{taxonomy_label}) ON (n.mergedInto)"
             )
+
+        # An organisation a document names is looked up by its tenant and key
+        # once per record (find_organizations).
+        indexes.append(
+            "CREATE INDEX organization_parent_normalized_name IF NOT EXISTS "
+            f"FOR (n:{collection_to_label(CollectionNames.ORGS.value)}) ON (n.parentOrgId, n.normalizedName)"
+        )
 
         # ==================== ENTITY INDEX SOURCES ====================
         # The entity index rebuild pages each source by scope, then keyset on
@@ -18374,6 +18387,127 @@ class Neo4jProvider(IGraphDBProvider):
             txn_id=transaction,
         )
         return [dict(row) for row in rows or []]
+
+    async def find_organizations(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_organizations`."""
+        wanted = sorted({k for k in keys if k})
+        if not org_id or not wanted:
+            return []
+        label = collection_to_label(CollectionNames.ORGS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (o:{label})
+            WHERE o.parentOrgId = $org_id AND o.normalizedName IN $keys AND o.isExternal = true
+            RETURN o.id AS id, o.name AS name, o.normalizedName AS normalizedName
+            ORDER BY id
+            """,
+            parameters={"org_id": org_id, "keys": wanted},
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def create_organization_if_absent(
+        self,
+        org_id: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.create_organization_if_absent`."""
+        key = node.get("id") or node.get("_key")
+        if not org_id or not key or not node.get("name"):
+            raise ValueError("an extracted organisation needs a tenant, an id and a name")
+        now = get_epoch_timestamp_in_ms()
+        label = collection_to_label(CollectionNames.ORGS.value)
+        await self.client.execute_query(
+            f"""
+            MERGE (o:{label} {{id: $id}})
+            ON CREATE SET o += $props
+            """,
+            parameters={"id": key, "props": {
+                "name": node["name"], "normalizedName": node.get("normalizedName"),
+                "accountType": "enterprise", "isActive": True, "isExternal": True, "parentOrgId": org_id,
+                "createdAtTimestamp": now, "updatedAtTimestamp": now,
+            }},
+            txn_id=transaction,
+        )
+
+    async def delete_record_entity_relations(
+        self,
+        record_id: str,
+        to_collection: str,
+        origin: str,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.delete_record_entity_relations`."""
+        if not record_id or not to_collection or not origin:
+            raise ValueError("deleting a record's entity relations needs a record, a collection and an origin")
+        rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        to_label = collection_to_label(to_collection)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:Record {{id: $record_id}})-[e:{rel}]->(:{to_label})
+            WHERE coalesce(e.origin, $inferred) = $origin
+            DELETE e
+            RETURN count(e) AS deleted
+            """,
+            parameters={"record_id": record_id, "origin": origin, "inferred": EntityOrigin.INFERRED.value},
+            txn_id=transaction,
+        )
+        return int((rows or [{}])[0].get("deleted") or 0)
+
+    async def get_organization_record_reach(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+        *,
+        record_cap: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_organization_record_reach`."""
+        wanted = sorted({k for k in keys if k})
+        if not org_id or not wanted:
+            return {}
+        label = collection_to_label(CollectionNames.ORGS.value)
+        rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        account_rels = "|".join(
+            edge_collection_to_relationship(c.value)
+            for c in (CollectionNames.DEAL_OF, CollectionNames.PROSPECT, CollectionNames.CUSTOMER)
+        )
+        # MENTIONS is the only EXTRACTED edge type and edges merge on
+        # edgeType, so a record has at most one: edges count records.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (o:{label})
+            WHERE o.id IN $keys AND o.isExternal = true AND o.parentOrgId = $org_id
+            CALL {{
+                WITH o
+                MATCH (r:Record)-[e:{rel}]->(o)
+                WHERE coalesce(e.origin, $inferred) = $extracted AND r.orgId = $org_id AND {cypher_live_record("r")}
+                WITH e LIMIT $cap
+                RETURN count(e) AS records
+            }}
+            CALL {{
+                WITH o
+                OPTIONAL MATCH (r:Record)-[e:{rel}]->(o)
+                WHERE coalesce(e.origin, $inferred) <> $extracted AND r.orgId = $org_id AND {cypher_live_record("r")}
+                WITH e LIMIT 1
+                RETURN count(e) AS linked
+            }}
+            RETURN o.id AS key, records,
+                   linked > 0 OR EXISTS {{ MATCH (o)<-[:{account_rels}]-() }} AS inferred
+            """,
+            parameters={
+                "keys": wanted, "org_id": org_id, "cap": _record_cap(record_cap),
+                "inferred": EntityOrigin.INFERRED.value, "extracted": EntityOrigin.EXTRACTED.value,
+            },
+            txn_id=transaction,
+        )
+        return {row["key"]: {"records": int(row["records"]), "inferred": bool(row["inferred"])} for row in rows or []}
 
     async def create_taxonomy_node_if_absent(
         self,

@@ -25,6 +25,7 @@ from app.modules.entity_resolution.models import (
     CATEGORY,
     LANGUAGE,
     MAX_ALIASES_PER_NODE,
+    ORGANIZATION,
     SUBCATEGORY_CHAIN,
     TOPIC,
     EntityResolution,
@@ -36,6 +37,7 @@ from app.modules.entity_resolution.models import (
     ResolvedEntity,
     TaxonomyKind,
     WinnerCandidate,
+    name_key,
 )
 from app.modules.entity_resolution.normalizer import (
     display_form,
@@ -43,6 +45,7 @@ from app.modules.entity_resolution.normalizer import (
     normalize_name,
     spelling_key,
 )
+from app.modules.entity_resolution.organizations import usable_organization_names
 from app.modules.entity_resolution.prompt import build_prompt
 from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
 from app.telemetry.modules import entity_resolution_metrics as metrics
@@ -72,6 +75,10 @@ MERGE_CALL_TIMEOUT_SECONDS = 60.0
 # top 3 every time (tests/evals/entity_resolution, KG-12).
 MERGE_CANDIDATES = 3
 
+# How long a tenant's name is reused to filter the tenant out of the
+# organisations its own documents name.
+TENANT_NAME_TTL_SECONDS = 600.0
+
 
 class EntityResolver:
     """Resolves one record's taxonomy names. Safe to share across records.
@@ -98,6 +105,7 @@ class EntityResolver:
         self.max_aliases = max_aliases
         self._llm: BaseChatModel | None = None
         self._llm_lock = asyncio.Lock()
+        self._tenant_names: dict[str, tuple[str, float]] = {}
 
     # ------------------------------------------------------------------
     # Entry point
@@ -122,7 +130,8 @@ class EntityResolver:
         started = time.monotonic()
         stats = ResolutionStats()
         try:
-            resolution = await self._resolve(org_id, metadata, mode, stats)
+            organizations = await self._organization_names(org_id, record, metadata)
+            resolution = await self._resolve(org_id, metadata, mode, stats, organizations)
         except Exception:
             if mode is ResolutionMode.SHADOW:
                 self.logger.warning(
@@ -160,9 +169,10 @@ class EntityResolver:
         metadata: SemanticMetadata,
         mode: ResolutionMode,
         stats: ResolutionStats,
+        organizations: list[str] | None = None,
     ) -> EntityResolution:
         resolution = EntityResolution(org_id=org_id, mode=mode, stats=stats)
-        names = self._collect_names(metadata, stats)
+        names = self._collect_names(metadata, stats, organizations or [])
 
         existing = await self._tier0(org_id, names)
         unresolved: list[ExtractedName] = []
@@ -201,7 +211,8 @@ class EntityResolver:
         """
         new_by_collection: dict[str, list[ResolvedEntity]] = {}
         for entity in resolution.entries.values():
-            if entity.is_new:
+            # Organisations are never merged into one another (no redirects).
+            if entity.is_new and entity.kind is not ORGANIZATION:
                 new_by_collection.setdefault(entity.kind.collection, []).append(entity)
         by_index = {name.index: name for name in names}
         for collection, entities in new_by_collection.items():
@@ -268,7 +279,7 @@ class EntityResolver:
     # ---- collection --------------------------------------------------
 
     def _collect_names(
-        self, metadata: SemanticMetadata, stats: ResolutionStats
+        self, metadata: SemanticMetadata, stats: ResolutionStats, organizations: list[str] = (),
     ) -> list[ExtractedName]:
         """Clean and dedupe the resolvable names, in metadata order.
 
@@ -283,10 +294,10 @@ class EntityResolver:
             if not isinstance(raw, str):
                 return False
             stats.names_seen += 1
-            normalized = normalize_name(raw)
-            if not is_acceptable_name(normalized):
+            if not is_acceptable_name(normalize_name(raw)):
                 stats.names_dropped += 1
                 return False
+            normalized = name_key(kind.collection, raw)
             dedupe_key = (kind.collection, normalized)
             if dedupe_key in seen:
                 stats.names_deduped += 1
@@ -323,7 +334,37 @@ class EntityResolver:
         for raw in metadata.languages or []:
             if isinstance(raw, str):
                 add(LANGUAGE, canonical_language(raw) or raw)
+
+        for raw in organizations:
+            add(ORGANIZATION, raw)
         return names
+
+    async def _organization_names(self, org_id: str, record: object, metadata: SemanticMetadata) -> list[str]:
+        """The organisations ``metadata`` names that are worth resolving: not
+        the tenant itself, not the application the record came from."""
+        names = list(getattr(metadata, "organizations", None) or [])
+        if not names:
+            return []
+        connector = getattr(record, "connector_name", None)
+        return usable_organization_names(
+            names, tenant_name=await self._tenant_name(org_id),
+            connector_name=str(getattr(connector, "value", connector) or ""),
+        )
+
+    async def _tenant_name(self, org_id: str) -> str:
+        cached = self._tenant_names.get(org_id)
+        if cached is not None and time.monotonic() - cached[1] < TENANT_NAME_TTL_SECONDS:
+            return cached[0]
+        try:
+            doc = await self.graph_provider.get_document(org_id, ORGANIZATION.collection)
+        except Exception:
+            # Unfiltered for this record: at worst the tenant becomes one of
+            # its own organisations, which the next lookup stops.
+            self.logger.warning("entity_resolution: tenant name lookup failed for org %s", org_id, exc_info=True)
+            return ""
+        name = str((doc or {}).get("name") or "")
+        self._tenant_names[org_id] = (name, time.monotonic())
+        return name
 
     # ---- tier 0 ------------------------------------------------------
 
@@ -341,9 +382,12 @@ class EntityResolver:
         found: dict[tuple[str, str], dict[str, Any]] = {}
         for collection, normalized_names in by_collection.items():
             wanted = set(normalized_names)
-            rows = await self.graph_provider.find_taxonomy_nodes(
-                collection, org_id, sorted(wanted)
-            )
+            if collection == ORGANIZATION.collection:
+                rows = await self.graph_provider.find_organizations(org_id, sorted(wanted))
+            else:
+                rows = await self.graph_provider.find_taxonomy_nodes(
+                    collection, org_id, sorted(wanted)
+                )
             nodes: list[tuple[dict[str, Any], str | None, list[str]]] = []
             for row in rows or []:
                 key = row.get("id") or row.get("_key")
@@ -359,8 +403,14 @@ class EntityResolver:
                 nodes.append((node, str(normalized) if normalized else None, alias_forms))
             # A node reached by its own name wins over one reached by an alias;
             # among nodes sharing an alias the lowest key wins, whatever order
-            # the provider returned them in.
-            nodes.sort(key=lambda entry: entry[0]["id"])
+            # the provider returned them in. A connector's account wins over
+            # an organisation extraction made under the same key.
+            if collection == ORGANIZATION.collection:
+                nodes.sort(key=lambda entry: (
+                    entry[0]["id"] == taxonomy_node_key(org_id, collection, entry[1] or ""), entry[0]["id"],
+                ))
+            else:
+                nodes.sort(key=lambda entry: entry[0]["id"])
             for node, normalized, _alias_forms in nodes:
                 if normalized in wanted:
                     found.setdefault((collection, normalized), node)
@@ -435,7 +485,7 @@ class EntityResolver:
         try:
             rows = await self.graph_provider.get_nodes_by_field_in(
                 collection, "id", sorted(ids),
-                return_fields=["id", "orgId", "normalizedName", "mergedInto"],
+                return_fields=["id", "orgId", "normalizedName", "mergedInto", "parentOrgId", "isExternal"],
                 raise_on_error=True,
             )
         except Exception:
@@ -445,14 +495,25 @@ class EntityResolver:
                 "offering no winners", org_id, collection, len(ids), exc_info=True,
             )
             return None
-        live = {
-            str(row.get("id") or row.get("_key"))
-            for row in rows or []
-            if (row.get("id") or row.get("_key"))
-            and row.get("orgId") == org_id
-            and row.get("normalizedName")
-            and not row.get("mergedInto")
-        }
+        if collection == ORGANIZATION.collection:
+            # The tenant's external organisations; the tenant org itself and
+            # other tenants' accounts share the collection.
+            live = {
+                str(row.get("id") or row.get("_key"))
+                for row in rows or []
+                if (row.get("id") or row.get("_key"))
+                and row.get("parentOrgId") == org_id
+                and row.get("isExternal") is True
+            }
+        else:
+            live = {
+                str(row.get("id") or row.get("_key"))
+                for row in rows or []
+                if (row.get("id") or row.get("_key"))
+                and row.get("orgId") == org_id
+                and row.get("normalizedName")
+                and not row.get("mergedInto")
+            }
         if ids - live:
             metrics.record_fallback("stale_winner", len(ids - live))
         return live
@@ -485,6 +546,10 @@ class EntityResolver:
             return True
         per_kind: dict[str, int] = {}
         for name in unresolved:
+            # Spellings of one organisation already share a key: new names
+            # alone leave the model nothing to group.
+            if name.kind is ORGANIZATION:
+                continue
             per_kind[name.kind.collection] = per_kind.get(name.kind.collection, 0) + 1
         return any(count >= 2 for count in per_kind.values())
 
@@ -692,8 +757,8 @@ class EntityResolver:
         """
         if canonical_name:
             display = display_form(canonical_name)
-            normalized = normalize_name(display)
-            if is_acceptable_name(normalized):
+            normalized = name_key(head.kind.collection, display)
+            if is_acceptable_name(normalize_name(display)):
                 if spelling_key(normalized) == spelling_key(head.normalized):
                     return display, normalized
                 stats.rejected_decisions += 1
@@ -711,7 +776,7 @@ class EntityResolver:
         decision: str,
     ) -> ResolvedEntity:
         name = str(node.get("name") or node["id"])
-        normalized = normalize_name(name)
+        normalized = name_key(kind.collection, name)
         entity = resolution.entries.get((kind.collection, normalized))
         if entity is None:
             entity = ResolvedEntity(
@@ -734,7 +799,7 @@ class EntityResolver:
         entity.extracted_names.append(name.raw)
         if name.normalized == entity.normalized:
             return
-        known = {normalize_name(a) for a in entity.aliases}
+        known = {name_key(entity.kind.collection, a) for a in entity.aliases}
         if name.normalized in known:
             return
         if len(entity.aliases) >= self.max_aliases:
@@ -773,6 +838,7 @@ class EntityResolver:
         metadata.sub_category_level_3 = (chain[2] if chain[0] and chain[1] else None) or None
         metadata.topics = by_slot.get(TOPIC.slot, [])
         metadata.languages = by_slot.get(LANGUAGE.slot, [])
+        metadata.organizations = by_slot.get(ORGANIZATION.slot, [])
 
 
 __all__ = ["LLM_ROLE", "EntityResolver"]

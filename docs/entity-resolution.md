@@ -86,6 +86,70 @@ link across orgs. Legacy global nodes created before the feature are not
 migrated automatically; a reindex moves a record onto canonical nodes, and an
 operator can migrate them (see Consolidation).
 
+## Organisations named in documents
+
+The classification call also lists the organisations a document names
+(KG-13 slice 3b): one more field, at most 10, no extra model call. Before
+resolution, names are dropped when they are the tenant itself (its full name
+or its leading words), the application the record came from (a Slack message
+naming "Slack"), or a generic word ("the client").
+
+- Names resolve with the record's taxonomy, through the same tiers, against
+  the tenant's external organisations: CRM accounts and organisations made by
+  earlier extractions. The key is `organization_key` (case, punctuation and
+  legal suffixes ignored), stored as `normalizedName` on external
+  organisations. Spellings of one organisation share a key, so new names alone
+  never cost a model call. The model is told that a parent or subsidiary is a
+  different organisation.
+- A name that matches nothing becomes an external organisation of the tenant
+  in `organizations` (`isExternal`, `parentOrgId`, a deterministic key). A
+  Salesforce account synced later with the same name or key takes the node
+  over, and when an account and such a node share a key, the account wins.
+- The record links to each with an `entityRelations` edge of type `MENTIONS`,
+  `origin: EXTRACTED` and `extractedName`. A re-extraction replaces only the
+  record's EXTRACTED edges; a connector sync replaces only INFERRED ones (an
+  edge without an origin counts as INFERRED).
+- An organisation is searchable once a connector knows it (a record group's
+  `dealOf`, a tenant's `prospect` or `customer` edge, or an INFERRED record
+  edge) or once 2 live records name it (`MIN_EXTRACTED_RECORDS`). Below that it
+  has no entity point; the rebuild deletes one that drops below.
+- Organisation edges are written after the record's transaction and a failure
+  is logged, never raised: `MENTIONS` and `normalizedName` are new, and an
+  older pod's strict schema rejects them during a rolling deploy.
+- When a Salesforce account and an organisation extraction made share a name,
+  the account keeps its node and contacts link to the account.
+- Upgrading:
+  - Run `python -m app.scripts.kg_record_people backfill --org ORG --apply`
+    for each org right after the deploy, before records are re-indexed. It
+    writes `normalizedName` on accounts synced before this change; until then
+    a document naming such an account creates a second organisation.
+  - Do not run old and new connector or indexing pods against ArangoDB at the
+    same time. Each applies its own schema at startup, and an old schema
+    rejects any update of an organisation that carries `normalizedName`
+    (ArangoDB validates the whole merged document), so Salesforce account
+    pages fail. Old connector pods also still delete every link of a CRM
+    record to its account, including EXTRACTED ones; re-index those records
+    after the rollout if pods overlapped.
+  - Rolling back on ArangoDB: strip the new field and edges, or Salesforce
+    account sync fails on keyed accounts:
+    ```aql
+    FOR o IN organizations FILTER HAS(o, "normalizedName")
+      UPDATE o WITH { normalizedName: null } IN organizations OPTIONS { keepNull: false }
+    FOR e IN entityRelations FILTER e.edgeType == "MENTIONS" REMOVE e IN entityRelations
+    ```
+    Neo4j has no strict schema and needs neither.
+- Not yet:
+  - aliases on organisations: each new spelling of an account goes to the
+    vector tier and the model until it matches by key;
+  - the origin in `search_entities` output;
+  - records copied onto an MD5 duplicate do not get its MENTIONS edges, so
+    duplicates are not listed under the organisation or counted;
+  - a failed write of a record's organisation links is logged, not retried;
+    the next extraction of the record writes them.
+- Measured on 40 hand-labelled documents (`tests/evals/organization_extraction`):
+  precision 98.8%, recall 97.6% after filtering, on the indexing model at low
+  reasoning effort.
+
 ## Consolidation
 
 Nodes that should have been one (created while the model was unavailable, or

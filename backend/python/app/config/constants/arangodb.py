@@ -668,6 +668,8 @@ class EntityRelations(Enum):
     OWNED_BY = "OWNED_BY"
     # Record -> the CRM account (external organisation) it belongs to (KG-13).
     FOR_ACCOUNT = "FOR_ACCOUNT"
+    # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
+    MENTIONS = "MENTIONS"
 
 
 class EntityOrigin(str, Enum):

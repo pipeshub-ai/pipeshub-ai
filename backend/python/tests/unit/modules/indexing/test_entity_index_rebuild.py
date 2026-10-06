@@ -61,6 +61,8 @@ class FakeGraph:
         self.lookup_error: Exception | None = None
         self.page_calls: list[tuple[str, str, str | None, int]] = []
         self.updates: list[tuple[str, str, dict[str, Any]]] = []
+        # Organisations not listed are CRM accounts a connector knows.
+        self.org_reach: dict[str, dict[str, Any]] = {}
 
     async def get_entity_index_candidate(
         self, collection: str, marker: str, *, sweep_before: int | None = None,
@@ -104,6 +106,11 @@ class FakeGraph:
             )
             for r in refs
         }
+
+    async def get_organization_record_reach(
+        self, org_id: str, keys: list[str], transaction: str | None = None, *, record_cap: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        return {k: self.org_reach.get(k, {"records": 0, "inferred": True}) for k in keys}
 
     async def get_nodes_by_field_in(
         self, collection: str, field_name: str, field_values: list[Any],
@@ -588,6 +595,22 @@ class TestTaxonomyPass:
         (written,) = store.written()
         assert written == EntityRecord.for_linked(EntityType.ORGANIZATION, "acme", "Acme", "org-1", "sf", "rg-acme")
         assert store.deletes == [("org-1", "organization", ["idle"])]
+
+    async def test_an_extracted_organisation_needs_two_records(self) -> None:
+        """KG-13 3b: one mention is not enough to be searchable, though the
+        mentioning record gives the organisation a connector."""
+        from app.models.entities import EntityRecord
+
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org(**{EntityIndexState.TARGET: ORG_MARKER, EntityIndexState.PHASE: ORGS})
+        graph.sources[(ORGS, "org-1")] = [{"_key": "once", "name": "Once"}, {"_key": "twice", "name": "Twice"}]
+        for key in ("once", "twice"):
+            graph.membership[("organization", key)] = {"connectorIds": ["drive"], "recordGroupIds": []}
+        graph.org_reach = {"once": {"records": 1, "inferred": False}, "twice": {"records": 2, "inferred": False}}
+        await _rebuilder(graph, store).tick()
+        (written,) = store.written()
+        assert written == EntityRecord.for_linked(EntityType.ORGANIZATION, "twice", "Twice", "org-1", "drive", None)
+        assert store.deletes == [("org-1", "organization", ["once"])]
 
     async def test_membership_lookup_failure_counts_the_page_and_deletes_nothing(self) -> None:
         graph, store = FakeGraph(), FakeStore()

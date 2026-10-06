@@ -6662,6 +6662,77 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_organizations(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """External organisations of tenant ``org_id`` (CRM accounts and
+        extracted ones) whose ``normalizedName`` is one of ``keys``.
+
+        Returns:
+            ``[{"id", "name", "normalizedName"}]``.
+        """
+        pass
+
+    @abstractmethod
+    async def create_organization_if_absent(
+        self,
+        org_id: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> None:
+        """Create an extracted organisation of tenant ``org_id`` unless a node
+        with ``node["id"]`` exists; an existing node is left as it is.
+
+        ``node`` carries ``id``, ``name`` and ``normalizedName``; the node is
+        external and active, so every organisation query treats it like a
+        CRM account.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_record_entity_relations(
+        self,
+        record_id: str,
+        to_collection: str,
+        origin: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the ``entityRelations`` edges from record ``record_id`` to
+        nodes of ``to_collection`` whose ``origin`` is ``origin``. An edge
+        without one predates origins and counts as INFERRED, so a connector
+        sync and a re-extraction each replace only their own edges.
+
+        Returns:
+            How many edges were deleted.
+        """
+        pass
+
+    @abstractmethod
+    async def get_organization_record_reach(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+        *,
+        record_cap: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """For each of ``keys`` that is an external organisation of tenant
+        ``org_id``: how many live records of the org name it (EXTRACTED
+        edges), and whether a connector knows it (a record group's ``dealOf``
+        edge, a tenant's ``prospect``/``customer`` edge, or an INFERRED
+        record edge). Trashed records count for neither. With
+        ``record_cap``, counting stops there: deciding the searchability
+        threshold need not walk every record of a much-named organisation.
+
+        Returns:
+            ``{key: {"records": int, "inferred": bool}}``; other keys are left out.
+        """
+        pass
+
+    @abstractmethod
     async def create_taxonomy_node_if_absent(
         self,
         collection: str,

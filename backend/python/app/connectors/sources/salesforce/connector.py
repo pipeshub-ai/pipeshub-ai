@@ -80,6 +80,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.modules.entity_resolution.organizations import accounts_last, extracted_organization_id
 from collections import defaultdict
 
 from app.models.blocks import (
@@ -4285,7 +4286,7 @@ class SalesforceConnector(BaseConnector):
                 all_orgs = await tx_store.get_all_orgs()
             external_org_key_by_name: Dict[str, str] = {
                 o["name"]: o["_key"]
-                for o in (all_orgs or [])
+                for o in accounts_last(all_orgs or [])
                 if o.get("isExternal") is True
                 and (parent_org_id is None or o.get("parentOrgId") == parent_org_id)
             }
@@ -4372,12 +4373,21 @@ class SalesforceConnector(BaseConnector):
                     parent_org_id = self._get_parent_org_id()
                     external_org_key_by_name = {
                         o["name"]: o.get("id", o.get("_key"))
-                        for o in all_orgs
+                        for o in accounts_last(all_orgs)
                         if parent_org_id is None or o.get("parentOrgId") == parent_org_id
                     }
+                    external_keys = set(external_org_key_by_name.values())
+                    tenant_id = parent_org_id or self.data_entities_processor.org_id
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
                         existing_key = external_org_key_by_name.get(org.name)
+                        if existing_key is None:
+                            # A node documents named before the CRM synced the
+                            # account (KG-13 3b): the account takes it over, so
+                            # those records link to it. Only extraction's own
+                            # deterministic key, never another account's.
+                            extracted = extracted_organization_id(tenant_id, org.name)
+                            existing_key = extracted if extracted in external_keys else None
                         if existing_key is not None:
                             org.id = existing_key
                             delete_tasks.append(tx_store.delete_edges_to(
@@ -4578,7 +4588,7 @@ class SalesforceConnector(BaseConnector):
                     }
                     org_name_map = {
                         node.get("name"): node
-                        for node in (existing_orgs_result or [])
+                        for node in accounts_last(existing_orgs_result or [])
                         if parent_org_id is None or (
                             node.get("isExternal") is True
                             and node.get("parentOrgId") == parent_org_id
