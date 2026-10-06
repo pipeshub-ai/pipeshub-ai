@@ -259,9 +259,7 @@ class TestFullSyncIntegration:
         first_call_groups = space_calls[0][0][0]
         assert len(first_call_groups) > 0
         record_group, permissions = first_call_groups[0]
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.GROUP
-        assert "internal-" in permissions[0].external_id
+        assert permissions == []
         
         # Verify pages were synced
         connector.data_entities_processor.on_new_records.assert_called()

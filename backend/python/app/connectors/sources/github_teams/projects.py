@@ -417,6 +417,7 @@ class ProjectsSync:
             external_group_id=str(repo.id),
             parent_external_group_id=self._org_parent_external_id(repo.owner.id),
             web_url=getattr(repo, "html_url", None),
+            inherit_permissions=getattr(c, "scope", None) == "personal",
         )
         # The ACL lives ONLY on the repo group. The three child groups set
         # inherit_permissions=True, which makes the processor write a
@@ -526,6 +527,7 @@ class ProjectsSync:
                 connector_id=c.connector_id,
                 external_group_id=self._org_parent_external_id(org_id),
                 web_url=f"https://github.com/{org_login}",
+                inherit_permissions=getattr(c, "scope", None) == "personal",
             )
             await c.data_entities_processor.on_new_record_groups([(org_rg, list(bucket.values()))])
             # Cleared per org, after its own write: a failure leaves that org

@@ -45,6 +45,9 @@ class Permission(BaseModel):
     email: Optional[str] = None
     type: PermissionType
     entity_type: EntityType
+    # Set by SharePoint when the grant comes from a sharing link's identities.
+    # Not written onto the permission edge.
+    link_grant: bool = False
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission creation")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission update")
 

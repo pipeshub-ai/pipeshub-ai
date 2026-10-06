@@ -282,6 +282,17 @@ def role_bindings_to_permission_type(bindings: list[dict]) -> PermissionType | N
     return PermissionType.READ
 
 
+def unique_file_grants(role_grants: list[Permission], graph_permissions: list[Permission]) -> list[Permission]:
+    """Role assignments from SharePoint, plus link grants that only Graph reports."""
+    merged: dict[tuple[str, str], Permission] = {}
+    for permission in role_grants:
+        merge_permission(merged, permission)
+    for permission in graph_permissions:
+        if permission.entity_type == EntityType.ORG or permission.link_grant:
+            merge_permission(merged, permission)
+    return list(merged.values())
+
+
 def merge_permission(permissions: dict[tuple[str, str], Permission], permission: Permission) -> None:
     """Keep one grant per principal, at the strongest role it is given."""
     principal = permission.email or permission.external_id or ''
@@ -1536,16 +1547,21 @@ class SharePointConnector(BaseConnector):
             if not file_record:
                 return None
 
-            # An item's Graph permissions are its whole effective ACL, so a uniquely
-            # permissioned item needs nothing from its parent.
+            # An item's Graph permissions are its whole effective ACL. A uniquely
+            # permissioned item does not inherit, and its role assignments come from
+            # SharePoint; Graph still supplies an organization link.
+            graph_permissions = await self._get_item_permissions(site_id, drive_id, item_id)
             if has_unique_permissions is None:
                 file_record.inherit_permissions = await self._inheritance_when_unreadable(
                     CollectionNames.RECORDS.value, existing_record.id if existing_record else None
                 )
+                permissions = graph_permissions
             elif has_unique_permissions:
                 file_record.inherit_permissions = False
-
-            permissions = await self._get_item_permissions(site_id, drive_id, item_id)
+                role_grants = await self._unique_drive_item_role_grants(item, drive_id, site_id)
+                permissions = graph_permissions if role_grants is None else unique_file_grants(role_grants, graph_permissions)
+            else:
+                permissions = graph_permissions
 
             return RecordUpdate(
                 record=file_record,
@@ -2973,18 +2989,22 @@ class SharePointConnector(BaseConnector):
                 if hasattr(perm, 'granted_to_identities_v2') and perm.granted_to_identities_v2:
                     for identity in perm.granted_to_identities_v2:
                         if hasattr(identity, 'group') and identity.group:
-                            permissions.extend(await self._graph_group_grant(
+                            link_groups = await self._graph_group_grant(
                                 identity.group,
                                 getattr(identity, 'site_user', None),
                                 map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                            ))
+                            )
+                            for grant in link_groups:
+                                grant.link_grant = True
+                            permissions.extend(link_groups)
                         elif hasattr(identity, 'user') and identity.user:
                             user = identity.user
                             permissions.append(Permission(
                                 external_id=user.id,
                                 email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
                                 type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                                entity_type=EntityType.USER
+                                entity_type=EntityType.USER,
+                                link_grant=True,
                             ))
 
                 # An org-scoped link is an org grant; an anonymous one names no
@@ -3287,13 +3307,7 @@ class SharePointConnector(BaseConnector):
 
     async def _inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
         """``inherit_permissions`` when the scope can't be read: a stored node keeps its inheritance edge, a new one gets none."""
-        if stored_id is None:
-            return False
-        async with self.data_store_provider.transaction() as tx_store:
-            edges = await tx_store.get_edges_from_node(
-                f"{collection}/{stored_id}", CollectionNames.INHERIT_PERMISSIONS.value
-            )
-        return bool(edges)
+        return await self.data_entities_processor.inheritance_when_unreadable(collection, stored_id)
 
     async def _get_library_access(self, site_id: str, drive: object) -> tuple[bool, list[Permission] | None]:
         """``(inherit_permissions, grants)`` for a library; the grants are None when they can't be read."""
@@ -3318,6 +3332,18 @@ class SharePointConnector(BaseConnector):
             return None
         unique_id = drive_item_unique_id(item)
         return unique_id is not None and unique_id in scope.unique_items
+
+    async def _unique_drive_item_role_grants(self, item: DriveItem, drive_id: str, site_id: str) -> list[Permission] | None:
+        """Role assignments of a drive item that broke inheritance, or None when they can't be read."""
+        scope = await self._get_library_scope(drive_id)
+        unique_id = drive_item_unique_id(item)
+        list_item_id = scope.unique_items.get(unique_id) if scope is not None and unique_id else None
+        if scope is None or list_item_id is None:
+            return None
+        return await self._get_role_assignment_grants(
+            f"{scope.list_url}/items({list_item_id})/roleassignments?$expand=Member,RoleDefinitionBindings",
+            site_id,
+        )
 
     async def _get_page_access(
         self, site_id: str, page_id: str, pages_scope: ListPermissionScope | None

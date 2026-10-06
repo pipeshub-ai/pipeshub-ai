@@ -239,7 +239,13 @@ async def unshared_folder_scenario(
     tenant.share("f1", shared)
     connector = await ready_connector(db, checkpoints)
     await connector.run_sync()
-    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+    # The file keeps the list OneDrive returned. Matching the folder is not inheritance.
+    assert db.records["f1"].inherit_permissions is False
+    assert perms(db, "f1") == {
+        (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+        (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+    }
+    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "d1")
     tenant.share("d1", [user_grant("u-ana", "ana@acme.com", "owner")])
     cloud.on("GET", f"/v1.0/drives/{DRIVE}/items/d1/children", page([drive_item("f1", "plan.pdf", parent="d1")]))
     return connector
@@ -821,7 +827,10 @@ class TestSharing:
 
         for _ in range(4):
             await connector.run_sync()
-            assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+            assert perms(db, "f1") == {
+                (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+                (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+            }
         await connector.run_sync()
 
         assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}
@@ -844,10 +853,12 @@ class TestSharing:
 
         await connector.run_sync()
 
+        # A failed folder read must not replace the file's stored grants.
         assert perms(db, "f2") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
         }
+        assert db.records["f2"].inherit_permissions is False
         assert db.records["d1"].is_shared is True
         assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
 
