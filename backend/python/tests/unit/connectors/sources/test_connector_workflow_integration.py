@@ -377,6 +377,12 @@ class MockTransactionStore:
 
     # -- users ---
 
+    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None:
+        return None  # this store keeps no userAppRelation edges
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
     async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("email") == email:

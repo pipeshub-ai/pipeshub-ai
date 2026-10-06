@@ -465,3 +465,43 @@ async def test_an_author_who_signs_up_keeps_their_documents(backend) -> None:
         assert all(r[3] for r in rows), "an edge points at a removed node"
         got = [("User" if r[0] == "users" else r[0], r[1], r[2]) for r in rows]
     assert got == [("User", f"{org}-eve", "AUTHORED_BY")]
+
+
+async def test_two_open_syncs_naming_the_same_outsider_both_link_them(backend) -> None:
+    """An existing person is only read, so two transactions in flight at once
+    do not collide on its lock and both records keep their author edge."""
+    from app.connectors.core.base.data_processor.record_people import link_record_people
+    from app.models.entities import FileRecord, Person, SourcePerson
+
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    person_id = await provider.upsert_person_by_email(Person(email="eve@partner.test", org_id=org), raise_on_error=True)
+    records = [
+        FileRecord(
+            id=f"{org}-file-{i}", org_id=org, external_record_id=f"{org}-file-{i}", record_name=f"f{i}.pdf",
+            origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id=f"{org}-conn",
+            record_type=RecordType.FILE, version=1, source_created_at=1000, source_updated_at=2000,
+            is_file=True, extension="pdf", authored_by=SourcePerson(email="eve@partner.test"),
+        )
+        for i in range(2)
+    ]
+    await provider.batch_upsert_records(records)
+    store = GraphDataStore(logger, provider)
+    async with store.transaction() as first, store.transaction() as second:
+        assert await link_record_people(records[0], first, logger) == 1
+        assert await link_record_people(records[1], second, logger) == 1
+
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    for record in records:
+        if isinstance(provider, Neo4jProvider):
+            rows = await provider.client.execute_query(
+                "MATCH (:Record {id: $id})-[r]->(p:Person) RETURN p.id AS id", parameters={"id": record.id},
+            )
+            assert [r["id"] for r in rows] == [person_id]
+        else:
+            rows = await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e._from == @f RETURN e._to", {"f": f"records/{record.id}"},
+            )
+            assert rows == [f"person/{person_id}"]

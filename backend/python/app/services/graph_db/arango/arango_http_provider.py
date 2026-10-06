@@ -6092,6 +6092,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
 
 
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Person | None:
+        """See :meth:`IGraphDBProvider.get_person_by_source_key`."""
+        try:
+            rows = await self.http_client.execute_aql(
+                f"FOR p IN {CollectionNames.PEOPLE.value} "
+                "FILTER p.orgId == @org_id AND p.sourceKey == @source_key LIMIT 1 RETURN p",
+                bind_vars={"org_id": org_id, "source_key": source_key},
+                txn_id=transaction,
+            )
+            return Person.from_arango_person(rows[0]) if rows else None
+        except Exception as e:
+            self.logger.error(f"❌ Get person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
+
     async def upsert_person_by_source_key(
         self,
         person: Person,
@@ -6371,7 +6389,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         rows = await self.http_client.execute_aql(
             """
             LET mine = (FOR e IN @@collection FILTER e._to == @person_id RETURN e)
-            LET theirs = (FOR e IN @@collection FILTER e._to == @user_id RETURN CONCAT(e._from, "|", e.edgeType))
+            LET theirs = (
+                FOR e IN @@collection
+                    FILTER e._to == @user_id AND e._from IN mine[*]._from
+                    RETURN CONCAT(e._from, "|", e.edgeType)
+            )
             RETURN {mine: mine, theirs: theirs}
             """,
             bind_vars={"@collection": CollectionNames.ENTITY_RELATIONS.value, "person_id": person_id, "user_id": user_id},

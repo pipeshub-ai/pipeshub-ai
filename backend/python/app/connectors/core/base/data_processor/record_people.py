@@ -61,6 +61,10 @@ _NEW_EDGE_TYPES = frozenset({
 # Roles in which someone who is not a member still gets a person node.
 _PERSON_NODE_ROLES = frozenset(EntityRelations) - {EntityRelations.ADDRESSED_TO}
 
+# _PersonResolver._member's answer for a user of another org: no member here,
+# and no person node either.
+_ANOTHER_ORG = object()
+
 LINKED_RECORD_TYPES = (TicketRecord, ProjectRecord, MailRecord, CommentRecord, PullRequestRecord, DealRecord)
 
 
@@ -78,12 +82,15 @@ class PersonLink:
 class PeopleStore(Protocol):
     async def get_user_by_email(self, email: str) -> User | None: ...
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None: ...
+    async def get_person_by_email(self, email: str, org_id: str) -> Person | None: ...
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None: ...
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
     async def delete_edges_between_collections(
         self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
     ) -> None: ...
     async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
+    def is_transient_error(self, error: BaseException) -> bool: ...
 
 
 def _address(raw: str | None) -> str | None:
@@ -230,13 +237,21 @@ class _PersonResolver:
         identity = self.identity(link)
         if identity not in self._resolved:
             try:
-                self._resolved[identity] = await self._member(*identity) or await self._person(link, *identity)
-            except Exception:  # one unresolved person must not drop the others
+                member = await self._member(*identity)
+                self._resolved[identity] = (
+                    None if member is _ANOTHER_ORG else member or await self._person(link, *identity)
+                )
+            except Exception as exc:
+                if self._store.is_transient_error(exc) is True:
+                    # A lock held by a concurrent sync: fail the record so its
+                    # transaction is retried, rather than commit it without the edge.
+                    raise
+                # Otherwise one unresolved person must not drop the others.
                 self.failed += 1
                 self._resolved[identity] = None
         return self._resolved[identity]
 
-    async def _member(self, source_id: str, email: str) -> tuple[str, str] | None:
+    async def _member(self, source_id: str, email: str) -> tuple[str, str] | object | None:
         user = None
         if source_id:
             user = await self._store.get_user_by_source_id(source_id, self._record.connector_id)
@@ -246,31 +261,35 @@ class _PersonResolver:
             return None
         user_org = getattr(user, "org_id", None)
         if user_org is not None and user_org != self._record.org_id:
-            # Email lookups are not org-scoped; another tenant's member
-            # sharing an address is not this record's person.
-            return None
+            # Email lookups are not org-scoped; another tenant's member sharing
+            # an address is not this record's person, and recording the
+            # address as an outsider here could misfile this org's own member.
+            return _ANOTHER_ORG
         return CollectionNames.USERS.value, user.id
 
     async def _person(self, link: PersonLink, source_id: str, email: str) -> tuple[str, str] | None:
-        if link.edge_type not in _PERSON_NODE_ROLES:
+        if link.edge_type not in _PERSON_NODE_ROLES or not (source_id or email):
             return None
         org_id = self._record.org_id
-        if email:
-            key = await self._store.upsert_person_by_email(
-                Person(email=email, org_id=org_id, full_name=link.display_name), raise_on_error=True,
-            )
-        elif source_id:
-            key = await self._store.upsert_person_by_source_key(
-                Person(source_key=f"{self._record.connector_id}:{source_id}", org_id=org_id,
-                       full_name=link.display_name),
-                raise_on_error=True,
-            )
-        else:
-            return None
+        source_key = f"{self._record.connector_id}:{source_id}" if source_id else None
+        # Read first: an upsert of a node that exists still takes its write lock
+        # inside the sync transaction, so popular outsiders would serialise syncs.
+        existing = (
+            source_key and await self._store.get_person_by_source_key(source_key, org_id)
+        ) or (email and await self._store.get_person_by_email(email, org_id))
+        if existing:
+            return CollectionNames.PEOPLE.value, existing.id
+        person = Person(email=email or None, source_key=source_key, org_id=org_id, full_name=link.display_name)
+        key = await (
+            self._store.upsert_person_by_email(person, raise_on_error=True) if email
+            else self._store.upsert_person_by_source_key(person, raise_on_error=True)
+        )
         return (CollectionNames.PEOPLE.value, key) if key else None
 
 
-async def link_record_people(record: Record, store: PeopleStore, logger: Logger) -> int:
+async def link_record_people(
+    record: Record, store: PeopleStore, logger: Logger, *, may_have_edges: bool = True,
+) -> int:
     """Replace ``record``'s person edges with the people it names now.
 
     Idempotent: the record's existing edges to members and to person nodes
@@ -278,10 +297,15 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
     assignee drops the edge. Its other ``entityRelations`` edges
     (organisations) are left to their own writers. Returns the number of
     edges written. A failed lookup or person write skips that person (logged
-    by record id, never by address); the others are still linked.
+    by record id, never by address); the others are still linked, unless it
+    collided with a concurrent sync, which fails the record for a retry.
+
+    ``may_have_edges`` is False for a record being created: one that names
+    nobody then costs no query. An existing record is always cleared, so
+    one that stops naming anyone loses its old edges.
     """
     links = person_links(record)
-    if not links and not isinstance(record, LINKED_RECORD_TYPES):
+    if not links and not may_have_edges and not isinstance(record, LINKED_RECORD_TYPES):
         return 0
     for target in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
         try:

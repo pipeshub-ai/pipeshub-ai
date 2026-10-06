@@ -6,6 +6,8 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.config.constants.arangodb import Connectors, EntityRelations, OriginTypes
 from app.connectors.core.base.data_processor import record_people
 from app.connectors.core.base.data_processor.record_people import (
@@ -17,6 +19,7 @@ from app.models.entities import (
     DealRecord,
     FileRecord,
     MailRecord,
+    Person,
     ProjectRecord,
     PullRequestRecord,
     RecordType,
@@ -159,10 +162,10 @@ class TestWriteBehaviour:
             ("rec-1", "records", "entityRelations", "person"),
         ]
 
-    async def test_other_record_types_are_left_alone(self) -> None:
+    async def test_a_new_record_that_names_nobody_is_left_alone(self) -> None:
         store = _store()
         file_record = FileRecord(record_type=RecordType.FILE, is_file=True, extension="txt", **BASE)
-        assert await link_record_people(file_record, store, logging.getLogger("t")) == 0
+        assert await link_record_people(file_record, store, logging.getLogger("t"), may_have_edges=False) == 0
         store.delete_edges_between_collections.assert_not_awaited()
 
     async def test_a_failed_lookup_skips_that_person_only_and_logs_no_address(self, caplog) -> None:
@@ -257,6 +260,9 @@ def _file(**kw: object) -> FileRecord:
 def _person_store() -> MagicMock:
     """A store that also creates person nodes for people who are not members."""
     store = _store()
+    store.get_person_by_email = AsyncMock(return_value=None)
+    store.get_person_by_source_key = AsyncMock(return_value=None)
+    store.is_transient_error = MagicMock(return_value=False)
     store.upsert_person_by_email = AsyncMock(side_effect=lambda person, **_: f"p-{person.email}")
     store.upsert_person_by_source_key = AsyncMock(side_effect=lambda person, **_: f"p-{person.source_key}")
     return store
@@ -340,5 +346,61 @@ class TestSourcePeople:
 
     async def test_a_record_that_names_nobody_costs_nothing(self) -> None:
         store = _person_store()
-        assert await link_record_people(_file(), store, logging.getLogger("t")) == 0
+        assert await link_record_people(_file(), store, logging.getLogger("t"), may_have_edges=False) == 0
         store.delete_edges_between_collections.assert_not_awaited()
+
+
+class TestReviewFixesAuthorship:
+    async def test_a_known_person_is_read_not_written(self) -> None:
+        """A write takes the node's lock inside the sync transaction; two syncs
+        naming the same outsider then collide, so an existing node is only read."""
+        store = _person_store()
+        store.get_person_by_email = AsyncMock(return_value=SimpleNamespace(id="p-eve"))
+        await link_record_people(_file(authored_by=SourcePerson(email="eve@partner.com")), store, logging.getLogger("t"))
+        assert _edges(store) == {("person/p-eve", "AUTHORED_BY")}
+        store.upsert_person_by_email.assert_not_awaited()
+
+    async def test_a_person_known_by_source_key_is_found_before_email(self) -> None:
+        store = _person_store()
+        store.get_person_by_source_key = AsyncMock(return_value=SimpleNamespace(id="p-acc"))
+        await link_record_people(
+            _file(authored_by=SourcePerson(source_id="acc-9", email="eve@partner.com")), store, logging.getLogger("t"),
+        )
+        assert _edges(store) == {("person/p-acc", "AUTHORED_BY")}
+        store.get_person_by_source_key.assert_awaited_once_with("conn-1:acc-9", "org-1")
+
+    async def test_a_new_email_person_also_records_its_source_key(self) -> None:
+        store = _person_store()
+        await link_record_people(
+            _file(authored_by=SourcePerson(source_id="acc-9", email="eve@partner.com")), store, logging.getLogger("t"),
+        )
+        (person,) = [c.args[0] for c in store.upsert_person_by_email.await_args_list]
+        assert (person.email, person.source_key) == ("eve@partner.com", "conn-1:acc-9")
+
+    async def test_a_write_conflict_fails_the_record_so_its_transaction_retries(self) -> None:
+        store = _person_store()
+        conflict = RuntimeError("[1200] timeout waiting to lock key")
+        store.upsert_person_by_email = AsyncMock(side_effect=conflict)
+        store.is_transient_error = MagicMock(side_effect=lambda exc: exc is conflict)
+        with pytest.raises(RuntimeError, match="1200"):
+            await link_record_people(_file(authored_by=SourcePerson(email="eve@partner.com")), store, logging.getLogger("t"))
+
+    async def test_an_updated_record_that_names_nobody_loses_its_old_edges(self) -> None:
+        store = _person_store()
+        await link_record_people(_file(), store, logging.getLogger("t"), may_have_edges=True)
+        assert {c.args[3] for c in store.delete_edges_between_collections.await_args_list} == {"users", "person"}
+
+    def test_an_unset_key_is_left_out_of_the_stored_person(self) -> None:
+        """An older pod can restore the old strict schema (email required, no
+        sourceKey) mid-rollout; an email person must still validate against it."""
+        assert "sourceKey" not in Person(email="eve@partner.com", org_id="o").to_arango_person()
+        assert "email" not in Person(source_key="c:a", org_id="o").to_arango_person()
+
+    async def test_another_orgs_user_with_the_address_is_not_made_a_person_here(self) -> None:
+        """Email lookups are not org-scoped: if they answer with another org's
+        user, this org's member must not be recorded as an outside person."""
+        store = _person_store()
+        store.get_user_by_email = AsyncMock(return_value=SimpleNamespace(id="u-x", org_id="org-2"))
+        await link_record_people(_file(authored_by=SourcePerson(email="ann@acme.com")), store, logging.getLogger("t"))
+        store.batch_create_entity_relations.assert_not_awaited()
+        store.upsert_person_by_email.assert_not_awaited()

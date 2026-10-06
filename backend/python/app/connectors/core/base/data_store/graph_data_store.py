@@ -532,6 +532,14 @@ class GraphTransactionStore(TransactionStore):
         )
 
 
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        return await self.graph_provider.get_person_by_source_key(
+            source_key, org_id, transaction=self.txn, raise_on_error=True
+        )
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
+
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         return await self.graph_provider.upsert_person_by_source_key(
             person, transaction=self.txn, raise_on_error=raise_on_error

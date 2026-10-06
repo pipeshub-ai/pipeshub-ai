@@ -3015,14 +3015,8 @@ class Person(BaseModel):
     phone: str | None = Field(default=None, description="Phone number")
 
     def to_arango_person(self) -> dict[str, Any]:
-        return {
+        doc = {
             "_key": self.id,
-            # (orgId, email) is this node's business key and carries a composite unique
-            # index. Atomic upserts match on exact equality, so the stored form must be
-            # normalised or Foo@x.com and foo@x.com become two nodes every reader sees
-            # as one.
-            "email": self.email.lower() if self.email else None,
-            "sourceKey": self.source_key,
             "orgId": self.org_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -3031,6 +3025,16 @@ class Person(BaseModel):
             "lastName": self.last_name,
             "phone": self.phone,
         }
+        # Only the keys that are set: an older pod's strict schema (email
+        # required, no sourceKey) must still accept an email person mid-rollout.
+        if self.email:
+            # (orgId, email) is the business key; upserts match on exact equality,
+            # so the stored form must be normalised or Foo@x.com and foo@x.com
+            # become two nodes.
+            doc["email"] = self.email.lower()
+        if self.source_key:
+            doc["sourceKey"] = self.source_key
+        return doc
 
     @staticmethod
     def from_arango_person(data: dict[str, Any]) -> 'Person':

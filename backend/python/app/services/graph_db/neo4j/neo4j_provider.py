@@ -15517,6 +15517,28 @@ class Neo4jProvider(IGraphDBProvider):
             return None
 
 
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Person | None:
+        """See :meth:`IGraphDBProvider.get_person_by_source_key`."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            rows = await self.client.execute_query(
+                f"MATCH (p:{label} {{sourceKey: $source_key, orgId: $org_id}}) RETURN p LIMIT 1",
+                parameters={"source_key": source_key, "org_id": org_id},
+                txn_id=transaction,
+            )
+            if not rows:
+                return None
+            return Person.from_arango_person(
+                self._neo4j_to_arango_node(dict(rows[0]["p"]), CollectionNames.PEOPLE.value)
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
+
     async def upsert_person_by_source_key(
         self,
         person: Person,

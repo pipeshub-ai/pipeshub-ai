@@ -779,11 +779,13 @@ class DataSourceEntitiesProcessor:
 
         return moved
 
-    async def _handle_record_people(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_record_people(
+        self, record: Record, tx_store: TransactionStore, *, may_have_edges: bool = True,
+    ) -> None:
         """Link the record to the members it names (assignee, sender,
         reviewer...) and to the CRM account it belongs to; see
         ``record_people`` and ``record_organizations``."""
-        await link_record_people(record, tx_store, self.logger)
+        await link_record_people(record, tx_store, self.logger, may_have_edges=may_have_edges)
         await link_record_organization(record, tx_store, self.logger)
 
     async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
@@ -1519,7 +1521,7 @@ class DataSourceEntitiesProcessor:
 
         # Edges to the members a ticket, project, mail, comment, pull request
         # or deal names (ASSIGNED_TO, AUTHORED_BY, ADDRESSED_TO, ...).
-        await self._handle_record_people(record, tx_store)
+        await self._handle_record_people(record, tx_store, may_have_edges=existing_record is not None)
 
         # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
         if isinstance(record, MessageRecord):
