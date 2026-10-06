@@ -110,6 +110,7 @@ async def ready_connector(
     stub: MicrosoftCloudStub, db: FakeRecordsDb, checkpoints: FakeCheckpointStore
 ) -> SharePointConnector:
     stub.on("GET", "/v1.0/sites/root", site_payload())
+    db.edge_store = checkpoints
     connector = SharePointConnector(
         logging.getLogger("test.sharepoint"), db, checkpoints,
         FakeConfigService(CONNECTOR_ID, sharepoint_config()), CONNECTOR_ID, "team", "creator-1",

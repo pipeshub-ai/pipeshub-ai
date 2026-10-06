@@ -4213,7 +4213,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (r:Record {connectorId: $connector_id, orgId: $org_id})
             MATCH (r)-[:IS_OF_TYPE]->(m:Mail {conversationIndex: $conversation_index, threadId: $thread_id})
-            MATCH (u:User)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(r)
+            MATCH (r)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
+            MATCH (u:User)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(ancestor)
             WHERE u.userId = $user_id
             RETURN r
             LIMIT 1
@@ -7887,8 +7888,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Get first user with permission to node"""
         try:
             query = """
-            MATCH (u:User)-[r:PERMISSION]->(n)
-            WHERE n.id = $node_key
+            MATCH (start)
+            WHERE start.id = $node_key
+            MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
+            MATCH (u:User)-[:PERMISSION]->(ancestor)
             RETURN u
             LIMIT 1
             """
@@ -7926,9 +7929,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Get users with permission to node"""
         try:
             query = """
-            MATCH (u:User)-[r:PERMISSION]->(n)
-            WHERE n.id = $node_key
-            RETURN u
+            MATCH (start)
+            WHERE start.id = $node_key
+            MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
+            MATCH (u:User)-[:PERMISSION]->(ancestor)
+            RETURN DISTINCT u
             """
 
             collection_name, key = self._parse_arango_id(node_key)
@@ -8004,7 +8009,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Get record owner source user email"""
         try:
             query = """
-            MATCH (u:User)-[r:PERMISSION {role: 'OWNER', type: 'USER'}]->(rec:Record {id: $record_id})
+            MATCH (start:Record {id: $record_id})
+            MATCH (start)-[:INHERIT_PERMISSIONS*0..8]->(ancestor)
+            MATCH (u:User)-[:PERMISSION {role: 'OWNER', type: 'USER'}]->(ancestor)
             RETURN u.email AS email
             LIMIT 1
             """
