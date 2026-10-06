@@ -30,7 +30,7 @@ class EntityIndexSource:
     """How one projected source is read.
 
     ``scope_field`` is ``connectorId`` for connector-owned sources and
-    ``orgId`` for taxonomy. ``canonical_only`` keeps legacy taxonomy nodes
+    ``orgId`` for taxonomy and people. ``canonical_only`` keeps legacy taxonomy nodes
     (no ``normalizedName``) and merged-away ones (``mergedInto``) out; ``include_global`` admits nodes without an
     org (departments are seeded globally)."""
 
@@ -66,6 +66,8 @@ ENTITY_INDEX_SOURCES: dict[str, EntityIndexSource] = {
         EntityIndexSource(
             CollectionNames.DEPARTMENTS.value, "orgId", "departmentName", include_global=True,
         ),
+        # Named as on the index path (SinkOrchestrator._sync_record_people_entities).
+        EntityIndexSource(CollectionNames.USERS.value, "orgId", "fullName", name_fallback="email"),
         *(
             _taxonomy(c.value)
             for c in (
@@ -174,7 +176,9 @@ def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -
     projection = ", ".join(
         [
             "n.id AS _key",
-            f"coalesce(n.{spec.name_field}, n.{spec.name_fallback}) AS name"
+            # An empty name falls back too, as AQL's ``||`` does.
+            f"CASE WHEN coalesce(n.{spec.name_field}, '') <> '' THEN n.{spec.name_field} "
+            f"ELSE n.{spec.name_fallback} END AS name"
             if spec.name_fallback else f"n.{spec.name_field} AS name",
             *(f"n.{f} AS {f}" for f in spec.fields),
             *(f"coalesce(n.{f}, []) AS {f}" for f in spec.list_fields),

@@ -17644,7 +17644,16 @@ class Neo4jProvider(IGraphDBProvider):
             edge_collection_to_relationship(CollectionNames.BELONGS_TO.value),
             (collection_to_label(CollectionNames.RECORD_GROUPS.value),),
         ),
+        KnowledgeGraphEntityType.PERSON.value: (
+            edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
+            (collection_to_label(CollectionNames.USERS.value),),
+        ),
     }
+    # Entity types whose nodes carry orgId and are matched against it.
+    _ORG_SCOPED_ENTITY_TYPES = frozenset({
+        KnowledgeGraphEntityType.RECORD_GROUP.value, KnowledgeGraphEntityType.PERSON.value,
+    })
+    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | {KnowledgeGraphEntityType.PERSON.value}
 
     async def _get_taxonomy_entities_for_record_via_edge(
         self,
@@ -17741,6 +17750,13 @@ class Neo4jProvider(IGraphDBProvider):
         ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
     )
 
+    @staticmethod
+    def _candidate_arrow(entity_type: str) -> str:
+        """``->`` for edges from the record to the entity; undirected for a
+        person, whom Slack links user -> record and record_people links
+        record -> user."""
+        return "-" if entity_type == KnowledgeGraphEntityType.PERSON.value else "->"
+
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
         """The record relationship for ``entity_type`` and a clause binding
         ``e`` to the node whose id is ``ref.id``."""
@@ -17779,7 +17795,7 @@ class Neo4jProvider(IGraphDBProvider):
             """
 
         relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
+        if entity_type in self._ORG_SCOPED_ENTITY_TYPES:
             entity_match += "\n              WHERE e.orgId = $org_id"
 
         # The aggregating CALL yields one row per ref even when nothing matches.
@@ -17788,7 +17804,7 @@ class Neo4jProvider(IGraphDBProvider):
             CALL {{
               WITH ref
               {entity_match}
-              MATCH (rec:Record)-[:{relationship}]->(e)
+              MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)
               WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
               WITH DISTINCT rec
               LIMIT $scan_cap
@@ -17853,7 +17869,7 @@ class Neo4jProvider(IGraphDBProvider):
             """
 
         relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
+        if entity_type in self._ORG_SCOPED_ENTITY_TYPES:
             entity_match += "\n              WHERE e.orgId = $org_id"
         # Sorting the capped scan is cheap; the permission walk is the cost,
         # and it stops at $limit permitted rows or the end of the window.
@@ -17863,7 +17879,7 @@ class Neo4jProvider(IGraphDBProvider):
             CALL {{
               WITH ref, u
               {entity_match}
-              MATCH (rec:Record)-[:{relationship}]->(e)
+              MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)
               WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
               WITH DISTINCT rec, u
               LIMIT $scan_cap
@@ -17902,6 +17918,25 @@ class Neo4jProvider(IGraphDBProvider):
                 {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
             )
         return refs_by_type
+
+    async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_people`."""
+        if not record_id or not org_id:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        relationship = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:Record {{id: $record_id}})-[:{relationship}]-(u:User)
+            WHERE u.orgId = $org_id
+            WITH DISTINCT u
+            RETURN u.id AS id, u.fullName AS name, u.email AS email
+            ORDER BY id
+            """,
+            parameters={"record_id": record_id, "org_id": org_id},
+        )
+        return [dict(r) for r in rows or [] if r.get("id")]
 
     async def get_permitted_entity_records(
         self,
@@ -18015,7 +18050,7 @@ class Neo4jProvider(IGraphDBProvider):
         ids_by_type: dict[str, list[str]] = {}
         for ref in refs:
             ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
-            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES:
+            if ref_id and ref_type in self._MEMBERSHIP_ENTITY_TYPES:
                 bucket = ids_by_type.setdefault(ref_type, [])
                 if ref_id not in bucket:
                     bucket.append(ref_id)
@@ -18023,13 +18058,15 @@ class Neo4jProvider(IGraphDBProvider):
         results: dict[tuple[str, str], dict[str, list[str]]] = {}
         for ref_type, ref_ids in ids_by_type.items():
             relationship, entity_match = self._entity_node_match(ref_type)
+            if ref_type in self._ORG_SCOPED_ENTITY_TYPES:
+                entity_match += "\n              WHERE e.orgId = $org_id"
             # The aggregating CALL yields one row per ref even when nothing links.
             query = f"""
             UNWIND $refs AS ref
             CALL {{
               WITH ref
               {entity_match}
-              OPTIONAL MATCH (rec:Record)-[:{relationship}]->(e)
+              OPTIONAL MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(ref_type)}(e)
               WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
               RETURN [c IN collect(DISTINCT rec.connectorId) WHERE c IS NOT NULL] AS connector_ids,
                      [g IN collect(DISTINCT rec.recordGroupId) WHERE g IS NOT NULL] AS group_ids
