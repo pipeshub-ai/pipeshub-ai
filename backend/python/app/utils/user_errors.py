@@ -124,7 +124,7 @@ GENERATED_FILE_SKIPPED = (
 )
 BINARY_FILE_SKIPPED = (
     "This file holds binary data rather than text, so PipesHub can't read it. If it is "
-    "meant to be text, save it as plain text (UTF-8) and sync or upload it again."
+    "meant to be text, commit it as plain text (UTF-8) and the next sync will index it."
 )
 PARSE_WORKER_OUT_OF_MEMORY = (
     "PipesHub ran out of memory while reading this file, so it wasn't indexed. Split it "
@@ -158,12 +158,19 @@ def _megabytes(size_bytes: int, *, round_up: bool = False) -> str:
     return f"{(math.ceil(tenths) if round_up else round(tenths)) / 10:.1f}".removesuffix(".0")
 
 
-def text_file_too_large(size_bytes: int, limit_bytes: int) -> str:
+def text_file_too_large(size_bytes: int, limit_bytes: int, *, repository_file: bool) -> str:
+    # A record marked "File Type Not Supported" has no Reindex action of its
+    # own, and a sync skips a repository that has not changed, so the step
+    # that brings the file back is "Reindex all" on the repository.
+    after_raising = (
+        "choose Reindex all on the repository" if repository_file else "upload it again"
+    )
     # Rounded up, so a file one byte over a 5 MB limit never reads as "5 MB".
     return (
         f"This file is {_megabytes(size_bytes, round_up=True)} MB, and PipesHub reads code "
         f"and plain-text files up to {_megabytes(limit_bytes)} MB. Split it into smaller "
-        "files, or ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then Reindex it."
+        "files, or ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then "
+        f"{after_raising}."
     )
 
 

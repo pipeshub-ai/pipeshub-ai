@@ -11,6 +11,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     OriginTypes,
     ProgressStatus,
+    RecordTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
@@ -1511,6 +1512,11 @@ class Processor:
             status_update["reason"] = ""
         elif reason is not None:
             status_update["reason"] = reason
+        # The parsing-service path writes parsingStatus=IN_PROGRESS before it
+        # dispatches. Left there with processingStartedAt cleared, the record
+        # reads as a crashed parse and stale recovery republishes it for ever.
+        if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+            status_update["parsingStatus"] = indexing_status.value
 
         success = await self.graph_provider.update_node(
             record_id,
@@ -1802,11 +1808,12 @@ class Processor:
         file_path: Optional[str] = None,
         event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process a file from a code repository, yielding phase events.
+        """Process a source file, or any file from a code repository.
 
-        Source with a grammar becomes code blocks. Data files go to the parser
-        for their format, generated files are skipped, and anything else is
-        read as text up to the code size limit.
+        Source with a grammar becomes code blocks and a data file goes to the
+        parser for its format. Anything else is read as text; for a repository
+        file that is capped at the code size limit, and generated files are
+        skipped (see ``plan_code_file``).
         """
         self.logger.info(f"🚀 Starting code document processing for record: {recordName}")
 
@@ -1822,6 +1829,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
+            repository_file = record.get("recordType") == RecordTypes.CODE_FILE.value
             record = convert_record_dict_to_record(record)
 
             # Preserve the repo-relative path so block metadata remains unique
@@ -1830,7 +1838,9 @@ class Processor:
                 file_path = await self._lookup_code_file_path(recordId)
             file_path = file_path or recordName
 
-            plan = plan_code_file(recordName, file_path, extension, code_binary)
+            plan = plan_code_file(
+                recordName, file_path, extension, code_binary, repository_file=repository_file
+            )
 
             if plan.route is CodeFileRoute.SKIP:
                 async for event in self._skip_code_file(
@@ -1882,7 +1892,11 @@ class Processor:
             if block_containers is None:
                 async for event in self._skip_code_file(
                     recordName, recordId, len(code_binary), "too_large",
-                    text_file_too_large(len(code_binary), code_parser_engine.MAX_FILE_SIZE_BYTES),
+                    text_file_too_large(
+                        len(code_binary),
+                        code_parser_engine.MAX_FILE_SIZE_BYTES,
+                        repository_file=repository_file,
+                    ),
                 ):
                     yield event
                 return

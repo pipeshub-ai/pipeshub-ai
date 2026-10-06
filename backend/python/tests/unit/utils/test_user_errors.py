@@ -376,11 +376,23 @@ class TestRepositoryFileReasons:
     def test_too_large_names_both_sizes_and_the_setting(
         self, size_bytes: int, limit_bytes: int, size_text: str, limit_text: str
     ) -> None:
-        reason = ue.text_file_too_large(size_bytes, limit_bytes)
+        reason = ue.text_file_too_large(size_bytes, limit_bytes, repository_file=True)
 
         assert f"This file is {size_text}" in reason
         assert limit_text in reason
         assert "CODE_FILE_MAX_SIZE_MB" in reason
+
+    def test_too_large_ends_with_a_step_the_reader_can_take(self) -> None:
+        """A record marked File Type Not Supported has no Reindex action, so
+        "reindex it" would send people looking for a button that is not there."""
+        five_mb = 5 * 1024 * 1024
+
+        from_repository = ue.text_file_too_large(five_mb + 1, five_mb, repository_file=True)
+        uploaded = ue.text_file_too_large(five_mb + 1, five_mb, repository_file=False)
+
+        assert from_repository.endswith("and then choose Reindex all on the repository.")
+        assert uploaded.endswith("and then upload it again.")
+        assert "Reindex it" not in from_repository + uploaded
 
     @pytest.mark.parametrize("message", [ue.PARSE_WORKER_OUT_OF_MEMORY, ue.PROCESSING_TIMED_OUT])
     def test_a_parse_worker_failure_keeps_the_reason_it_was_raised_with(self, message: str) -> None:

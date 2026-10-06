@@ -283,6 +283,7 @@ async def test_an_oversized_text_file_is_marked_too_large_and_never_reaches_mark
     assert "1.5 MB" in write["reason"]
     assert "up to 1 MB" in write["reason"]
     assert "CODE_FILE_MAX_SIZE_MB" in write["reason"]
+    assert "Reindex all on the repository" in write["reason"]
     # The log names the file and its size, so an operator can find it.
     assert "dump.sql" in harness.log_lines()
     assert str(size) in harness.log_lines()
@@ -321,6 +322,75 @@ async def test_source_with_a_grammar_still_goes_to_the_code_parser(harness: Harn
     assert harness.parsed_as_code()
     assert not harness.parsed_as_markdown()
     assert len(_Pipeline.applied) == 1
+
+
+# -- a skipped file is finished, not stuck ------------------------------------
+
+
+async def test_a_skipped_file_leaves_no_parse_marked_in_progress(harness: Harness) -> None:
+    """The parsing-service path marks parsingStatus IN_PROGRESS before it hands
+    the file over. A skip that left it there, with processingStartedAt cleared,
+    read as a crashed parse, and stale recovery republished the record for ever."""
+    harness.graph.get_document.return_value["parsingStatus"] = ProgressStatus.IN_PROGRESS.value
+
+    await harness.run("package-lock.json", b"{}")
+
+    (write,) = harness.status_writes()
+    assert write["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+    assert write["parsingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+    assert write["processingStartedAt"] is None
+
+
+async def test_a_skip_does_not_overwrite_a_parse_that_already_finished(harness: Harness) -> None:
+    harness.graph.get_document.return_value["parsingStatus"] = ProgressStatus.COMPLETED.value
+
+    await harness.run("package-lock.json", b"{}")
+
+    (write,) = harness.status_writes()
+    assert "parsingStatus" not in write
+
+
+# -- uploads are not filtered -------------------------------------------------
+
+
+@pytest.fixture
+def uploaded(harness: Harness) -> Harness:
+    """The same code path, reached by a source file someone uploaded."""
+    harness.graph.get_document.return_value["recordType"] = "FILE"
+    return harness
+
+
+async def test_an_uploaded_minified_script_is_still_parsed_as_source(uploaded: Harness) -> None:
+    events = await uploaded.run("app.min.js", b"function a(){return 1}")
+
+    assert events == DONE
+    assert uploaded.parsed_as_code()
+    assert uploaded.status_writes() == []
+
+
+async def test_an_uploaded_shell_script_over_the_code_limit_is_still_read_as_text(
+    uploaded: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine, "MAX_FILE_SIZE_BYTES", 1024)
+
+    events = await uploaded.run("deploy.sh", b"echo deploying\n" * 1024)
+
+    assert events == DONE
+    uploaded.md.parse_to_blocks.assert_awaited_once()
+    assert uploaded.status_writes() == []
+
+
+async def test_uploaded_source_over_the_code_limit_is_refused_as_before(
+    uploaded: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine, "MAX_FILE_SIZE_BYTES", 1024)
+
+    await uploaded.run("big.py", b"x = 1\n" * 1024)
+
+    assert not uploaded.parsed_as_code()
+    (write,) = uploaded.status_writes()
+    assert write["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+    assert write["reason"].endswith("and then upload it again.")
 
 
 # -- the event loop keeps turning ---------------------------------------------

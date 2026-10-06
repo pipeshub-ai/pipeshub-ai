@@ -1361,7 +1361,11 @@ class EventProcessor:
                     # alone, so the decision the in-process code path makes is
                     # made here before the bytes are sent.
                     plan = plan_code_file(
-                        record_name, event_data.get("filePath"), code_ext, content_bytes
+                        record_name,
+                        event_data.get("filePath"),
+                        code_ext,
+                        content_bytes,
+                        repository_file=record_type == RecordTypes.CODE_FILE.value,
                     )
                     if plan.route is CodeFileRoute.SKIP:
                         async for event in self.processor.process_code_document(
@@ -1381,6 +1385,11 @@ class EventProcessor:
                         service_mime_type = get_mime_type_for_extension(
                             plan.parser, fallback=mime_type
                         )
+                    elif plan.route is CodeFileRoute.CODE and code_ext:
+                        # The event may carry no extension; the one read off
+                        # the file name is what makes the service pick the code
+                        # parser over the text one a text/plain mime implies.
+                        service_extension = code_ext
 
                 async for event in self._orchestrate_via_services(
                     record_id=record_id,

@@ -311,7 +311,11 @@ GitLab and GitHub sync every file of a repository as a `CODE_FILE` record, and a
 | Anything else (`.sh`, `.sql`, `.css`, `.proto`, …) | Text (Markdown) parser | `CODE_FILE_MAX_SIZE_MB`. Over it: `FILE_TYPE_NOT_SUPPORTED` with the file's size and the limit as the reason, and a log line naming the file and its size. Nothing is truncated |
 | Binary content under a text name (a NUL byte in the first 8,000 bytes and no UTF-16/32 byte-order mark, the test git uses) | Skipped: `FILE_TYPE_NOT_SUPPORTED` | |
 
-Before this, a file with no grammar was parsed whole as Markdown whatever it was. Uploaded files (`recordType` other than `CODE_FILE`) are not affected: an uploaded `.txt` has no size limit, as before. The GitLab connector already leaves generated files out when it lists a repository, and the GitHub connector already switches content indexing off for files over its own fixed 5 MB when it knows the size; this is the same decision made again at parse time, where every connector and the size-unknown incremental path pass through.
+Before this, a file with no grammar was parsed whole as Markdown whatever it was. The skips and the text limit apply to `CODE_FILE` records only (`repository_file=True`). A source file someone uploaded goes through the same planner and keeps what it had: the code parser's size limit when it has a grammar, an unlimited text fallback when it does not, and no filtering by name or content, so an uploaded `app.min.js` is still parsed as JavaScript.
+
+A skipped file's status write also takes `parsingStatus` off `IN_PROGRESS` (`Processor._mark_record`). The parsing-service path sets it before dispatch, and a record left there with `processingStartedAt` cleared reads as a crashed parse that stale recovery republishes on every pass.
+
+The reason on an oversized repository file ends "…ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then choose Reindex all on the repository", because a **File Type Not Supported** record has no Reindex action of its own and a sync skips a repository whose head has not moved. The GitLab connector already leaves generated files out when it lists a repository, and the GitHub connector already switches content indexing off for files over its own fixed 5 MB when it knows the size; this is the same decision made again at parse time, where every connector and the size-unknown incremental path pass through.
 
 ---
 

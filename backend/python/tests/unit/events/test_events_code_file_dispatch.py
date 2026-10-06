@@ -190,6 +190,34 @@ async def test_a_data_file_stored_as_plain_text_is_sent_as_its_own_format(
     processor.process_code_document.assert_not_called()
 
 
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_source_is_sent_with_the_extension_from_its_name_when_the_event_has_none() -> None:
+    """With text/plain and no extension the parsing service would read it as Markdown."""
+    processor = _legacy_processor()
+    ep, parsing_client = _service_processor(processor)
+    _as_code_file(ep, "text/plain")
+    event = _repository_event("main.py", "text/plain", b"x = 1\n")
+    event["payload"]["extension"] = "unknown"
+
+    await _drain(ep, event)
+
+    assert parsing_client.parse.await_args.kwargs["extension"] == "py"
+
+
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_an_uploaded_minified_script_is_still_sent_to_the_parsing_service() -> None:
+    processor = _legacy_processor()
+    ep, parsing_client = _service_processor(processor)
+    ep.graph_provider.get_document.return_value["mimeType"] = "text/javascript"
+    event = _repository_event("app.min.js", "text/javascript", b"function a(){return 1}")
+    event["payload"]["connectorName"] = ""
+
+    await _drain(ep, event)
+
+    parsing_client.parse.assert_awaited_once()
+    processor.process_code_document.assert_not_called()
+
+
 @pytest.mark.parametrize("name", ["main.py", "site.css"])
 @patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 async def test_source_and_small_text_files_are_sent_unchanged(name: str) -> None:

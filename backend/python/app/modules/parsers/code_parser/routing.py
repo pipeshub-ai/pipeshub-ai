@@ -1,9 +1,9 @@
-"""How a file from a code repository is read.
+"""How a file on the code path is read.
 
 A source file with a tree-sitter grammar goes to the code parser. Everything
 else used to be parsed whole as Markdown, whatever it was: a 50 MB CSV export,
 a lock file, a minified bundle. This module names the reader that fits instead,
-or the reason the file is skipped.
+or, for a file synced from a code repository, the reason it is skipped.
 
 Pure functions, so the whole table is testable without a parser or a graph.
 """
@@ -100,15 +100,23 @@ def plan_code_file(
     file_path: str | None,
     extension: str | None,
     content: bytes,
+    *,
+    repository_file: bool,
 ) -> CodeFilePlan:
-    """Pick the reader for one repository file, or the reason to skip it.
+    """Pick the reader for one file on the code path, or the reason to skip it.
 
-    The size limit covers the two readers that take a file whole, code and the
-    text fallback. CSV, TSV, JSON and YAML go to the parsers an upload of that
-    type gets, with those parsers' own limits and nothing added here.
+    *repository_file* is True for a file a connector synced out of a code
+    repository (a ``CODE_FILE`` record). Only those are filtered: generated
+    files, data dumps with no parser and binary content are skipped, and the
+    text fallback is held to the code size limit. A source file someone
+    uploaded keeps what it had before, the code parser's own size limit and an
+    unlimited text fallback.
+
+    CSV, TSV, JSON and YAML go to the parsers an upload of that type gets, with
+    those parsers' own limits and nothing added here.
     """
     path = file_path or record_name
-    if is_generated_file_name(record_name) or is_generated_file_name(path):
+    if repository_file and (is_generated_file_name(record_name) or is_generated_file_name(path)):
         return _skip(SkipCause.GENERATED, GENERATED_FILE_SKIPPED)
 
     declared = _declared_extension(extension)
@@ -119,9 +127,10 @@ def plan_code_file(
 
     size = len(content)
     limit = engine.MAX_FILE_SIZE_BYTES
+    too_large = text_file_too_large(size, limit, repository_file=repository_file)
     if language:
         if size > limit:
-            return _skip(SkipCause.TOO_LARGE, text_file_too_large(size, limit))
+            return _skip(SkipCause.TOO_LARGE, too_large)
         return CodeFilePlan(CodeFileRoute.CODE, parser=language)
 
     ext = _extension(record_name) or _extension(path) or declared
@@ -129,10 +138,12 @@ def plan_code_file(
         return CodeFilePlan(CodeFileRoute.DELIMITED, parser=_DELIMITED[ext])
     if ext in _STRUCTURED:
         return CodeFilePlan(CodeFileRoute.STRUCTURED, parser=_STRUCTURED[ext])
+    if not repository_file:
+        return CodeFilePlan(CodeFileRoute.TEXT)
     if ext in _DATA_WITHOUT_A_PARSER:
         return _skip(SkipCause.NO_PARSER, unsupported_file_type(ext))
     if size > limit:
-        return _skip(SkipCause.TOO_LARGE, text_file_too_large(size, limit))
+        return _skip(SkipCause.TOO_LARGE, too_large)
     if _looks_binary(content):
         return _skip(SkipCause.BINARY, BINARY_FILE_SKIPPED)
     return CodeFilePlan(CodeFileRoute.TEXT)
