@@ -828,3 +828,52 @@ class TestNeo4jLegacyAliasHeal:
         await provider.client.execute_query(
             "MATCH (a:TaxonomyAlias {orgId: $org}) DETACH DELETE a", parameters={"org": org_id},
         )
+
+
+class TestNeo4jAliasWrites:
+    """An alias write merges alias nodes for the spellings it was given only,
+    not for every stored alias: with up to MAX_TAXONOMY_ALIASES per node, a
+    full re-merge was that many constraint lookups under the node's lock on
+    every write. List-only aliases are the startup heal's (KG-50)."""
+
+    @staticmethod
+    async def _alias_nodes(provider: Neo4jProvider, org_id: str, key: str) -> set[str]:
+        rows = await provider.client.execute_query(
+            "MATCH (a:TaxonomyAlias {orgId: $org})-[:ALIAS_OF]->(:Topics {id: $key}) RETURN a.normalized AS n",
+            parameters={"org": org_id, "key": key},
+        )
+        return {r["n"] for r in rows}
+
+    async def test_only_the_written_spellings_are_merged(self, neo4j) -> None:
+        provider, org_id = neo4j
+        key = taxonomy_node_key(org_id, TOPICS, "release")
+        await provider.create_taxonomy_node_if_absent(TOPICS, {
+            "id": key, "name": "Release", "normalizedName": "release", "orgId": org_id,
+        })
+        await provider.add_taxonomy_aliases(
+            TOPICS, key, ["Go live", "Ship"], ["go live", "ship"], org_id=org_id,
+        )
+        # As if "ship" had been stored before alias nodes existed.
+        await provider.client.execute_query(
+            "MATCH (a:TaxonomyAlias {orgId: $org, normalized: 'ship'}) DETACH DELETE a", parameters={"org": org_id},
+        )
+
+        await provider.add_taxonomy_aliases(TOPICS, key, ["Launch"], ["launch"], org_id=org_id)
+        assert await self._alias_nodes(provider, org_id, key) == {"go live", "launch"}
+
+        # Writing a stored spelling again gives it its node back.
+        await provider.add_taxonomy_aliases(TOPICS, key, ["Ship"], ["ship"], org_id=org_id)
+        assert await self._alias_nodes(provider, org_id, key) == {"go live", "launch", "ship"}
+        assert [r["id"] for r in await provider.find_taxonomy_nodes(TOPICS, org_id, ["ship"])] == [key]
+
+    async def test_a_spelling_past_the_cap_gets_no_alias_node(self, neo4j) -> None:
+        provider, org_id = neo4j
+        key = taxonomy_node_key(org_id, TOPICS, "pricing")
+        await provider.create_taxonomy_node_if_absent(TOPICS, {
+            "id": key, "name": "Pricing", "normalizedName": "pricing", "orgId": org_id,
+        })
+        await provider.add_taxonomy_aliases(
+            TOPICS, key, ["Prices", "Price list", "Rates"], ["prices", "price list", "rates"],
+            org_id=org_id, max_aliases=2,
+        )
+        assert await self._alias_nodes(provider, org_id, key) == {"prices", "price list"}

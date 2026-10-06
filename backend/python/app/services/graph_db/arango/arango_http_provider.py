@@ -204,18 +204,17 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
+    MAX_TAXONOMY_ALIASES,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
+    alias_pairs as _alias_pairs,
     check_edge_move,
     check_edge_move_target,
     global_department_key,
     hierarchy_edge_key,
     is_taxonomy_collection,
     subcategory_level,
-)
-from app.services.graph_db.taxonomy import (
-    alias_pairs as _alias_pairs,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
@@ -19206,7 +19205,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
         transaction: str | None = None,
     ) -> None:
         """See :meth:`IGraphDBProvider.add_taxonomy_aliases`."""

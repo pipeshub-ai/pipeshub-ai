@@ -217,7 +217,7 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         (items,) = model.calls
-        assert items[0]["match"] == {"id": "k-bug", "name": "Bug bash testing", "aliases": ["bbt"]}
+        assert items[0]["matches"] == [{"id": "k-bug", "name": "Bug bash testing", "aliases": ["bbt"]}]
         assert resolution.stats.winners_offered == 1
 
     async def test_store_failure_falls_back_to_new_without_raising(
@@ -238,14 +238,15 @@ class TestTier1:
     ) -> None:
         model = scripted_model()
         store = MagicMock()
-        store.find_best_matches = AsyncMock(return_value=[
-            {"entityId": "k", "entityType": "category", "name": "Legal", "aliases": [], "level": None}
+        store.find_candidates = AsyncMock(return_value=[
+            [{"entityId": "k", "entityType": "category", "name": "Legal", "aliases": [], "level": None}]
         ])
         resolver = make_resolver(store=store)
         resolution = await resolver.resolve(
             ctx_factory("r1", "acme", metadata_factory(topics=["Legal"]))
         )
         assert resolution.stats.winners_offered == 0
+        assert resolution.stats.vector_failures == 0
         assert model.calls == []
 
     async def test_no_store_wired_skips_tier1(
@@ -268,7 +269,7 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash", "Bug bash testing"]))
         )
         assert len(model.calls) == 1
-        assert [i["match"] for i in model.calls[0]] == [None, None]
+        assert [i["matches"] for i in model.calls[0]] == [[], []]
 
 
 class TestTier2:

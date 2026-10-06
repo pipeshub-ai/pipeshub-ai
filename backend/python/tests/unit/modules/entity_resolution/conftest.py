@@ -111,7 +111,9 @@ class FakeEntityVectorStore:
             }
         return EntityWriteOutcome(written=len(entities))
 
-    async def find_best_matches(self, names, org_id, entity_type, level=None) -> list[dict[str, Any] | None]:
+    async def find_candidates(self, names, org_id, entity_type, level=None, *, k=3) -> list[list[dict[str, Any]]]:
+        """Token-overlap ranking over the canonical names, best first.
+        ``force_winner`` pins the first candidate for a name."""
         self.match_calls.append((list(names), org_id, entity_type, level))
         if self.fail_matches:
             raise RuntimeError("vector store down")
@@ -119,38 +121,33 @@ class FakeEntityVectorStore:
             p for (o, t, _k), p in self.points.items()
             if o == org_id and t == entity_type and (p.get("level") or None) == (level or None)
         ]
-        results: list[dict[str, Any] | None] = []
+        results: list[list[dict[str, Any]]] = []
         for name in names:
             if not candidates or not name.strip():
-                results.append(None)
+                results.append([])
                 continue
-            forced = self.force_winner.get(name.casefold())
-            best = None
-            best_score = -1.0
-            for candidate in candidates:
-                if forced is not None:
-                    if candidate["name"].casefold() == forced:
-                        best = candidate
-                        break
-                    continue
+
+            def _score(candidate: dict[str, Any], name: str = name) -> float:
                 # Mirrors the real store: only the canonical name is searchable.
-                haystack = candidate["name"]
-                overlap = _tokens(name) & _tokens(haystack)
-                union = _tokens(name) | _tokens(haystack)
-                score = len(overlap) / len(union) if union else 0.0
-                if score > best_score:
-                    best, best_score = candidate, score
-            if best is None:
-                results.append(None)
-                continue
-            results.append({
-                "entityId": best["entityId"],
-                "entityType": best["entityType"],
-                "name": best["name"],
-                "aliases": list(best["aliases"]),
-                "level": best.get("level"),
-                "score": round(max(best_score, 0.0), 4),
-            })
+                overlap = _tokens(name) & _tokens(candidate["name"])
+                union = _tokens(name) | _tokens(candidate["name"])
+                return len(overlap) / len(union) if union else 0.0
+
+            ranked = sorted(candidates, key=lambda c: (-_score(c), c["entityId"]))
+            forced = self.force_winner.get(name.casefold())
+            if forced is not None:
+                ranked = [c for c in ranked if c["name"].casefold() == forced]
+            results.append([
+                {
+                    "entityId": c["entityId"],
+                    "entityType": c["entityType"],
+                    "name": c["name"],
+                    "aliases": list(c["aliases"]),
+                    "level": c.get("level"),
+                    "score": round(_score(c), 4),
+                }
+                for c in ranked[:k]
+            ])
         return results
 
 
@@ -201,12 +198,11 @@ class ScriptedModel:
                 continue
             kind, value = spec
             if kind == "same":
-                match = item.get("match") or {}
-                assert (match.get("name") or "").casefold() == value.casefold(), (
-                    f"scenario expected winner {value!r} for {item['name']!r}, "
-                    f"got {match.get('name')!r}"
+                offered = {m["name"].casefold(): m["id"] for m in item.get("matches") or []}
+                assert value.casefold() in offered, (
+                    f"scenario expected winner {value!r} for {item['name']!r} among {sorted(offered)}"
                 )
-                decisions.append(MergeDecision(i=item["i"], same=True, target=match["id"]))
+                decisions.append(MergeDecision(i=item["i"], same=True, target=offered[value.casefold()]))
             elif kind == "same_as":
                 other = by_name[value.casefold()]
                 decisions.append(

@@ -20,6 +20,7 @@ from app.config.constants.arangodb import (
 )
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 
 FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
     "Records were moved into this folder while it was being deleted, so nothing was deleted. "
@@ -6624,7 +6625,7 @@ class IGraphDBProvider(ABC):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
         transaction: str | None = None,
     ) -> None:
         """Union ``aliases`` into the node's ``aliases`` list and

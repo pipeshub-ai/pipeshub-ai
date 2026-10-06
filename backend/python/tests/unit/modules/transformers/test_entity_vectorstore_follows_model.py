@@ -213,11 +213,14 @@ class TestQueries:
         db, config = FakeEntityVectorDB(SMALL.dimension), config_service(SMALL_CONFIG)
         reader = _store(db, config, owner=False)
         await reader.search_entities("pricing", ORG, set(), {"c1"})
+        before_switch = len(db.searches)
 
         await switch_embedding_model(config, ADA_CONFIG)
         await reader.search_entities("pricing", ORG, set(), {"c1"})
 
-        assert [request.dense_query[0] for request in db.searches] == [SMALL.value, ADA.value]
+        # A search makes one request per pass, so compare per search.
+        assert {request.dense_query[0] for request in db.searches[:before_switch]} == {SMALL.value}
+        assert {request.dense_query[0] for request in db.searches[before_switch:]} == {ADA.value}
         assert db.deletions == 0
 
 
