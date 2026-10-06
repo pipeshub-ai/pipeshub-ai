@@ -170,4 +170,4 @@ def test_uploaded_source_over_the_limit_is_still_refused_as_before() -> None:
 def test_the_reason_for_a_repository_file_names_a_step_that_exists() -> None:
     # A "File Type Not Supported" record has no Reindex action of its own.
     result = plan_repository("dump.sql", None, None, b"x" * (LIMIT + 1))
-    assert result.skip_reason.endswith("and then choose Reindex all on the repository.")
+    assert result.skip_reason.endswith("and then reindex the repository.")
