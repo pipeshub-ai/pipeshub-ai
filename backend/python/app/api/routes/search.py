@@ -93,10 +93,10 @@ def _queries_for_search(
     # blank is not, so the expansions stand alone as they always have.
     first = original if rewritten is None else rewritten.strip()
     queries = [first] if first else []
-    expanded_queries_list = [
-        q.strip() for q in (expanded or "").split("\n") if q.strip()
-    ]
-    queries.extend([q for q in expanded_queries_list if q not in queries])
+    for line in (expanded or "").split("\n"):
+        q = line.strip()
+        if q and q not in queries:
+            queries.append(q)
     if not queries and original:
         queries = [original]
     return queries

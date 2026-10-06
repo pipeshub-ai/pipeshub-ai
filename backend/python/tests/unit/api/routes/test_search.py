@@ -663,6 +663,23 @@ class TestSearchSurvivesQueryTransformationFailure:
         ]
 
     @pytest.mark.asyncio
+    async def test_an_expansion_repeated_by_the_model_is_searched_once(self) -> None:
+        request, retrieval = self._build_request(), self._retrieval()
+
+        await self._search(
+            request,
+            retrieval,
+            self._chain(returns="rewritten"),
+            self._chain(returns="angle one\nangle one\nangle two"),
+        )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "rewritten",
+            "angle one",
+            "angle two",
+        ]
+
+    @pytest.mark.asyncio
     async def test_failed_expansion_keeps_the_rewrite(self) -> None:
         request, retrieval = self._build_request(), self._retrieval()
 
