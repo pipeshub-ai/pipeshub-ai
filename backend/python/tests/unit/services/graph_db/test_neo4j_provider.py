@@ -4628,6 +4628,24 @@ class TestListUserKnowledgeBases:
         assert count_query.count("coalesce(kb2.isHidden, false) = false") == 1
 
     @pytest.mark.asyncio
+    async def test_a_name_search_filters_each_branch_on_its_own_knowledge_base(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        """kb is null on the team branch for a team-only grant; searching kb.name there dropped it."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[[], [{"total": 0}], []]
+        )
+
+        await neo4j_provider.list_user_knowledge_bases(
+            "user1", "org1", skip=0, limit=10, search="roadmap"
+        )
+
+        for call in neo4j_provider.client.execute_query.call_args_list[:2]:
+            query = call[0][0]
+            assert query.count("toLower(kb.name) CONTAINS toLower($search_term)") == 1
+            assert query.count("toLower(kb2.name) CONTAINS toLower($search_term)") == 1
+
+    @pytest.mark.asyncio
     async def test_exception_returns_empty(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=Exception("neo4j error")
