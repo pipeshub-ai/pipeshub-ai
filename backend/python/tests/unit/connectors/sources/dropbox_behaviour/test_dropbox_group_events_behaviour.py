@@ -158,6 +158,25 @@ class TestGroupEvents:
 
         assert (await saved_cursor(connector), await failed_runs(connector)) == ("c2", 1)
 
+    async def test_giving_up_on_one_removal_does_not_give_up_on_the_one_after_it(self, connector, api, db) -> None:
+        api.page("c1", [member_removed(ENG, BEN), member_removed(ENG, ANA)], next_cursor="c2")
+        db.fail_member_removal.add((ENG[0], BEN))
+        for _ in range(4):
+            await connector._sync_group_changes_with_cursor()
+
+        # The run that gives up on Ben's removal is the first to reach Ana's, which fails this once.
+        db.fail_member_removal.add((ENG[0], ANA))
+        await connector._sync_group_changes_with_cursor()
+
+        assert db.members(ENG) == [ANA, BEN]
+        assert (await saved_cursor(connector), await failed_runs(connector)) == ("c1", 1), "Ana's removal has its own count"
+
+        db.fail_member_removal.discard((ENG[0], ANA))
+        await connector._sync_group_changes_with_cursor()
+
+        assert db.members(ENG) == [BEN], "Ana is out; Ben's removal stays skipped without being counted again"
+        assert await saved_cursor(connector) == "c2"
+
     async def test_a_page_that_cannot_be_fetched_keeps_the_count_of_failed_runs(self, connector, api, db) -> None:
         api.page("c1", [member_removed(ENG, BEN)], next_cursor="c2")
         db.fail_member_removal.add((ENG[0], BEN))

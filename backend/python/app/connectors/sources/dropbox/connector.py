@@ -104,8 +104,8 @@ from app.utils.streaming import create_stream_record_response, stream_content
 # from dropbox.team import GroupSelector
 
 
-# Runs that may fail on one page of group events before its failed removals are skipped.
-MAX_GROUP_EVENT_PAGE_ATTEMPTS = 5
+# Runs in which one member removal or group deletion may fail before it is skipped.
+MAX_GROUP_EVENT_ATTEMPTS = 5
 
 
 class GroupAccessRemovalError(Exception):
@@ -1761,8 +1761,12 @@ class DropboxConnector(BaseConnector):
             has_more = True
             latest_cursor_to_save = cursor
             events_processed = 0
-            # Runs that already failed on the page at the saved cursor.
-            failed_runs = int(sync_point.get('heldAttempts') or 0)
+            # On the page at the saved cursor: the position of the removal that failed last
+            # run, the runs it has failed, and the positions of removals already given up on.
+            # Positions hold because a cursor always returns the same events in the same order.
+            held_event = sync_point.get('heldEvent')
+            held_attempts = int(sync_point.get('heldAttempts') or 0)
+            skipped_events = list(sync_point.get('skippedEvents') or [])
 
             while has_more:
                 try:
@@ -1778,17 +1782,24 @@ class DropboxConnector(BaseConnector):
                     self.logger.info(f"Processing {len(events)} new group-related events.")
 
                     # 4. Process each event individually
-                    for event in events:
+                    for position, event in enumerate(events):
                         try:
                             await self._process_group_event(event)
                             events_processed += 1
                         except GroupAccessRemovalError as e:
-                            # A page is held for a bounded number of runs, so one removal
-                            # that can never be saved can't stop every later group change.
-                            if failed_runs + 1 < MAX_GROUP_EVENT_PAGE_ATTEMPTS:
+                            if position in skipped_events:
+                                self.logger.error(f"❌ {e}; skipped again, it was given up on in an earlier run")
+                                continue
+                            # Each removal is held for a bounded number of runs, so one that
+                            # can never be saved can't stop every later group change. Only
+                            # that one is skipped: the others on the page keep their own count.
+                            attempts = (held_attempts if position == held_event else 0) + 1
+                            if attempts < MAX_GROUP_EVENT_ATTEMPTS:
+                                held_event, held_attempts = position, attempts
                                 raise
+                            skipped_events.append(position)
                             self.logger.error(
-                                f"❌ {e}; still failing after {failed_runs + 1} runs, so it is skipped and "
+                                f"❌ {e}; still failing after {attempts} runs, so it is skipped and "
                                 "the access it should have removed stays in place",
                                 exc_info=True,
                             )
@@ -1801,15 +1812,14 @@ class DropboxConnector(BaseConnector):
                     latest_cursor_to_save = response.data.cursor
                     has_more = response.data.has_more
                     cursor = latest_cursor_to_save
-                    failed_runs = 0
+                    held_event, held_attempts, skipped_events = None, 0, []
 
                 except GroupAccessRemovalError as e:
                     # latest_cursor_to_save still points before this page, so the next
                     # run reads the event again; the events before it are safe to repeat.
-                    failed_runs += 1
                     self.logger.error(
                         f"❌ {e}; group events will be read again from this page on the next run "
-                        f"(attempt {failed_runs} of {MAX_GROUP_EVENT_PAGE_ATTEMPTS})",
+                        f"(attempt {held_attempts} of {MAX_GROUP_EVENT_ATTEMPTS})",
                         exc_info=True,
                     )
                     has_more = False
@@ -1822,7 +1832,12 @@ class DropboxConnector(BaseConnector):
                 self.logger.info(f"Storing latest group sync cursor for key {sync_point_key}")
                 await self.dropbox_cursor_sync_point.update_sync_point(
                     sync_point_key,
-                    sync_point_data={"cursor": latest_cursor_to_save, "heldAttempts": failed_runs}
+                    sync_point_data={
+                        "cursor": latest_cursor_to_save,
+                        "heldEvent": held_event,
+                        "heldAttempts": held_attempts,
+                        "skippedEvents": skipped_events,
+                    }
                 )
 
             self.logger.info(f"Incremental group sync completed. Processed {events_processed} events.")
