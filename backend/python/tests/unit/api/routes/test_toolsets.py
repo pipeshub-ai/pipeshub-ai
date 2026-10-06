@@ -3211,6 +3211,7 @@ class TestGetInstanceStatus:
         config_service = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
+            """Return the NONE-auth instance and no stored credentials."""
             if "toolset-instances" in path:
                 return [{"_id": "i1", "orgId": "o1", "instanceName": "My Jira", "toolsetType": "jira", "authType": "OAUTH"}]
             if "toolsets/i1/u1" in path:
@@ -8083,6 +8084,7 @@ class TestGetAuthenticatedToolsets:
         ]
 
         async def mock_get_config(path, default=None):
+            """Return instances while simulating no stored user credentials."""
             if "toolset-instances" in path:
                 return instances
             return None
@@ -8108,6 +8110,46 @@ class TestGetAuthenticatedToolsets:
         assert "inst_token_unauthed" not in auth_by_instance
 
     @pytest.mark.asyncio
+    async def test_none_authtype_ignores_stale_unauthenticated_record(self) -> None:
+        """NONE-auth toolsets must synthesize authenticated state even if stale auth is false."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {
+                "_id": "inst_none",
+                "orgId": "o1",
+                "toolsetType": "calculator",
+                "instanceName": "Calculator",
+                "authType": "NONE",
+            }
+        ]
+
+        async def mock_get_config(path, default=None):
+            """Return a stale unauthenticated record for the NONE-auth instance."""
+            if "toolset-instances" in path:
+                return instances
+            if "inst_none" in path:
+                return {"isAuthenticated": False, "authType": "NONE"}
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Calculator",
+            "tools": [],
+        }
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+
+        assert len(result) == 1
+        assert result[0]["instanceId"] == "inst_none"
+        assert auth_by_instance["inst_none"] == {
+            "isAuthenticated": True,
+            "authType": "NONE",
+        }
+
+    @pytest.mark.asyncio
     async def test_missing_empty_or_none_authtype_without_credentials_fails_closed(self) -> None:
         """Missing or empty authType must not be interpreted as NONE."""
         from app.api.routes.toolsets import get_authenticated_toolsets
@@ -8120,6 +8162,7 @@ class TestGetAuthenticatedToolsets:
         ]
 
         async def mock_get_config(path, default=None):
+            """Return malformed auth-type instances without credential records."""
             if "toolset-instances" in path:
                 return instances
             return None
