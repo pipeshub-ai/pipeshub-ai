@@ -98,7 +98,8 @@ class _World:
 
 async def _remove(w: _World) -> None:
     await w.graph.client.execute_query(
-        "MATCH (n) WHERE n.id IN $ids DETACH DELETE n", parameters={"ids": sorted(w.ids)}
+        "MATCH (n) WHERE n.id IN $ids OR n.orgId = $org OR n.connectorId = $connector DETACH DELETE n",
+        parameters={"ids": sorted(w.ids), "org": w.org_id, "connector": w.connector_id},
     )
 
 
