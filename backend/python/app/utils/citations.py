@@ -11,6 +11,7 @@ from app.utils.chat_helpers import (
     valid_group_labels,
 )
 from app.utils.logger import create_logger
+from app.utils.text_fragments import SourceFormat, split_fragment_directive
 
 # Initialize logger
 logger = create_logger(__name__)
@@ -396,18 +397,10 @@ def _append_record_page_citation(
     return citation_num + 1
 
 
-_FRAGMENT_DIRECTIVE_DELIMITER = ":~:"
-
-
 def _page_of(url: str) -> str:
     """Strip the fragment directive so a bare page URL can be compared
-    against fragment-keyed web records (see `generate_text_fragment_url`).
-
-    Splits on `:~:` rather than `#:~:text=` because the directive is appended
-    after any anchor the URL already had, so the `#` is not always adjacent.
-    """
-    page = url.split(_FRAGMENT_DIRECTIVE_DELIMITER, 1)[0]
-    return page[:-1] if page.endswith("#") else page
+    against fragment-keyed web records (see `generate_text_fragment_url`)."""
+    return split_fragment_directive(url)[0]
 
 
 def _build_web_record_page_index(
@@ -541,11 +534,22 @@ def _resolve_fragment_content(
     return " ".join(display_parts), " ".join(text_parts)
 
 
+def _fragment_children_format(
+    blocks: list[dict[str, Any]], container_index: int
+) -> SourceFormat | None:
+    """Format of the text children `_resolve_fragment_content` joined."""
+    for block in blocks:
+        if block.get("parent_block_index") == container_index and isinstance(block.get("data"), str):
+            return SourceFormat.from_data_format(block.get("format"))
+    return None
+
+
 def _enrich_metadata_from_fragment(
     metadata: dict[str, Any],
     record: dict[str, Any],
     display_content: str,
     fragment_text: str,
+    source_format: SourceFormat | None = None,
 ) -> None:
     """Fill blockText/webUrl when primary block data was empty (image-split container).
 
@@ -563,7 +567,7 @@ def _enrich_metadata_from_fragment(
     base_url = record.get("weburl") or ""
     if not base_url:
         return
-    metadata["webUrl"] = generate_text_fragment_url(base_url, fragment_text)
+    metadata["webUrl"] = generate_text_fragment_url(base_url, fragment_text, source_format)
 
 
 def detect_hallucinated_citation_urls(
@@ -742,7 +746,7 @@ def _normalize_markdown_link_citations(
                 )
                 return False
             _enrich_metadata_from_fragment(
-                enhanced_metadata, record, display, fragment_text
+                enhanced_metadata, record, display, fragment_text, _fragment_children_format(blocks, block_index)
             )
             data = display
         citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
@@ -1023,7 +1027,7 @@ def _normalize_markdown_link_citations_for_agent(
                                 if not display:
                                     continue
                                 _enrich_metadata_from_fragment(
-                                    enhanced_metadata, r, display, fragment_text
+                                    enhanced_metadata, r, display, fragment_text, _fragment_children_format(blocks, block_index)
                                 )
                                 data = display
                             citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
@@ -1072,7 +1076,7 @@ def _normalize_markdown_link_citations_for_agent(
                                     if not display:
                                         continue
                                     _enrich_metadata_from_fragment(
-                                        enhanced_metadata, rec, display, fragment_text
+                                        enhanced_metadata, rec, display, fragment_text, _fragment_children_format(blocks, block_index)
                                     )
                                     data = display
                                 citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
