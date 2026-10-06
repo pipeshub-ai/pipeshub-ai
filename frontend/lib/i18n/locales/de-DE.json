@@ -2536,7 +2536,8 @@
       "status": {
         "ready": "Bereit",
         "notConnected": "Nicht verbunden",
-        "needsAuth": "Authentifizierung erforderlich"
+        "needsAuth": "Authentifizierung erforderlich",
+        "disabled": "Deaktiviert"
       },
       "team": {
         "title": "MCP-Server",
@@ -2658,7 +2659,13 @@
         "noState": "Es wurde kein State-Parameter zurückgegeben.",
         "backendRejected": "Der Server hat die Autorisierungsanfrage abgelehnt."
       },
-      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden"
+      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden",
+      "stdioPolicy": {
+        "disabledTitle": "In dieser Installation deaktiviert",
+        "disabledDescription": "Benutzerdefinierte STDIO-Server führen einen Befehl auf dem PipesHub-Server aus und bleiben deshalb deaktiviert, bis der Betreiber {{flag}}=true in der Umgebung der Installation setzt (Docker-Compose-.env oder config.mcpAllowCustomStdio in Helm). Bis dahin können Agenten die Tools dieses Servers nicht nutzen. Sie können ihn löschen oder auf einen Remote-Server (HTTP) umstellen.",
+        "unavailableHint": "Server mit lokalem Befehl (STDIO) sind in dieser Installation deaktiviert. Um sie zuzulassen, muss der Betreiber {{flag}}=true setzen.",
+        "enabledWarning": "Dieser Befehl läuft auf dem PipesHub-Server mit den Rechten des Dienstes, einschließlich seines Netzwerkzugriffs und seiner Zugangsdaten. Fügen Sie nur Befehle hinzu, denen Sie vertrauen."
+      }
     },
     "bots": {
       "subtitle": "Konfigurieren Sie Bot-Anmeldedaten und ordnen Sie optional jeden Bot einem Agenten zu",

@@ -64,6 +64,7 @@ from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("parsing_main")
 
@@ -226,6 +227,7 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    mark_process_non_dumpable()
     app_container = await _get_initialized_container()
     app.container = app_container  # type: ignore[attr-defined]
 

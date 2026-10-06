@@ -6817,6 +6817,94 @@ describe('ConfigurationManager Controller', () => {
     })
   })
 
+  describe('createAIModelsConfig (endpoint check for every model type)', () => {
+    const appConfig = { aiBackend: 'http://ai:8000', cmBackend: 'http://cm:3001' } as any
+    const calls: Array<{ uri: string; body: unknown }> = []
+
+    const stubAiService = (respond: (uri: string) => { statusCode: number; data: unknown }) => {
+      calls.length = 0
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        calls.push({ uri: this.uri, body: this.body })
+        return Promise.resolve(respond(this.uri))
+      })
+    }
+
+    const otherTypes = {
+      ocr: [{ provider: 'openAICompatible', configuration: { model: 'o', endpoint: 'http://ocr.example' } }],
+      slm: [{ provider: 'ollama', configuration: { model: 's', endpoint: 'http://slm.example' } }],
+      reasoning: [{ provider: 'openAICompatible', configuration: { model: 'r', endpoint: 'http://r.example' } }],
+      multiModal: [{ provider: 'ollama', configuration: { model: 'm', baseUrl: 'http://mm.example' } }],
+      imageGeneration: [{ provider: 'litellmProxy', configuration: { model: 'i', endpoint: 'http://img.example' } }],
+      tts: [{ provider: 'litellmProxy', configuration: { model: 't', endpoint: 'http://tts.example' } }],
+      stt: [{ provider: 'litellmProxy', configuration: { model: 'st', endpoint: 'http://stt.example' } }],
+    }
+
+    it('sends every model type without its own health check to the endpoint check before saving', async () => {
+      stubAiService(() => ({ statusCode: 200, data: { status: 'healthy' } }))
+      const kvs = createMockKeyValueStore()
+      const handler = createAIModelsConfig(kvs, createMockEventService(), appConfig)
+      const req = createMockRequest({ body: { ...otherTypes } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const check = calls.find((call) => call.uri.endsWith('/api/v1/model-endpoint-check'))
+      expect(check).to.not.be.undefined
+      expect(JSON.parse(String(check!.body))).to.deep.equal(Object.values(otherTypes).flat())
+      expect(kvs.set.calledOnce).to.be.true
+    })
+
+    it('refuses the save with the AI service reason when an endpoint is refused', async () => {
+      const reason = "Model endpoint 'http://img.example' resolves to a link-local or cloud metadata address, which is never allowed."
+      stubAiService((uri) =>
+        uri.endsWith('/model-endpoint-check')
+          ? { statusCode: 400, data: { status: 'error', message: reason } }
+          : { statusCode: 200, data: { status: 'healthy' } },
+      )
+      const kvs = createMockKeyValueStore()
+      const handler = createAIModelsConfig(kvs, createMockEventService(), appConfig)
+      const req = createMockRequest({
+        body: { llm: [{ provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'k' } }], imageGeneration: otherTypes.imageGeneration },
+      })
+      const next = createMockNext()
+
+      await handler(req, createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(400)
+      expect(error.message).to.equal(reason)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('does not save when the endpoint check itself fails', async () => {
+      stubAiService(() => ({ statusCode: 503, data: null }))
+      const kvs = createMockKeyValueStore()
+      const handler = createAIModelsConfig(kvs, createMockEventService(), appConfig)
+      const next = createMockNext()
+
+      await handler(createMockRequest({ body: { tts: otherTypes.tts } }), createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(500)
+      expect(kvs.set.called).to.be.false
+    })
+
+    it('does not call the endpoint check when only llm and embedding are saved', async () => {
+      stubAiService(() => ({ statusCode: 200, data: { status: 'healthy' } }))
+      const handler = createAIModelsConfig(createMockKeyValueStore(), createMockEventService(), appConfig)
+      const req = createMockRequest({
+        body: { llm: [{ provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'k' } }] },
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      expect(calls.map((call) => call.uri)).to.deep.equal(['http://ai:8000/api/v1/llm-health-check'])
+    })
+  })
+
   // -----------------------------------------------------------------------
   // addAIModelProvider - deep logic
   // -----------------------------------------------------------------------
