@@ -6121,6 +6121,25 @@ def _renamed_share_file(name: str, mime_type: str) -> FileRecord:
     )
 
 
+class TestOnRecordsMovedRefreshesPeople:
+    """A move can carry a new revision, whose people (author, last editor)
+    may differ, so the moved record's person edges are rewritten like any
+    other update's."""
+
+    pytestmark = pytest.mark.anyio
+
+    async def test_the_moved_record_gets_its_people_rewritten(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-abc", external_revision_id="sha-before")
+        new_record = _make_code_record(record_id="fresh-uuid", external_revision_id="sha-after")
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+        proc._handle_record_people = AsyncMock()
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        proc._handle_record_people.assert_awaited_once_with(new_record, tx_store)
+
+
 class TestOnRecordsMovedKeepsStoredState:
     pytestmark = pytest.mark.anyio
 

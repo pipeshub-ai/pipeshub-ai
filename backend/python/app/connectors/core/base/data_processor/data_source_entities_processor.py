@@ -2071,6 +2071,7 @@ class DataSourceEntitiesProcessor:
                         await self._link_kb_record_to_app(new_record, tx_store)
                     else:
                         await self._handle_parent_record(new_record, tx_store, existing_record=None)
+                    await self._handle_record_people(new_record, tx_store)
                     await self._handle_record_permissions(new_record, permissions, tx_store)
 
             # Compute and attempt the storage move for every record that was
