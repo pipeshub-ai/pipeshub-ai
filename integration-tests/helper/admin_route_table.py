@@ -278,7 +278,7 @@ PYTHON_BEHIND_NODE_ADMIN = frozenset({
 
 # Python handlers that ask whether the caller is an admin but let members
 # through for some inputs, so there is no single "member is refused" request.
-# helper/conditional_admin_table.py holds the live cases for each one.
+# helper/admin_route_conditional_table.py holds the live cases for each one.
 PYTHON_CONDITIONAL_ADMIN = {
     # Team-scoped connectors need an admin; a personal one is its creator's alone.
     "connectors/api/router.py::create_connector_instance": "team scope needs admin",

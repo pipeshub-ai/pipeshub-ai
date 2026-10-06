@@ -7,7 +7,7 @@ for members, a built-in skill needs an admin where a member's own does not.
 Only unit tests covered these, with the check itself mocked, so a route that
 lost its check would have passed everything.
 
-``helper/conditional_admin_table.py`` holds one row per such handler and one
+``helper/admin_route_conditional_table.py`` holds one row per such handler and one
 case per (thing asked for, caller) pair its rule tells apart. Each case is sent
 here to the running stack, as the admin, as the member who created the thing,
 or as another member, and must get the pinned answer: the refusal for a caller
@@ -26,7 +26,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from helper.conditional_admin_table import (
+from helper.admin_route_conditional_table import (
     ADMIN,
     CONDITIONAL_ROUTES,
     MEMBER,
@@ -34,7 +34,7 @@ from helper.conditional_admin_table import (
     ConditionalRoute,
     fill,
 )
-from helper.conditional_admin_world import Reply, World, oauth_state, send
+from helper.admin_route_conditional_world import Reply, World, oauth_state, send
 from helper.http.session_client import SessionClient
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser, create_second_user, delete_second_user

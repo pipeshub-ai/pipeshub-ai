@@ -1,6 +1,6 @@
 """The things the conditional-admin cases are aimed at, made for one run.
 
-``helper/conditional_admin_table.py`` names them (``WORLD_GROUPS``). A group is
+``helper/admin_route_conditional_table.py`` names them (``WORLD_GROUPS``). A group is
 created the first time a case asks for one of its keys, by the people the
 cases then call the routes as: the org admin, a member who creates things of
 their own, and a second member who created nothing. Everything is named
@@ -21,12 +21,12 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from helper.conditional_admin_table import (
+from helper.admin_route_conditional_table import (
     ADMIN,
     AGENT_CONNECTOR_AUTH,
     AGENT_CONNECTOR_TYPE,
@@ -45,8 +45,10 @@ from helper.conditional_admin_table import (
     WORLD_GROUPS,
 )
 from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
-from helper.second_user import SecondUser
 from helper.source_credentials import source_unavailable
+
+if TYPE_CHECKING:
+    from helper.second_user import SecondUser
 
 logger = logging.getLogger("conditional-admin")
 

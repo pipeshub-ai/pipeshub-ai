@@ -9,7 +9,7 @@ until the table names every such route.
 
 A Python handler whose admin check depends on what is asked for cannot be
 tested with one "member is refused" request. Those are listed with their rule
-in ``PYTHON_CONDITIONAL_ADMIN``, and ``helper/conditional_admin_table.py`` holds
+in ``PYTHON_CONDITIONAL_ADMIN``, and ``helper/admin_route_conditional_table.py`` holds
 the live cases ``permissions/test_conditional_admin_routes.py`` sends for each.
 The tests in the second half fail until every such handler has cases, and
 until those cases could not pass for the wrong reason.
@@ -38,7 +38,7 @@ from helper.admin_routes import (
     discover_admin_routes,
     discover_python_admin_handlers,
 )
-from helper.conditional_admin_table import (
+from helper.admin_route_conditional_table import (
     ADMIN,
     CALLERS,
     CONDITIONAL_ROUTES,
@@ -181,7 +181,7 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
     missing = sorted(set(PYTHON_CONDITIONAL_ADMIN) - set(rows))
     assert not missing, (
         "These handlers are in PYTHON_CONDITIONAL_ADMIN but have no row in "
-        "helper/conditional_admin_table.py, so nothing checks on a running stack "
+        "helper/admin_route_conditional_table.py, so nothing checks on a running stack "
         "that they enforce their rule:\n"
         + "\n".join(f"  {key}  ({PYTHON_CONDITIONAL_ADMIN[key]})" for key in missing)
     )
@@ -308,7 +308,7 @@ def test_connector_rules_cover_every_kind_of_caller() -> None:
 
 
 def test_the_test_world_can_make_every_group() -> None:
-    from helper.conditional_admin_world import World  # noqa: PLC0415 - only this test needs it
+    from helper.admin_route_conditional_world import World  # noqa: PLC0415 - only this test needs it
 
     missing = sorted(g for g in WORLD_GROUPS if not callable(getattr(World, f"_build_{g}", None)))
     assert not missing, f"groups of the test world with nothing to make them: {missing}"
