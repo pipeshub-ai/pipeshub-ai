@@ -31,6 +31,15 @@ describe('slack-bot citations: stripFragmentDirective', () => {
     );
   });
 
+  it('leaves the delimiter alone in a path or query', () => {
+    expect(stripFragmentDirective('https://example.com/search?q=a:~:b')).to.equal(
+      'https://example.com/search?q=a:~:b',
+    );
+    expect(stripFragmentDirective('https://example.com/search?q=a:~:b#:~:text=hello')).to.equal(
+      'https://example.com/search?q=a:~:b',
+    );
+  });
+
   it('handles percent-encoded hyphens and commas in the directive', () => {
     expect(stripFragmentDirective('https://example.com/p#:~:text=e%2Dmail,Q3%2C%20done')).to.equal(
       'https://example.com/p',

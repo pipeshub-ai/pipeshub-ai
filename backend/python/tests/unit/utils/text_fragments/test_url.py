@@ -22,6 +22,9 @@ class TestSplit:
             ("https://x.io/a#:~:", "https://x.io/a", None),
             ("https://x.io/a#:~:text=a&text=b", "https://x.io/a", "text=a&text=b"),
             ("https://x.io/a#:~:text=:~:text=b", "https://x.io/a", "text=:~:text=b"),
+            ("https://x.io/s?q=a:~:b", "https://x.io/s?q=a:~:b", None),
+            ("https://x.io/s?q=a:~:b#:~:text=hi", "https://x.io/s?q=a:~:b", "text=hi"),
+            ("https://x.io/p:~:q/a#sec:~:text=hi", "https://x.io/p:~:q/a#sec", "text=hi"),
         ],
     )
     def test_split(self, url: str, page: str, directive: str | None) -> None:
@@ -33,9 +36,16 @@ class TestSplit:
     def test_has_directive(self) -> None:
         assert has_fragment_directive("https://x.io/#:~:text=a")
         assert not has_fragment_directive("https://x.io/#anchor")
+        assert not has_fragment_directive("https://x.io/s?q=a:~:b")
 
 
 class TestAppend:
+    def test_delimiter_in_query_is_not_an_existing_directive(self) -> None:
+        assert (
+            append_directive("https://x.io/s?q=a:~:b", DIRECTIVE)
+            == "https://x.io/s?q=a:~:b#:~:text=hello%20world"
+        )
+
     def test_adds_hash_and_delimiter_when_no_fragment(self) -> None:
         assert append_directive("https://x.io/a", DIRECTIVE) == "https://x.io/a#:~:text=hello%20world"
 

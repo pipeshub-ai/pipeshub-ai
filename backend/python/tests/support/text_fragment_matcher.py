@@ -19,7 +19,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from app.utils.text_fragments import (
     TextDirective,
@@ -49,7 +49,7 @@ def _wordish(ch: str) -> bool:
 
 def rendered_blocks(html: str) -> list[str]:
     """Visible text of `html`, one string per block, whitespace-collapsed."""
-    root = HTMLParser(html).body
+    root = LexborHTMLParser(html).body
     blocks: list[str] = []
     current: list[str] = []
 
@@ -59,11 +59,11 @@ def rendered_blocks(html: str) -> list[str]:
         if text:
             blocks.append(text)
 
-    def hidden(node: Node) -> bool:
+    def hidden(node: LexborNode) -> bool:
         attrs = node.attributes
         return "hidden" in attrs or bool(attrs.get("style") and _HIDDEN_STYLE.search(attrs["style"]))
 
-    def walk(node: Node) -> None:
+    def walk(node: LexborNode) -> None:
         child = node.child
         while child is not None:
             tag = child.tag

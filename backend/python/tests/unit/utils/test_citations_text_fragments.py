@@ -29,6 +29,15 @@ class TestFragmentChildrenFormat:
         ]
         assert _fragment_children_format(blocks, 0) is SourceFormat.HTML
 
+    def test_skips_children_that_contribute_no_fragment_text(self) -> None:
+        blocks = [
+            {"parent_block_index": 0, "index": 4, "data": "<p>later</p>", "format": "html"},
+            {"parent_block_index": 0, "index": 3, "data": "**md**", "format": "markdown"},
+            {"parent_block_index": 0, "index": 1, "data": "   ", "format": "txt"},
+            {"parent_block_index": 0, "index": 2, "type": "image", "data": "data:image/png;base64,x", "format": "txt"},
+        ]
+        assert _fragment_children_format(blocks, 0) is SourceFormat.MARKDOWN
+
     def test_none_without_text_children(self) -> None:
         assert _fragment_children_format([{"parent_block_index": 1, "data": "x"}], 0) is None
 

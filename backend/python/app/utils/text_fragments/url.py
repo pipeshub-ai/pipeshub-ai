@@ -14,7 +14,15 @@ TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
 
 
 def has_fragment_directive(url: str) -> bool:
-    return FRAGMENT_DIRECTIVE_DELIMITER in url
+    return _directive_index(url) >= 0
+
+
+def _directive_index(url: str) -> int:
+    """Index of the first `:~:` inside the fragment; `:~:` is legal in a path or query."""
+    fragment_start = url.find("#")
+    if fragment_start < 0:
+        return -1
+    return url.find(FRAGMENT_DIRECTIVE_DELIMITER, fragment_start + 1)
 
 
 def split_fragment_directive(url: str) -> tuple[str, str | None]:
@@ -22,10 +30,11 @@ def split_fragment_directive(url: str) -> tuple[str, str | None]:
 
     The page URL keeps any anchor that preceded the directive
     (`page#section:~:text=x` -> `page#section`) and loses a dangling `#`. The
-    split is on the first `:~:`, as in the spec, because a directive is appended
-    after an existing anchor and so the `#` is not always adjacent to it.
+    split is on the first `:~:` in the fragment, as in the spec, because a
+    directive is appended after an existing anchor and so the `#` is not always
+    adjacent to it.
     """
-    index = url.find(FRAGMENT_DIRECTIVE_DELIMITER)
+    index = _directive_index(url)
     if index < 0:
         return url, None
     page = url[:index]

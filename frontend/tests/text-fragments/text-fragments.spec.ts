@@ -41,14 +41,26 @@ async function polyfillHighlight(page: Page, url: string): Promise<string | null
   );
 }
 
+// Chromium retries a directive that did not match at load 500 ms later, so a
+// "paints nothing" check must wait past that retry or it can pass too early.
+const NATIVE_RETRY_SETTLE_MS = 1000;
+
 async function nativeMarkedPixels(page: Page): Promise<number> {
-  await page.waitForTimeout(250);
   const png = PNG.sync.read(await page.screenshot());
   let marked = 0;
   for (let i = 0; i < png.data.length; i += 4) {
     if (png.data[i] > 240 && png.data[i + 1] < 20 && png.data[i + 2] > 240) marked += 1;
   }
   return marked;
+}
+
+async function expectNativeHighlight(page: Page, message: string): Promise<void> {
+  await expect.poll(() => nativeMarkedPixels(page), { message }).toBeGreaterThan(50);
+}
+
+async function expectNoNativeHighlight(page: Page): Promise<void> {
+  await page.waitForTimeout(NATIVE_RETRY_SETTLE_MS);
+  expect(await nativeMarkedPixels(page)).toBe(0);
 }
 
 function urlOf(testCase: GoldenCase): string {
@@ -85,12 +97,11 @@ test.describe('text fragments: native Chromium highlight', () => {
     test(testCase.id, async ({ page }) => {
       await serveFixtures(page);
       await page.goto(urlOf(testCase));
-      const marked = await nativeMarkedPixels(page);
 
       if (hasDirective(urlOf(testCase))) {
-        expect(marked, 'native ::target-text should paint the matched text').toBeGreaterThan(50);
+        await expectNativeHighlight(page, 'native ::target-text should paint the matched text');
       } else {
-        expect(marked).toBe(0);
+        await expectNoNativeHighlight(page);
       }
     });
   }
@@ -98,16 +109,16 @@ test.describe('text fragments: native Chromium highlight', () => {
   test('control: a directive that matches nothing paints nothing', async ({ page }) => {
     await serveFixtures(page);
     await page.goto(`${FAKE_ORIGIN}/report.html#:~:text=this%20phrase%20is%20not%20on%20the%20page`);
-    expect(await nativeMarkedPixels(page)).toBe(0);
+    await expectNoNativeHighlight(page);
   });
 
   test('control: an unencoded hyphen invalidates the whole directive', async ({ page }) => {
     await serveFixtures(page);
     const encoded = `${FAKE_ORIGIN}/report.html#:~:text=Revenue%20grew%2012%25%20year%2Dover%2Dyear`;
     await page.goto(encoded);
-    expect(await nativeMarkedPixels(page), 'the encoded form is the positive control').toBeGreaterThan(50);
+    await expectNativeHighlight(page, 'the encoded form is the positive control');
 
     await page.goto(`${FAKE_ORIGIN}/report.html?unencoded#:~:text=Revenue%20grew%2012%25%20year-over-year`);
-    expect(await nativeMarkedPixels(page)).toBe(0);
+    await expectNoNativeHighlight(page);
   });
 });

@@ -11,7 +11,7 @@ import re
 from typing import TYPE_CHECKING, Protocol
 
 from markdown_it import MarkdownIt
-from selectolax.parser import HTMLParser, Node
+from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from app.utils.text_fragments.models import SourceFormat
 
@@ -96,7 +96,7 @@ _HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.IGN
 
 class HtmlBlockExtractor:
     def extract(self, text: str) -> list[str]:
-        root = HTMLParser(text).body
+        root = LexborHTMLParser(text).body
         if root is None:
             return []
         blocks: list[str] = []
@@ -107,7 +107,7 @@ class HtmlBlockExtractor:
                 blocks.append("".join(current))
                 current.clear()
 
-        def visit(node: Node) -> None:
+        def visit(node: LexborNode) -> None:
             child = node.child
             while child is not None:
                 tag = child.tag
@@ -130,7 +130,7 @@ class HtmlBlockExtractor:
         return [block for block in blocks if block.strip()]
 
 
-def _is_hidden(node: Node) -> bool:
+def _is_hidden(node: LexborNode) -> bool:
     attributes = node.attributes
     if "hidden" in attributes:
         return True

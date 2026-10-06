@@ -512,19 +512,13 @@ def _resolve_fragment_content(
         (display_content, fragment_text) — display may include "Image" placeholders;
         fragment_text is text-only for #:~:text= URL highlighting on the source page.
     """
-    children = [b for b in blocks if b.get("parent_block_index") == container_index]
-    if not children:
-        return "", ""
-    children.sort(key=lambda b: b.get("index", 0))
     display_parts: list[str] = []
     text_parts: list[str] = []
-    for child in children:
-        child_type = child.get("type")
-        child_data = child.get("data")
-        if child_type == BlockType.IMAGE.value:
+    for child in _fragment_children(blocks, container_index):
+        if child.get("type") == BlockType.IMAGE.value:
             display_parts.append("Image")
-        elif isinstance(child_data, str) and child_data.strip():
-            text = child_data.strip()
+        elif _contributes_fragment_text(child):
+            text = child["data"].strip()
             display_parts.append(text)
             text_parts.append(text)
     if not display_parts:
@@ -537,11 +531,22 @@ def _resolve_fragment_content(
 def _fragment_children_format(
     blocks: list[dict[str, Any]], container_index: int
 ) -> SourceFormat | None:
-    """Format of the text children `_resolve_fragment_content` joined."""
-    for block in blocks:
-        if block.get("parent_block_index") == container_index and isinstance(block.get("data"), str):
-            return SourceFormat.from_data_format(block.get("format"))
+    """Format of the first child whose text `_resolve_fragment_content` joined."""
+    for child in _fragment_children(blocks, container_index):
+        if _contributes_fragment_text(child):
+            return SourceFormat.from_data_format(child.get("format"))
     return None
+
+
+def _fragment_children(blocks: list[dict[str, Any]], container_index: int) -> list[dict[str, Any]]:
+    children = [b for b in blocks if b.get("parent_block_index") == container_index]
+    children.sort(key=lambda b: b.get("index", 0))
+    return children
+
+
+def _contributes_fragment_text(child: dict[str, Any]) -> bool:
+    data = child.get("data")
+    return child.get("type") != BlockType.IMAGE.value and isinstance(data, str) and bool(data.strip())
 
 
 def _enrich_metadata_from_fragment(
