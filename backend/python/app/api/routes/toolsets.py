@@ -1954,6 +1954,7 @@ async def get_authenticated_toolsets(
 
     # Fetch user auth for all instances in parallel
     async def _fetch_user_auth(inst: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Fetch the current user's stored auth record for one toolset instance."""
         iid = inst.get("_id", "")
         try:
             path = _get_user_auth_path(iid, user_id)
@@ -1973,10 +1974,11 @@ async def get_authenticated_toolsets(
         is_authenticated = auth_type == "NONE" or bool(user_auth and user_auth.get("isAuthenticated", False))
         if not is_authenticated:
             continue
-        auth_by_instance[inst.get("_id", "")] = user_auth or {
-            "isAuthenticated": True,
-            "authType": "NONE",
-        }
+        auth_by_instance[inst.get("_id", "")] = (
+            {"isAuthenticated": True, "authType": "NONE"}
+            if auth_type == "NONE"
+            else user_auth
+        )
 
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
@@ -2925,6 +2927,7 @@ async def _build_toolsets_list_response(
         return _empty_toolsets_response(page, limit)
 
     async def _fetch_instance_with_auth(inst: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Fetch an auth record for one instance while keeping list assembly resilient."""
         instance_id = inst.get("_id", "")
         try:
             auth = await fetch_auth_for_instance(instance_id)
