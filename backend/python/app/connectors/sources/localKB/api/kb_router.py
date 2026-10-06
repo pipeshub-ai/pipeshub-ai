@@ -17,7 +17,6 @@ from app.connectors.sources.localKB.api.models import (
     CreateFolderResponse,
     CreateKnowledgeBaseResponse,
     CreatePermissionsResponse,
-    CreateRecordsResponse,
     DeleteRecordResponse,
     ErrorResponse,
     FolderContentsResponse,
@@ -412,52 +411,6 @@ async def delete_knowledge_base(
         raise HTTPException(
             status_code=500,
             detail=action_failed("delete this knowledge base")
-        )
-
-@kb_router.post(
-    "/{kb_id}/records",
-    response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
-)
-@inject
-async def create_records_in_kb(
-    kb_id: str,
-    request: Request,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Union[CreateRecordsResponse, Dict[str, Any]]:
-    try:
-        user_id = request.state.user.get("userId")
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
-            )
-        result = await kb_service.create_records_in_kb(
-            kb_id=kb_id,
-            user_id=user_id,
-            records=body.get("records"),
-            file_records=body.get("fileRecords"),
-        )
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
-            )
-        return result
-
-    except HTTPException as he:
-        raise he
-
-    except Exception as e:
-        _log.error("create_records_in_kb failed: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=action_failed("add these files")
         )
 
 @kb_router.post(
@@ -1343,55 +1296,6 @@ async def list_kb_permissions(
         raise HTTPException(
             status_code=500,
             detail=action_failed("load who this knowledge base is shared with")
-        )
-
-
-@kb_router.post(
-    "/{kb_id}/folder/{folder_id}/records",
-    response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
-)
-@inject
-async def create_records_in_folder(
-    kb_id: str,
-    folder_id: str,
-    request: Request,
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Union[CreateRecordsResponse, Dict[str, Any]]:
-    try:
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request body"
-            )
-        user_id = request.state.user.get("userId")
-        result = await kb_service.create_records_in_folder(
-            kb_id=kb_id,
-            folder_id=folder_id,
-            user_id=user_id,
-            records=body.get("records"),
-            file_records=body.get("fileRecords"),
-        )
-        if not result or result.get("success") is False:
-            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
-            error_reason = result.get("reason", "Unknown error")
-            raise HTTPException(
-                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
-                detail=error_reason
-            )
-        return result
-
-    except HTTPException as he:
-        raise he
-
-    except Exception as e:
-        _log.error("create_records_in_folder failed: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=action_failed("add these files")
         )
 
 

@@ -268,26 +268,88 @@ Without one, `run_code` fails at provision with an opaque Docker error in the
 middle of a user's conversation. Failing here instead makes the operator
 choose how code execution is isolated, at install time, with the options in
 front of them.
+
+Also refuses a Docker socket mounted into the application container: that is
+the raw daemon API with no policy in between, i.e. root on the node.
 */}}
 {{- define "pipeshub-ai.validateSandbox" -}}
 {{- if and (eq (include "pipeshub-ai.sandboxMode" .) "local") (ne (include "pipeshub-ai.sandboxAllowLocal" .) "true") }}
   {{- fail "config.sandboxMode is \"local\", which runs generated code as a subprocess of this pod with no container isolation, and the service refuses it unless config.sandboxAllowLocal=true. Set that only on a single-tenant development cluster; otherwise use docker or e2b." }}
 {{- end }}
-{{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
-  {{- $hasDaemon := or .Values.sandbox.dind.enabled .Values.config.dockerHost }}
-  {{- if not $hasDaemon }}
-    {{- $socketMounted := false }}
-    {{- range .Values.extraVolumeMounts }}
-      {{- if contains "docker.sock" (.mountPath | default "") }}
-        {{- $socketMounted = true }}
+{{- $socketError := "mounts a Docker socket into the application container, which gives it, and any code it runs, root on the node. Use --set sandbox.dind.enabled=true (the app then reaches the daemon only through the docker-proxy policy sidecar) or --set config.sandboxMode=e2b." }}
+{{- range $mounts := list .Values.extraVolumeMounts .Values.volumeMounts }}
+  {{- range $mounts }}
+    {{- if kindIs "map" . }}
+      {{- $named := list (.mountPath | default "") (.subPath | default "") (.subPathExpr | default "") }}
+      {{- if or (eq (toString (.name | default "")) "dind-sock") (include "pipeshub-ai.namesRuntimeSocket" $named) }}
+        {{- fail (printf "extraVolumeMounts/volumeMounts %s" $socketError) }}
       {{- end }}
-    {{- end }}
-    {{- if not $socketMounted }}
-      {{- fail "config.sandboxMode is \"docker\" but no Docker daemon is configured, so run_code would fail at runtime. Pick one: (a) --set sandbox.dind.enabled=true to run a Docker-in-Docker sidecar (needs a PRIVILEGED container - see sandbox.dind in values.yaml); (b) --set config.dockerHost=tcp://<host>:2375 to use a daemon you already run; (c) mount the node's /var/run/docker.sock via extraVolumes/extraVolumeMounts; (d) --set config.sandboxMode=e2b with an E2B_API_KEY to execute off-cluster; or (e) --set config.sandboxMode=local --set config.sandboxAllowLocal=true to run generated code as a subprocess of this pod - NO container isolation, acceptable only for single-tenant development clusters." }}
     {{- end }}
   {{- end }}
 {{- end }}
+{{- range $volumes := list .Values.extraVolumes .Values.volumes }}
+  {{- range $volumes }}
+    {{- if and (kindIs "map" .) (kindIs "map" .hostPath) }}
+      {{- if or (eq (toString (.hostPath.type | default "")) "Socket") (include "pipeshub-ai.hostPathReachesRuntimeSocket" (toString (.hostPath.path | default ""))) }}
+        {{- fail (printf "extraVolumes/volumes %s" $socketError) }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
 {{- end }}
+{{- if eq (include "pipeshub-ai.sandboxMode" .) "docker" }}
+  {{- if not (or .Values.sandbox.dind.enabled .Values.config.dockerHost) }}
+    {{- fail "config.sandboxMode is \"docker\" but no Docker daemon is configured, so run_code would fail at runtime. Pick one: (a) --set sandbox.dind.enabled=true to run a Docker-in-Docker sidecar behind the docker-proxy policy sidecar (needs a PRIVILEGED container - see sandbox.dind in values.yaml); (b) --set config.dockerHost=tcp://<host>:2375 to use a daemon you run, behind the same policy proxy (python -m app.docker_proxy_main); (c) --set config.sandboxMode=e2b with an E2B_API_KEY to execute off-cluster; or (d) --set config.sandboxMode=local --set config.sandboxAllowLocal=true to run generated code as a subprocess of this pod - NO container isolation, acceptable only for single-tenant development clusters." }}
+  {{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Container-runtime sockets on a node. Any of them is as good as the Docker API:
+whoever can write to it can start a privileged container. Each is listed once
+under /run and expanded to the /var/run spelling as well, because /var/run is
+usually a symlink to /run and a hostPath under either reaches the same socket.
+*/}}
+{{- define "pipeshub-ai.runtimeSocketPaths" -}}
+{{- $paths := list -}}
+{{- range list "/run/docker.sock" "/run/containerd/containerd.sock" "/run/k3s/containerd/containerd.sock" "/run/crio/crio.sock" "/run/podman/podman.sock" "/run/dockershim.sock" "/run/cri-dockerd.sock" -}}
+  {{- $paths = append (append $paths .) (printf "/var%s" .) -}}
+{{- end -}}
+{{- $paths | toJson -}}
+{{- end -}}
+
+{{/*
+"true" when any of the given strings names a runtime socket file. Used on mount
+paths and subPaths, where only the file name is visible.
+*/}}
+{{- define "pipeshub-ai.namesRuntimeSocket" -}}
+{{- $hit := false -}}
+{{- $sockets := include "pipeshub-ai.runtimeSocketPaths" . | fromJsonArray -}}
+{{- range $value := . -}}
+  {{- range $socket := $sockets -}}
+    {{- if and $value (contains (base $socket) (toString $value)) -}}
+      {{- $hit = true -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if $hit }}true{{ end -}}
+{{- end -}}
+
+{{/*
+"true" when a hostPath is a runtime socket or a directory that holds one, so /,
+/run and /var/run are caught as well as the socket file itself.
+*/}}
+{{- define "pipeshub-ai.hostPathReachesRuntimeSocket" -}}
+{{- $hit := false -}}
+{{- if . -}}
+  {{- $path := clean . -}}
+  {{- range $socket := include "pipeshub-ai.runtimeSocketPaths" . | fromJsonArray -}}
+    {{- if or (eq $path "/") (eq $path $socket) (hasPrefix (printf "%s/" $path) $socket) (contains (base $socket) $path) -}}
+      {{- $hit = true -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if $hit }}true{{ end -}}
+{{- end -}}
 
 {{/*
 Canonical `config.sandboxMode`, validated against what the service accepts.
@@ -326,18 +388,19 @@ Effective DOCKER_HOST, or "" when no daemon is configured.
 
 Single source for the precedence so the deployment's env var and the NOTES
 description cannot disagree: an explicitly configured daemon wins, otherwise
-the DinD sidecar's loopback address if one is being deployed.
+the docker-proxy sidecar's loopback address if DinD is being deployed. The
+proxy binds 127.0.0.1 only, so "localhost" resolving to ::1 first would miss.
 */}}
 {{- define "pipeshub-ai.dockerHost" -}}
 {{- if .Values.config.dockerHost -}}
 {{- .Values.config.dockerHost -}}
 {{- else if .Values.sandbox.dind.enabled -}}
-{{- printf "tcp://localhost:%v" .Values.sandbox.dind.port -}}
+{{- printf "tcp://127.0.0.1:%v" .Values.sandbox.dind.port -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-How run_code actually executes: local | e2b | dind | external | socket.
+How run_code actually executes: local | e2b | dind | external.
 
 Deploying the sidecar and USING it are independent — `sandbox.dind.enabled`
 creates a privileged container whatever the backend is, while
@@ -351,10 +414,8 @@ Docker-in-Docker for an e2b deployment.
 {{- $mode -}}
 {{- else if .Values.config.dockerHost -}}
 external
-{{- else if .Values.sandbox.dind.enabled -}}
-dind
 {{- else -}}
-socket
+dind
 {{- end -}}
 {{- end -}}
 

@@ -1,10 +1,7 @@
 import axios from "axios";
 import FormData from "form-data";
 import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
-import {
-  type SlackBotConfig,
-  getCurrentMatchedSlackBot,
-} from "./botRegistry";
+import { type SlackBotConfig } from "./botRegistry";
 
 // ---------------------------------------------------------------------------
 // Interfaces & Types
@@ -1906,13 +1903,15 @@ export function buildChatStreamUrl(
 // Bot resolution
 // ---------------------------------------------------------------------------
 
-export async function resolveSlackBotForEvent(
-): Promise<SlackBotConfig | null> {
-  const matchedFromRequestContext = getCurrentMatchedSlackBot();
-  if (matchedFromRequestContext) {
-    return matchedFromRequestContext;
-  }
-  return null;
+/**
+ * The resolver is passed in rather than imported: the EE receiver stores the
+ * matched bot in the EE registry's own AsyncLocalStorage, so reading the OSS
+ * store from an EE handler would always come back empty.
+ */
+export async function resolveSlackBotForEvent<T extends SlackBotConfig>(
+  getMatchedBot: () => T | null,
+): Promise<T | null> {
+  return getMatchedBot();
 }
 
 // ---------------------------------------------------------------------------

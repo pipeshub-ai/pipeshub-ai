@@ -165,6 +165,11 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
+      # Custom (non-catalog) STDIO MCP servers run an admin-entered command on this
+      # host as the app user, with its network access. Off unless "true"; catalog
+      # and remote (HTTP) MCP servers are unaffected.
+      - MCP_ALLOW_CUSTOM_STDIO=${MCP_ALLOW_CUSTOM_STDIO:-false}
+
       # Sandbox execution mode (local = subprocess, docker = ephemeral containers).
       # Defaults to "docker" -- the sandbox-image service below builds the required
       # pipeshub/sandbox:latest image before pipeshub-ai starts.
