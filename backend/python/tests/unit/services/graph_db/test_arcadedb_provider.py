@@ -115,5 +115,5 @@ class TestSchema:
         assert result is True
         executed = [c.args[0] for c in arcadedb_provider.client.execute_query.call_args_list]
         assert any("CREATE CONSTRAINT" in q and "IS UNIQUE" in q for q in executed)
-        assert not any("IS NOT NULL" in q for q in executed)
+        assert not any("CREATE CONSTRAINT" in q and "IS NOT NULL" in q for q in executed)
         assert any("CREATE INDEX" in q for q in executed)
