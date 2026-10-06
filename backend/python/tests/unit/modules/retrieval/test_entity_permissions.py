@@ -710,3 +710,13 @@ class TestListingFirstWindowPastTheDeadline:
         with pytest.raises(EntityAccessError):
             await list_accessible_entity_records(graph, _context(), entity_id="t1", entity_type="topic", limit=5)
         assert asyncio.get_running_loop().time() - started < 2
+
+
+@pytest.mark.asyncio
+async def test_a_hits_aliases_are_not_carried_to_the_tools() -> None:
+    """KG-17: stored aliases help matching only; a spelling from a record
+    the user cannot read must not reach the entity tools' output."""
+    store = _store([_hit("t1", "topic", 0.9, aliases=["Project Falcon"])])
+    graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "kb-1")]})
+    (hit,) = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+    assert not hasattr(hit, "aliases")

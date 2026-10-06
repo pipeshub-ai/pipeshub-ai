@@ -105,6 +105,16 @@ has_pytest() {
     || { echo "$1 lacks pytest-timeout (pip install pytest-timeout)"; return 1; }
 }
 
+# A suite that drives a real browser needs the browser build the installed
+# Playwright version expects, not just the npm package.
+has_playwright_chromium() {
+  (cd frontend && node -e "
+    const { chromium } = require('@playwright/test');
+    process.exit(require('fs').existsSync(chromium.executablePath()) ? 0 : 1);
+  ") >/dev/null 2>&1 \
+    || { echo "Playwright Chromium not installed (cd frontend && npx playwright install chromium)"; return 1; }
+}
+
 printf '\n%sVerifying %s%s\n\n' "$BOLD" "$ROOT" "$RESET"
 
 # ── shell ────────────────────────────────────────────────────────────────────
@@ -157,6 +167,10 @@ run frontend "i18n checker tests" \
 run frontend "frontend unit tests (vitest)" \
   'exists frontend/node_modules && have npm' \
   bash -c "cd frontend && npm run --silent test:unit"
+
+run frontend "text-fragment browser tests" \
+  'exists frontend/node_modules/@playwright/test && have node && has_playwright_chromium' \
+  bash -c "cd frontend && npm run --silent test:text-fragments"
 
 run frontend "electron main-process tests" \
   'exists frontend/node_modules && have npm' \

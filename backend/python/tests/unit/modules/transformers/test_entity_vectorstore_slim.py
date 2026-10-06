@@ -395,10 +395,11 @@ class TestSearchOrgFilter:
             accessible_record_group_ids={"rg-1"}, accessible_connector_ids=set(),
         )
 
-        vector_db_service.filter_collection.assert_awaited_once()
-        _, kwargs = vector_db_service.filter_collection.call_args
-        assert kwargs["must"]["metadata.orgId"] == "org-1"
-        assert "metadata.entityType" not in kwargs["must"]
+        # Two requests (KG-14): every type but record titles, then titles.
+        others, titles = (c.kwargs for c in vector_db_service.filter_collection.await_args_list)
+        assert others["must"] == {"metadata.orgId": "org-1"}
+        assert others["must_not"] == {"metadata.entityType": "record"}
+        assert titles["must"] == {"metadata.orgId": "org-1", "metadata.entityType": "record"}
 
     @pytest.mark.asyncio
     async def test_search_adds_entity_type_filter_when_provided(self) -> None:

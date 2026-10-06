@@ -358,7 +358,7 @@ class TestARecreatedCollectionReachesRunningServices:
     async def test_the_merge_candidate_search_resets_it_too(self) -> None:
         store, _ = self._searching_store(collection_dimension=4)
         with pytest.raises(RuntimeError):
-            await store.find_best_matches(["Pricing"], ORG, "topic")
+            await store.find_candidates(["Pricing"], ORG, "topic")
         assert store._initialized is False
 
     async def test_after_the_reset_the_next_call_reads_the_new_model(self) -> None:

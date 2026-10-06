@@ -1,14 +1,11 @@
 import asyncio
 import base64
-import hashlib
 import logging
 import re
-import time
 from collections import defaultdict
 from collections.abc import Iterable
 from itertools import groupby
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
@@ -50,6 +47,12 @@ from app.services.vector_db.strategy import QueryContext
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jinja_templates import compiled_template
 from app.utils.logger import create_logger
+from app.utils.text_fragments import (  # noqa: F401  (re-exported for existing importers)
+    FRAGMENT_DIRECTIVE_DELIMITER,
+    TEXT_FRAGMENT_DIRECTIVE_PREFIX,
+    SourceFormat,
+    build_text_fragment_url,
+)
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -760,8 +763,28 @@ def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShorte
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
-TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
-FRAGMENT_DIRECTIVE_DELIMITER = ":~:"
+def generate_text_fragment_url(
+    base_url: str, text_snippet: str, source_format: SourceFormat | None = None
+) -> str:
+    """Citation link to `base_url` that highlights `text_snippet` in a browser."""
+    return build_text_fragment_url(base_url, text_snippet, source_format)
+
+
+# Neither has page text to highlight: a summary describes the record, and an
+# image block's text is only a placeholder.
+_NO_TEXT_FRAGMENT_BLOCK_TYPES = frozenset({BlockType.RECORD_SUMMARY.value, BlockType.IMAGE.value})
+
+
+def _fragment_source_format(block: dict[str, Any] | None, block_type: str | None) -> SourceFormat | None:
+    """How a block's text is written, which decides how it is split into rendered blocks.
+
+    Code and table-row text is never markdown, so it must not be parsed as such;
+    other blocks follow the format the parser recorded, if any.
+    """
+    if block_type in (BlockType.CODE.value, BlockType.TABLE_ROW.value):
+        return SourceFormat.PLAIN
+    return SourceFormat.from_data_format(block.get("format")) if block else None
+
 
 GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
@@ -2927,9 +2950,11 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                 web_url
                 and origin != "UPLOAD"
                 and record_type != RecordType.MAIL.value
-                and block_type != BlockType.RECORD_SUMMARY.value
+                and block_type not in _NO_TEXT_FRAGMENT_BLOCK_TYPES
             ):
-                web_url = generate_text_fragment_url(web_url, block_text)
+                web_url = generate_text_fragment_url(
+                    web_url, block_text, _fragment_source_format(block, block_type)
+                )
             if not web_url and recordId:
                 web_url = f"/record/{recordId}"
 
@@ -4913,158 +4938,3 @@ def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]
             new_tokens += count_tokens_text(text_content,enc)
 
     return current_message_tokens, new_tokens
-
-
-
-FRAGMENT_WORD_COUNT = 4
-
-_FRAGMENT_WORD_PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
-
-def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
-    if not snippet:
-        return "", ""
-
-    PATTERN = _FRAGMENT_WORD_PATTERN
-
-    # --- Find start_text: first match with at least FRAGMENT_WORD_COUNT words, else longest ---
-    all_matches = list(PATTERN.finditer(snippet))
-    if not all_matches:
-        return "", ""
-
-    best_match = next(
-        (m for m in all_matches if len(m.group().strip().split()) >= FRAGMENT_WORD_COUNT),
-        max(all_matches, key=lambda m: len(m.group().strip().split())),
-    )
-    first_text = best_match.group().strip()
-    if not first_text:
-        return "", ""
-
-    words = first_text.split()
-    start_text = " ".join(words[:FRAGMENT_WORD_COUNT])
-    start_text_end = best_match.start() + len(first_text.split()[0])
-
-    # Compute exact end position of start_text in snippet
-    leading_spaces = len(best_match.group()) - len(best_match.group().lstrip())
-    start_text_begin = best_match.start() + leading_spaces
-    start_text_end = start_text_begin + len(start_text)
-
-    # --- Find end_text: last matching segment after start_text_end ---
-    remaining = snippet[start_text_end:]
-
-    last_text = None
-    for m in PATTERN.finditer(remaining):
-        stripped = m.group().strip()
-        if stripped:
-            last_text = stripped
-
-    if last_text:
-        words = last_text.split()
-        end_text = " ".join(words[-FRAGMENT_WORD_COUNT:])
-    elif len(first_text.split()) > FRAGMENT_WORD_COUNT:
-        word_count = len(first_text.split())
-        diff = word_count - FRAGMENT_WORD_COUNT
-        diff = min(FRAGMENT_WORD_COUNT, diff)
-        # Fall back to last 4 words of the first segment
-        end_text = " ".join(first_text.split()[-diff:])
-    else:
-        end_text = ""
-
-    return start_text, end_text.strip()
-
-# Values are fragment URLs that embed a few URL-encoded snippet words in
-# #:~:text=… — not whole record blocks. Keys are digests of the snippet.
-# TTL + maxsize keep retention bounded across orgs in a long-lived process.
-_FRAGMENT_URL_CACHE: dict[tuple[str, bytes], tuple[str, float]] = {}
-_FRAGMENT_URL_CACHE_MAXSIZE = 8192
-_FRAGMENT_URL_CACHE_TTL_SECONDS = 300.0
-
-
-def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
-    """Memoized wrapper over `_build_text_fragment_url`.
-
-    The live citation overlay re-derives every citation's URL on each refresh,
-    so the same (base_url, snippet) pair is re-scanned many times per turn.
-    Snippets are keyed by digest so the cache does not retain full record text
-    as keys; cached values still hold the short start/end words used in the
-    text-fragment directive. Entries expire after
-    `_FRAGMENT_URL_CACHE_TTL_SECONDS` and the map is cleared wholesale when
-    full — eviction bookkeeping would cost more than the recompute it saves.
-    """
-    if not isinstance(base_url, str) or not isinstance(text_snippet, str):
-        return _build_text_fragment_url(base_url, text_snippet)
-
-    key = (base_url, hashlib.sha1(text_snippet.encode("utf-8", "surrogatepass")).digest())
-    now = time.monotonic()
-    cached = _FRAGMENT_URL_CACHE.get(key)
-    if cached is not None:
-        result, expires_at = cached
-        if expires_at > now:
-            return result
-        _FRAGMENT_URL_CACHE.pop(key, None)
-
-    result = _build_text_fragment_url(base_url, text_snippet)
-    if len(_FRAGMENT_URL_CACHE) >= _FRAGMENT_URL_CACHE_MAXSIZE:
-        _FRAGMENT_URL_CACHE.clear()
-    _FRAGMENT_URL_CACHE[key] = (result, now + _FRAGMENT_URL_CACHE_TTL_SECONDS)
-    return result
-
-
-def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
-    """
-    Generate a URL with text fragment for direct navigation to specific text.
-
-    Format: url#:~:text=start_text,end_text
-
-    Args:
-        base_url: The base URL of the page
-        text_snippet: The text to highlight/navigate to
-
-    Returns:
-        URL with text fragment, or base_url if encoding fails
-    """
-    if not base_url or not text_snippet:
-        return base_url
-
-    # Everything after the first `:~:` is the fragment directive, so a URL that
-    # already carries one cannot take a second.
-    if FRAGMENT_DIRECTIVE_DELIMITER in base_url:
-        return base_url
-
-    try:
-        snippet = text_snippet.strip()
-        if not snippet:
-            return base_url
-
-        while snippet and not snippet[-1].isalnum():
-            snippet = snippet[:-1]
-        if not snippet:
-            return base_url
-
-        start_text, end_text = extract_start_end_text(snippet)
-
-        if not start_text:
-            return base_url
-
-        encoded_start = quote(start_text, safe="';:[]")
-        encoded_end = ""
-
-        if end_text:
-            encoded_end = quote(end_text, safe="';:[]")
-
-        # Append rather than replace: a conforming browser hands the page the
-        # fragment up to `:~:` and keeps the directive to itself, so an anchor
-        # the connector set (a Gmail message id, a heading) still resolves.
-        delimiter = (
-            FRAGMENT_DIRECTIVE_DELIMITER
-            if '#' in base_url
-            else f"#{FRAGMENT_DIRECTIVE_DELIMITER}"
-        )
-
-        return f"{base_url}{delimiter}text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
-
-    except Exception:
-        return base_url
-
-
-
-

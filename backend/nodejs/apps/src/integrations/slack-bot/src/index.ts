@@ -33,7 +33,11 @@ import {
   toolStatusLabel,
 } from "./utils/tool-display";
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
-import { rewriteCitationsForSlack, stripTinyRefCitationLinks } from "./utils/citations";
+import {
+  rewriteCitationsForSlack,
+  stripFragmentDirective,
+  stripTinyRefCitationLinks,
+} from "./utils/citations";
 
 import {
   type SlackBotConfig,
@@ -192,8 +196,8 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     seenRecordIds.add(recordId);
 
     const recordName = citation.citationData.metadata.recordName || "Source";
-    // Strip text fragment directive (#:~:text=...) but preserve other fragments
-    const recordUrl = webUrl.replace(/#:~:text=[^#]*/, '');
+    // Slack does not implement text fragments, and sources are deduped per record
+    const recordUrl = stripFragmentDirective(webUrl);
     uniqueRecords.push({ name: recordName, url: recordUrl });
   }
 
