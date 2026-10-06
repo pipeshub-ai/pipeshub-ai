@@ -2673,7 +2673,8 @@
       "status": {
         "ready": "就绪",
         "notConnected": "未连接",
-        "needsAuth": "需要认证"
+        "needsAuth": "需要认证",
+        "disabled": "已禁用"
       },
       "team": {
         "title": "MCP 服务器",
@@ -2795,7 +2796,13 @@
         "noState": "未返回 state 参数。",
         "backendRejected": "服务器拒绝了授权请求。"
       },
-      "deleteDisabledTooltip": "此服务器无法删除"
+      "deleteDisabledTooltip": "此服务器无法删除",
+      "stdioPolicy": {
+        "disabledTitle": "此部署已禁用",
+        "disabledDescription": "自定义 STDIO 服务器会在 PipesHub 服务器上运行命令，因此在运维人员于部署环境中设置 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前保持关闭。在此之前，智能体无法使用此服务器的工具。你可以删除它，或将其改为远程（HTTP）服务器。",
+        "unavailableHint": "此部署已关闭本地命令（STDIO）服务器。如需允许，运维人员必须设置 {{flag}}=true。",
+        "enabledWarning": "此命令以服务的权限在 PipesHub 服务器上运行，包括其网络访问和凭据。请只添加你信任的命令。"
+      }
     },
     "bots": {
       "subtitle": "配置机器人凭据，并可选择将每个机器人映射到一个智能体",

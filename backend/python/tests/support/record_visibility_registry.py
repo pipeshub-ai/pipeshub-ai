@@ -146,6 +146,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "link_record_to_group": (Rule.WRITE, ""),
     "replace_record_permissions": (Rule.WRITE, ""),
     "batch_upsert_record_permissions": (Rule.WRITE, ""),
+    "replace_record_permissions": (Rule.WRITE, "rewrites the permission and inherit edges of a record the caller resolved"),
+    "link_record_to_group": (Rule.WRITE, "moves a record the caller resolved between record groups"),
     "delete_records_and_relations": (Rule.WRITE, ""),
     "delete_record": (Rule.WRITE, ""),
     "delete_record_by_external_id": (Rule.WRITE, "looks the record up with ALL; LIVE for a soft delete"),

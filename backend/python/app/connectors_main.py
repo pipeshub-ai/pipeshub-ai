@@ -80,6 +80,7 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import SOMETHING_WENT_WRONG
 
@@ -689,6 +690,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
     # Initialize container
     app_container = await get_initialized_container()
     app.container = app_container  # type: ignore

@@ -2531,7 +2531,8 @@
       "status": {
         "ready": "तैयार",
         "notConnected": "कनेक्ट नहीं है",
-        "needsAuth": "प्रमाणीकरण आवश्यक"
+        "needsAuth": "प्रमाणीकरण आवश्यक",
+        "disabled": "अक्षम"
       },
       "team": {
         "title": "MCP सर्वर",
@@ -2653,7 +2654,13 @@
         "noState": "कोई state पैरामीटर नहीं मिला।",
         "backendRejected": "सर्वर ने प्रमाणीकरण अनुरोध को अस्वीकार कर दिया।"
       },
-      "deleteDisabledTooltip": "यह सर्वर हटाया नहीं जा सकता"
+      "deleteDisabledTooltip": "यह सर्वर हटाया नहीं जा सकता",
+      "stdioPolicy": {
+        "disabledTitle": "इस डिप्लॉयमेंट पर अक्षम",
+        "disabledDescription": "कस्टम STDIO सर्वर PipesHub सर्वर पर एक कमांड चलाते हैं, इसलिए वे तब तक बंद रहते हैं जब तक ऑपरेटर डिप्लॉयमेंट के एनवायरनमेंट में {{flag}}=true सेट नहीं करता (Docker Compose .env, या Helm में config.mcpAllowCustomStdio)। तब तक एजेंट इस सर्वर के टूल का उपयोग नहीं कर सकते। आप इसे हटा सकते हैं या इसे रिमोट (HTTP) सर्वर में बदल सकते हैं।",
+        "unavailableHint": "इस डिप्लॉयमेंट पर लोकल कमांड (STDIO) सर्वर बंद हैं। इन्हें अनुमति देने के लिए ऑपरेटर को {{flag}}=true सेट करना होगा।",
+        "enabledWarning": "यह कमांड PipesHub सर्वर पर सेवा के विशेषाधिकारों के साथ चलती है, जिसमें उसका नेटवर्क एक्सेस और क्रेडेंशियल शामिल हैं। केवल भरोसेमंद कमांड ही जोड़ें।"
+      }
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
