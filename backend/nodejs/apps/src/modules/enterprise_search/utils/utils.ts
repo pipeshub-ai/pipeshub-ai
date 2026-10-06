@@ -29,6 +29,7 @@ import { ChatSessionMessage } from '../schema/chat.session.message.schema';
 import { AccessView } from '../services/collaboration/domain/types';
 import {
   DRAFT_AGENT_TOOL,
+  LIST_AGENT_OPTIONS_TOOL,
   redactAgentDraft,
   redactAgentDrafts,
 } from '../services/collaboration/feed/draft-redaction';
@@ -832,6 +833,14 @@ const toolResultsFromParts = (
           tool_id: part.toolCallId,
           tool_name: part.toolName,
           result: 'An agent draft card was shown to the user who asked.',
+          status: 'success' as const,
+        };
+      }
+      if (part.toolName?.endsWith(LIST_AGENT_OPTIONS_TOOL)) {
+        return {
+          tool_id: part.toolCallId,
+          tool_name: part.toolName,
+          result: "The asker's agent options were listed for them.",
           status: 'success' as const,
         };
       }

@@ -560,6 +560,51 @@ export interface AgentDraft {
   suggestedTools: string[];
   provenance: 'sender' | 'content';
   requestedBy: string;
+  /** Resolved server-side against what the requester can use. Absent on drafts stored before agent builder v2. */
+  knowledgeSources?: DraftKnowledge[];
+  actions?: DraftToolset[];
+  webSearch?: DraftWebSearch | null;
+  unresolved?: DraftUnresolved[];
+  /** The earlier draft this one replaces; that card collapses. */
+  revisesDraftId?: string | null;
+  /** Set once the requester created an agent from this draft, so a reload shows it as created. */
+  createdAgent?: { agentKey: string; handle: string };
+}
+
+export interface DraftKnowledge {
+  /** Sent as `knowledge[].connectorId` on create: a collection's kb id or a connector instance id. */
+  id: string;
+  name: string;
+  kind: 'collection' | 'connector';
+  connectorType?: string | null;
+}
+
+export interface DraftTool {
+  name: string;
+  fullName: string;
+  description?: string;
+}
+
+export interface DraftToolset {
+  instanceId: string;
+  instanceName?: string | null;
+  name: string;
+  displayName: string;
+  iconPath?: string;
+  category?: string;
+  tools: DraftTool[];
+}
+
+export interface DraftWebSearch {
+  provider: string;
+  providerLabel: string;
+}
+
+export interface DraftUnresolved {
+  kind: 'knowledge' | 'tool' | 'webSearch';
+  query: string;
+  reason: 'not_found' | 'ambiguous' | 'not_connected' | 'unavailable';
+  candidates?: string[];
 }
 
 /** What every viewer but the requester gets in place of a draft. */
@@ -860,6 +905,8 @@ export interface ConversationMessage {
   author?: MessageAuthor | null;
   /** Who asked the question this answer belongs to (differs from `author` for agent turns run for someone else). */
   requestedBy?: MessageAuthor | null;
+  /** On a `draft_agent` row: the agent its requester created from it. */
+  agentDraftCreated?: { agentKey: string; handle?: string };
   /** Client-generated id that reconciles an optimistic row with the stored one. */
   clientMessageId?: string;
   /** Set on a bot message a guest agent answered (a mentioned agent other than the chat's own). */

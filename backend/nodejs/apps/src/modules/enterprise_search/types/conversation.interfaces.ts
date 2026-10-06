@@ -185,6 +185,7 @@ export interface IMessage {
   mentions?: Array<{ type: MentionType; id: string }>;
   /** `bot_response` / `error` / `tool_call`: the user whose turn produced the row. */
   requestedBy?: Types.ObjectId;
+  agentDraftCreated?: { agentKey: string; handle?: string; createdAt?: Date };
   /** Rows a guest agent's turn wrote: the agent that answered, when it is not the chat's own. */
   respondingAgentKey?: string;
   /** The `user_query` `_id` this row answers, same session. */

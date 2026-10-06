@@ -511,8 +511,14 @@ function agentDraftFromToolCall(msg: ConversationMessage): StoredDraft | null {
   if (!result || typeof result !== 'object') return null;
   if (result.redacted !== true && typeof result.draftId !== 'string') return null;
   const author = msg.author?.displayName;
+  const created = msg.agentDraftCreated;
+  const payload = (
+    created?.agentKey && result.redacted !== true
+      ? { ...result, createdAgent: { agentKey: created.agentKey, handle: created.handle ?? '' } }
+      : result
+  ) as unknown as AgentDraftPayload;
   return {
-    payload: result as unknown as AgentDraftPayload,
+    payload,
     ...(msg._id ? { messageId: msg._id } : {}),
     ...(author ? { author } : {}),
   };

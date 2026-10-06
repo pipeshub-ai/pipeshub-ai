@@ -21,6 +21,7 @@ const cases: Array<[DomainHttpError, number, string]> = [
   [new errors.InvalidPrincipalError([{ key: 'user:u1', reason: 'x' }]), 400, 'INVALID_PRINCIPAL'],
   [new errors.RateLimitedError(30), 429, 'RATE_LIMITED'],
   [new errors.OrgWideConfirmationRequiredError(), 400, 'ORG_WIDE_CONFIRMATION_REQUIRED'],
+  [new errors.AgentDraftAlreadyCreatedError({ agentKey: 'a1', handle: 'h' }), 409, 'AGENT_DRAFT_ALREADY_CREATED'],
 ];
 
 describe('collaboration domain errors', () => {

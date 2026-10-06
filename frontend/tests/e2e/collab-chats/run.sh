@@ -104,7 +104,7 @@ echo "node api:   http://localhost:$NODE_PORT"
 node -e "const s=require('$STATE');console.log(JSON.stringify({nodeUrl:s.nodeUrl,controlUrl:s.controlUrl,roster:Object.fromEntries(Object.entries(s.roster).map(([k,v])=>[k,{userId:v.userId,email:v.email}]))}))"
 
 echo "== frontend (next dev on $FE_ORIGIN -> http://localhost:$NODE_PORT)"
-(cd "$FE_DIR" && NEXT_PUBLIC_API_BASE_URL="http://localhost:$NODE_PORT" NEXT_TELEMETRY_DISABLED=1 exec setsid npx next dev --turbopack -p "$FE_PORT") >"$RUN_DIR/next.log" 2>&1 &
+(cd "$FE_DIR" && NEXT_PUBLIC_API_BASE_URL="http://localhost:$NODE_PORT" NEXT_TELEMETRY_DISABLED=1 exec setsid npx next dev ${PCC_E2E_NEXT_BUNDLER---turbopack} -p "$FE_PORT") >"$RUN_DIR/next.log" 2>&1 &
 NEXT_PID=$!
 for _ in $(seq 1 120); do
   curl -sf -o /dev/null "$FE_ORIGIN/login/" && break
@@ -140,6 +140,8 @@ mkdir -p "$FE_DIR/test-results" "$FE_DIR/playwright-report"
 PW_CMD=(npx playwright test --project collab-chats --reporter=list,html "$@")
 PW_NET=(--network host)
 PW_MOUNTS=(-v "$RUN_DIR:$RUN_DIR:ro")
+# A node_modules symlink (a worktree sharing another checkout's install) must resolve inside the container too.
+[[ -L "$FE_DIR/node_modules" ]] && PW_MOUNTS+=(-v "$(readlink -f "$FE_DIR/node_modules"):$(readlink -f "$FE_DIR/node_modules"):ro")
 if [[ "${PCC_PW_HOST_NETWORK:-0}" != 1 && -f "$RUN_DIR/bridge-ports" ]]; then
   read -r -a BRIDGE_PORTS <"$RUN_DIR/bridge-ports"
   PW_NET=()

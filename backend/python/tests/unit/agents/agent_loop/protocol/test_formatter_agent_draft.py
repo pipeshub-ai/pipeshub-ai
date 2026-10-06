@@ -7,7 +7,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.agents.actions.agent_builder.models import AgentDraft
+from app.agents.actions.agent_builder.models import (
+    AgentDraft,
+    DraftKnowledge,
+    DraftTool,
+    DraftToolset,
+    DraftUnresolved,
+    DraftWebSearch,
+)
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.hooks.agent_draft import agent_draft_sse
 from app.agents.agent_loop.protocol.formatter import (
@@ -21,6 +28,20 @@ def _draft() -> AgentDraft:
     return AgentDraft(
         name="Offer drafter", handleSuggestion="offer-drafter", description="d", instructions="i",
         knowledge=["kb-1"], suggestedTools=["jira__create_issue"], requestedBy="u1",
+    )
+
+
+def _rich_draft() -> AgentDraft:
+    return AgentDraft(
+        name="HR helper", handleSuggestion="hr-helper", description="d", instructions="i", knowledge=["kb-1"],
+        knowledgeSources=[DraftKnowledge(id="kb-1", name="HR Policies", kind="collection")],
+        actions=[DraftToolset(
+            instanceId="i-1", name="jira", displayName="Jira",
+            tools=[DraftTool(name="create_issue", fullName="jira.create_issue")],
+        )],
+        webSearch=DraftWebSearch(provider="duckduckgo", providerLabel="DuckDuckGo"),
+        unresolved=[DraftUnresolved(kind="knowledge", query="Payroll", reason="not_found")],
+        revisesDraftId="d-0", requestedBy="u1",
     )
 
 
@@ -85,3 +106,23 @@ async def test_hook_ignores_errors_and_other_invocations() -> None:
     ok = json.dumps({"status": "drafted", "draft": _draft().model_dump()})
     assert await _run_hook(_context(invocation="saved_agent", has_ui_client=True), _tool_ctx(ok)) == []
     assert await _run_hook(_context(invocation="assistant", has_ui_client=False), _tool_ctx(ok)) == []
+
+
+@pytest.mark.parametrize("protocol", ["legacy", "agui"])
+async def test_hook_carries_knowledge_actions_web_search_and_unresolved(protocol: str) -> None:
+    draft = _rich_draft()
+    payload = json.dumps({"status": "drafted", "draft": draft.model_dump(), "message": "m"})
+    [frame] = await _run_hook(
+        _context(invocation="assistant", has_ui_client=True, protocol=protocol), _tool_ctx(payload),
+    )
+    body = frame["data"]
+    body = json.loads(body) if isinstance(body, str) else body
+    value = body["value"] if protocol == "agui" else body
+    assert AgentDraft.model_validate(value) == draft
+
+
+async def test_list_agent_options_does_not_produce_a_draft_card() -> None:
+    ctx = _tool_ctx(json.dumps({"status": "ok", "knowledge": [], "actionToolsets": []}))
+    ctx.tool_path = "/tools/agent_builder/list_agent_options"
+    ctx.scope.turn.run.runtime.tool_registry.resolve.return_value.name = "agent_builder__list_agent_options"
+    assert await _run_hook(_context(invocation="assistant", has_ui_client=True), ctx) == []

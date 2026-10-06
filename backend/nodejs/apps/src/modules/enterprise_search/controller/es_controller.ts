@@ -163,6 +163,7 @@ import { RunCanceller } from '../services/collaboration/http/run-canceller';
 import {
   AgentDraftRefResolver,
   DraftRef,
+  VerifiedDraftRef,
 } from '../services/collaboration/agent-draft/agent-draft-ref.service';
 import { ConversationNotFoundError } from '../services/collaboration/domain/errors';
 import { JwtServiceTokenIssuer } from '../../../libs/services/service-token.issuer';
@@ -3617,11 +3618,12 @@ export const createAgent =
         draftRef?: DraftRef;
       };
       let aiCommandOptions: AICommandOptions;
+      let verified: VerifiedDraftRef | undefined;
       if (draftRef !== undefined) {
         if (!draftRefs) {
           throw new ConversationNotFoundError();
         }
-        const verified = await draftRefs.resolve(req, draftRef);
+        verified = await draftRefs.resolve(req, draftRef);
         const token = agentTokenIssuerFor(appConfig).issue(
           {
             userId,
@@ -3671,14 +3673,25 @@ export const createAgent =
         callerIdentityOf(req),
         (agent as { agent?: { _key?: string } } | undefined)?.agent?._key,
       );
-      if (draftRef !== undefined) {
+      if (verified !== undefined) {
+        const created = (agent as { agent?: { _key?: string; handle?: string } } | undefined)
+          ?.agent;
+        if (created?._key && draftRefs) {
+          await draftRefs
+            .markCreated(verified, { agentKey: created._key, handle: created.handle ?? '' })
+            .catch((error: unknown) =>
+              logger.warn('Could not mark the agent draft as created', {
+                requestId,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            );
+        }
         logger.info('agent.audit', {
           action: 'create',
-          agentKey: (agent as { agent?: { _key?: string } } | undefined)?.agent
-            ?._key,
+          agentKey: created?._key,
           actor: userId,
           createdVia: 'chat',
-          sourceConversationId: draftRef.conversationId,
+          sourceConversationId: verified.conversationId,
         });
       }
       res.status(HTTP_STATUS.CREATED).json(agent);

@@ -4,6 +4,8 @@
  */
 
 export const DRAFT_AGENT_TOOL = 'draft_agent';
+/** Lists the requester's own collections and toolsets for drafting, so it is as private as the draft. */
+export const LIST_AGENT_OPTIONS_TOOL = 'list_agent_options';
 
 export interface RedactedDraft {
   redacted: true;
@@ -38,13 +40,17 @@ export interface DraftBearingMessage {
 const isDraftTool = (name: string | undefined): boolean =>
   typeof name === 'string' && name.endsWith(DRAFT_AGENT_TOOL);
 
+export const isRequesterPrivateTool = (name: string | undefined): boolean =>
+  isDraftTool(name) ||
+  (typeof name === 'string' && name.endsWith(LIST_AGENT_OPTIONS_TOOL));
+
 const idOf = (value: IdLike | string | null | undefined): string | undefined =>
   value === undefined || value === null ? undefined : String(value);
 
 const scrubParts = (parts: PartLike[]): PartLike[] =>
   parts.map((part) => {
     const nested = part.parts ? { parts: scrubParts(part.parts) } : {};
-    if (part.type !== 'tool_call' || !isDraftTool(part.toolName)) {
+    if (part.type !== 'tool_call' || !isRequesterPrivateTool(part.toolName)) {
       return part.parts ? { ...part, ...nested } : part;
     }
     const {
@@ -56,11 +62,14 @@ const scrubParts = (parts: PartLike[]): PartLike[] =>
   });
 
 const touchesDraft = (message: DraftBearingMessage): boolean => {
-  const hasTool = (message.tools ?? []).some((t) => isDraftTool(t.toolName));
+  const hasTool = (message.tools ?? []).some((t) =>
+    isRequesterPrivateTool(t.toolName),
+  );
   const hasPart = (parts: PartLike[] | undefined): boolean =>
     (parts ?? []).some(
       (p) =>
-        (p.type === 'tool_call' && isDraftTool(p.toolName)) || hasPart(p.parts),
+        (p.type === 'tool_call' && isRequesterPrivateTool(p.toolName)) ||
+        hasPart(p.parts),
     );
   return hasTool || hasPart(message.parts);
 };
@@ -84,11 +93,18 @@ export function redactAgentDraft<T extends object>(
     redacted: true,
     ...(requester !== undefined && { authorId: requester }),
   };
+  const { agentDraftCreated: _created, ...rest } = message as T & {
+    agentDraftCreated?: unknown;
+  };
   return {
-    ...message,
+    ...(rest as T),
     ...(m.tools && {
       tools: m.tools.map((t) =>
-        isDraftTool(t.toolName) ? { ...t, toolResult: redacted } : t,
+        isDraftTool(t.toolName)
+          ? { ...t, toolResult: redacted }
+          : isRequesterPrivateTool(t.toolName)
+            ? { ...t, toolResult: '' }
+            : t,
       ),
     }),
     ...(m.parts && { parts: scrubParts(m.parts) }),

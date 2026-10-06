@@ -191,6 +191,12 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // as authored by `session.userId`.
     authorUserId: { type: Schema.Types.ObjectId }, // user_query
     requestedBy: { type: Schema.Types.ObjectId }, // bot_response | error | tool_call
+    agentDraftCreated: {
+      type: new Schema(
+        { agentKey: String, handle: String, createdAt: Date },
+        { _id: false },
+      ),
+    }, // draft_agent tool_call: the agent its requester created from it
     inReplyTo: { type: Schema.Types.ObjectId },
     respondingAgentKey: { type: String }, // guest-agent turns: bot_response | error | tool_call
     clientMessageId: { type: String, maxlength: CLIENT_MESSAGE_ID_MAX_LENGTH },

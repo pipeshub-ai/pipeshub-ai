@@ -23,6 +23,7 @@ export const COLLAB_ERROR_CODES = {
   OWNER_STATUS_UNAVAILABLE: 'OWNER_STATUS_UNAVAILABLE',
   RATE_LIMITED: 'RATE_LIMITED',
   ORG_WIDE_CONFIRMATION_REQUIRED: 'ORG_WIDE_CONFIRMATION_REQUIRED',
+  AGENT_DRAFT_ALREADY_CREATED: 'AGENT_DRAFT_ALREADY_CREATED',
 } as const;
 
 export type CollabErrorCode =
@@ -223,6 +224,18 @@ export class OrgWideConfirmationRequiredError extends DomainHttpError {
       'Sharing with the whole organization needs confirmation',
       400,
       details,
+    );
+  }
+}
+
+/** Only ever raised to the draft's own requester, so naming the agent leaks nothing. */
+export class AgentDraftAlreadyCreatedError extends DomainHttpError {
+  constructor(agent: { agentKey: string; handle: string }) {
+    super(
+      COLLAB_ERROR_CODES.AGENT_DRAFT_ALREADY_CREATED,
+      'An agent was already created from this draft',
+      409,
+      { agentKey: agent.agentKey, handle: agent.handle },
     );
   }
 }

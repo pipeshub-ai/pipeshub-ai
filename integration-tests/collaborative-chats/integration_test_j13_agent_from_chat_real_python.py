@@ -2,8 +2,8 @@
 
 Given the agent builder flag on and a shared chat
 When B asks the assistant to build an agent (the real `draft_agent` tool runs), then clicks Create
-Then the draft is a card with no toolsets and no agent exists yet; Create goes through the real Python create-from-chat route:
-     the agent exists, private to B, with its handle; another draft with the same handle is refused with a suggestion;
+Then the draft is a card that resolves what the user named (what this stack lacks is reported, never faked) and no agent exists yet; Create goes through the real Python create-from-chat route:
+     the agent exists, private to B, with its handle and its web search; another draft with the same handle is refused with a suggestion;
      the picker offers the agent to B only.
 
 Node, the query service (draft tool, create route, handle allocator) and the graph run for real; only the model's words are scripted.
@@ -58,7 +58,7 @@ def slug(name: str) -> str:
 
 def draft_turns(name: str):  # noqa: ANN201
     """Tools of a big toolset are disclosed lazily: the model loads the AgentBuilder toolset, then calls its one tool."""
-    args = {"name": name, "purpose": "Drafts offer letters", "instructions": INSTRUCTIONS, "suggested_tools": ["jira__create_issue"]}
+    args = {"name": name, "purpose": "Drafts offer letters", "instructions": INSTRUCTIONS, "tools": ["jira__create_issue"], "web_search": True}
     return (
         llm_turn(tool_calls=[tool_call("fetch_tools", {"toolset": "agent_builder"})], when=lacks_ending(DRAFT_TOOL)),
         llm_turn(tool_calls=[tool_call_ending(DRAFT_TOOL, args)], when=offers_ending(DRAFT_TOOL)),
@@ -97,25 +97,31 @@ def test_j13_the_draft_is_a_card_with_no_tools_and_nothing_is_created_before_the
     draft = card["tools"][0]["toolResult"]
     assert draft["name"] == name and draft["handleSuggestion"] == slug(name)
     assert draft["instructions"] == INSTRUCTIONS and draft["toolsets"] == [] and draft["requestedBy"] == writer.user_id
-    assert draft["suggestedTools"] == ["jira__create_issue"], "tools are hints, never enabled"
+    assert draft["actions"] == [] and draft["suggestedTools"] == [], "nothing is ticked that the requester has not signed in to"
+    assert [(u["kind"], u["query"]) for u in draft["unresolved"] if u["kind"] == "tool"] == [("tool", "jira__create_issue")]
+    assert draft["webSearch"]["provider"] in {"duckduckgo", "serper", "tavily", "exa"}
     listing = api.get(AGENTS, writer)
     assert listing.status_code == 200 and not [a for a in listing.json().get("agents", []) if a.get("name") == name]
     free = api.get(f"{AGENTS}/handle-availability", writer, params={"handle": f"@{slug(name)}"})
     assert free.status_code == 200 and free.json()["available"] is True
 
 
-def test_j13_create_makes_a_private_agent_with_its_handle_and_the_plain_chat_offers_no_agent(stack, api, fake, world) -> None:  # noqa: ANN001
+def test_j13_create_makes_a_private_agent_with_its_handle_and_the_picker_offers_it_to_its_creator_only(stack, api, fake, world) -> None:  # noqa: ANN001
     owner, writer, _reader, chat = world
     name = unique_name()
     message = drafted(stack, api, fake, writer, chat, name)
 
-    resp = create(api, writer, chat, message, name)
+    card = next(r for r in messages_of(stack.db, chat) if str(r["_id"]) == message)
+    web_search = card["tools"][0]["toolResult"]["webSearch"]
+    resp = create(api, writer, chat, message, name, webSearch=web_search)
 
     assert resp.status_code == 201, resp.text[:500]
     agent = resp.json()["agent"]
     assert agent["handle"] == slug(name)
     key = agent["_key"]
-    assert api.get(f"{AGENTS}/{key}", writer).status_code == 200
+    stored = api.get(f"{AGENTS}/{key}", writer)
+    assert stored.status_code == 200
+    assert (stored.json().get("agent") or stored.json()).get("webSearch", {}).get("provider") == web_search["provider"]
     for other in (owner, stack.roster.stranger):
         assert api.get(f"{AGENTS}/{key}", other).status_code in (403, 404), "a new agent is private to its creator"
     taken = api.get(f"{AGENTS}/handle-availability", owner, params={"handle": f"@{slug(name)}"})
@@ -124,8 +130,8 @@ def test_j13_create_makes_a_private_agent_with_its_handle_and_the_plain_chat_off
     def agents_offered(who):  # noqa: ANN001, ANN202
         return [i for i in collab.mentionables(api, who, chat) if i["type"] == "agent"]
 
-    # RR #16a: the picker offers what the validator accepts, and a plain chat accepts no agent mention (M1).
-    assert agents_offered(writer) == []
+    # M2: a guest agent may answer in any chat, so its creator is offered it with its handle; it is private, so nobody else is.
+    assert [(i["handle"], i["label"]) for i in agents_offered(writer)] == [(slug(name), name)]
     assert agents_offered(owner) == []
 
 

@@ -129,3 +129,47 @@ test('draft card: asking in the page shows a card that can be used once the turn
   // The row is stored while the turn runs; once it is, Create must work without a reload.
   await expect(card(a.page).getByTestId('agent-draft-create')).toBeEnabled({ timeout: 30_000 });
 });
+
+test('draft card: a resolved draft shows its knowledge, actions, web search and what could not be added, all ticked, with a one-line summary', { tag: '@collab' }, async ({ users }) => {
+  const { a } = users;
+  await draftTurn(a.actor, {
+    knowledge: ['kb-hr'],
+    knowledgeSources: [{ id: 'kb-hr', name: 'HR Policies', kind: 'collection', connectorType: null }],
+    actions: [{
+      instanceId: 'inst-jira', instanceName: 'Jira', name: 'jira', displayName: 'Jira', iconPath: '', category: 'app',
+      tools: [{ name: 'create_issue', fullName: 'jira.create_issue', description: 'Create an issue' }],
+    }],
+    webSearch: { provider: 'duckduckgo', providerLabel: 'DuckDuckGo' },
+    unresolved: [{ kind: 'knowledge', query: 'Payroll', reason: 'not_found', candidates: [] }],
+  });
+  const chat = await a.api.startChat('Make me an HR agent');
+  await openChat(a.page, chat);
+  const mine = card(a.page);
+  await expect(mine).toBeVisible({ timeout: 30_000 });
+
+  await expect(mine.getByTestId('agent-draft-knowledge-kb-hr')).toBeChecked();
+  await expect(mine.getByTestId('agent-draft-tool-jira.create_issue')).toBeChecked();
+  await expect(mine.getByTestId('agent-draft-websearch')).toBeChecked();
+  await expect(mine.getByTestId('agent-draft-unresolved')).toContainText('Payroll');
+  await expect(mine.getByTestId('agent-draft-summary')).toHaveText('1 knowledge source · 1 action · Web search (DuckDuckGo)');
+  await expectNoBlockingViolations(a.page, 'agent-draft-card');
+
+  const mark = await fake.mark();
+  await mine.getByTestId('agent-draft-create').click();
+  await expect(a.page.getByTestId('agent-draft-created')).toBeVisible({ timeout: 20_000 });
+  const [created] = await waitFor('the create to reach Python', async () => {
+    const sent = await fake.requests(['agent_create_from_chat'], mark);
+    return sent.length ? sent : false;
+  });
+  const body = created.body as Record<string, any>;
+  expect(body.knowledge).toEqual([{ connectorId: 'kb-hr', filters: { recordGroups: [], records: [] } }]);
+  expect(body.toolsets).toHaveLength(1);
+  expect(body.toolsets[0]).toMatchObject({ instanceId: 'inst-jira', tools: [{ fullName: 'jira.create_issue' }] });
+  expect(body.webSearch).toMatchObject({ provider: 'duckduckgo', providerLabel: 'DuckDuckGo' });
+  await expect(mine.getByTestId('agent-draft-attached')).toContainText('1 knowledge source');
+
+  await a.page.reload();
+  await expect(card(a.page).getByTestId('agent-draft-created')).toContainText('@offer-drafter', { timeout: 30_000 });
+  await expect(card(a.page).getByTestId('agent-draft-open-chat')).toBeVisible();
+  await expect(card(a.page).getByTestId('agent-draft-create')).toHaveCount(0);
+});

@@ -15,6 +15,8 @@ export interface AgentDraftPlaceholderProps {
   messageId?: string | null;
   /** False when the agent builder flag is off: the card stays visible but cannot create. */
   builderEnabled?: boolean;
+  /** A later draft in the chat revises this one. */
+  superseded?: boolean;
 }
 
 /** The seat for the draft card: the requester gets the card, everyone else a one-line notice. */
@@ -24,7 +26,8 @@ export function AgentDraftPlaceholder({
   conversationId = null,
   messageId = null,
   builderEnabled = true,
+  superseded = false,
 }: AgentDraftPlaceholderProps) {
   if (isRedactedAgentDraft(draft)) return <AgentDraftRedacted authorName={authorName} />;
-  return <AgentDraftCard draft={draft} conversationId={conversationId} messageId={messageId} builderEnabled={builderEnabled} />;
+  return <AgentDraftCard draft={draft} conversationId={conversationId} messageId={messageId} builderEnabled={builderEnabled} superseded={superseded} />;
 }

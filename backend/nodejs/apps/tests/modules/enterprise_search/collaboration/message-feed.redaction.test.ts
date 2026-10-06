@@ -75,6 +75,24 @@ describe('agent draft redaction', () => {
       expect(JSON.stringify(out)).to.not.include('secret prompt')
       expect(JSON.stringify(out)).to.include('draft_agent')
     })
+    it("the requester's agent options are scrubbed for others and kept out of model history", () => {
+      const optionsPart = {
+        ...draftPart,
+        toolCallId: 'c2',
+        toolName: 'agent_builder__list_agent_options',
+        args: '{}',
+        resultPreview: '{"knowledge":[{"name":"Payroll secrets"}]}',
+        resultSummary: 'Payroll secrets',
+      }
+      const bot = { messageType: 'bot_response', requestedBy: PEOPLE.A, parts: [optionsPart] }
+      expect(JSON.stringify(redactAgentDraft(bot, B))).to.not.include('Payroll secrets')
+      expect(redactAgentDraft(bot, A)).to.equal(bot)
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'what can my agent use?' },
+        { messageType: 'bot_response', content: 'Here you go.', parts: [optionsPart] },
+      ] as never)
+      expect(JSON.stringify(history)).to.not.include('Payroll secrets')
+    })
   })
 
   describe('the feed', () => {

@@ -5,7 +5,8 @@ import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 
 const replace = vi.fn();
-vi.mock('next/navigation', () => ({ useRouter: () => ({ replace, push: vi.fn() }) }));
+const push = vi.fn();
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace, push }) }));
 const api = vi.hoisted(() => ({
   checkHandle: vi.fn(),
   createAgent: vi.fn(),
@@ -66,6 +67,7 @@ const create = () => screen.getByTestId('agent-draft-create') as HTMLButtonEleme
 beforeEach(() => {
   vi.useFakeTimers();
   replace.mockReset();
+  push.mockReset();
   api.checkHandle.mockReset().mockResolvedValue({ available: true });
   api.createAgent.mockReset().mockResolvedValue({ _key: 'agent-9', handle: 'offer-drafter' });
   api.getKnowledgeBasesForBuilder.mockReset().mockResolvedValue({ knowledgeBases: [{ id: 'kb-1', connectorId: 'kb-1', name: 'Price lists' }] });
@@ -284,6 +286,26 @@ describe('creating', () => {
     expect(screen.queryByRole('button', { name: 'Mention here' })).toBeNull();
   });
 
+  it('a reloaded draft that was already created shows the created state, not the form', async () => {
+    card({ superseded: true }, { ...draft, createdAgent: { agentKey: 'agent-9', handle: 'offer-drafter' } });
+    await flush();
+    expect(screen.getByTestId('agent-draft-created').textContent).toBe('Created @offer-drafter (private)');
+    expect(screen.queryByTestId('agent-draft-create')).toBeNull();
+    expect(screen.queryByTestId('agent-draft-superseded')).toBeNull();
+    fireEvent.click(screen.getByTestId('agent-draft-open-chat'));
+    expect(replace).toHaveBeenCalledWith('/chat/?agentId=agent-9');
+  });
+
+  it('AGENT_DRAFT_ALREADY_CREATED turns the card into the created state with no error', async () => {
+    api.createAgent.mockRejectedValue({ code: 'AGENT_DRAFT_ALREADY_CREATED', details: { agentKey: 'agent-7', handle: 'offer-drafter' } });
+    card();
+    await flush();
+    await click();
+    expect(screen.getByTestId('agent-draft-created').textContent).toBe('Created @offer-drafter (private)');
+    expect(screen.queryByTestId('agent-draft-error')).toBeNull();
+    expect(screen.queryByTestId('agent-draft-create')).toBeNull();
+  });
+
   it('HANDLE_TAKEN from the server is inline with a suggestion and raises no toast', async () => {
     api.createAgent.mockRejectedValue({ code: 'HANDLE_TAKEN', details: { suggestion: 'offer-drafter-2' } });
     card();
@@ -338,5 +360,213 @@ describe('creating', () => {
     type('agent-draft-name', '   ');
     expect(create().disabled).toBe(true);
     expect(api.createAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent builder v2 drafts', () => {
+  const v2: AgentDraft = {
+    ...draft,
+    knowledge: ['kb-hr', 'conn-slack'],
+    suggestedTools: [],
+    knowledgeSources: [
+      { id: 'kb-hr', name: 'HR Policies', kind: 'collection' },
+      { id: 'conn-slack', name: 'Team Slack', kind: 'connector', connectorType: 'SLACK' },
+    ],
+    actions: [{
+      instanceId: 'inst-1', instanceName: 'Main Jira', name: 'jira', displayName: 'Jira', category: 'app',
+      tools: [
+        { name: 'create_issue', fullName: 'jira.create_issue', description: 'Create an issue' },
+        { name: 'search_issues', fullName: 'jira.search_issues', description: 'find issues' },
+      ],
+    }],
+    webSearch: { provider: 'duckduckgo', providerLabel: 'DuckDuckGo' },
+  };
+  const state = (id: string) => checkbox(id).getAttribute('aria-checked');
+  const click = async () => {
+    await act(async () => {
+      fireEvent.click(create());
+    });
+  };
+
+  it('sender: everything resolved is pre-ticked, with real names and a summary', async () => {
+    card({}, v2);
+    await flush();
+    expect(screen.getByText('HR Policies')).toBeTruthy();
+    expect(screen.getByText('Team Slack')).toBeTruthy();
+    expect(screen.getByText('Create issue')).toBeTruthy();
+    expect(state('agent-draft-knowledge-kb-hr')).toBe('true');
+    expect(state('agent-draft-toolset-inst-1')).toBe('true');
+    expect(state('agent-draft-tool-jira.create_issue')).toBe('true');
+    expect(state('agent-draft-websearch')).toBe('true');
+    expect(screen.getByTestId('agent-draft-summary').textContent).toBe('2 knowledge sources · 2 actions · Web search (DuckDuckGo)');
+    expect(api.getKnowledgeBasesForBuilder).not.toHaveBeenCalled();
+  });
+
+  it('content provenance: nothing is pre-ticked and the banner stays', async () => {
+    card({}, { ...v2, provenance: 'content' });
+    await flush();
+    expect(screen.getByRole('note').textContent).toContain('Suggested from document content');
+    expect(state('agent-draft-knowledge-kb-hr')).toBe('false');
+    expect(state('agent-draft-toolset-inst-1')).toBe('false');
+    expect(state('agent-draft-websearch')).toBe('false');
+    expect(screen.getByTestId('agent-draft-summary').textContent).toBe('No knowledge, actions or web search yet');
+  });
+
+  it('create sends knowledge, toolsets and web search as ticked', async () => {
+    card({}, v2);
+    await flush();
+    await click();
+    const [payload] = api.createAgent.mock.calls[0];
+    expect(payload.knowledge).toEqual([
+      { connectorId: 'kb-hr', filters: { recordGroups: [], records: [] } },
+      { connectorId: 'conn-slack', filters: { recordGroups: [], records: [] } },
+    ]);
+    expect(payload.toolsets).toEqual([{
+      id: 'inst-1', instanceId: 'inst-1', instanceName: 'Main Jira', name: 'jira', displayName: 'Jira', type: 'app',
+      tools: [
+        { name: 'create_issue', fullName: 'jira.create_issue', description: 'Create an issue' },
+        { name: 'search_issues', fullName: 'jira.search_issues', description: 'find issues' },
+      ],
+    }]);
+    expect(payload.webSearch).toMatchObject({ provider: 'duckduckgo', providerLabel: 'DuckDuckGo' });
+  });
+
+  it('web search off omits it from the payload', async () => {
+    card({}, v2);
+    await flush();
+    fireEvent.click(checkbox('agent-draft-websearch'));
+    await click();
+    expect(api.createAgent.mock.calls[0][0]).not.toHaveProperty('webSearch');
+  });
+
+  it('the group checkbox toggles every tool and shows a mixed state', async () => {
+    card({}, v2);
+    await flush();
+    fireEvent.click(checkbox('agent-draft-tool-jira.search_issues'));
+    expect(state('agent-draft-toolset-inst-1')).toBe('mixed');
+    fireEvent.click(checkbox('agent-draft-toolset-inst-1'));
+    expect(state('agent-draft-tool-jira.search_issues')).toBe('true');
+    expect(state('agent-draft-tool-jira.create_issue')).toBe('true');
+    fireEvent.click(checkbox('agent-draft-toolset-inst-1'));
+    expect(state('agent-draft-tool-jira.create_issue')).toBe('false');
+    expect(state('agent-draft-tool-jira.search_issues')).toBe('false');
+  });
+
+  it('a long group shows five tools until "Show all"', async () => {
+    const tools = Array.from({ length: 8 }, (_, i) => ({ name: `t${i}`, fullName: `jira.t${i}`, description: '' }));
+    card({}, { ...v2, actions: [{ ...v2.actions![0], tools }] });
+    await flush();
+    expect(screen.queryByTestId('agent-draft-tool-jira.t5')).toBeNull();
+    fireEvent.click(screen.getByText('Show all 8'));
+    expect(screen.getByTestId('agent-draft-tool-jira.t7')).toBeTruthy();
+  });
+
+  it('lists what could not be added in plain words, with Connect for a toolset that is not connected', async () => {
+    card({}, {
+      ...v2,
+      unresolved: [
+        { kind: 'knowledge', query: 'Payroll', reason: 'not_found' },
+        { kind: 'knowledge', query: 'Docs', reason: 'ambiguous', candidates: ['Docs A', 'Docs B'] },
+        { kind: 'tool', query: 'Asana', reason: 'not_connected' },
+      ],
+    });
+    await flush();
+    const box = screen.getByTestId('agent-draft-unresolved');
+    expect(box.textContent).toContain('Couldn\'t find "Payroll" among what you can use.');
+    expect(box.textContent).toContain('"Docs" could mean more than one: Docs A, Docs B.');
+    expect(box.textContent).toContain('"Asana" isn\'t connected for you yet.');
+    expect(screen.getByTestId('agent-draft-connect').getAttribute('href')).toBe('/workspace/actions/personal/');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a draft stored before v2 still renders its legacy rows', async () => {
+    card();
+    await flush();
+    expect(screen.queryByTestId('agent-draft-websearch')).toBeNull();
+    expect(screen.queryByTestId('agent-draft-unresolved')).toBeNull();
+    expect(checkbox('agent-draft-knowledge-kb-1')).toBeTruthy();
+    expect(checkbox('agent-draft-tool-search_issues')).toBeTruthy();
+    expect(screen.getByTestId('agent-draft-summary').textContent).toBe('3 knowledge sources');
+  });
+
+  it('long instructions collapse behind "Show instructions"', async () => {
+    card({}, { ...v2, instructions: 'x'.repeat(300) });
+    await flush();
+    expect(screen.queryByTestId('agent-draft-instructions')).toBeNull();
+    fireEvent.click(screen.getByText('Show instructions'));
+    expect(input('agent-draft-instructions').value).toHaveLength(300);
+  });
+
+  it('Add actions lists the requester\'s authenticated tools and adds ticked ones to the payload', async () => {
+    const slack = {
+      ...jira, name: 'slack', normalized_name: 'slack', displayName: 'Slack', instanceId: 'inst-2', instanceName: 'Slack',
+      tools: [{ name: 'send_message', fullName: 'slack.send_message', description: 'post' }],
+    };
+    api.getAllMyToolsets.mockResolvedValue({ toolsets: [slack, { ...jira, instanceId: 'inst-3', isAuthenticated: false }] });
+    card({}, { ...v2, actions: [] });
+    await flush();
+    fireEvent.click(screen.getByTestId('agent-draft-add-actions'));
+    expect(screen.getByRole('status').textContent).toBe('Loading…');
+    await flush(0);
+    expect(screen.queryByTestId('agent-draft-picker-tool-jira.search_issues')).toBeNull();
+    fireEvent.click(checkbox('agent-draft-picker-tool-slack.send_message'));
+    fireEvent.click(screen.getByTestId('agent-draft-picker-add'));
+    await flush(0);
+    expect(state('agent-draft-tool-slack.send_message')).toBe('true');
+    await click();
+    expect(api.createAgent.mock.calls[0][0].toolsets).toEqual([{
+      id: 'inst-2', instanceId: 'inst-2', instanceName: 'Slack', name: 'slack', displayName: 'Slack', type: 'app',
+      tools: [{ name: 'send_message', fullName: 'slack.send_message', description: 'post' }],
+    }]);
+  });
+
+  it('Add knowledge adds a collection from the picker and shows an error with retry', async () => {
+    api.getKnowledgeBasesForBuilder.mockRejectedValueOnce(new Error('x'));
+    api.getKnowledgeHubAppNodes.mockRejectedValueOnce(new Error('x'));
+    card({}, { ...v2, knowledgeSources: [], knowledge: [] });
+    await flush();
+    fireEvent.click(screen.getByTestId('agent-draft-add-knowledge'));
+    await flush(0);
+    expect(screen.getByRole('alert').textContent).toContain('Couldn\'t load this list.');
+    fireEvent.click(screen.getByText('Try again'));
+    await flush(0);
+    fireEvent.click(checkbox('agent-draft-picker-knowledge-kb-1'));
+    fireEvent.click(screen.getByTestId('agent-draft-picker-add'));
+    await flush(0);
+    expect(screen.getByText('Price lists')).toBeTruthy();
+    expect(state('agent-draft-knowledge-kb-1')).toBe('true');
+    await click();
+    expect(api.createAgent.mock.calls[0][0].knowledge).toEqual([{ connectorId: 'kb-1', filters: { recordGroups: [], records: [] } }]);
+  });
+
+  it('INVALID_TOOLSET marks the whole group unavailable', async () => {
+    api.createAgent.mockRejectedValue({ code: 'INVALID_TOOLSET', details: { ids: ['inst-1'] } });
+    card({}, v2);
+    await flush();
+    await click();
+    expect(state('agent-draft-toolset-inst-1')).toBe('false');
+    expect(checkbox('agent-draft-tool-jira.create_issue').disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toBe('No longer available to you');
+  });
+
+  it('a created agent lists what was attached and offers Open agent chat and Edit agent', async () => {
+    card({}, v2);
+    await flush();
+    await click();
+    expect(screen.getByTestId('agent-draft-attached').textContent).toBe('Attached: 2 knowledge sources · 2 actions · Web search (DuckDuckGo)');
+    fireEvent.click(screen.getByTestId('agent-draft-edit-agent'));
+    expect(push).toHaveBeenCalledWith('/agents/edit?agentKey=agent-9');
+  });
+
+  it('a superseded draft collapses and can be expanded read-only', async () => {
+    card({ superseded: true }, v2);
+    await flush();
+    expect(screen.getByTestId('agent-draft-superseded').textContent).toContain('Updated in a newer draft below');
+    expect(screen.queryByTestId('agent-draft-create')).toBeNull();
+    expect(api.checkHandle).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Show'));
+    expect(input('agent-draft-name').disabled).toBe(true);
+    expect(screen.queryByTestId('agent-draft-create')).toBeNull();
+    expect(screen.queryByTestId('agent-draft-add-actions')).toBeNull();
   });
 });

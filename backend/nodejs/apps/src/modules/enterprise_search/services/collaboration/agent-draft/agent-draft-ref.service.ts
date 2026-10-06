@@ -3,7 +3,10 @@ import { AuthenticatedUserRequest } from '../../../../../libs/middlewares/types'
 import { COLLAB_FLAG_KEYS } from '../../../../configuration_manager/constants/constants';
 import { IFeatureFlags } from '../../../../configuration_manager/services/platform-feature-flags.service';
 import { ChatSessionMessage } from '../../../schema/chat.session.message.schema';
-import { ConversationNotFoundError } from '../domain/errors';
+import {
+  AgentDraftAlreadyCreatedError,
+  ConversationNotFoundError,
+} from '../domain/errors';
 import { ConversationAccessGrant } from '../http/conversation-context';
 import { DRAFT_AGENT_TOOL } from '../feed/draft-redaction';
 import { ConversationOperation } from '../domain/types';
@@ -13,29 +16,70 @@ export interface DraftRef {
   readonly messageId: string;
 }
 
-export interface IDraftRowLookup {
-  /** Who asked for the draft in message `messageId` of `sessionId`; `null` when that row is not a draft card. */
-  requesterOf(
-    sessionId: Types.ObjectId,
-    messageId: string,
-  ): Promise<string | null>;
+export interface VerifiedDraftRef extends DraftRef {
+  readonly sessionId: Types.ObjectId;
 }
 
-export class MongoDraftRowLookup implements IDraftRowLookup {
-  async requesterOf(
+export interface CreatedAgentRef {
+  readonly agentKey: string;
+  readonly handle: string;
+}
+
+export interface DraftRow {
+  readonly requester: string | null;
+  readonly createdAgent?: CreatedAgentRef;
+}
+
+export interface IDraftRowLookup {
+  /** The draft card in message `messageId` of `sessionId`; `null` when that row is not a draft card. */
+  draftOf(sessionId: Types.ObjectId, messageId: string): Promise<DraftRow | null>;
+  markCreated(
     sessionId: Types.ObjectId,
     messageId: string,
-  ): Promise<string | null> {
-    const row = await ChatSessionMessage.findOne({
-      _id: messageId,
-      sessionId,
-      messageType: 'tool_call',
-      'tools.toolName': DRAFT_AGENT_TOOL,
-    })
-      .select('requestedBy')
+    agent: CreatedAgentRef,
+  ): Promise<void>;
+}
+
+const draftRowFilter = (sessionId: Types.ObjectId, messageId: string) => ({
+  _id: messageId,
+  sessionId,
+  messageType: 'tool_call',
+  'tools.toolName': DRAFT_AGENT_TOOL,
+});
+
+export class MongoDraftRowLookup implements IDraftRowLookup {
+  async draftOf(
+    sessionId: Types.ObjectId,
+    messageId: string,
+  ): Promise<DraftRow | null> {
+    const row = await ChatSessionMessage.findOne(draftRowFilter(sessionId, messageId))
+      .select('requestedBy agentDraftCreated')
       .lean()
       .exec();
-    return row?.requestedBy ? String(row.requestedBy) : null;
+    if (!row) return null;
+    const created = row.agentDraftCreated;
+    return {
+      requester: row.requestedBy ? String(row.requestedBy) : null,
+      ...(created?.agentKey && {
+        createdAgent: { agentKey: created.agentKey, handle: created.handle ?? '' },
+      }),
+    };
+  }
+
+  async markCreated(
+    sessionId: Types.ObjectId,
+    messageId: string,
+    agent: CreatedAgentRef,
+  ): Promise<void> {
+    await ChatSessionMessage.updateOne(draftRowFilter(sessionId, messageId), {
+      $set: {
+        agentDraftCreated: {
+          agentKey: agent.agentKey,
+          handle: agent.handle,
+          createdAt: new Date(),
+        },
+      },
+    }).exec();
   }
 }
 
@@ -63,7 +107,7 @@ export class AgentDraftRefResolver {
   async resolve(
     req: AuthenticatedUserRequest,
     ref: DraftRef,
-  ): Promise<DraftRef> {
+  ): Promise<VerifiedDraftRef> {
     if (!(await this.flags.isEnabled(COLLAB_FLAG_KEYS.chatAgentBuilder))) {
       throw new ConversationNotFoundError();
     }
@@ -77,10 +121,19 @@ export class AgentDraftRefResolver {
       'chat',
       ref.conversationId,
     );
-    const requester = await this.rows.requesterOf(session._id, ref.messageId);
-    if (requester === null || requester !== String(userId)) {
+    const row = await this.rows.draftOf(session._id, ref.messageId);
+    if (row === null || row.requester === null || row.requester !== String(userId)) {
       throw new ConversationNotFoundError();
     }
-    return ref;
+    // A second tab or a reloaded card would otherwise create a duplicate agent.
+    if (row.createdAgent) {
+      throw new AgentDraftAlreadyCreatedError(row.createdAgent);
+    }
+    return { ...ref, sessionId: session._id };
+  }
+
+  /** Best effort: the agent exists either way, the card only falls back to its draft state. */
+  async markCreated(ref: VerifiedDraftRef, agent: CreatedAgentRef): Promise<void> {
+    await this.rows.markCreated(ref.sessionId, ref.messageId, agent);
   }
 }

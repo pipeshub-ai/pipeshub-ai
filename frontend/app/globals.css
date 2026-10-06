@@ -1373,3 +1373,14 @@ th code {
     padding: var(--space-1) 0 0 !important;
   }
 }
+
+/* Same for an agent draft card: on phones the reply block's frame is enough, and a second one left the
+   draft's checkboxes and pickers about 215 px wide. */
+@media (max-width: 640px) {
+  [data-side="right"] [data-testid="agent-draft-card"],
+  [data-side="right"] [data-testid="agent-draft-redacted"] {
+    padding: var(--space-1) 0 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+  }
+}

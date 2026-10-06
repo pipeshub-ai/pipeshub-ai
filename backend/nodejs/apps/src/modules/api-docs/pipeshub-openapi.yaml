@@ -1702,6 +1702,7 @@ components:
         | `INVALID_PRINCIPAL` | 400 | A person or team cannot be added (`details.principalIds`). |
         | `RATE_LIMITED` | 429 | Too many requests (`details.retryAfter`). Sent by the collaboration routes. |
         | `ORG_WIDE_CONFIRMATION_REQUIRED` | 400 | Sharing with the whole organization needs confirmation. |
+        | `AGENT_DRAFT_ALREADY_CREATED` | 409 | An agent was already created from this draft (`details.agentKey`, `details.handle`). Returned by `POST /agents/create` with a `draftRef`, to the draft's requester only. |
         | `MENTION_NOT_ALLOWED` | 400 or 403 | A mention is refused (`details.mentionIndex`, `details.reason`). A person who is not in the organization or not active, and a team that is not on the conversation, are 400; an agent the sender cannot run (with `ENABLE_CHAT_AGENT_BUILDER` off, any but this conversation's own agent) is 403. Nothing is stored. |
         | `TOO_MANY_AGENT_MENTIONS` | 422 | A message mentions more than one agent (`details.max`). Nothing is stored. |
         | `MENTION_SA_AGENT_SHARED` | 403 | The mentioned agent runs with its creator's access and cannot be used in a shared conversation (`details.mentionIndex`). |
@@ -1747,6 +1748,7 @@ components:
         - OWNER_STATUS_UNAVAILABLE
         - RATE_LIMITED
         - ORG_WIDE_CONFIRMATION_REQUIRED
+        - AGENT_DRAFT_ALREADY_CREATED
       example: CONVERSATION_NOT_FOUND
 
     CollaboratorRequest:
@@ -35915,7 +35917,9 @@ paths:
         '409':
           description: |
             `handle` is already in use in the organization (`error.code` `HANDLE_TAKEN`;
-            `error.details.suggestion` is the first free alternative).
+            `error.details.suggestion` is the first free alternative), or the `draftRef` draft already
+            created an agent (`AGENT_DRAFT_ALREADY_CREATED`; `error.details.agentKey` and `error.details.handle`
+            name it).
           content:
             application/json:
               schema:

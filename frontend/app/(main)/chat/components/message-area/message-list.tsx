@@ -14,6 +14,7 @@ import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useUserStore } from '@/lib/store/user-store';
+import { isRedactedAgentDraft } from '../../types';
 import type { ChatArtifact, MessagePart } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -248,6 +249,19 @@ export function MessageList() {
     }
     return versions;
   }, [thread.messages, isStreaming, streamingArtifacts]);
+
+  const liveRevisedDraftId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.liveAgentDraft?.revisesDraftId ?? null : null
+  );
+  const supersededDraftIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (liveRevisedDraftId) ids.add(liveRevisedDraftId);
+    for (const pair of messagePairs) {
+      const draft = pair.persistedAgentDraft;
+      if (draft && !isRedactedAgentDraft(draft) && draft.revisesDraftId) ids.add(draft.revisesDraftId);
+    }
+    return ids;
+  }, [messagePairs, liveRevisedDraftId]);
 
   const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
 
@@ -1040,6 +1054,7 @@ export function MessageList() {
                   persistedAgentDraft={pair.persistedAgentDraft}
                   agentDraftAuthor={pair.agentDraftAuthor}
                   agentDraftMessageId={pair.agentDraftMessageId}
+                  supersededDraftIds={supersededDraftIds}
                   feedbackInfo={pair.feedbackInfo}
                   status={pair.status}
                   unanswered={pair.unanswered}

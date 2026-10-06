@@ -59,9 +59,11 @@ async def _loaded_tools(skip: set[str], invocation: str) -> list[str]:
 
 async def test_the_loader_registers_draft_agent_unless_skipped() -> None:
     assert TOOL in await _loaded_tools(set(), "assistant")
+    assert "agent_builder__list_agent_options" in await _loaded_tools(set(), "assistant")
     with _flag(False):
         skip = await agent_builder_skip_apps(_context("assistant"))
     assert TOOL not in await _loaded_tools(skip, "assistant")
+    assert "agent_builder__list_agent_options" not in await _loaded_tools(skip, "assistant")
 
 
 async def test_no_domain_sub_agent_claims_the_draft_tool() -> None:
@@ -69,3 +71,4 @@ async def test_no_domain_sub_agent_claims_the_draft_tool() -> None:
     plan = plan_domain_agents(registry)
     assert TOOL not in [n for names in plan.claims.values() for n in names]
     assert TOOL in plan.top_level_names
+    assert "agent_builder__list_agent_options" in plan.top_level_names

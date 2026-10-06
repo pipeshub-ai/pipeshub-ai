@@ -8,7 +8,10 @@ import {
   AgentDraftRefResolver,
   IDraftRowLookup,
 } from '../../../../src/modules/enterprise_search/services/collaboration/agent-draft/agent-draft-ref.service'
-import { ConversationNotFoundError } from '../../../../src/modules/enterprise_search/services/collaboration/domain/errors'
+import {
+  AgentDraftAlreadyCreatedError,
+  ConversationNotFoundError,
+} from '../../../../src/modules/enterprise_search/services/collaboration/domain/errors'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { AgentHandleError } from '../../../../src/modules/enterprise_search/utils/agent-handle-error'
 
@@ -40,15 +43,21 @@ function stubPython(response: unknown = { statusCode: 200, data: { agent: { _key
   return { sent }
 }
 
-function resolver(opts: { requester?: string | null; flag?: boolean; deny?: boolean } = {}) {
+function resolver(
+  opts: { requester?: string | null; flag?: boolean; deny?: boolean; createdAgent?: { agentKey: string; handle: string } } = {},
+) {
   const guards = {
     authorizeById: sinon.stub().callsFake(async () => {
       if (opts.deny) throw new ConversationNotFoundError()
       return { session: { _id: SESSION_ID } }
     }),
   }
+  const requester = opts.requester === undefined ? USER : opts.requester
   const rows: IDraftRowLookup = {
-    requesterOf: sinon.stub().resolves(opts.requester === undefined ? USER : opts.requester),
+    draftOf: sinon.stub().resolves(
+      requester === null ? null : { requester, ...(opts.createdAgent && { createdAgent: opts.createdAgent }) },
+    ),
+    markCreated: sinon.stub().resolves(),
   }
   const flags = { isEnabled: sinon.stub().resolves(opts.flag ?? true) }
   return { guards, rows, flags, resolver: new AgentDraftRefResolver(guards as any, flags as any, rows) }
@@ -148,7 +157,7 @@ describe('createAgent from a chat draft', () => {
     await createAgent(appConfig, draftRefs)(request({ name: 'X', draftRef: DRAFT_REF }), response(), next)
 
     expect(sent).to.have.length(0)
-    expect((rows.requesterOf as sinon.SinonStub).called).to.equal(false)
+    expect((rows.draftOf as sinon.SinonStub).called).to.equal(false)
     expect(next.firstCall.args[0]).to.be.instanceOf(ConversationNotFoundError)
   })
 
@@ -208,5 +217,47 @@ describe('createAgent from a chat draft', () => {
     expect(error).to.be.instanceOf(AgentHandleError)
     expect(error.statusCode).to.equal(400)
     expect(error.publicDetails).to.deep.equal({ ids: ['kb-1'] })
+  })
+
+  it('marks the draft as created, so a reload shows the agent instead of the draft', async () => {
+    stubPython({ statusCode: 200, data: { agent: { _key: 'agent-1', handle: 'offer-drafter' } } })
+    const { resolver: draftRefs, rows } = resolver()
+
+    await createAgent(appConfig, draftRefs)(request({ name: 'X', draftRef: DRAFT_REF }), response(), sinon.stub())
+
+    const mark = rows.markCreated as sinon.SinonStub
+    expect(mark.calledOnce).to.equal(true)
+    expect(String(mark.firstCall.args[0])).to.equal(CONVERSATION)
+    expect(mark.firstCall.args.slice(1)).to.deep.equal([MESSAGE, { agentKey: 'agent-1', handle: 'offer-drafter' }])
+  })
+
+  it('a draft that already made an agent is a 409 naming it, and Python is never called', async () => {
+    const { sent } = stubPython()
+    const next = sinon.stub()
+
+    await createAgent(appConfig, resolver({ createdAgent: { agentKey: 'agent-1', handle: 'offer-drafter' } }).resolver)(
+      request({ name: 'X', draftRef: DRAFT_REF }),
+      response(),
+      next,
+    )
+
+    expect(sent).to.have.length(0)
+    const error = next.firstCall.args[0] as AgentDraftAlreadyCreatedError
+    expect(error).to.be.instanceOf(AgentDraftAlreadyCreatedError)
+    expect(error.statusCode).to.equal(409)
+    expect(error.publicDetails).to.deep.equal({ agentKey: 'agent-1', handle: 'offer-drafter' })
+  })
+
+  it('the agent is still returned when marking the draft fails', async () => {
+    stubPython()
+    const { resolver: draftRefs, rows } = resolver()
+    ;(rows.markCreated as sinon.SinonStub).rejects(new Error('mongo down'))
+    const res = response()
+    const next = sinon.stub()
+
+    await createAgent(appConfig, draftRefs)(request({ name: 'X', draftRef: DRAFT_REF }), res, next)
+
+    expect(next.called).to.equal(false)
+    expect(res.status.calledWith(201)).to.equal(true)
   })
 })

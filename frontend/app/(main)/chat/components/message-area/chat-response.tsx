@@ -31,6 +31,7 @@ import { useChatStore } from '../../store';
 import { selectChatAgentBuilderEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { isRedactedAgentDraft } from '../../types';
 import type { AgentDraftPayload, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart, RespondingAgent } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -137,6 +138,8 @@ interface ChatResponseProps {
   persistedAgentDraft?: AgentDraftPayload;
   agentDraftAuthor?: string;
   agentDraftMessageId?: string;
+  /** Draft ids that a later draft in this chat revises; their cards collapse. */
+  supersededDraftIds?: ReadonlySet<string>;
   /** Persisted feedback value from the backend — initialises the like/dislike button state */
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
@@ -191,6 +194,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   persistedAgentDraft,
   agentDraftAuthor,
   agentDraftMessageId,
+  supersededDraftIds,
   feedbackInfo,
   status,
   unanswered = false,
@@ -680,6 +684,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 conversationId={activeConvId}
                 messageId={persistedAgentDraft ? agentDraftMessageId ?? null : null}
                 builderEnabled={agentBuilderEnabled}
+                superseded={!isRedactedAgentDraft(agentDraft) && Boolean(supersededDraftIds?.has(agentDraft.draftId))}
               />
             ) : null}
 

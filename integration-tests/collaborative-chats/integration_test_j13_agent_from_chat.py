@@ -2,7 +2,7 @@
 
 Given a chat where the user asks the assistant to draft an agent
 When the draft is produced, and then the user clicks create
-Then the draft has no tools and nothing is persisted before the click, the created agent is private, and only its creator can mention it
+Then the draft carries what the user named (knowledge, actions, web search) but enables no legacy toolsets, nothing is persisted before the click, the created agent is private and keeps what the card ticked, and only its creator can mention it
 
 Owning phase: PH-11 (80-implementation-plan section 5).
 PR-11.3 covers the draft half over real HTTP (Node only; the AI backend is the lane's fake, which scripts the `agent_draft`
@@ -38,9 +38,24 @@ DRAFT = {
     "handleSuggestion": "offer-drafter",
     "description": "Drafts offer letters",
     "instructions": SECRET,
-    "knowledge": [],
+    "knowledge": ["kb-hr"],
     "toolsets": [],
-    "suggestedTools": ["jira__create_issue"],
+    "suggestedTools": [],
+    "knowledgeSources": [{"id": "kb-hr", "name": "HR Policies", "kind": "collection", "connectorType": None}],
+    "actions": [
+        {
+            "instanceId": "inst-jira",
+            "instanceName": "Jira Cloud",
+            "name": "jira",
+            "displayName": "Jira",
+            "iconPath": "",
+            "category": "app",
+            "tools": [{"name": "create_issue", "fullName": "jira.create_issue", "description": "Create an issue"}],
+        }
+    ],
+    "webSearch": {"provider": "duckduckgo", "providerLabel": "DuckDuckGo"},
+    "unresolved": [{"kind": "knowledge", "query": "Payroll", "reason": "not_found", "candidates": []}],
+    "revisesDraftId": None,
     "provenance": "sender",
     "requestedBy": "set-by-test",
 }
@@ -98,6 +113,9 @@ def test_j13_requester_sees_the_draft_and_other_participants_see_it_redacted(sta
             if sees_draft:
                 assert seen["instructions"] == SECRET, f"{label}: the requester sees the draft"
                 assert seen["toolsets"] == []
+                assert [k["id"] for k in seen["knowledgeSources"]] == ["kb-hr"], f"{label}: resolved knowledge is kept"
+                assert [t["fullName"] for a in seen["actions"] for t in a["tools"]] == ["jira.create_issue"]
+                assert seen["webSearch"]["provider"] == "duckduckgo"
             else:
                 assert seen == placeholder, f"{label}: {who.user_id} must get the placeholder"
                 assert SECRET not in (feed.text if label == "feed" else detail.text)
@@ -173,6 +191,35 @@ def test_j13_create_from_the_draft_forwards_server_set_provenance_under_a_bound_
     assert (claims["userId"], claims["conversationId"], claims["messageId"]) == (writer.user_id, chat, message)
     assert claims["exp"] - claims["iat"] <= 60
     assert token != Directory.session_token(writer), "Python must not receive the user's session token"
+
+
+def test_j13_create_forwards_the_knowledge_toolsets_and_web_search_the_card_ticked(stack, api, fake, roster, builder_on) -> None:  # noqa: ANN001
+    chat, message, writer = drafted(stack, api, fake, roster)
+    mark = fake.mark()
+    ticked = {
+        "knowledge": [{"connectorId": "kb-hr", "filters": {"recordGroups": [], "records": []}}],
+        "toolsets": [
+            {
+                "id": "inst-jira",
+                "instanceId": "inst-jira",
+                "instanceName": "Jira Cloud",
+                "name": "jira",
+                "displayName": "Jira",
+                "type": "app",
+                "tools": [{"name": "create_issue", "fullName": "jira.create_issue", "description": "Create an issue"}],
+            }
+        ],
+        "webSearch": {"provider": "duckduckgo", "providerLabel": "DuckDuckGo"},
+    }
+
+    resp = create(api, writer, chat, message, **ticked)
+
+    assert resp.status_code == 201, resp.text[:400]
+    [sent] = fake.since(mark, "agent_create_from_chat")
+    assert sent.body["knowledge"] == ticked["knowledge"]
+    assert sent.body["webSearch"] == ticked["webSearch"]
+    assert [(t["instanceId"], [x["fullName"] for x in t["tools"]]) for t in sent.body["toolsets"]] == [("inst-jira", ["jira.create_issue"])]
+    assert sent.body["createdVia"] == "chat" and sent.body["sourceMessageId"] == message
 
 
 @pytest.mark.parametrize(
