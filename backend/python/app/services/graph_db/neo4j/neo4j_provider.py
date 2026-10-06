@@ -18333,8 +18333,11 @@ class Neo4jProvider(IGraphDBProvider):
         # without it two writers read the same lists and the later SET drops
         # the other's alias. Merged as pairs so both lists stay aligned; the
         # stored lists are cut to their common length first so a skewed node
-        # heals. Every stored alias also gets an indexed TaxonomyAlias node,
-        # which is what find_taxonomy_nodes seeks.
+        # heals. Each spelling this call stored gets an indexed TaxonomyAlias
+        # node, which is what find_taxonomy_nodes seeks; the node's other
+        # aliases already have theirs (heal_taxonomy_alias_nodes covers older
+        # list-only ones), and re-merging up to max_aliases of them under the
+        # node's lock on every write was the cost of the old full re-merge.
         query = f"""
             MATCH (n:{label} {{id: $key}})
             WHERE n.orgId = $org_id
@@ -18349,7 +18352,7 @@ class Neo4jProvider(IGraphDBProvider):
                 n.normalizedAliases = (normals + [i IN fresh | $normalized[i]])[0..$max_aliases]
             REMOVE n._aliasLock
             WITH n
-            UNWIND n.normalizedAliases AS normalized
+            UNWIND [normalized IN $normalized WHERE normalized IN n.normalizedAliases] AS normalized
             MERGE (a:{TAXONOMY_ALIAS_LABEL} {{orgId: n.orgId, collection: $collection, normalized: normalized}})
             MERGE (a)-[:{TAXONOMY_ALIAS_REL}]->(n)
             RETURN count(a) AS aliases
