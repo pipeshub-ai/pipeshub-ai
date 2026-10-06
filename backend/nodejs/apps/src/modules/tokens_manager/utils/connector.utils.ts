@@ -114,12 +114,11 @@ export const fetchConnectorInstanceSummary = async (
     headers,
   );
 
-  const statusCode = response?.statusCode;
-  if (response && !(statusCode >= 200 && statusCode < 300)) {
+  if (!(response.statusCode >= 200 && response.statusCode < 300)) {
     throw handleBackendError(response, 'getting connector');
   }
 
-  const data = response?.data as
+  const data = response.data as
     | { connector?: ConnectorInstanceSummary }
     | undefined;
   if (!data?.connector) {
