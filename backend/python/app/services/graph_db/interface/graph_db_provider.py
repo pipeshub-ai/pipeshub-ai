@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     DeleteSource,
     ProgressStatus,
+    RecordRelations,
 )
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -3464,6 +3465,28 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
         """
         pass
+
+    async def upsert_record_under_parent(
+        self,
+        record: "Record",
+        parent_record_id: str | None,
+        transaction: str | None = None,
+    ) -> None:
+        """Upsert a moved *record* and make *parent_record_id* its only PARENT_CHILD parent.
+
+        None leaves it under no parent: the root of its knowledge base. Records in
+        the trash holding the record's external id give it up, as in
+        ``batch_upsert_records``. Concrete by design: a provider with real
+        transactions keeps the separate calls. Neo4j overrides it with one
+        statement: with the old edge deleted on its own, a move that failed
+        afterwards left the item, and everything beneath it, in no folder at all.
+        """
+        await self.delete_parent_child_edge_to_record(record.id, transaction)
+        await self.batch_upsert_records([record], transaction, release_trashed_external_ids=True)
+        if parent_record_id:
+            await self.create_record_relation(
+                parent_record_id, record.id, RecordRelations.PARENT_CHILD.value, transaction
+            )
 
     @abstractmethod
     async def batch_upsert_record_groups(

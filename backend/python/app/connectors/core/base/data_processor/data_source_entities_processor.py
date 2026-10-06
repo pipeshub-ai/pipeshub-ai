@@ -2142,9 +2142,11 @@ class DataSourceEntitiesProcessor:
                         new_record, old_record
                     )
 
-                    # Drop the stale parent-child edge so _handle_parent_record can
-                    # create the correct one pointing at the new parent folder.
-                    await tx_store.delete_parent_child_edge_to_record(old_record.id)
+                    is_kb_item = new_record.origin == OriginTypes.UPLOAD
+                    if not is_kb_item:
+                        # Drop the stale parent-child edge so _handle_parent_record can
+                        # create the correct one pointing at the new parent folder.
+                        await tx_store.delete_parent_child_edge_to_record(old_record.id)
 
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
@@ -2217,30 +2219,31 @@ class DataSourceEntitiesProcessor:
                                 (vrid, new_record.connector_id)
                             )
 
-                    # The release shares this write: on Neo4j each statement commits on
-                    # its own, so a release written first outlived a refused move.
-                    await tx_store.batch_upsert_records([new_record], release_trashed_external_ids=True)
-
-                    if record_group_id:
-                        await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
-
-                    # existing_record=None forces _handle_parent_record to build a
-                    # fresh parent edge (the stale one was deleted above).
-                    if new_record.origin == OriginTypes.UPLOAD:
-                        # Re-point the KB PARENT_CHILD edge by _key; a None parent means
-                        # the record moved to KB root (no edge). belongsTo / inheritPermissions
-                        # already exist on the reused vertex, so the idempotent re-link is a
-                        # no-op unless they were missing.
-                        if new_record.parent_external_record_id:
-                            await tx_store.create_record_relation(
-                                new_record.parent_external_record_id,
-                                new_record.id,
-                                RecordRelations.PARENT_CHILD.value,
-                            )
+                    if is_kb_item:
+                        # belongsTo / inheritPermissions already exist on the reused vertex,
+                        # so the idempotent re-link is a no-op unless they were missing.
                         await self._link_kb_record_to_app(new_record, tx_store)
+                        await self._handle_record_permissions(new_record, permissions, tx_store)
+                        # The move itself is the last write and a single one: the record
+                        # (its externalParentId) and its PARENT_CHILD edge, re-pointed by
+                        # _key, or removed for the KB root. On Neo4j each statement commits
+                        # on its own, so written apart a failure left the item in no folder,
+                        # or in its old one under a path that no longer matched.
+                        await tx_store.upsert_record_under_parent(
+                            new_record, new_record.parent_external_record_id or None
+                        )
                     else:
+                        # The release shares this write: on Neo4j each statement commits on
+                        # its own, so a release written first outlived a refused move.
+                        await tx_store.batch_upsert_records([new_record], release_trashed_external_ids=True)
+
+                        if record_group_id:
+                            await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
+
+                        # existing_record=None forces _handle_parent_record to build a
+                        # fresh parent edge (the stale one was deleted above).
                         await self._handle_parent_record(new_record, tx_store, existing_record=None)
-                    await self._handle_record_permissions(new_record, permissions, tx_store)
+                        await self._handle_record_permissions(new_record, permissions, tx_store)
 
             # Compute and attempt the storage move for every record that was
             # actually moved (not new) BEFORE publishing any Kafka event below

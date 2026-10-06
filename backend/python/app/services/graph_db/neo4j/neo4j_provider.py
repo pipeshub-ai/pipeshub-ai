@@ -37,6 +37,7 @@ from app.config.constants.arangodb import (
     PermissionModel,
     PersonMigrationMode,
     ProgressStatus,
+    RecordRelations,
     RecordTypes,
 )
 
@@ -1363,17 +1364,10 @@ class Neo4jProvider(IGraphDBProvider):
             neo4j_nodes.append(neo4j_node)
         return neo4j_nodes
 
-    async def _upsert_record_with_type(
-        self, record: Record, transaction: str | None, *, release_trashed_external_ids: bool
-    ) -> None:
-        """Upsert a record, its type node and the IS_OF_TYPE edge between them.
-
-        One statement: each statement commits on its own unless explicit
-        transactions are on, so a type node or edge that failed left a record
-        without its type, and a trash release outlived a refused upsert.
-        Records in the trash holding the record's external id give it up when
-        *release_trashed_external_ids* is set.
-        """
+    def _upsert_record_with_type_cypher(
+        self, record: Record, *, release_trashed_external_ids: bool
+    ) -> tuple[str, dict[str, Any]]:
+        """The statement of ``_upsert_record_with_type`` up to its RETURN, with the record bound as ``n``."""
         node = self._nodes_for_upsert([record.to_arango_base_record()], CollectionNames.RECORDS.value)[0]
         parameters: dict[str, Any] = {
             "nodes": [node], "ids": [node["id"]], "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
@@ -1402,17 +1396,29 @@ class Neo4jProvider(IGraphDBProvider):
             MERGE (n)-[e:{edge_collection_to_relationship(CollectionNames.IS_OF_TYPE.value)}]->(t)
             SET e = $edge
             """
-        await self.client.execute_query(
-            f"""
+        return f"""
             UNWIND $nodes AS node
             {release}
             MERGE (n:Record {{id: node.id}})
             SET n += node
-            {typed}
-            RETURN n.id
-            """,
-            parameters=parameters,
-            txn_id=transaction,
+            {typed}""", parameters
+
+    async def _upsert_record_with_type(
+        self, record: Record, transaction: str | None, *, release_trashed_external_ids: bool
+    ) -> None:
+        """Upsert a record, its type node and the IS_OF_TYPE edge between them.
+
+        One statement: each statement commits on its own unless explicit
+        transactions are on, so a type node or edge that failed left a record
+        without its type, and a trash release outlived a refused upsert.
+        Records in the trash holding the record's external id give it up when
+        *release_trashed_external_ids* is set.
+        """
+        statement, parameters = self._upsert_record_with_type_cypher(
+            record, release_trashed_external_ids=release_trashed_external_ids
+        )
+        await self.client.execute_query(
+            f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
         )
 
     async def delete_nodes(
@@ -6765,6 +6771,44 @@ class Neo4jProvider(IGraphDBProvider):
             [edge],
             collection=CollectionNames.RECORD_RELATIONS.value,
             transaction=transaction
+        )
+
+    async def upsert_record_under_parent(
+        self,
+        record: Record,
+        parent_record_id: str | None,
+        transaction: str | None = None,
+    ) -> None:
+        # One statement: the record carries externalParentId, which the path reads
+        # check against the edge, so the two change together or not at all. Written
+        # apart, a failure after the old edge was deleted left the item in no folder.
+        statement, parameters = self._upsert_record_with_type_cypher(record, release_trashed_external_ids=True)
+        relationship_type = edge_collection_to_relationship(CollectionNames.RECORD_RELATIONS.value)
+        statement += f"""
+            WITH n
+            OPTIONAL MATCH ()-[old:{relationship_type} {{relationshipType: $parent_child}}]->(n)
+            DELETE old
+            WITH n, count(*) AS _"""
+        parameters["parent_child"] = RecordRelations.PARENT_CHILD.value
+        if parent_record_id:
+            now = get_epoch_timestamp_in_ms()
+            statement += f"""
+            CALL {{
+                WITH n
+                MATCH (parent:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $parent_id}})
+                MERGE (parent)-[link:{relationship_type}]->(n)
+                SET link = $parent_edge
+            }}"""
+            parameters.update(
+                parent_id=parent_record_id,
+                parent_edge={
+                    "relationshipType": RecordRelations.PARENT_CHILD.value,
+                    "createdAtTimestamp": now,
+                    "updatedAtTimestamp": now,
+                },
+            )
+        await self.client.execute_query(
+            f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
         )
 
     async def batch_upsert_record_relations(
@@ -15842,8 +15886,10 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return results[0].get("deleted", False) if results else False
         except Exception as e:
+            # Raised, not answered False: a caller that went on to write the new parent
+            # edge after a swallowed failure left the record under two parents.
             self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
-            return False
+            raise
 
     async def _get_user_accessible_team_app_ids(
         self,

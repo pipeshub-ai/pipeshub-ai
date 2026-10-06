@@ -30,6 +30,9 @@ from app.config.constants.arangodb import DeleteSource
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.sources.localKB.handlers.kb_service import (
     FOLDER_DEPTH_LIMIT_REASON,
     KnowledgeBaseService,
@@ -2367,6 +2370,70 @@ class TestMoveRecord:
         result = await service.move_record("kb1", "rec1", "new-folder", "user1")
         assert result["success"] is True
         service.processor_for_kb.return_value.on_records_moved.assert_awaited_once()
+
+    @staticmethod
+    def _through_the_processor(service, stored: FileRecord) -> AsyncMock:
+        """Move *stored* through the real processor over a mocked store; return that store."""
+        _setup_writer(service)
+        graph = service.graph_provider
+        graph._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
+        graph.get_record_parent_info = AsyncMock(return_value={"id": "old-folder"})
+        graph.validate_folder_in_kb = AsyncMock(return_value=True)
+        graph.is_record_folder = AsyncMock(return_value=False)
+        graph.get_document = AsyncMock(
+            side_effect=[{"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
+        )
+        graph.find_file_by_name_in_parent = AsyncMock(return_value=None)
+        graph.get_file_record_by_id = AsyncMock(return_value=stored.model_copy())
+
+        tx_store = AsyncMock()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+        transaction = AsyncMock()
+        transaction.__aenter__.return_value = tx_store
+        transaction.__aexit__.return_value = False
+        processor = DataSourceEntitiesProcessor(MagicMock(), MagicMock(), AsyncMock())
+        processor.data_store_provider.transaction.return_value = transaction
+        processor._get_storage_cleanup = MagicMock(return_value=None)
+        processor.messaging_producer = AsyncMock()
+        service.processor_for_kb = AsyncMock(return_value=processor)
+        return tx_store
+
+    @staticmethod
+    def _stored_file() -> FileRecord:
+        return FileRecord.from_arango_record(
+            arango_base_file_record={"isFile": True, "extension": "pdf", "name": "a.pdf"},
+            arango_base_record=_minimal_upload_record_dict(externalParentId="old-folder"),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("new_parent", "written_parent"), [("new-folder", "new-folder"), ("", None)])
+    async def test_a_move_writes_the_record_and_its_parent_edge_together(
+        self, service, new_parent: str, written_parent: str | None
+    ) -> None:
+        tx_store = self._through_the_processor(service, self._stored_file())
+
+        result = await service.move_record("kb1", "rec-upload-1", new_parent, "user1")
+
+        assert result["success"] is True, result
+        tx_store.upsert_record_under_parent.assert_awaited_once()
+        record, parent = tx_store.upsert_record_under_parent.await_args.args
+        assert (record.id, record.parent_external_record_id, parent) == (
+            "rec-upload-1", written_parent, written_parent
+        )
+        # On Neo4j each of these commits on its own, so the move must not be made of them.
+        tx_store.delete_parent_child_edge_to_record.assert_not_awaited()
+        tx_store.batch_upsert_records.assert_not_awaited()
+        tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_move_whose_write_fails_is_answered_as_a_failure(self, service) -> None:
+        tx_store = self._through_the_processor(service, self._stored_file())
+        tx_store.upsert_record_under_parent.side_effect = RuntimeError("LockAcquisitionTimeout")
+
+        result = await service.move_record("kb1", "rec-upload-1", "new-folder", "user1")
+
+        assert result == {"success": False, "code": 500, "reason": action_failed("move this file")}
+        tx_store.upsert_record_under_parent.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_noop_when_already_at_destination(self, service):

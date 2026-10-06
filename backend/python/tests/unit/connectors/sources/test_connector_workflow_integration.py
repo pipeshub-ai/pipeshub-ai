@@ -546,6 +546,12 @@ class MockTransactionStore:
         ]
         return before - len(self._s.edges[CollectionNames.RECORD_RELATIONS.value])
 
+    async def upsert_record_under_parent(self, record: Record, parent_record_id: str | None) -> None:
+        await self.delete_parent_child_edge_to_record(record.id)
+        await self.batch_upsert_records([record], release_trashed_external_ids=True)
+        if parent_record_id:
+            await self.create_record_relation(parent_record_id, record.id, RecordRelations.PARENT_CHILD.value)
+
     async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
         return self._s.get_edges_from_node(from_node_id, edge_collection)
 
@@ -2569,6 +2575,50 @@ class TestComplexRealWorldScenarios:
 # ===========================================================================
 # 16. Edge cases and data integrity
 # ===========================================================================
+
+
+class TestKbMoveWorkflow:
+    """A knowledge-base item is under one folder at a time, or at the root under none."""
+
+    @staticmethod
+    def _kb_item(name: str, parent_id: str | None = None, *, is_file: bool = True) -> FileRecord:
+        record = make_file_record(
+            connector_id="kb-1", connector_name=ConnectorsEnum.KNOWLEDGE_BASE, name=name,
+            record_group_type=None, parent_ext_id=parent_id, is_file=is_file,
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        record.origin = OriginTypes.UPLOAD
+        record.external_record_id = record.id
+        return record
+
+    @staticmethod
+    def _parents(graph_store: _InMemoryGraphStore, record_id: str) -> list[str]:
+        return [
+            edge["_from"].split("/")[-1]
+            for edge in graph_store.get_edges_to_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.RECORD_RELATIONS.value
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_move_re_points_the_one_parent_edge(self, processor, graph_store) -> None:
+        old, new = self._kb_item("Old", is_file=False), self._kb_item("New", is_file=False)
+        report = self._kb_item("q3.pdf", old.id)
+        await processor.on_new_records([(old, []), (new, []), (report, [])])
+        assert self._parents(graph_store, report.id) == [old.id]
+
+        to_new = report.model_copy(update={"parent_external_record_id": new.id})
+        await processor.on_records_moved([(report.external_record_id, to_new, [])])
+
+        assert self._parents(graph_store, report.id) == [new.id]
+        stored = graph_store.get_node(CollectionNames.RECORDS.value, report.id)
+        assert stored["externalParentId"] == new.id
+
+        to_root = report.model_copy(update={"parent_external_record_id": None})
+        await processor.on_records_moved([(report.external_record_id, to_root, [])])
+
+        assert self._parents(graph_store, report.id) == []
+        assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] is None
 
 
 class TestEdgeCasesAndDataIntegrity:

@@ -17,7 +17,10 @@ write below is now one statement on Neo4j:
   file its drive should no longer read still readable through the drive;
 - a record changing record group: it left the old group before it lost that
   group's inherit-permissions edge, with the same result;
-- a permission upgrade: the old edge was deleted before the new one was written.
+- a permission upgrade: the old edge was deleted before the new one was written;
+- a move inside a knowledge base: the old parent edge was deleted, the record
+  rewritten and the new parent edge created in three writes, so a failure left
+  the item, and everything beneath it, in no folder at all.
 
 A failed permission write is also raised now on both stores, where it used to
 be logged and the surrounding write committed without the permissions. On
@@ -72,6 +75,7 @@ from app.connectors.core.base.data_store import (
     graph_data_store as graph_data_store_module,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -776,3 +780,186 @@ async def test_a_failed_group_to_user_migration_keeps_the_users_own_permissions(
     await migrate()
     assert await _roles(w, alice, handbook.id) == ["WRITER"]
     assert await _roles(w, alice, payroll.id) == ["WRITER"]
+
+
+@dataclass
+class _KbTree:
+    """Old/Reports/q3.pdf and New/Archive in one knowledge base, and the service that moves its items."""
+
+    service: KnowledgeBaseService
+    kb_id: str
+    owner: str
+    old: str
+    new: str
+    reports: str
+    report: str
+    storage_moves: AsyncMock
+
+
+async def _kb_tree(w: _World) -> _KbTree:
+    owner, _ = await _add_user(w, "owner")
+
+    async def processor_for_kb(_kb_id: str) -> DataSourceEntitiesProcessor:
+        return w.processor
+
+    service = KnowledgeBaseService(logger, w.graph, MagicMock(), processor_for_kb=processor_for_kb)
+    created = await service.create_knowledge_base(user_id=owner, org_id=w.org_id, name="Handbook")
+    assert created.get("success") is True, created
+    kb_id = created["id"]
+    w.ids.add(kb_id)
+
+    async def folder(name: str, parent: str | None = None) -> str:
+        made = await (
+            service.create_nested_folder(kb_id, parent, name, owner, w.org_id) if parent
+            else service.create_folder_in_kb(kb_id, name, owner, w.org_id)
+        )
+        assert made.get("success") is True, made
+        w.ids.add(made["id"])
+        return made["id"]
+
+    old, new = await folder("Old"), await folder("New")
+    reports = await folder("Reports", old)
+    # New holds a folder already, so on ArangoDB a second child of it can be refused.
+    await folder("Archive", new)
+    report = _file(w, "q3").model_copy(update={
+        "origin": OriginTypes.UPLOAD, "connector_name": Connectors.KNOWLEDGE_BASE, "connector_id": kb_id,
+        "external_record_group_id": kb_id, "parent_external_record_id": reports,
+    })
+    await w.processor.on_new_records([(report, [])])
+
+    # The stored files follow the graph: the move asks the storage service to
+    # move them, and that request is all there is of it here.
+    storage_moves = AsyncMock(return_value={"moved": 1})
+    w.processor._get_storage_cleanup().move_record_tree = storage_moves
+    return _KbTree(service, kb_id, owner, old, new, reports, report.id, storage_moves)
+
+
+async def _parents(w: _World, record_id: str) -> list[str]:
+    """The record at the other end of each PARENT_CHILD edge into the record."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
+            parameters={"id": record_id},
+        )
+        return [row["id"] for row in rows or []]
+    return await w.graph.http_client.execute_aql(
+        "FOR e IN recordRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
+        "RETURN PARSE_IDENTIFIER(e._from).key",
+        {"to": f"records/{record_id}"},
+    ) or []
+
+
+async def _kb_place(w: _World, kb: _KbTree) -> dict[str, object]:
+    """Where the Reports folder is: by its edges, by its own record, and as the product reads it."""
+    stored = await w.graph.get_document(kb.reports, CollectionNames.RECORDS.value)
+    shown_in = []
+    for name, parent in (("root", None), ("Old", kb.old), ("New", kb.new)):
+        found = await w.graph.find_folder_by_name_in_parent(
+            kb_id=kb.kb_id, folder_name="Reports", parent_folder_id=parent, raise_on_error=True
+        )
+        if found:
+            shown_in.append(name)
+    return {
+        "parents": await _parents(w, kb.reports),
+        "externalParentId": stored.get("externalParentId"),
+        "shown_in": shown_in,
+        # Read through the folder: only a parent the record itself names counts.
+        "path_of_its_file": await w.graph.get_record_path_segments(kb.report, raise_on_error=True),
+    }
+
+
+async def _failed_kb_move(w: _World, kb: _KbTree, new_parent_id: str | None) -> str:
+    """Move Reports through the KB service, which answers a failure instead of raising it; return its cause."""
+    causes: list[str] = []
+    write = w.processor.on_records_moved
+
+    async def recording(moves: list) -> None:
+        try:
+            await write(moves)
+        except Exception as exc:
+            causes.append(str(exc))
+            raise
+
+    w.processor.on_records_moved = recording
+    try:
+        result = await kb.service.move_record(kb.kb_id, kb.reports, new_parent_id, kb.owner)
+    finally:
+        w.processor.on_records_moved = write
+    assert result["success"] is False and result["code"] == 500, result
+    assert len(causes) == 1, causes
+    return causes[0]
+
+
+@pytest.mark.parametrize("fails_on", ["old_edge", "record", "new_edge"])
+async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World, fails_on: str) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    target: str | None = kb.new
+    moved = {
+        "parents": [kb.new], "externalParentId": kb.new, "shown_in": ["New"],
+        "path_of_its_file": ["New", "Reports", "q3.pdf"],
+    }
+    expected = NEO4J_LOCK_TIMEOUT if w.neo4j else ARANGO_CONFLICT
+    if fails_on == "old_edge":
+        # The edge from the old folder cannot be deleted. Neo4j answered that with
+        # False, and the move went on to put the item in the new folder as well.
+        if w.neo4j:
+            hold = _neo4j_hold(
+                w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.old}
+            )
+        else:
+            hold = _arango_hold(
+                w, CollectionNames.RECORD_RELATIONS.value,
+                "FOR e IN recordRelations FILTER e._to == @to "
+                "UPDATE e WITH {updatedAtTimestamp: @now} IN recordRelations RETURN 1",
+                {"to": f"records/{kb.reports}", "now": get_epoch_timestamp_in_ms()},
+            )
+    elif fails_on == "record":
+        # To the root there is no new edge: the move fails on rewriting the record,
+        # after the edge from the old folder is deleted. Neo4j's hold is on the
+        # folder's File node, which that delete does not need.
+        target = None
+        moved = {
+            "parents": [], "externalParentId": None, "shown_in": ["root"],
+            "path_of_its_file": ["Reports", "q3.pdf"],
+        }
+        if w.neo4j:
+            hold = _neo4j_hold(
+                w, "MATCH (f:File {id: $id}) SET f.heldByTest = true RETURN count(f) AS n", {"id": kb.reports}
+            )
+        else:
+            hold = _arango_hold(w, CollectionNames.RECORDS.value,
+                                "UPDATE @key WITH {updatedAtTimestamp: @now} IN records RETURN 1",
+                                {"key": kb.reports, "now": get_epoch_timestamp_in_ms()})
+    # The move fails on the edge from the new folder, after the edge from the old
+    # one is deleted and the record rewritten. Another writer holds the new folder
+    # on Neo4j; on ArangoDB, whose edges have random keys, a unique index refuses
+    # the folder a second child.
+    elif w.neo4j:
+        hold = _neo4j_hold(
+            w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.new}
+        )
+    else:
+        hold = _arango_unique(w, CollectionNames.RECORD_RELATIONS.value, ["_from", "relationshipType"])
+        expected = "unique constraint violated"
+    async with hold:
+        assert expected in await _failed_kb_move(w, kb, target)
+
+    # Still in the old folder, with everything beneath it, and nowhere else.
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+
+    result = await kb.service.move_record(kb.kb_id, kb.reports, target, kb.owner)
+    assert result["success"] is True, result
+    assert await _kb_place(w, kb) == moved
+    # The retry is a whole move, the stored files included.
+    old_path, new_path = (
+        "/".join(["records", kb.kb_id, *place["path_of_its_file"][:-1]]) for place in (in_old, moved)
+    )
+    assert [call.args[1:3] for call in kb.storage_moves.await_args_list] == [(old_path, new_path)]

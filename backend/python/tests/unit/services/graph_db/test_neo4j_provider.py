@@ -2,7 +2,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.exceptions.graph_db_exceptions import GraphQueryError
+from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
 )
@@ -5774,6 +5776,95 @@ class TestRecordLinksAreOneStatement:
         await neo4j_provider.link_record_to_group("r1", None, inherit=True)
 
         neo4j_provider.client.execute_query.assert_not_awaited()
+
+
+class TestRecordMoveIsOneStatement:
+    """A move's record write and its parent edges are checked against each other by the path reads."""
+
+    @staticmethod
+    def _folder() -> FileRecord:
+        return FileRecord(
+            id="r1", org_id="org-1", record_name="Reports", record_type=RecordType.FILE,
+            external_record_id="r1", version=0, origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE, connector_id="kb-1", mime_type="application/vnd.folder",
+            is_file=False, parent_external_record_id="folder-2",
+        )
+
+    @pytest.mark.asyncio
+    async def test_under_another_parent(self, neo4j_provider: Neo4jProvider) -> None:
+        await neo4j_provider.upsert_record_under_parent(self._folder(), "folder-2", transaction="tx")
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call = neo4j_provider.client.execute_query.await_args
+        query, parameters = call.args[0], call.kwargs["parameters"]
+        steps = [
+            "trashedExternalRecordId: holder.externalRecordId",
+            "MERGE (n:Record {id: node.id})",
+            "MERGE (n)-[e:IS_OF_TYPE]->(t)",
+            "OPTIONAL MATCH ()-[old:RECORD_RELATION {relationshipType: $parent_child}]->(n)",
+            "DELETE old",
+            "MATCH (parent:Record {id: $parent_id})",
+            "MERGE (parent)-[link:RECORD_RELATION]->(n)",
+            "RETURN n.id",
+        ]
+        assert [query.index(step) for step in steps] == sorted(query.index(step) for step in steps)
+        assert parameters["nodes"][0]["externalParentId"] == "folder-2"
+        assert (parameters["parent_child"], parameters["parent_id"]) == ("PARENT_CHILD", "folder-2")
+        assert parameters["parent_edge"]["relationshipType"] == "PARENT_CHILD"
+        assert call.kwargs["txn_id"] == "tx"
+
+    @pytest.mark.asyncio
+    async def test_to_the_root(self, neo4j_provider: Neo4jProvider) -> None:
+        record = self._folder()
+        record.parent_external_record_id = None
+
+        await neo4j_provider.upsert_record_under_parent(record, None)
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call = neo4j_provider.client.execute_query.await_args
+        assert "DELETE old" in call.args[0]
+        assert "MERGE (parent)" not in call.args[0]
+        assert "parent_id" not in call.kwargs["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_a_failure_is_raised(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.side_effect = RuntimeError("LockAcquisitionTimeout")
+
+        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await neo4j_provider.upsert_record_under_parent(self._folder(), "folder-2")
+
+    @pytest.mark.asyncio
+    async def test_the_plain_upsert_touches_no_parent_edge(self, neo4j_provider: Neo4jProvider) -> None:
+        await neo4j_provider.batch_upsert_records([self._folder()])
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "MERGE (n:Record {id: node.id})" in query
+        assert query.rstrip().endswith("RETURN n.id")
+        assert "RECORD_RELATION" not in query
+        assert "trashedExternalRecordId" not in query
+
+
+class TestDeleteParentChildEdgeToRecord:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("rows", "deleted"), [([{"deleted": True}], True), ([{"deleted": False}], False), ([], False)])
+    async def test_answers_whether_an_edge_was_deleted(
+        self, neo4j_provider: Neo4jProvider, rows: list[dict], deleted: bool
+    ) -> None:
+        neo4j_provider.client.execute_query.return_value = rows
+
+        assert await neo4j_provider.delete_parent_child_edge_to_record("r1", transaction="tx") is deleted
+
+        call = neo4j_provider.client.execute_query.await_args
+        assert call.kwargs == {"parameters": {"record_id": "r1"}, "txn_id": "tx"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_is_raised(self, neo4j_provider: Neo4jProvider) -> None:
+        """Answered False, the caller went on to write the new parent edge beside the old one."""
+        neo4j_provider.client.execute_query.side_effect = RuntimeError("LockAcquisitionTimeout")
+
+        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await neo4j_provider.delete_parent_child_edge_to_record("r1")
 
 
 class TestPrincipalLookupsCanRaise:

@@ -6423,8 +6423,8 @@ class TestOnRecordsMovedKeepsStoredState:
 
 
 class TestOnRecordsMovedKbUpload:
-    @pytest.mark.asyncio
-    async def test_upload_with_parent_creates_edge(self):
+    @staticmethod
+    def _moving(parent_external_record_id: str | None) -> tuple:
         proc = _make_processor()
         tx_store = _make_tx_store()
         old = MagicMock(
@@ -6435,32 +6435,70 @@ class TestOnRecordsMovedKbUpload:
             record_name="upload.pdf",
         )
         tx_store.get_record_by_external_id = _live_lookup(old)
-        new_record = _make_kb_upload_record(parent_external_record_id="parent-folder")
+        new_record = _make_kb_upload_record(parent_external_record_id=parent_external_record_id)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
-
-        await proc.on_records_moved([("old-ext", new_record, [])])
-
-        tx_store.create_record_relation.assert_awaited_once_with(
-            "parent-folder", "r1", RecordRelations.PARENT_CHILD.value
-        )
+        return proc, tx_store, new_record
 
     @pytest.mark.asyncio
-    async def test_upload_to_root_no_parent_edge(self):
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        old = MagicMock(
-            id="r1",
-            external_revision_id="rev1",
-            indexing_status=ProgressStatus.COMPLETED.value,
-            mime_type="application/pdf",
-            record_name="upload.pdf",
-        )
-        tx_store.get_record_by_external_id = _live_lookup(old)
-        new_record = _make_kb_upload_record(parent_external_record_id=None)
-        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+    async def test_a_move_under_a_folder_is_one_write(self) -> None:
+        proc, tx_store, new_record = self._moving("parent-folder")
 
         await proc.on_records_moved([("old-ext", new_record, [])])
+
+        tx_store.upsert_record_under_parent.assert_awaited_once_with(new_record, "parent-folder")
+        assert new_record.id == "r1"
+        # Not the three writes it replaces: on Neo4j each commits on its own.
+        tx_store.delete_parent_child_edge_to_record.assert_not_awaited()
+        tx_store.batch_upsert_records.assert_not_awaited()
         tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_move_to_the_root_leaves_no_parent(self) -> None:
+        proc, tx_store, new_record = self._moving(None)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        tx_store.upsert_record_under_parent.assert_awaited_once_with(new_record, None)
+        tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_move_is_the_last_write(self) -> None:
+        """A write that failed after it would report a failed move for an item that had moved."""
+        proc, tx_store, new_record = self._moving("parent-folder")
+        writes: list[str] = []
+        tx_store.batch_create_edges = AsyncMock(side_effect=lambda _edges, collection: writes.append(collection))
+        tx_store.upsert_record_under_parent = AsyncMock(side_effect=lambda *_: writes.append("move"))
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert writes == [CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value, "move"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_move_is_raised_before_any_stored_file_moves(self) -> None:
+        proc, tx_store, new_record = self._moving("parent-folder")
+        tx_store.upsert_record_under_parent = AsyncMock(side_effect=RuntimeError("lock timeout"))
+        proc._flush_pending_blob_moves = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="lock timeout"):
+            await proc.on_records_moved([("old-ext", new_record, [])])
+
+        proc._flush_pending_blob_moves.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_connector_move_keeps_its_own_writes(self) -> None:
+        """Its parent is looked up by external id after the record is written, so it stays as it was."""
+        proc, tx_store, _ = self._moving(None)
+        new_record = _make_record(id="new-id", external_record_id="new-ext", parent_external_record_id=None)
+        writes: list[str] = []
+        tx_store.delete_parent_child_edge_to_record = AsyncMock(side_effect=lambda *_: writes.append("delete edge"))
+        tx_store.batch_upsert_records = AsyncMock(side_effect=lambda *_, **__: writes.append("upsert"))
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert writes == ["delete edge", "upsert"]
+        tx_store.delete_parent_child_edge_to_record.assert_awaited_once_with("r1")
+        tx_store.upsert_record_under_parent.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_old_record_treated_as_add(self):

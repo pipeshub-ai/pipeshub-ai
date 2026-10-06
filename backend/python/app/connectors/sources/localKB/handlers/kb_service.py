@@ -3333,9 +3333,10 @@ class KnowledgeBaseService:
                         return conflict_err
 
             # ── 7. Move through the shared processor ─────────────────────────
-            # Validation above stays here. The processor re-points the PARENT_CHILD
-            # edge by _key, refreshes the apps anchor, updates externalParentId via
-            # the re-upserted record, and emits no reindex event for a pure move.
+            # Validation above stays here. The processor refreshes the apps anchor,
+            # then re-points the PARENT_CHILD edge by _key and updates externalParentId
+            # via the re-upserted record in one write, so a move that fails leaves the
+            # item where it was. It emits no reindex event for a pure move.
             record = await self.graph_provider.get_file_record_by_id(record_id)
             if not record:
                 return {
