@@ -18,6 +18,11 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import MessageBrokerType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+@pytest.fixture(autouse=True)
+def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
+
+
 
 @pytest.fixture(autouse=True)
 def disable_distributed_concurrency_by_default(monkeypatch):
