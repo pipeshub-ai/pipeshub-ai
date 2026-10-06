@@ -218,7 +218,7 @@ class TestOpenAIAdapterGenerate:
         mock_http_client.__aexit__ = AsyncMock(return_value=None)
 
         with patch("openai.AsyncOpenAI", return_value=mock_client), patch(
-            "httpx.AsyncClient", return_value=mock_http_client
+            "app.utils.aimodels.guarded_async_client", return_value=mock_http_client
         ):
             images = await adapter.generate("x")
 
@@ -241,7 +241,7 @@ class TestOpenAIAdapterGenerate:
         mock_http_client.__aexit__ = AsyncMock(return_value=None)
 
         with patch("openai.AsyncOpenAI", return_value=mock_client), patch(
-            "httpx.AsyncClient", return_value=mock_http_client
+            "app.utils.aimodels.guarded_async_client", return_value=mock_http_client
         ):
             images = await adapter.generate("x")
 
@@ -436,7 +436,7 @@ class TestOpenAIAdapterEdit:
         mock_http_client.__aexit__ = AsyncMock(return_value=None)
 
         with patch("openai.AsyncOpenAI", return_value=mock_client), patch(
-            "httpx.AsyncClient", return_value=mock_http_client
+            "app.utils.aimodels.guarded_async_client", return_value=mock_http_client
         ):
             images = await adapter.edit("x", input_image=b"src", size="1024x1024", n=1)
 

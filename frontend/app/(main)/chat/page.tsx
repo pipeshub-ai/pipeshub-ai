@@ -686,8 +686,24 @@ function ChatContent() {
     if (!convId) return;
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const generationOf = () => useChatStore.getState().slots[activeSlotId]?.refreshGeneration ?? 0;
+    // A notification can invalidate the conversation while this request is in flight; a response
+    // fetched before that is stale. Refetch at once a few times; past that, back off and start over,
+    // so a stale response (or error) never marks the slot initialized.
+    const MAX_REFETCHES = 3;
+    const RETRY_DELAY_MS = 500;
 
-    const loadHistory = async () => {
+    const retryStale = (attempt: number): Promise<void> | undefined => {
+      if (attempt < MAX_REFETCHES) return loadHistory(attempt + 1);
+      retryTimer = setTimeout(() => {
+        if (!cancelled) void loadHistory(0);
+      }, RETRY_DELAY_MS);
+      return undefined;
+    };
+
+    const loadHistory = async (attempt = 0): Promise<void> => {
+      const generation = generationOf();
       try {
         // With the flag on, a 404/403 shows the access-lost banner instead of the API client's toast.
         const quietWhenGone = selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState());
@@ -695,6 +711,9 @@ function ChatContent() {
           ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId, { quietWhenGone })
           : await ChatApi.fetchConversation(convId, undefined, undefined, { quietWhenGone });
         if (cancelled) return;
+        if (generationOf() !== generation) {
+          return retryStale(attempt);
+        }
 
         const messages = detail.messages;
         const access = normalizeAccessView(detail.conversation.access) ?? normalizeAccessView({ isOwner: false });
@@ -770,6 +789,9 @@ function ChatContent() {
           pendingAskUserQuestion: unansweredAskUserQuestion,
         });
       } catch (error) {
+        if (!cancelled && generationOf() !== generation) {
+          return retryStale(attempt);
+        }
         // A 404/403 with the flag on is a chat the user cannot open: the banner says so, no composer on an empty thread.
         const lost = isAccessLostError(error) && selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState());
         if (!lost) console.error('Failed to load conversation history:', error);
@@ -793,6 +815,7 @@ function ChatContent() {
 
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
   }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
 

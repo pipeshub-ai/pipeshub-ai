@@ -409,6 +409,12 @@ config:
   allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
   # Example: "https://app.example.com,https://admin.example.com"
   # For development: --set config.allowedOrigins="http://localhost:3001"
+  # SECURITY: "true" refuses AI model endpoints on private/internal addresses (localhost,
+  # RFC 1918, cluster DNS names), checked when a model is saved and on every connection.
+  # Turn it on when organisations that don't trust each other share this install. Link-local
+  # and cloud metadata addresses are refused either way; OLLAMA_API_URL stays allowed.
+  # Model traffic sent through HTTP(S)_PROXY is not address-checked: filter it on the proxy.
+  blockPrivateAddresses: ""
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
