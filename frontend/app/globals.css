@@ -1420,17 +1420,32 @@ article[data-side="right"] .md-p:last-child {
   margin-bottom: 0 !important;
 }
 
-/* Timeline replies: older answers' toolbars stay out of sight until the row is hovered or focused (pointers that
-   hover only; touch keeps them). Their space stays reserved, so nothing below jumps as the pointer moves.
-   !important beats the inline entry animation's forwards fill. */
+/* Timeline replies: on pointers that hover, an older answer's toolbar takes no space; it floats on the reply's
+   bottom end edge (open space beside the next human row) while the row is hovered or focused, like a chat app's message actions, so nothing below moves.
+   The latest answer and touch screens keep it in place. !important beats the inline entry animation's fill. */
 @media (hover: hover) {
   article[data-side="right"] [data-testid="message-actions"]:not([data-latest="true"]) {
+    position: absolute;
+    bottom: calc(var(--space-4) * -1);
+    inset-inline-end: var(--space-3);
+    inset-inline-start: auto;
+    width: max-content !important;
+    max-width: calc(100% - var(--space-6));
+    z-index: 2;
+    margin: 0 !important;
+    padding: 2px var(--space-2) !important;
+    background: var(--color-panel-solid);
+    border: 1px solid var(--gray-a5);
+    border-radius: var(--radius-3);
+    box-shadow: var(--shadow-2);
     opacity: 0 !important;
+    pointer-events: none;
     transition: opacity 120ms ease-out;
   }
   article[data-side="right"]:hover [data-testid="message-actions"]:not([data-latest="true"]),
   article[data-side="right"]:focus-within [data-testid="message-actions"]:not([data-latest="true"]) {
     opacity: 1 !important;
+    pointer-events: auto;
   }
 }
 @media (hover: hover) and (prefers-reduced-motion: reduce) {

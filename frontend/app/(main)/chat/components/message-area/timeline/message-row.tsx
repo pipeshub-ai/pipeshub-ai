@@ -93,6 +93,7 @@ export function MessageRow({ name, tone, avatarSrc, time, showHeader = true, tes
           style={{
             marginInlineStart: compactWidth ? 'var(--space-4)' : 'var(--space-8)',
             minWidth: 0,
+            position: 'relative',
             textAlign: 'start',
             background: 'var(--olive-2)',
             border: '1px solid var(--olive-a4)',

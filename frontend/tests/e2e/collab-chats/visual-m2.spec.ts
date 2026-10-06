@@ -112,6 +112,8 @@ for (const combo of COMBOS) {
         await expect(bob.page.getByText('light attracts insects')).toBeVisible({ timeout: 45_000 });
         await bob.page.locator('.chat-message-scroll').evaluate((el) => { el.scrollTop = 0; });
         await shot(bob.page, '11', 'timeline-multi-user-qa', 'The same chat in the second person\'s tab after they ask the assistant: two askers, two replies, each row with its own avatar, name and time.');
+        await bob.page.getByTestId('reply-message').first().hover();
+        await shot(bob.page, '11b', 'timeline-hover-toolbar', 'An older answer hovered: its toolbar floats over the reply\'s top corner and takes no space, so rows below stay put.');
       }, bob.page);
       await own.close();
     });
