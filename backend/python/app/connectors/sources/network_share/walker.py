@@ -84,7 +84,8 @@ class ShareWalker:
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
         pending_moves: list[tuple[MoveDecision, DirectoryEntry, str, list[Permission]]] = []
         seen_file_ids: set[int] = set()
-        walked_dirs: dict[int, tuple[str, datetime | None, datetime | None]] = {}
+        # The folders the walk is inside right now, outermost first.
+        open_dirs: list[tuple[int, datetime | None, datetime | None, str]] = []
         chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
 
         async def flush() -> None:
@@ -96,31 +97,21 @@ class ShareWalker:
                 await self.flush_moves(moves)
                 moves = []
 
-        async def second_path_of(
-            entry: DirectoryEntry,
-            ext_id: str,
-            existing_by_id: Record | None,
-            existing_by_revision: Record | None,
-        ) -> str | None:
+        def enclosing_folder(entry: DirectoryEntry) -> str | None:
             # Samba follows a directory symlink on the server and lists it as a
-            # plain folder with the target's file id. A folder has one path, so a
-            # second path with that id is a link. The timestamps guard against two
-            # filesystems under one share reusing an inode number.
-            first = walked_dirs.get(entry.file_id)
-            if first is not None:
-                path, created, written = first
-                if (created, written) == (entry.created_time, entry.last_write_time):
+            # plain folder with the target's file id. A link back up the tree
+            # would be walked until the server gives up. Only a folder the walk
+            # is inside counts: a second path elsewhere with the same id can be
+            # a snapshot or a cloned volume, and skipping it drops its records.
+            # The timestamps tell a nested mount that reuses an inode number apart.
+            if entry.created_time is None and entry.last_write_time is None:
+                return None
+            for file_id, created, written, path in open_dirs:
+                if file_id == entry.file_id and (created, written) == (
+                    entry.created_time,
+                    entry.last_write_time,
+                ):
                     return path
-                return None
-            if existing_by_id is not None or existing_by_revision is None:
-                return None
-            known_id = existing_by_revision.external_record_id
-            if not known_id or known_id == ext_id or not known_id.startswith(f"{share}/"):
-                return None
-            # A renamed folder has the same id at a new path too; its old path is gone.
-            at_known = await self.data_source.stat(share, known_id[len(share) + 1 :])
-            if at_known is not None and at_known.is_directory and at_known.file_id == entry.file_id:
-                return known_id
             return None
 
         async def handle_entry(entry: DirectoryEntry, parent_dir: str) -> str | None:
@@ -165,15 +156,14 @@ class ShareWalker:
                 )
 
             if entry.is_directory and usable_file_id(entry.file_id):
-                same_as = await second_path_of(entry, ext_id, existing_by_id, existing_by_revision)
-                if same_as is not None:
+                inside = enclosing_folder(entry)
+                if inside is not None:
                     self.logger.warning(
-                        "Not walking %s: it is the same folder as %s (a link on the server)",
+                        "Not walking %s: it is %s, the folder that contains it (a link loop on the server)",
                         ext_id,
-                        same_as,
+                        inside,
                     )
                     return None
-                walked_dirs[entry.file_id] = (ext_id, entry.created_time, entry.last_write_time)
 
             seen.add(ext_id)
             if entry.last_write_time is not None:
@@ -243,7 +233,21 @@ class ShareWalker:
                         and not entry.is_symlink
                         and not entry.is_reparse
                     ):
-                        await traverse(child_dir)
+                        tracked = usable_file_id(entry.file_id)
+                        if tracked:
+                            open_dirs.append(
+                                (
+                                    entry.file_id,
+                                    entry.created_time,
+                                    entry.last_write_time,
+                                    f"{share}/{identity_rel_path(child_dir)}",
+                                )
+                            )
+                        try:
+                            await traverse(child_dir)
+                        finally:
+                            if tracked:
+                                open_dirs.pop()
                 except Exception:
                     complete = False
                     self.logger.exception(
@@ -281,6 +285,13 @@ class ShareWalker:
                     )
                     return False
             return True
+
+        try:
+            root = await self.data_source.stat(share, "")
+        except Exception:  # only loses detection of a link to the share root
+            root = None
+        if root is not None and usable_file_id(root.file_id):
+            open_dirs.append((root.file_id, root.created_time, root.last_write_time, share))
 
         for prefix in scope.list_prefixes:
             directory = prefix.rstrip("/")
