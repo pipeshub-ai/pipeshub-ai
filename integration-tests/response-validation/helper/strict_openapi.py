@@ -103,11 +103,12 @@ def _undocumented(
         return
     if not isinstance(instance, dict) or not instance:
         return
-    properties: dict[str, Any] = {}
+    properties: dict[str, list[Any]] = {}
     extra: list[dict[str, Any]] = []
     is_open = False
     for part in parts:
-        properties.update(part.get("properties") or {})
+        for key, described in (part.get("properties") or {}).items():
+            properties.setdefault(key, []).append(described)
         additional = part.get("additionalProperties")
         if additional is True or isinstance(additional, dict):
             is_open = True
@@ -118,7 +119,7 @@ def _undocumented(
         return
     for key, value in instance.items():
         if key in properties:
-            _undocumented(doc, value, properties[key], f"{where}.{key}", out, what)
+            _undocumented(doc, value, {"anyOf": properties[key]}, f"{where}.{key}", out, what)
         elif extra:
             _undocumented(doc, value, {"anyOf": extra}, f"{where}.{key}", out, what)
         elif not is_open:
@@ -256,11 +257,12 @@ def _coerce(value: str, types: set[str]) -> Any:
     """A query string value as the documented type would read it."""
     if "boolean" in types and value in ("true", "false"):
         return value == "true"
-    if types & {"integer", "number"} and "string" not in types:
-        try:
-            return int(value) if re.fullmatch(r"-?\d+", value) else float(value)
-        except ValueError:
-            return value
+    if "string" in types:
+        return value
+    if types & {"integer", "number"} and re.fullmatch(r"-?\d+", value):
+        return int(value)
+    if "number" in types and re.fullmatch(r"-?\d+\.\d+", value):
+        return float(value)
     return value
 
 
@@ -280,7 +282,12 @@ def _query_problems(
             continue
         param, pointer = documented[name]
         types = {t for part in _flatten(doc, param.get("schema") or {}) for t in _as_list(part.get("type"))}
-        if not types or not types <= _SCALARS | {"null"} or len(values) != 1:
+        if not types or not types <= _SCALARS | {"null"}:
+            continue
+        if len(values) != 1:
+            forbidden.append(f"query.{name}: sent {len(values)} times but the spec describes a single value")
+            continue
+        if values[0] == "" and param.get("allowEmptyValue"):
             continue
         for error in _schema_errors(registry, pointer, _coerce(values[0], types)):
             forbidden.append(f"query.{name}{error}")
@@ -405,12 +412,42 @@ def assert_strict_openapi_request(
         raise AssertionError(f"{len(problems)} OpenAPI request problem(s):\n" + "\n".join(problems))
 
 
+def assert_spec_forbids_request(
+    resp: requests.Response, path: str, *, method: str | None = None
+) -> None:
+    """For a request the API refused without the Node validator's error: the spec must refuse it too.
+
+    The gate only recognises ``400 VALIDATION_ERROR``. Where a route has no validator and answers a
+    bad request some other way, this is how a test ties that refusal to the spec's request contract.
+    """
+    doc, registry = _spec()
+    request = resp.request
+    method = (method or request.method or "").lower()
+    found = find_operation(doc, method, path)
+    assert found is not None, f"{method.upper()} {path} is not in the OpenAPI spec"
+    spec_path, operation = found
+    body = request.body.encode() if isinstance(request.body, str) else request.body
+    assert isinstance(body, bytes | type(None)), "the request body is a stream and cannot be inspected"
+    query_forbidden, _ = _query_problems(
+        doc, registry, _query_parameters(doc, spec_path, method, operation), urlsplit(request.url or "").query
+    )
+    body_forbidden, _ = _body_problems(
+        doc, registry, spec_path, method, operation, request.headers.get("Content-Type", ""), body or b""
+    )
+    if not query_forbidden and not body_forbidden:
+        raise AssertionError(
+            f"{method.upper()} {spec_path}: the API refused this request with {resp.status_code} "
+            "but the spec's parameters and request body schema allow it"
+        )
+
+
 def assert_strict_openapi_exchange(
     resp: requests.Response, path: str, *, method: str | None = None
 ) -> None:
     """Request and response of one call, both checked strictly."""
     doc, registry = _spec()
-    problems = request_problems_for(resp, path, method=method) + strict_response_problems(
+    request_side = [] if _request_contract_suspended else request_problems_for(resp, path, method=method)
+    problems = request_side + strict_response_problems(
         doc,
         registry,
         method or resp.request.method or "",
@@ -454,9 +491,26 @@ def _path_matchers() -> list[tuple[re.Pattern[str], str]]:
     return [(regex, spec_path) for _, regex, spec_path in sorted(ranked, key=lambda r: r[0])]
 
 
+@lru_cache(maxsize=1)
+def _catch_all_matchers() -> list[tuple[re.Pattern[str], str]]:
+    """Path items marked ``x-catch-all: true``: their last parameter also matches deeper paths."""
+    doc, _ = _spec()
+    out = []
+    for spec_path, item in (doc.get("paths") or {}).items():
+        if isinstance(item, dict) and item.get("x-catch-all") is True and spec_path.endswith("}"):
+            head = spec_path[: spec_path.rindex("{")]
+            pattern = re.sub(r"\\\{[^/]+?\\\}", "[^/]+", re.escape(head))
+            out.append((re.compile(f"^{pattern}.+$"), spec_path))
+    return out
+
+
 def _template_for(url_path: str) -> str | None:
-    bare = url_path.removeprefix(_API_PREFIX) if url_path.startswith(_API_PREFIX + "/") else url_path
-    return next((spec_path for regex, spec_path in _path_matchers() if regex.match(bare or "/")), None)
+    bare = (url_path.removeprefix(_API_PREFIX) if url_path.startswith(_API_PREFIX + "/") else url_path) or "/"
+    for matchers in (_path_matchers(), _catch_all_matchers()):
+        found = next((spec_path for regex, spec_path in matchers if regex.match(bare)), None)
+        if found:
+            return found
+    return None
 
 
 @contextmanager
