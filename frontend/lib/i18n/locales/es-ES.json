@@ -2552,7 +2552,8 @@
       "status": {
         "ready": "Listo",
         "notConnected": "No conectado",
-        "needsAuth": "Requiere autenticación"
+        "needsAuth": "Requiere autenticación",
+        "disabled": "Deshabilitado"
       },
       "team": {
         "title": "Servidores MCP",
@@ -2676,7 +2677,13 @@
         "backendRejected": "El servidor rechazó la solicitud de autorización."
       },
       "deleteDisabledTooltip": "Este servidor no se puede eliminar",
-      "toolsCount_many": "{{count}} de herramientas"
+      "toolsCount_many": "{{count}} de herramientas",
+      "stdioPolicy": {
+        "disabledTitle": "Deshabilitado en esta instalación",
+        "disabledDescription": "Los servidores STDIO personalizados ejecutan un comando en el servidor de PipesHub, por lo que permanecen desactivados hasta que el operador establezca {{flag}}=true en el entorno de la instalación (.env de Docker Compose o config.mcpAllowCustomStdio en Helm). Hasta entonces, los agentes no pueden usar las herramientas de este servidor. Puedes eliminarlo o cambiarlo a un servidor remoto (HTTP).",
+        "unavailableHint": "Los servidores con comando local (STDIO) están desactivados en esta instalación. Para permitirlos, el operador debe establecer {{flag}}=true.",
+        "enabledWarning": "Este comando se ejecuta en el servidor de PipesHub con los privilegios del servicio, incluidos su acceso a la red y sus credenciales. Añade solo comandos de confianza."
+      }
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",

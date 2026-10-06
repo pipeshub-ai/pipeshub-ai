@@ -56,6 +56,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -1374,6 +1375,7 @@ async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
 
     app_container = await get_initialized_container()
     app.container = app_container
