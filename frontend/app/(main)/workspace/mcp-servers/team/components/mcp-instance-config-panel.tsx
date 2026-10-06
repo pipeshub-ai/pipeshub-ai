@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Box, Callout, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -138,6 +138,14 @@ export function McpInstanceConfigPanel({
   const [oauthClientId, setOauthClientId] = useState('');
   const [oauthClientSecret, setOauthClientSecret] = useState('');
 
+  // Read by the form reset below without being one of its deps: the catalog that carries
+  // this flag can arrive after the drawer opens, and re-running the reset then would wipe
+  // whatever the admin has already typed.
+  const customStdioAllowedRef = useRef(customStdioAllowed);
+  useEffect(() => {
+    customStdioAllowedRef.current = customStdioAllowed;
+  }, [customStdioAllowed]);
+
   useEffect(() => {
     if (!open) return;
     setActiveTab('configuration');
@@ -173,7 +181,7 @@ export function McpInstanceConfigPanel({
     } else {
       setName('');
       setDescription('');
-      setTransport(customStdioAllowed ? 'stdio' : 'streamable_http');
+      setTransport(customStdioAllowedRef.current ? 'stdio' : 'streamable_http');
       setAuthMode('none');
       setUseAdminAuth(false);
       setCommand('');
@@ -190,11 +198,14 @@ export function McpInstanceConfigPanel({
     setHeaderValue('');
     setOauthClientId('');
     setOauthClientSecret('');
-  }, [open, editingInstance, prefillTemplate, customStdioAllowed]);
+  }, [open, editingInstance, prefillTemplate]);
 
-  // An existing STDIO instance keeps the option so its form renders; saving it is blocked below.
+  // An existing STDIO instance, or a STDIO form open when the setting turned off, keeps the
+  // option so the dropdown still shows the selected value; saving it is blocked below.
   const transportOptions: { value: McpTransport; label: string }[] =
-    customStdioAllowed || editingInstance?.transport === 'stdio' ? [STDIO_OPTION, HTTP_OPTION] : [HTTP_OPTION];
+    customStdioAllowed || editingInstance?.transport === 'stdio' || transport === 'stdio'
+      ? [STDIO_OPTION, HTTP_OPTION]
+      : [HTTP_OPTION];
   const customStdioBlocked = !isTemplateBased && transport === 'stdio' && !customStdioAllowed;
 
   const availableAuthModes = resolvedTemplate?.supportedAuthModes?.length
