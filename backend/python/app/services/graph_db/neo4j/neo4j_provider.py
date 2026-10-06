@@ -138,6 +138,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     IGraphDBProvider,
+    MoveDestinationMissing,
     _containers_from_row,
     _distinct_connector_types,
     _unsupported_container_filters,
@@ -6784,21 +6785,28 @@ class Neo4jProvider(IGraphDBProvider):
         # apart, a failure after the old edge was deleted left the item in no folder.
         statement, parameters = self._upsert_record_with_type_cypher(record, release_trashed_external_ids=True)
         relationship_type = edge_collection_to_relationship(CollectionNames.RECORD_RELATIONS.value)
+        parameters["parent_child"] = RecordRelations.PARENT_CHILD.value
+        carried = "n"
+        if parent_record_id:
+            # The parent is matched before anything is written, so one that is gone
+            # (a folder deleted while the move was on its way) leaves no row to write
+            # for. The edge is then created from that same node, not looked up again.
+            statement = f"""
+            MATCH (parent:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $parent_id}})
+            CALL {{{statement}
+                RETURN n
+            }}"""
+            carried = "parent, n"
         statement += f"""
-            WITH n
+            WITH {carried}
             OPTIONAL MATCH ()-[old:{relationship_type} {{relationshipType: $parent_child}}]->(n)
             DELETE old
-            WITH n, count(*) AS _"""
-        parameters["parent_child"] = RecordRelations.PARENT_CHILD.value
+            WITH {carried}, count(*) AS _"""
         if parent_record_id:
             now = get_epoch_timestamp_in_ms()
             statement += f"""
-            CALL {{
-                WITH n
-                MATCH (parent:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $parent_id}})
-                MERGE (parent)-[link:{relationship_type}]->(n)
-                SET link = $parent_edge
-            }}"""
+            MERGE (parent)-[link:{relationship_type}]->(n)
+            SET link = $parent_edge"""
             parameters.update(
                 parent_id=parent_record_id,
                 parent_edge={
@@ -6807,9 +6815,11 @@ class Neo4jProvider(IGraphDBProvider):
                     "updatedAtTimestamp": now,
                 },
             )
-        await self.client.execute_query(
+        written = await self.client.execute_query(
             f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
         )
+        if parent_record_id and not written:
+            raise MoveDestinationMissing(record.id, parent_record_id)
 
     async def batch_upsert_record_relations(
         self,

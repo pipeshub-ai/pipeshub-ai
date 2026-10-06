@@ -11,7 +11,10 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-from app.services.graph_db.interface.graph_db_provider import FolderChangedDuringDelete
+from app.services.graph_db.interface.graph_db_provider import (
+    FolderChangedDuringDelete,
+    MoveDestinationMissing,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1745,12 +1748,16 @@ class TestUpsertRecordUnderParent:
     """ArangoDB keeps the separate writes of a move: its transaction rolls them back together."""
 
     async def test_every_write_runs_in_the_callers_transaction(self, connected_provider) -> None:
+        connected_provider.http_client.get_document = AsyncMock(return_value={"_key": "folder-2"})
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "e1"}])
         connected_provider.batch_upsert_records = AsyncMock()
         record = _make_mock_record("r1")
 
         await connected_provider.upsert_record_under_parent(record, "folder-2", "tx")
 
+        connected_provider.http_client.get_document.assert_awaited_once_with(
+            "records", "folder-2", txn_id="tx", raise_on_error=True
+        )
         connected_provider.batch_upsert_records.assert_awaited_once_with(
             [record], "tx", release_trashed_external_ids=True
         )
@@ -1774,7 +1781,29 @@ class TestUpsertRecordUnderParent:
         assert "REMOVE edge" in connected_provider.http_client.execute_aql.await_args.args[0]
         connected_provider.batch_upsert_records.assert_awaited_once()
 
+    async def test_a_parent_that_is_gone_is_raised_before_anything_is_written(self, connected_provider) -> None:
+        """ArangoDB takes an edge from a record that does not exist, so nothing else would refuse it."""
+        connected_provider.http_client.get_document = AsyncMock(return_value=None)
+        connected_provider.http_client.execute_aql = AsyncMock()
+        connected_provider.batch_upsert_records = AsyncMock()
+
+        with pytest.raises(MoveDestinationMissing):
+            await connected_provider.upsert_record_under_parent(_make_mock_record("r1"), "folder-2", "tx")
+
+        connected_provider.http_client.execute_aql.assert_not_awaited()
+        connected_provider.batch_upsert_records.assert_not_awaited()
+
+    async def test_a_parent_that_cannot_be_read_is_not_taken_for_gone(self, connected_provider) -> None:
+        connected_provider.http_client.get_document = AsyncMock(side_effect=ConnectionError("unreachable"))
+        connected_provider.batch_upsert_records = AsyncMock()
+
+        with pytest.raises(ConnectionError, match="unreachable"):
+            await connected_provider.upsert_record_under_parent(_make_mock_record("r1"), "folder-2", "tx")
+
+        connected_provider.batch_upsert_records.assert_not_awaited()
+
     async def test_a_failed_edge_delete_is_raised_before_anything_else_is_written(self, connected_provider) -> None:
+        connected_provider.http_client.get_document = AsyncMock(return_value={"_key": "folder-2"})
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("write-write conflict"))
         connected_provider.batch_upsert_records = AsyncMock()
 

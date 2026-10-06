@@ -41,6 +41,7 @@ from app.connectors.sources.localKB.handlers.kb_service import (
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
+from app.services.graph_db.interface.graph_db_provider import MoveDestinationMissing
 
 
 # Fixtures live in conftest.py (service, mock_graph_provider, mock_processor, …)
@@ -2434,6 +2435,18 @@ class TestMoveRecord:
 
         assert result == {"success": False, "code": 500, "reason": action_failed("move this file")}
         tx_store.upsert_record_under_parent.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_move_into_a_folder_deleted_on_the_way_is_answered_as_not_found(self, service) -> None:
+        """The folder passed the check above and was gone when the move was written."""
+        tx_store = self._through_the_processor(service, self._stored_file())
+        tx_store.upsert_record_under_parent.side_effect = MoveDestinationMissing("rec-upload-1", "new-folder")
+
+        result = await service.move_record("kb1", "rec-upload-1", "new-folder", "user1")
+
+        assert result == {
+            "success": False, "code": 404, "reason": "Target folder new-folder not found in KB kb1",
+        }
 
     @pytest.mark.asyncio
     async def test_noop_when_already_at_destination(self, service):

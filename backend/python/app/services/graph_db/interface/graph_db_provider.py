@@ -32,6 +32,15 @@ class FolderChangedDuringDelete(RuntimeError):
     """Records were moved into a folder while it was being deleted; nothing was deleted."""
 
 
+class MoveDestinationMissing(RuntimeError):
+    """The parent a record was being moved under is not in the graph; nothing was written."""
+
+    def __init__(self, record_id: str, parent_record_id: str) -> None:
+        super().__init__(
+            f"Record {record_id} was not moved: its new parent {parent_record_id} is not in the graph"
+        )
+
+
 @dataclass(frozen=True)
 class AccessibleContainers:
     """The containers a user may search, in place of enumerating their records.
@@ -3474,13 +3483,20 @@ class IGraphDBProvider(ABC):
     ) -> None:
         """Upsert a moved *record* and make *parent_record_id* its only PARENT_CHILD parent.
 
-        None leaves it under no parent: the root of its knowledge base. Records in
-        the trash holding the record's external id give it up, as in
-        ``batch_upsert_records``. Concrete by design: a provider with real
-        transactions keeps the separate calls. Neo4j overrides it with one
-        statement: with the old edge deleted on its own, a move that failed
-        afterwards left the item, and everything beneath it, in no folder at all.
+        None leaves it under no parent: the root of its knowledge base. A parent
+        that is not in the graph raises ``MoveDestinationMissing`` before anything
+        is written: a folder deleted while the move was on its way would take the
+        item out of its old folder and put it in none. Records in the trash holding
+        the record's external id give it up, as in ``batch_upsert_records``.
+        Concrete by design: a provider with real transactions keeps the separate
+        calls. Neo4j overrides it with one statement: with the old edge deleted on
+        its own, a move that failed afterwards left the item, and everything
+        beneath it, in no folder at all.
         """
+        if parent_record_id and not await self.get_document(
+            parent_record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+        ):
+            raise MoveDestinationMissing(record.id, parent_record_id)
         await self.delete_parent_child_edge_to_record(record.id, transaction)
         await self.batch_upsert_records([record], transaction, release_trashed_external_ids=True)
         if parent_record_id:

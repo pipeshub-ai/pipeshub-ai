@@ -680,6 +680,7 @@ class TestRecordLinkDefaults:
 
         await instance.upsert_record_under_parent(record, "folder-2", "tx")
 
+        instance.get_document.assert_awaited_once_with("folder-2", "records", "tx", raise_on_error=True)
         assert calls == [
             ("delete_parent_child_edge_to_record", ("r1", "tx"), {}),
             ("batch_upsert_records", ([record], "tx"), {"release_trashed_external_ids": True}),
@@ -694,6 +695,20 @@ class TestRecordLinkDefaults:
         await instance.upsert_record_under_parent(MagicMock(id="r1"), None, "tx")
 
         assert [name for name, _, _ in calls] == ["delete_parent_child_edge_to_record", "batch_upsert_records"]
+        instance.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_that_is_gone_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = None
+
+        # By name: other tests here reload the module, and its classes with it.
+        with pytest.raises(RuntimeError, match="Record r1 was not moved") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
 
     @pytest.mark.asyncio
     async def test_a_move_whose_old_edge_cannot_be_deleted_writes_nothing_more(self) -> None:

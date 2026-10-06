@@ -868,12 +868,24 @@ async def _kb_place(w: _World, kb: _KbTree) -> dict[str, object]:
     }
 
 
-async def _failed_kb_move(w: _World, kb: _KbTree, new_parent_id: str | None) -> str:
-    """Move Reports through the KB service, which answers a failure instead of raising it; return its cause."""
+async def _failed_kb_move(
+    w: _World,
+    kb: _KbTree,
+    new_parent_id: str | None,
+    *,
+    code: int = 500,
+    before_write: Callable[[], Awaitable[object]] | None = None,
+) -> str:
+    """Move Reports through the KB service, which answers a failure instead of raising it; return its cause.
+
+    *before_write* runs after the service has checked the move and before the move is written.
+    """
     causes: list[str] = []
     write = w.processor.on_records_moved
 
     async def recording(moves: list) -> None:
+        if before_write:
+            await before_write()
         try:
             await write(moves)
         except Exception as exc:
@@ -885,7 +897,7 @@ async def _failed_kb_move(w: _World, kb: _KbTree, new_parent_id: str | None) -> 
         result = await kb.service.move_record(kb.kb_id, kb.reports, new_parent_id, kb.owner)
     finally:
         w.processor.on_records_moved = write
-    assert result["success"] is False and result["code"] == 500, result
+    assert result["success"] is False and result["code"] == code, result
     assert len(causes) == 1, causes
     return causes[0]
 
@@ -963,3 +975,34 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
         "/".join(["records", kb.kb_id, *place["path_of_its_file"][:-1]]) for place in (in_old, moved)
     )
     assert [call.args[1:3] for call in kb.storage_moves.await_args_list] == [(old_path, new_path)]
+
+
+async def test_a_kb_move_into_a_folder_deleted_on_the_way_moves_nothing(world: _World) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    # The new folder is there when the service checks it and gone when the move is
+    # written. Neither store refuses an edge from a record that does not exist:
+    # Neo4j wrote none and ArangoDB a dangling one, after the old edge was deleted.
+    async def delete_the_new_folder() -> None:
+        await w.graph.delete_nodes_and_edges([kb.new], CollectionNames.RECORDS.value)
+        assert await w.graph.get_document(kb.new, CollectionNames.RECORDS.value) is None
+
+    cause = await _failed_kb_move(w, kb, kb.new, code=404, before_write=delete_the_new_folder)
+    assert f"its new parent {kb.new} is not in the graph" in cause
+
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+
+    result = await kb.service.move_record(kb.kb_id, kb.reports, None, kb.owner)
+    assert result["success"] is True, result
+    assert await _kb_place(w, kb) == {
+        "parents": [], "externalParentId": None, "shown_in": ["root"],
+        "path_of_its_file": ["Reports", "q3.pdf"],
+    }
+

@@ -7,6 +7,7 @@ from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
+    MoveDestinationMissing,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -5798,12 +5799,13 @@ class TestRecordMoveIsOneStatement:
         call = neo4j_provider.client.execute_query.await_args
         query, parameters = call.args[0], call.kwargs["parameters"]
         steps = [
+            # Before any write: a parent that is gone leaves no row to write for.
+            "MATCH (parent:Record {id: $parent_id})",
             "trashedExternalRecordId: holder.externalRecordId",
             "MERGE (n:Record {id: node.id})",
             "MERGE (n)-[e:IS_OF_TYPE]->(t)",
             "OPTIONAL MATCH ()-[old:RECORD_RELATION {relationshipType: $parent_child}]->(n)",
             "DELETE old",
-            "MATCH (parent:Record {id: $parent_id})",
             "MERGE (parent)-[link:RECORD_RELATION]->(n)",
             "RETURN n.id",
         ]
@@ -5823,8 +5825,22 @@ class TestRecordMoveIsOneStatement:
         neo4j_provider.client.execute_query.assert_awaited_once()
         call = neo4j_provider.client.execute_query.await_args
         assert "DELETE old" in call.args[0]
-        assert "MERGE (parent)" not in call.args[0]
+        assert "(parent" not in call.args[0]
         assert "parent_id" not in call.kwargs["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_a_parent_that_is_gone_is_raised(self, neo4j_provider: Neo4jProvider) -> None:
+        """Its MATCH comes first, so the statement wrote nothing; answered quietly, the move looked done."""
+        neo4j_provider.client.execute_query.return_value = []
+
+        with pytest.raises(MoveDestinationMissing, match="its new parent folder-2 is not in the graph"):
+            await neo4j_provider.upsert_record_under_parent(self._folder(), "folder-2")
+
+    @pytest.mark.asyncio
+    async def test_a_move_to_the_root_needs_no_parent(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.return_value = []
+
+        await neo4j_provider.upsert_record_under_parent(self._folder(), None)
 
     @pytest.mark.asyncio
     async def test_a_failure_is_raised(self, neo4j_provider: Neo4jProvider) -> None:

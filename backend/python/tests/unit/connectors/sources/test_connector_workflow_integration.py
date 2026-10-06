@@ -56,6 +56,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from app.services.graph_db.interface.graph_db_provider import MoveDestinationMissing
 
 # ---------------------------------------------------------------------------
 # Constants used across tests
@@ -547,6 +548,8 @@ class MockTransactionStore:
         return before - len(self._s.edges[CollectionNames.RECORD_RELATIONS.value])
 
     async def upsert_record_under_parent(self, record: Record, parent_record_id: str | None) -> None:
+        if parent_record_id and self._s.get_node(CollectionNames.RECORDS.value, parent_record_id) is None:
+            raise MoveDestinationMissing(record.id, parent_record_id)
         await self.delete_parent_child_edge_to_record(record.id)
         await self.batch_upsert_records([record], release_trashed_external_ids=True)
         if parent_record_id:
@@ -2619,6 +2622,19 @@ class TestKbMoveWorkflow:
 
         assert self._parents(graph_store, report.id) == []
         assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_move_under_a_folder_that_is_gone_moves_nothing(self, processor, graph_store) -> None:
+        old = self._kb_item("Old", is_file=False)
+        report = self._kb_item("q3.pdf", old.id)
+        await processor.on_new_records([(old, []), (report, [])])
+
+        to_nowhere = report.model_copy(update={"parent_external_record_id": "deleted-folder"})
+        with pytest.raises(MoveDestinationMissing):
+            await processor.on_records_moved([(report.external_record_id, to_nowhere, [])])
+
+        assert self._parents(graph_store, report.id) == [old.id]
+        assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] == old.id
 
 
 class TestEdgeCasesAndDataIntegrity:
