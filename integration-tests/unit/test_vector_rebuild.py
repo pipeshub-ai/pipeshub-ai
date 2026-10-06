@@ -136,7 +136,7 @@ def test_the_expected_model_change_refusal_is_the_one_the_gateway_sends() -> Non
     controller = (
         Path(__file__).resolve().parents[2]
         / "backend/nodejs/apps/src/modules/configuration_manager/controller/cm_controller.ts"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     flat = " ".join(controller.split())
 
     assert MODEL_CHANGE_REFUSED in flat
