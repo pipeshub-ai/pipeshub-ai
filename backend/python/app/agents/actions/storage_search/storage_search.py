@@ -1634,8 +1634,6 @@ class StoragePatternMatch:
             "[storage_pattern_match] org_id=%s connector_id=%s command_len=%d record_date=%s",
             org_id, connector_id, len(command), record_date,
         )
-        # Grep patterns carry the user's search terms.
-        logger.debug("[storage_pattern_match] command=%r", command)
 
         # 1. Validate the command (allowlist + security checks) and the scope.
         valid, err = _validate_command(command)
@@ -1669,8 +1667,8 @@ class StoragePatternMatch:
                 return False, view_err
             cwd = view_dir
         logger.debug(
-            "[storage_pattern_match] cwd=%s effective_command=%r",
-            cwd, effective_command,
+            "[storage_pattern_match] cwd=%s effective_command_len=%d",
+            cwd, len(effective_command),
         )
         try:
             success, output = await _run_subprocess(effective_command, cwd=cwd)
@@ -1760,7 +1758,6 @@ class StoragePatternMatch:
             "[storage_pattern_match.find_records] org_id=%s connector_id=%s command_len=%d max_results=%d",
             org_id, connector_id, len(command), max_results,
         )
-        logger.debug("[storage_pattern_match.find_records] command=%r", command)
 
         max_results = min(max(max_results, 1), _MAX_FIND_RECORDS)
 

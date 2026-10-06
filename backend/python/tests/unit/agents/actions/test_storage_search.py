@@ -1763,8 +1763,8 @@ class TestRankingIsBounded:
 
 
 class TestLogging:
-    """Record content and search terms stay out of the INFO log; operators and
-    the log pipeline are not authorised to read them."""
+    """Record content stays out of the INFO log and search terms out of every log;
+    operators and the log pipeline are not authorised to read them."""
 
     _LOGGER = "app.agents.actions.storage_search.storage_search"
     _SECRET = "ACME-PAYROLL-SSN-123-45-6789"
@@ -1807,7 +1807,8 @@ class TestLogging:
         assert self._SECRET not in self._info_text(caplog)
 
     @pytest.mark.asyncio
-    async def test_search_terms_are_logged_only_at_debug(self, tmp_path, caplog) -> None:
+    async def test_search_terms_are_logged_at_no_level(self, tmp_path, caplog) -> None:
+        """A grep pattern is the user's query; debug logs ship to the same pipeline."""
         caplog.set_level(logging.DEBUG, logger=self._LOGGER)
         tool = _make_tool(connector_dir=str(tmp_path), apps=["c"], has_knowledge=True)
         with patch(
@@ -1817,6 +1818,6 @@ class TestLogging:
         ):
             await tool.run_command("c", f'grep -rl "{self._SECRET}" .')
             await tool.find_records("c", f'grep -rl "{self._SECRET}" .')
-        assert self._SECRET not in self._info_text(caplog)
-        debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any(self._SECRET in m for m in debug)
+        logged = [r.getMessage() for r in caplog.records if r.name == self._LOGGER]
+        assert logged, "the calls should still log their metadata"
+        assert not any(self._SECRET in m for m in logged)
