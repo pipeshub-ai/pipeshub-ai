@@ -205,6 +205,19 @@ async def test_source_is_sent_with_the_extension_from_its_name_when_the_event_ha
 
 
 @patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_source_is_sent_with_its_names_extension_when_the_declared_one_disagrees() -> None:
+    processor = _legacy_processor()
+    ep, parsing_client = _service_processor(processor)
+    _as_code_file(ep, "text/plain")
+    event = _repository_event("main.py", "text/plain", b"x = 1\n")
+    event["payload"]["extension"] = "json"
+
+    await _drain(ep, event)
+
+    assert parsing_client.parse.await_args.kwargs["extension"] == "py"
+
+
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 async def test_an_uploaded_minified_script_is_still_sent_to_the_parsing_service() -> None:
     processor = _legacy_processor()
     ep, parsing_client = _service_processor(processor)

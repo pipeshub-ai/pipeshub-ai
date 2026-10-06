@@ -1385,11 +1385,12 @@ class EventProcessor:
                         service_mime_type = get_mime_type_for_extension(
                             plan.parser, fallback=mime_type
                         )
-                    elif plan.route is CodeFileRoute.CODE and code_ext:
-                        # The event may carry no extension; the one read off
-                        # the file name is what makes the service pick the code
+                    elif plan.route is CodeFileRoute.CODE:
+                        # The event may carry no extension, or one that
+                        # disagrees with the file's name. The one the grammar
+                        # was chosen by is what makes the service pick the code
                         # parser over the text one a text/plain mime implies.
-                        service_extension = code_ext
+                        service_extension = plan.extension
 
                 async for event in self._orchestrate_via_services(
                     record_id=record_id,

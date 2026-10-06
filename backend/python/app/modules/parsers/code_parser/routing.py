@@ -16,10 +16,7 @@ from enum import Enum
 from app.config.constants.arangodb import ExtensionTypes
 from app.modules.parsers.code_parser import engine
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
-from app.modules.parsers.code_parser.lang_config import (
-    config_for_extension,
-    detect_language,
-)
+from app.modules.parsers.code_parser.lang_config import config_for_extension
 from app.utils.user_errors import (
     BINARY_FILE_SKIPPED,
     GENERATED_FILE_SKIPPED,
@@ -50,6 +47,10 @@ class CodeFilePlan:
     route: CodeFileRoute
     # The language for CODE; the parser registry key for DELIMITED and STRUCTURED.
     parser: str | None = None
+    # For CODE, the extension the grammar was chosen by. The parsing service
+    # picks its parser from an extension, and the record's own may disagree
+    # with its name or be missing.
+    extension: str | None = None
     skip_cause: SkipCause | None = None
     # Stored on the record and shown to people, so written for them.
     skip_reason: str | None = None
@@ -120,20 +121,22 @@ def plan_code_file(
         return _skip(SkipCause.GENERATED, GENERATED_FILE_SKIPPED)
 
     declared = _declared_extension(extension)
-    language = detect_language(record_name) or detect_language(path)
-    if not language and declared:
-        cfg = config_for_extension(declared)
-        language = cfg.name if cfg else None
+    # The file's own name decides before the extension the record declares.
+    candidates = (_extension(record_name), _extension(path), declared)
+    grammar = next(
+        ((ext, cfg) for ext in candidates if ext and (cfg := config_for_extension(ext))), None
+    )
 
     size = len(content)
     limit = engine.MAX_FILE_SIZE_BYTES
     too_large = text_file_too_large(size, limit, repository_file=repository_file)
-    if language:
+    if grammar:
         if size > limit:
             return _skip(SkipCause.TOO_LARGE, too_large)
-        return CodeFilePlan(CodeFileRoute.CODE, parser=language)
+        grammar_extension, cfg = grammar
+        return CodeFilePlan(CodeFileRoute.CODE, parser=cfg.name, extension=grammar_extension)
 
-    ext = _extension(record_name) or _extension(path) or declared
+    ext = next((ext for ext in candidates if ext), "")
     if ext in _DELIMITED:
         return CodeFilePlan(CodeFileRoute.DELIMITED, parser=_DELIMITED[ext])
     if ext in _STRUCTURED:

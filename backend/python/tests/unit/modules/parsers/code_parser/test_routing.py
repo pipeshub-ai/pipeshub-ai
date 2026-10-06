@@ -41,6 +41,11 @@ def test_source_with_a_grammar_goes_to_the_code_parser(name: str, language: str)
     assert (plan.route, plan.parser) == (CodeFileRoute.CODE, language)
 
 
+def test_the_file_name_decides_the_grammar_before_the_declared_extension() -> None:
+    result = plan_repository("main.py", "src/main.py", "json", b"x = 1\n")
+    assert (result.route, result.parser, result.extension) == (CodeFileRoute.CODE, "python", "py")
+
+
 def test_a_declared_extension_picks_the_grammar_when_the_name_has_none() -> None:
     plan = plan_repository("build-script", None, "py", b"print(1)\n")
     assert (plan.route, plan.parser) == (CodeFileRoute.CODE, "python")
