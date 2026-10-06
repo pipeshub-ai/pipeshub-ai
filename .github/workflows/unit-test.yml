@@ -173,6 +173,8 @@ jobs:
       # "SharePoint Online" and only a nightly with a real tenant could find out.
       # The third is here because a route that gained an admin check without a
       # table row reached main through a pull request this job did not check.
+      # With the inventory goes the check on the helper that creates and removes
+      # what the conditional-admin cases act on in the shared test org.
       - name: Run the integration-suite guards
         run: |
           uv pip install --system pyyaml
@@ -186,6 +188,7 @@ jobs:
               integration-tests/unit/test_graph_edge_schemas.py \
               integration-tests/unit/test_connector_types_are_registered.py \
               integration-tests/unit/test_admin_route_inventory.py \
+              integration-tests/unit/test_admin_route_conditional_world.py \
               --noconftest -c backend/python/pytest.ini -v
 
       # The only automated check on agent behaviour: six golden properties the
