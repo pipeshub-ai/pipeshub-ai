@@ -338,7 +338,9 @@ async def test_a_move_committed_during_the_deletes_deletes_nothing(tree: _Tree) 
 
 # ArangoDB only: Neo4j waits for the other writer's lock instead of failing the write.
 @pytest.mark.parametrize("tree", ["arango"], indirect=True)
-async def test_a_record_another_writer_holds_is_deleted_once_it_lets_go(tree: _Tree) -> None:
+async def test_a_record_another_writer_holds_is_deleted_once_it_lets_go(
+    tree: _Tree, caplog: pytest.LogCaptureFixture
+) -> None:
     """Indexing updating a record while its folder is deleted made the record REMOVE fail
     with a write-write conflict; the delete still committed and reported success, and
     the records stayed in the graph with their edges gone."""
@@ -350,12 +352,27 @@ async def test_a_record_another_writer_holds_is_deleted_once_it_lets_go(tree: _T
         transaction=holder,
     )
 
+    caplog.set_level(logging.WARNING, logger=DataSourceEntitiesProcessor.__module__)
+
+    def retried() -> bool:
+        return any(
+            "Deadlock or write conflict in on_records_deleted_cascade" in r.getMessage()
+            for r in caplog.records
+        )
+
     deleting = asyncio.create_task(tree.processor.on_records_deleted_cascade(
         [tree.ids["folder_a"]], tree.connector_id, soft_delete=False,
     ))
-    await asyncio.sleep(1.5)
+    # Let go only once the delete has been refused and is waiting to run again, so the
+    # test shows the conflict happened rather than guessing how long it takes.
+    for _ in range(300):
+        if retried() or deleting.done():
+            break
+        await asyncio.sleep(0.05)
     await tree.graph.commit_transaction(holder)
     result = await deleting
+
+    assert retried(), "the delete never ran into the held record, so the conflict was not tested"
 
     assert result["success"] is True, result
     left = [name for name in ("folder_a", "a1", "attached", "sub", "s1") if await tree.exists(name)]

@@ -4239,7 +4239,7 @@ class TestDeleteRecordsRecursive:
         mock_begin.assert_not_awaited()
         mock_commit.assert_not_awaited()
 
-    @pytest.mark.parametrize("failing", ["records", "permission"])
+    @pytest.mark.parametrize("failing", ["records", "permission", "files"])
     @pytest.mark.asyncio
     async def test_a_failed_removal_fails_the_callers_transaction(self, connected_provider, failing) -> None:
         """A REMOVE refused by a write conflict was logged and counted, and the delete
@@ -4247,13 +4247,18 @@ class TestDeleteRecordsRecursive:
         conflict = 'Query failed (status=409): {"code":409,"error":true,"errorNum":1200}'
         inventory = {
             "valid_root_keys": ["r1"],
-            "records_with_type": [{"record": {"_key": "r1", "recordName": "doc.md"}, "type_target": None}],
+            "records_with_type": [{
+                "record": {"_key": "r1", "recordName": "doc.md"},
+                "type_target": {"collection": "files", "key": "r1", "full_id": "files/r1", "doc": {}},
+            }],
         }
 
         async def aql(query: str, bind_vars: dict | None = None, txn_id: str | None = None) -> list:
-            if failing in ((bind_vars or {}).get("@collection"), (bind_vars or {}).get("@edge_collection")):
+            bind_vars = bind_vars or {}
+            if failing in (bind_vars.get("@collection"), bind_vars.get("@edge_collection")):
                 raise RuntimeError(conflict)
-            return []
+            # A REMOVE ... RETURN 1 answers one row per document it removed.
+            return [1] * len(bind_vars.get("keys", []))
 
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=aql)
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
