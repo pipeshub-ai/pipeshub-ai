@@ -3019,6 +3019,23 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+
+    @abstractmethod
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """Upsert a Person a source names without an email, keyed on
+        (org_id, source_key), returning the id of the surviving node.
+
+        Same contract as :meth:`upsert_person_by_email`: callers use the
+        returned id, an existing node is never updated, and a failed write
+        answers None unless ``raise_on_error`` is set.
+        """
+        pass
     @abstractmethod
     async def ensure_app_membership(
         self,

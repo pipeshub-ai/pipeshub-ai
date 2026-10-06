@@ -1254,8 +1254,10 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
-            "email": {"type": "string"},
+            "_key": {"type": "string"},  # uuid4; (orgId, email), else (orgId, sourceKey), is the business key
+            "email": {"type": ["string", "null"]},
+            # "<connector id>:<source user id>" for a person a source names without an email
+            "sourceKey": {"type": ["string", "null"]},
             # Not in "required": pre-existing documents written before org-scoping
             # was added have no orgId and must stay schema-valid.
             "orgId": {"type": ["string", "null"]},
@@ -1266,7 +1268,7 @@ people_schema = {
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},
         },
-        "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
+        "required": ["createdAtTimestamp", "updatedAtTimestamp"],
         "additionalProperties": False,
     },
     "level": "strict",

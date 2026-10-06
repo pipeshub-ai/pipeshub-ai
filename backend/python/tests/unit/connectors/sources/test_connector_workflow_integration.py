@@ -397,6 +397,9 @@ class MockTransactionStore:
                 return Person.from_arango_person(doc)
         return None
 
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
+
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         existing = await self.get_person_by_email(person.email, person.org_id)
         if existing:
@@ -1208,8 +1211,9 @@ class TestJiraFullSyncWorkflow:
         assert EntityRelations.REPORTED_BY.value in edge_types
 
     @pytest.mark.asyncio
-    async def test_sync_ticket_missing_user_no_edge(self, processor, graph_store):
-        """If user doesn't exist in graph, entity relation edges are not created."""
+    async def test_sync_ticket_naming_a_non_member_links_one_person_node(self, processor, graph_store):
+        """Someone a ticket names who is not a member gets one person node
+        (decision D2), linked once per role; no user is created."""
         ticket = make_ticket_record(
             external_id="ticket-nousers-001",
             assignee_email="ghost@example.com",
@@ -1218,7 +1222,12 @@ class TestJiraFullSyncWorkflow:
         )
         await processor.on_new_records([(ticket, [])])
         entity_edges = graph_store.edges.get(CollectionNames.ENTITY_RELATIONS.value, [])
-        assert len(entity_edges) == 0
+        assert {e["_to"].split("/")[0] for e in entity_edges} == {CollectionNames.PEOPLE.value}
+        assert len({e["_to"] for e in entity_edges}) == 1
+        assert sorted(e["edgeType"] for e in entity_edges) == sorted([
+            EntityRelations.ASSIGNED_TO.value, EntityRelations.REPORTED_BY.value, EntityRelations.CREATED_BY.value,
+        ])
+        assert graph_store.count_collection(CollectionNames.USERS.value) == 0
 
     @pytest.mark.asyncio
     async def test_sync_project_lead_edge(self, processor, graph_store):

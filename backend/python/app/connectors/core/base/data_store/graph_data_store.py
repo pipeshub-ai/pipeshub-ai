@@ -531,6 +531,11 @@ class GraphTransactionStore(TransactionStore):
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
 
+
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return await self.graph_provider.upsert_person_by_source_key(
+            person, transaction=self.txn, raise_on_error=raise_on_error
+        )
     async def ensure_app_membership(
         self,
         principal_id: str,

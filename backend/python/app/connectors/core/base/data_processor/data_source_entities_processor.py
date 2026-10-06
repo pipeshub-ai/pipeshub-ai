@@ -1044,6 +1044,16 @@ class DataSourceEntitiesProcessor:
                     resolved = await self._resolve_principal(permission.email, tx_store)
                     if resolved:
                         from_id, from_collection = resolved
+                elif permission.external_id:
+                    # A source that hides emails grants by its own user id.
+                    user = await tx_store.get_user_by_source_id(permission.external_id, record.connector_id)
+                    if user is None:
+                        self.logger.warning(
+                            "User with source id %s for connector %s not found; record %s gets no grant from it",
+                            permission.external_id, record.connector_id, record.id,
+                        )
+                        continue
+                    from_id, from_collection = user.id, CollectionNames.USERS.value
 
             elif permission.entity_type == EntityType.GROUP.value:
                 user_group = None

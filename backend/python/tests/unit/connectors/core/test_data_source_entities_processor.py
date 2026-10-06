@@ -4039,6 +4039,40 @@ class TestLinkRecordToGroupEdgeCases:
 
 class TestHandleRecordPermissionsEntityTypes:
     @pytest.mark.asyncio
+    async def test_a_user_grant_without_an_email_resolves_by_the_source_user_id(self) -> None:
+        """A source that hides emails (Jira Cloud) grants by its own user id;
+        that member must still get the edge rather than lose access."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        member = MagicMock()
+        member.id = "u-ann"
+        tx_store.get_user_by_source_id = AsyncMock(return_value=member)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        await proc._handle_record_permissions(record, [perm], tx_store)
+
+        tx_store.get_user_by_source_id.assert_awaited_once_with("acc-1", "conn-1")
+        (edges,) = tx_store.batch_create_edges.await_args.args[:1]
+        assert [e["from_id"] for e in edges] == ["u-ann"]
+
+    @pytest.mark.asyncio
+    async def test_a_user_grant_naming_nobody_known_is_reported(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_source_id = AsyncMock(return_value=None)
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        await proc._handle_record_permissions(record, [perm], tx_store)
+
+        tx_store.batch_create_edges.assert_not_awaited()
+        proc.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
     async def test_group_permission_found(self):
         """Creates permission edge for GROUP entity when group found."""
         proc = _make_processor()

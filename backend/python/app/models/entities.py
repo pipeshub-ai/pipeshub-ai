@@ -230,6 +230,28 @@ class RelatedExternalRecord(BaseModel):
     constraint_name: Optional[str] = Field(default=None, description="Constraint name (e.g. FK constraint name)")
 
 
+class SourcePerson(BaseModel):
+    """A person as the source system names them, for authorship links.
+
+    Connectors fill it from vendor data; nothing downstream sees a vendor
+    shape. At least one of ``source_id`` (the connector's own user id) and
+    ``email`` identifies the person; ``display_name`` is for display only and
+    is never used to match.
+    """
+
+    model_config = {"frozen": True}
+
+    source_id: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    # Bots, apps and system accounts: never linked as a document's person.
+    is_service_account: bool = False
+
+    @property
+    def identifiable(self) -> bool:
+        return not self.is_service_account and bool(self.source_id or self.email)
+
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
@@ -291,6 +313,15 @@ class Record(BaseModel):
     purge_attempts: int | None = Field(default=None, description="Failed purge attempts")
     purge_last_error: str | None = Field(default=None, description="Last purge error, shortened")
     trashed_external_record_id: str | None = Field(default=None, description="External id this trashed record held before a live record moved onto it; restore puts it back")
+    # Who made and changed the record, as the source reports it for the current
+    # version. ``authored_by`` only when the source says this person wrote the
+    # content (a Drive file's creator); ``created_by`` when it says only who
+    # brought it in (a file uploaded to a collection). Read by record_people;
+    # not stored on the record node.
+    authored_by: SourcePerson | None = Field(default=None)
+    created_by: SourcePerson | None = Field(default=None)
+    last_modified_by: SourcePerson | None = Field(default=None)
+    owners: list[SourcePerson] = Field(default_factory=list)
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
@@ -2964,9 +2995,16 @@ class UserGroup(BaseModel):
 
 
 class Person(BaseModel):
-    """Lightweight entity for external email addresses (not organization members)."""
+    """Someone who is not an organization member: an external collaborator,
+    or a person a connector names (a document's author) without an account.
+
+    Keyed by (org_id, email). A source that names a person only by its own
+    user id (Jira, Notion) gives no email; such a node is keyed by
+    (org_id, source_key) instead, ``source_key`` being ``"<connector id>:<source user id>"``.
+    """
     id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
-    email: str = Field(description="Email address")
+    email: str | None = Field(default=None, description="Email address")
+    source_key: str | None = Field(default=None, description="'<connector id>:<source user id>' when there is no email")
     org_id: str | None = Field(default=None, description="Owning org for this Person")
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Creation timestamp")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Update timestamp")
@@ -2983,7 +3021,8 @@ class Person(BaseModel):
             # index. Atomic upserts match on exact equality, so the stored form must be
             # normalised or Foo@x.com and foo@x.com become two nodes every reader sees
             # as one.
-            "email": self.email.lower(),
+            "email": self.email.lower() if self.email else None,
+            "sourceKey": self.source_key,
             "orgId": self.org_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -2998,6 +3037,7 @@ class Person(BaseModel):
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
+            source_key=data.get("sourceKey"),
             org_id=data.get("orgId"),
             created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
             updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),

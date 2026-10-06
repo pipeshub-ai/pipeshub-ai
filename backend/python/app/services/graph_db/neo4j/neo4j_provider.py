@@ -669,7 +669,10 @@ class Neo4jProvider(IGraphDBProvider):
         """
         return [
             "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
-            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE"
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE",
+            # A person a source names without an email (see Person.source_key).
+            "CREATE CONSTRAINT person_org_source_key_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.sourceKey) IS UNIQUE",
         ]
 
     def _generate_performance_indexes(self) -> list[str]:
@@ -15513,6 +15516,34 @@ class Neo4jProvider(IGraphDBProvider):
                 raise
             return None
 
+
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.upsert_person_by_source_key`. Atomic
+        through the person_org_source_key_unique constraint."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            props = self._arango_to_neo4j_node(person.to_arango_person(), CollectionNames.PEOPLE.value)
+            results = await self.client.execute_query(
+                f"""
+                MERGE (p:{label} {{sourceKey: $source_key, orgId: $org_id}})
+                ON CREATE SET p = $props
+                RETURN p.id AS id
+                """,
+                parameters={"source_key": props["sourceKey"], "org_id": props["orgId"], "props": props},
+                txn_id=transaction,
+            )
+            return results[0]["id"] if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -15633,6 +15664,7 @@ class Neo4jProvider(IGraphDBProvider):
             app_rel = edge_collection_to_relationship(
                 CollectionNames.USER_APP_RELATION.value
             )
+            entity_rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
 
             # The transfers are written out per relationship type rather than looped:
             # Cypher has no dynamic relationship type without APOC.
@@ -15660,6 +15692,17 @@ class Neo4jProvider(IGraphDBProvider):
                 ON CREATE SET moved = properties(r)
                 DELETE r
                 RETURN count(*) AS moved_app_relations
+            }}
+
+            // Records naming the person (author, editor, owner) point AT it; they follow
+            // it to the user whether or not it splits.
+            CALL {{
+                WITH p, u
+                MATCH (rec)-[r:{entity_rel}]->(p)
+                MERGE (rec)-[moved:{entity_rel} {{edgeType: r.edgeType}}]->(u)
+                ON CREATE SET moved = properties(r)
+                DELETE r
+                RETURN count(*) AS moved_entity_relations
             }}
 
             // Aggregating rather than returning the deleted node keeps this block from
