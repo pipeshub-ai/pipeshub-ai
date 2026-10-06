@@ -4074,7 +4074,9 @@ class Neo4jProvider(IGraphDBProvider):
     async def get_user_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> User | None:
         """Get user by email"""
         try:
@@ -4100,6 +4102,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_by_source_id(
@@ -15376,6 +15380,8 @@ class Neo4jProvider(IGraphDBProvider):
         email: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Person | None:
         """Get a person by (org_id, email) — Person's business key, same as User's."""
         try:
@@ -15400,12 +15406,16 @@ class Neo4jProvider(IGraphDBProvider):
             return Person.from_arango_person(person_dict)
         except Exception as e:
             self.logger.error(f"❌ Get person by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def upsert_person_by_email(
         self,
         person: Person,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """
         Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
@@ -15442,6 +15452,8 @@ class Neo4jProvider(IGraphDBProvider):
             return results[0]["id"] if results else None
         except Exception as e:
             self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def ensure_app_membership(

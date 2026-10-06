@@ -5437,7 +5437,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> User | None:
         """
         Get user by email.
@@ -5465,6 +5467,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_by_source_id(
@@ -5959,6 +5963,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         email: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Person | None:
         """Get a person by (org_id, email) — Person's business key, same as User's."""
         try:
@@ -5976,12 +5982,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return Person.from_arango_person(results[0]) if results else None
         except Exception as e:
             self.logger.error(f"❌ Get person by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def upsert_person_by_email(
         self,
         person: Person,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """
         Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
@@ -6014,6 +6024,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results[0] if results else None
         except Exception as e:
             self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def ensure_app_membership(
@@ -11554,7 +11566,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return 0
 
-    async def _stop_inheriting_from_record_groups(self, record_id: str, transaction: str | None) -> None:
+    async def _stop_inheriting_from_record_groups(
+        self, record_id: str, transaction: str | None
+    ) -> None:
         # Not delete_edges_between_collections: it answers 0 when the delete fails, and
         # the transaction would commit the new permissions beside the old inheritance.
         await self.http_client.execute_aql(

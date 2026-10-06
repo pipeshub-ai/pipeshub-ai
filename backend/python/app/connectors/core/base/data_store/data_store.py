@@ -206,7 +206,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         pass
 
     @abstractmethod
@@ -254,11 +254,13 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False
+    ) -> Optional[Person]:
         pass
 
     @abstractmethod
-    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> Optional[str]:
         pass
 
     @abstractmethod

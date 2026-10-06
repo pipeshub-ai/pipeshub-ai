@@ -1448,6 +1448,126 @@ class TestFailedPermissionWritesAreRaised:
             await proc.on_updated_record_permissions(record, [])
 
 
+class TestFailedPrincipalLookupsStopRewrites:
+    """A lookup that cannot be read must not be taken for "no such principal": every one
+    of these writes replaces what was there, so the principal would lose its access."""
+
+    @staticmethod
+    def _proc_and_store() -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_record_permission_rewrite(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_edges_from_node.return_value = [{"some": "edge"}]
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, email="user@test.com")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_updated_record_permissions(record, [perm])
+
+        tx_store.replace_record_permissions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_permission_rewrite_keeps_an_absent_principal_out(self) -> None:
+        """A principal that truly is not there is left out, as before."""
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_edges_from_node.return_value = [{"some": "edge"}]
+        tx_store.get_user_group_by_external_id.return_value = None
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.GROUP.value, external_id="gone")
+
+        await proc.on_updated_record_permissions(record, [perm])
+
+        tx_store.replace_record_permissions.assert_awaited_once()
+        assert tx_store.replace_record_permissions.await_args.args[1] == []
+
+    @pytest.mark.asyncio
+    async def test_user_group_members(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        existing = MagicMock()
+        existing.id = "ug-1"
+        tx_store.get_user_group_by_external_id.return_value = existing
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+        group = AppUserGroup(
+            app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_group_id="ext-ug-1", name="G"
+        )
+        member = AppUser(
+            app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_id="s1",
+            email="member@test.com", full_name="Member",
+        )
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_new_user_groups([(group, [member])])
+
+        tx_store.replace_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_app_role_members(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        existing = MagicMock()
+        existing.id = "role-1"
+        tx_store.get_app_role_by_external_id.return_value = existing
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+        role = AppRole(app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_role_id="ext-r-1", name="R")
+        member = AppUser(
+            app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_id="s1",
+            email="member@test.com", full_name="Member",
+        )
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_new_app_roles([(role, [member])])
+
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        tx_store.replace_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("entity_type", "lookup", "principal"),
+        [
+            (EntityType.USER, "get_user_by_email", {"email": "user@test.com"}),
+            (EntityType.GROUP, "get_user_group_by_external_id", {"external_id": "ext-g"}),
+            (EntityType.ROLE, "get_app_role_by_external_id", {"external_id": "ext-r"}),
+        ],
+    )
+    async def test_record_group_permissions(self, entity_type: EntityType, lookup: str, principal: dict) -> None:
+        proc, tx_store = self._proc_and_store()
+        existing = MagicMock()
+        existing.id = "rg-1"
+        existing.name = "Drive"
+        tx_store.get_record_group_by_external_id.return_value = existing
+        getattr(tx_store, lookup).side_effect = RuntimeError("read failed")
+        group = RecordGroup(
+            external_group_id="ext-rg", name="Drive", group_type="DRIVE",
+            connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1",
+        )
+        perm = Permission(type=PermissionType.READ, entity_type=entity_type, **principal)
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_new_record_groups([(group, [perm])])
+
+        assert getattr(tx_store, lookup).await_args.kwargs["raise_on_error"] is True
+        tx_store.replace_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_external_app_users(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_external_app_users(["out@x.io"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_not_awaited()
+
+
 class TestUpsertPermissionEdge:
     @staticmethod
     def _proc_with(existing_edge: dict | None) -> tuple:
@@ -2029,6 +2149,20 @@ class TestDeletePermissionFromRecord:
 
         with pytest.raises(RuntimeError, match="write conflict"):
             await proc.delete_permission_from_record("rec-1", "user@test.com")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_lookup_is_raised(self) -> None:
+        """Taken for "no such user", it returned with the permission still in place."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.delete_permission_from_record("rec-1", "user@test.com")
+
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        tx_store.batch_delete_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_fails_logs_warning(self):
@@ -4323,8 +4457,8 @@ class TestHandleRecordPermissionsEntityTypes:
         assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
-    async def test_exception_logs_error(self):
-        """Logs error when exception during permission creation."""
+    async def test_a_failed_principal_lookup_is_raised_and_nothing_is_written(self) -> None:
+        """Answered as "no such user", the grant was dropped without an error or a retry."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.side_effect = RuntimeError("boom")
@@ -4338,9 +4472,30 @@ class TestHandleRecordPermissionsEntityTypes:
             email="user@test.com",
         )
 
-        await proc._handle_record_permissions(record, [perm], tx_store)
+        with pytest.raises(RuntimeError, match="boom"):
+            await proc._handle_record_permissions(record, [perm], tx_store)
 
-        proc.logger.error.assert_called()
+        tx_store.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("entity_type", "lookup"),
+        [(EntityType.GROUP, "get_user_group_by_external_id"), (EntityType.ROLE, "get_app_role_by_external_id")],
+    )
+    async def test_group_and_role_lookups_are_asked_to_raise(self, entity_type: EntityType, lookup: str) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        getattr(tx_store, lookup).side_effect = RuntimeError("read failed")
+
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=entity_type.value, external_id="ext-1")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc._handle_record_permissions(record, [perm], tx_store)
+
+        assert getattr(tx_store, lookup).await_args.kwargs["raise_on_error"] is True
+        tx_store.batch_create_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -4377,7 +4532,7 @@ class TestResolvePrincipal:
             "person-9", CollectionNames.PEOPLE.value
         )
         tx_store.upsert_person_by_email.assert_not_awaited()
-        tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id)
+        tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id, raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_returns_surviving_id_not_local_uuid(self):
@@ -4413,13 +4568,32 @@ class TestResolvePrincipal:
         tx_store.upsert_person_by_email.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    @pytest.mark.parametrize("failing", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_a_failed_lookup_is_raised(self, failing: str) -> None:
+        """None means "no such principal", and every caller acts on it: a rewrite
+        drops the grant. A lookup that could not be read must not look the same."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.get_user_by_email.side_effect = RuntimeError("db fail")
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+        getattr(tx_store, failing).side_effect = RuntimeError("db fail")
 
-        assert await proc._resolve_principal("out@x.io", tx_store) is None
-        proc.logger.error.assert_called()
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc._resolve_principal("out@x.io", tx_store)
+
+        assert getattr(tx_store, failing).await_args.kwargs["raise_on_error"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_email_with_no_principal_is_still_none(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        assert await proc._resolve_principal("out@x.io", tx_store, create_if_missing=False) is None
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
 
 # ===========================================================================

@@ -940,7 +940,9 @@ class IGraphDBProvider(ABC):
         elif record_group_id:
             await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
 
-    async def _stop_inheriting_from_record_groups(self, record_id: str, transaction: str | None) -> None:
+    async def _stop_inheriting_from_record_groups(
+        self, record_id: str, transaction: str | None
+    ) -> None:
         """Remove the record's INHERIT_PERMISSIONS edges to record groups. Must raise when it cannot."""
         await self.delete_edges_between_collections(
             record_id,
@@ -2282,10 +2284,16 @@ class IGraphDBProvider(ABC):
     async def get_user_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['User']:
         """
         Get a user by email address.
+
+        None means there is no such user. A read that fails also answers None unless
+        ``raise_on_error`` is set, which a caller needs when it would act on "no such
+        user" (replacing a record's permissions without them, say).
 
         Args:
             email (str): User email
@@ -2946,9 +2954,13 @@ class IGraphDBProvider(ABC):
         email: str,
         org_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['Person']:
         """
         Get a person by (org_id, email) — Person's business key, same as User's.
+
+        A read that fails answers None unless ``raise_on_error`` is set.
 
         Args:
             email (str): Email address; matched case-insensitively
@@ -2965,9 +2977,13 @@ class IGraphDBProvider(ABC):
         self,
         person: Person,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> str | None:
         """
         Upsert a Person keyed on (org_id, email), returning the id of the surviving node.
+
+        A write that fails answers None unless ``raise_on_error`` is set.
 
         Callers must use the returned id rather than ``person.id``: on a match the
         existing node wins and its id is what every edge must point at. Never updates

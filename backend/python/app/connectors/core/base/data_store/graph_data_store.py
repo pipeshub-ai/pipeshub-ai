@@ -311,14 +311,16 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         # Every record in a batch carries the same owner, so this is the same
         # lookup a hundred times over. Users are not created inside a record
         # transaction, so the answer cannot go stale within it.
         key = ("user_email", email)
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
-        value = await self.graph_provider.get_user_by_email(email, transaction=self.txn)
+        value = await self.graph_provider.get_user_by_email(
+            email, transaction=self.txn, raise_on_error=raise_on_error
+        )
         self._memo_put(key, value)
         return value
 
@@ -510,11 +512,17 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
 
-    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
-        return await self.graph_provider.get_person_by_email(email, org_id, transaction=self.txn)
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False
+    ) -> Optional[Person]:
+        return await self.graph_provider.get_person_by_email(
+            email, org_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
-    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
-        return await self.graph_provider.upsert_person_by_email(person, transaction=self.txn)
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> Optional[str]:
+        return await self.graph_provider.upsert_person_by_email(
+            person, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def ensure_app_membership(
         self,

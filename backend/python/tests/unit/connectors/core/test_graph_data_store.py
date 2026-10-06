@@ -16,6 +16,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     _is_deadlock_error,
     retry_on_deadlock,
 )
+from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
@@ -408,7 +409,29 @@ class TestGraphTransactionStore:
     async def test_get_user_by_email(self, tx_store, mock_graph_provider) -> None:
         result = await tx_store.get_user_by_email("test@example.com")
         assert result is None
-        mock_graph_provider.get_user_by_email.assert_awaited_once_with("test@example.com", transaction="txn-123")
+        mock_graph_provider.get_user_by_email.assert_awaited_once_with(
+            "test@example.com", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "args"),
+        [
+            ("get_user_by_email", ("test@example.com",)),
+            ("get_person_by_email", ("test@example.com", "org-1")),
+            ("upsert_person_by_email", (Person(email="test@example.com", org_id="org-1"),)),
+        ],
+    )
+    async def test_principal_lookups_pass_raise_on_error_through(
+        self, tx_store, mock_graph_provider, method: str, args: tuple
+    ) -> None:
+        setattr(mock_graph_provider, method, AsyncMock(return_value=None))
+
+        await getattr(tx_store, method)(*args, raise_on_error=True)
+
+        getattr(mock_graph_provider, method).assert_awaited_once_with(
+            *args, transaction="txn-123", raise_on_error=True
+        )
 
     @pytest.mark.asyncio
     async def test_get_user_by_source_id(self, tx_store, mock_graph_provider) -> None:

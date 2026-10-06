@@ -5774,3 +5774,42 @@ class TestRecordLinksAreOneStatement:
         await neo4j_provider.link_record_to_group("r1", None, inherit=True)
 
         neo4j_provider.client.execute_query.assert_not_awaited()
+
+
+class TestPrincipalLookupsCanRaise:
+    """None means "no such principal"; a caller that acts on that asks for a failed read to raise."""
+
+    @staticmethod
+    def _call(provider: Neo4jProvider, method: str, *, raise_on_error: bool):  # noqa: ANN205
+        from app.models.entities import Person
+
+        args = {
+            "get_user_by_email": ("a@b.com",),
+            "get_person_by_email": ("a@b.com", "org-1"),
+            "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
+        }[method]
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_a_failed_read_raises_when_asked(self, neo4j_provider: Neo4jProvider, method: str) -> None:
+        neo4j_provider.client.execute_query.side_effect = RuntimeError("connection lost")
+
+        with pytest.raises(RuntimeError, match="connection lost"):
+            await self._call(neo4j_provider, method, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_a_failed_read_is_none_by_default(self, neo4j_provider: Neo4jProvider, method: str) -> None:
+        neo4j_provider.client.execute_query.side_effect = RuntimeError("connection lost")
+
+        assert await self._call(neo4j_provider, method, raise_on_error=False) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_nothing_found_is_none_even_when_asked_to_raise(
+        self, neo4j_provider: Neo4jProvider, method: str
+    ) -> None:
+        neo4j_provider.client.execute_query.return_value = []
+
+        assert await self._call(neo4j_provider, method, raise_on_error=True) is None

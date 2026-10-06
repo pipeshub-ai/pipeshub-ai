@@ -4389,3 +4389,40 @@ class TestStopInheritingFromRecordGroups:
 
         with pytest.raises(RuntimeError, match="write conflict"):
             await connected_provider._stop_inheriting_from_record_groups("rec1", None)
+
+
+class TestPrincipalLookupsCanRaise:
+    """None means "no such principal"; a caller that acts on that asks for a failed read to raise."""
+
+    @staticmethod
+    def _call(provider, method: str, *, raise_on_error: bool):  # noqa: ANN205
+        from app.models.entities import Person
+
+        args = {
+            "get_user_by_email": ("a@b.com",),
+            "get_person_by_email": ("a@b.com", "org-1"),
+            "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
+        }[method]
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_a_failed_read_raises_when_asked(self, connected_provider, method: str) -> None:
+        connected_provider.http_client.execute_aql.side_effect = RuntimeError("connection lost")
+
+        with pytest.raises(RuntimeError, match="connection lost"):
+            await self._call(connected_provider, method, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_a_failed_read_is_none_by_default(self, connected_provider, method: str) -> None:
+        connected_provider.http_client.execute_aql.side_effect = RuntimeError("connection lost")
+
+        assert await self._call(connected_provider, method, raise_on_error=False) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_nothing_found_is_none_even_when_asked_to_raise(self, connected_provider, method: str) -> None:
+        connected_provider.http_client.execute_aql.return_value = []
+
+        assert await self._call(connected_provider, method, raise_on_error=True) is None

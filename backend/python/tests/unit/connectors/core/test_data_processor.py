@@ -1083,9 +1083,10 @@ class TestHandleRecordPermissions:
         permission.entity_type = EntityType.USER.value
         permission.email = "user@example.com"
 
-        await proc._handle_record_permissions(record, [permission], tx_store)
+        with pytest.raises(RuntimeError, match="db error"):
+            await proc._handle_record_permissions(record, [permission], tx_store)
 
-        proc.logger.error.assert_called()
+        tx_store.batch_create_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -2012,13 +2013,13 @@ class TestResolvePrincipal:
         assert result == ("person-1", CollectionNames.PEOPLE.value)
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_error(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.side_effect = Exception("db fail")
 
-        result = await proc._resolve_principal("ext@test.com", tx_store)
-        assert result is None
+        with pytest.raises(Exception, match="db fail"):
+            await proc._resolve_principal("ext@test.com", tx_store)
 
 
 # ===========================================================================

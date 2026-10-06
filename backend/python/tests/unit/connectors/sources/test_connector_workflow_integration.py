@@ -365,7 +365,7 @@ class MockTransactionStore:
 
     # -- users ---
 
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("email") == email:
                 return User(
@@ -376,6 +376,20 @@ class MockTransactionStore:
                     is_active=doc.get("isActive", True),
                 )
         return None
+
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False
+    ) -> Person | None:
+        for doc in self._s.collections.get(CollectionNames.PEOPLE.value, {}).values():
+            if doc.get("email") == email.lower() and doc.get("orgId") == org_id:
+                return Person.from_arango_person(doc)
+        return None
+
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        existing = await self.get_person_by_email(person.email, person.org_id)
+        if existing:
+            return existing.id
+        return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         results = []
@@ -1635,13 +1649,21 @@ class TestPermissionSyncWorkflow:
         assert len(perm_edges) >= 1
 
     @pytest.mark.asyncio
-    async def test_missing_user_skips_permission(self, processor, graph_store):
-        """If user doesn't exist in graph, permission edge is skipped (not created)."""
+    async def test_an_email_outside_the_workspace_gets_a_person_and_the_permission(
+        self, processor, graph_store
+    ) -> None:
+        """A grant to someone who is not a user is kept, on a Person created for the email.
+
+        This used to assert that the edge was skipped. It only was because the fake
+        store had no Person lookups, and the AttributeError that caused was swallowed.
+        """
         file_rec = make_file_record(external_id="perm-missing-user-001", record_group_ext_id="drive-perms")
         perm = make_permission(email="nonexistent@example.com", perm_type=PermissionType.READ)
         await processor.on_new_records([(file_rec, [perm])])
-        perm_edges = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
-        assert len(perm_edges) == 0
+        (person,) = graph_store.collections[CollectionNames.PEOPLE.value].values()
+        assert person["email"] == "nonexistent@example.com"
+        (edge,) = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
+        assert edge["_from"] == f"{CollectionNames.PEOPLE.value}/{person['_key']}"
 
     @pytest.mark.asyncio
     async def test_missing_group_skips_permission(self, processor, graph_store):

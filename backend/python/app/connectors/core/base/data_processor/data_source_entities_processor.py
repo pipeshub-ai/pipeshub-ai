@@ -1216,7 +1216,8 @@ class DataSourceEntitiesProcessor:
                     # Look up group by external_id
                     user_group = await tx_store.get_user_group_by_external_id(
                         connector_id=record.connector_id,
-                        external_id=permission.external_id
+                        external_id=permission.external_id,
+                        raise_on_error=True,
                     )
 
                 if user_group:
@@ -1228,7 +1229,9 @@ class DataSourceEntitiesProcessor:
             elif permission.entity_type == EntityType.ROLE.value:
                 user_role = None
                 if permission.external_id:
-                    user_role = await tx_store.get_app_role_by_external_id(external_id=permission.external_id, connector_id=record.connector_id)
+                    user_role = await tx_store.get_app_role_by_external_id(
+                        external_id=permission.external_id, connector_id=record.connector_id, raise_on_error=True
+                    )
                 if user_role:
                     from_id = user_role.id
                     from_collection = CollectionNames.ROLES.value
@@ -1298,30 +1301,31 @@ class DataSourceEntitiesProcessor:
         one query per user permission per record, so resolving every time costs no more
         than before for members, and at most two extra queries for an external
         collaborator — which is the only case that reaches past the first branch.
+
+        None means the email has no principal. A lookup that fails raises instead:
+        every caller writes the principals it is given, several by replacing what was
+        there, so "could not be read" answered as None took a grant or a membership
+        away without an error or a retry.
         """
-        try:
-            user = await tx_store.get_user_by_email(email)
-            if user:
-                return (user.id, CollectionNames.USERS.value)
+        user = await tx_store.get_user_by_email(email, raise_on_error=True)
+        if user:
+            return (user.id, CollectionNames.USERS.value)
 
-            person = await tx_store.get_person_by_email(email, self.org_id)
-            if person:
-                return (person.id, CollectionNames.PEOPLE.value)
+        person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
+        if person:
+            return (person.id, CollectionNames.PEOPLE.value)
 
-            if not create_if_missing:
-                return None
-
-            person_id = await tx_store.upsert_person_by_email(
-                Person(email=email.lower(), org_id=self.org_id)
-            )
-            if person_id:
-                self.logger.debug("Created person for external email: %s", email)
-                return (person_id, CollectionNames.PEOPLE.value)
-
+        if not create_if_missing:
             return None
-        except Exception as e:
-            self.logger.error(f"Failed to resolve principal for {email}: {e}")
-            return None
+
+        person_id = await tx_store.upsert_person_by_email(
+            Person(email=email.lower(), org_id=self.org_id), raise_on_error=True
+        )
+        if person_id:
+            self.logger.debug("Created person for external email: %s", email)
+            return (person_id, CollectionNames.PEOPLE.value)
+
+        return None
 
     @retry_on_deadlock()
     async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
@@ -3068,7 +3072,8 @@ class DataSourceEntitiesProcessor:
                             if permission.external_id:
                                 user_group = await tx_store.get_user_group_by_external_id(
                                     connector_id=record_group.connector_id,
-                                    external_id=permission.external_id
+                                    external_id=permission.external_id,
+                                    raise_on_error=True,
                                 )
 
                             if user_group:
@@ -3082,7 +3087,8 @@ class DataSourceEntitiesProcessor:
                             if permission.external_id:
                                 user_role = await tx_store.get_app_role_by_external_id(
                                     connector_id=record_group.connector_id,
-                                    external_id=permission.external_id
+                                    external_id=permission.external_id,
+                                    raise_on_error=True,
                                 )
 
                             if user_role:
@@ -3462,8 +3468,9 @@ class DataSourceEntitiesProcessor:
                     for member in members:
                         user = None
                         if member.email:
-                            # Find the user's internal DB ID
-                            user = await tx_store.get_user_by_email(member.email)
+                            # Find the user's internal DB ID. A read that fails is raised:
+                            # answered as "no such user", the rewrite below dropped the member.
+                            user = await tx_store.get_user_by_email(member.email, raise_on_error=True)
 
                         if not user:
                             self.logger.warning(f"Could not find user with email {member.email} for AppRole permission.")
@@ -4431,7 +4438,9 @@ class DataSourceEntitiesProcessor:
         """Delete permissions from a record."""
 
         async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_email(user_email)
+            # A user who could not be read is not a user who is not there: returning
+            # here on a failed read would leave the permission in place unreported.
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
             if not user:
                 self.logger.warning(f"User with email {user_email} not found in database")
                 return

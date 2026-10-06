@@ -25,6 +25,12 @@ ArangoDB the same goes for a failed delete of a record's inherit-permissions or
 belongs-to edge, or of a user's permission on a record, which was answered with
 False: the rest committed, or the caller was told the permission was gone.
 
+Looking up who a permission is for raises as well when the lookup fails. It used
+to answer "nobody by that email", and a rewrite then replaced the record's
+permissions without them. A read cannot be made to fail on a live database, so
+the test here fails the write half of the lookup (creating the Person for an
+outside email); the reads are covered by the unit tests.
+
 Each test makes the write fail inside the database, partway through: another
 transaction holds a lock that only the later part of the write needs. Neo4j
 gives up on it after db.lock.acquisition.timeout, which the compose file sets
@@ -71,6 +77,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    Person,
     RecordGroup,
     RecordGroupType,
     RecordType,
@@ -582,6 +589,45 @@ async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_
 
     await remove()
     assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
+    assert await _readers(w, record.id, alice, bob) == {alice}
+
+
+async def test_a_rewrite_whose_principal_lookup_fails_replaces_nothing(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    record = _file(w, "proposal")
+    await w.processor.on_updated_record_permissions(record, _grants(alice_email, bob_email))
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice, bob}
+
+    # The file is now shared with Alice and someone outside the workspace, whose
+    # Person another sync is creating at this moment, so it cannot be created here.
+    outside_email = f"partner-{uuid.uuid4().hex[:8]}@elsewhere.example"
+    being_created = Person(email=outside_email, org_id=w.org_id)
+    if w.neo4j:
+        hold = _neo4j_hold(
+            w, "CREATE (p:Person {id: $id, email: $email, orgId: $org}) RETURN count(p) AS n",
+            {"id": being_created.id, "email": outside_email, "org": w.org_id},
+        )
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(w, CollectionNames.PEOPLE.value,
+                            f"INSERT @doc INTO {CollectionNames.PEOPLE.value} RETURN 1",
+                            {"doc": being_created.to_arango_person()})
+        expected = ARANGO_CONFLICT
+    rewrite = _grants(alice_email, outside_email)
+    async with hold:
+        assert expected in await _failure(lambda: w.processor.on_updated_record_permissions(record, rewrite))
+
+    # Bob is still there: the rewrite did not go ahead without the outsider.
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    await w.processor.on_updated_record_permissions(record, rewrite)
+    outsider = await w.graph.get_person_by_email(outside_email, w.org_id, raise_on_error=True)
+    assert outsider is not None
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice, outsider.id}
     assert await _readers(w, record.id, alice, bob) == {alice}
 
 
