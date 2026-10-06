@@ -92,7 +92,10 @@ export function createSamlRouter(container: Container) {
   const samlDesktopHandoffService = container.get<SamlDesktopHandoffService>('SamlDesktopHandoffService');
 
   const logger = container.get<Logger>('Logger');
-  const exchangeRateLimiter = createAuthRateLimiter(logger, config.maxAuthRequestsPerMinute);
+  const exchangeRateLimiter = createAuthRateLimiter(
+    logger,
+    config.maxAuthRequestsPerMinute,
+  );
 
   /**
    * A desktop sign-in ran in the user's browser, so its outcome goes to the
@@ -286,13 +289,16 @@ export function createSamlRouter(container: Container) {
           return res.redirect(desktopSuccessUrl({ state: desktop.state, code }));
         }
 
-        const { code, binder } = await samlDesktopHandoffService.issueForBrowser({
-          accessToken,
-          refreshToken,
-        });
+        const { code, binder } =
+          await samlDesktopHandoffService.issueForBrowser({
+            accessToken,
+            refreshToken,
+          });
         setSamlHandoffCookie(res, binder);
         // A fragment is never sent to a server, so the code stays out of access logs and Referer.
-        return res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success#code=${code}`);
+        return res.redirect(
+          `${config.frontendUrl}/auth/sign-in/samlSso/success#code=${code}`,
+        );
       } catch (error) {
         logger.error('SAML callback error', { error: error instanceof Error ? error.message : String(error) });
         return redirectSamlError(req, res, 'unknown');
@@ -321,11 +327,19 @@ export function createSamlRouter(container: Container) {
     ValidationMiddleware.validate(webExchangeValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
-        const binder = readSamlHandoffCookie(req) ?? '';
+        const binder = readSamlHandoffCookie(req);
+        if (binder === null) {
+          // The callback set it; a SameSite=Lax cookie is withheld when the frontend calls this API from another site.
+          logger.warn(
+            'SAML exchange without the saml_handoff cookie: it expired, the browser blocked it, or the frontend and the API are on different sites',
+          );
+        }
         clearSamlHandoffCookie(res);
         clearLegacySamlTokenCookies(res);
         const { code } = req.body as { code: string };
-        res.status(200).json(await samlDesktopHandoffService.redeem(code, binder));
+        res
+          .status(200)
+          .json(await samlDesktopHandoffService.redeem(code, binder ?? ''));
       } catch (error) {
         next(error);
       }

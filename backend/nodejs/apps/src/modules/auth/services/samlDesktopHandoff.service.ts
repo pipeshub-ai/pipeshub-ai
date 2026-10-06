@@ -74,6 +74,11 @@ export class SamlDesktopHandoffService {
       throw new UnauthorizedError('Invalid or expired sign-in code');
     }
     const key = `${KEY_PREFIX}${code}`;
+    // Looked up first so a guessed code never creates a claim key in Redis.
+    const record = await this.redisService.get<HandoffRecord>(key);
+    if (!record) {
+      throw new UnauthorizedError('Invalid or expired sign-in code');
+    }
     // INCR is atomic, so of two concurrent redeems only the first gets past here.
     const claims = await this.redisService.increment(`${key}:claimed`, {
       ttl: HANDOFF_TTL_SECONDS,
@@ -81,10 +86,9 @@ export class SamlDesktopHandoffService {
     if (claims !== 1) {
       throw new UnauthorizedError('Invalid or expired sign-in code');
     }
-    const record = await this.redisService.get<HandoffRecord>(key);
     // Deleted before the verifier check, so a wrong guess burns the code.
     await this.redisService.delete(key);
-    if (!record || !matchesChallenge(codeVerifier, record.codeChallenge)) {
+    if (!matchesChallenge(codeVerifier, record.codeChallenge)) {
       throw new UnauthorizedError('Invalid or expired sign-in code');
     }
     return { accessToken: record.accessToken, refreshToken: record.refreshToken };

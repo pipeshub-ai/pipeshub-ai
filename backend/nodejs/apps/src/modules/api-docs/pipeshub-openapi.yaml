@@ -19242,10 +19242,22 @@ paths:
                     type: string
         '400':
           description: Malformed code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unknown, expired or already used code, or missing or mismatched `saml_handoff` cookie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Too many authentication requests from this client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
 
   /saml/desktop/exchange:
     post:

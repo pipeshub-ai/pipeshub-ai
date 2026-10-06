@@ -85,7 +85,9 @@ describe('SamlDesktopHandoffService', () => {
     expect(await service.redeem(second.code, second.binder)).to.deep.equal(tokens);
   });
 
-  it('rejects an unknown or expired code', async () => {
+  it('rejects an unknown or expired code without writing a claim key', async () => {
     await expectRejected(service.redeem('0'.repeat(64), VERIFIER));
+
+    expect([...store.keys()]).to.deep.equal([]);
   });
 });
