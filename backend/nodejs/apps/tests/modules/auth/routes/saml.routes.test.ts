@@ -304,6 +304,16 @@ describe('createSamlRouter', () => {
       expect((await exchange(first.code, first.binder)).status).to.equal(401);
     });
 
+    it('exchange keeps the binder cookie when it refuses before claiming the code', async () => {
+      const { code, binder } = await signIn();
+
+      const refused = await exchange(code);
+      expect(refused.status).to.equal(401);
+      expect(refused.headers.getSetCookie().some((c) => c.startsWith('saml_handoff='))).to.equal(false);
+
+      expect((await exchange(code, binder)).status).to.equal(200);
+    });
+
     it('exchange rejects a malformed code', async () => {
       const { binder } = await signIn();
 

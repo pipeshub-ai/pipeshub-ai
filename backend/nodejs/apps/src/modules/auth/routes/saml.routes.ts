@@ -334,12 +334,12 @@ export function createSamlRouter(container: Container) {
             'SAML exchange without the saml_handoff cookie: it expired, the browser blocked it, or the frontend and the API are on different sites',
           );
         }
-        clearSamlHandoffCookie(res);
         clearLegacySamlTokenCookies(res);
         const { code } = req.body as { code: string };
-        res
-          .status(200)
-          .json(await samlDesktopHandoffService.redeem(code, binder ?? ''));
+        const tokens = await samlDesktopHandoffService.redeem(code, binder ?? '');
+        // Cleared only on success: a failure before the claim (Redis down) leaves the code redeemable.
+        clearSamlHandoffCookie(res);
+        res.status(200).json(tokens);
       } catch (error) {
         next(error);
       }
