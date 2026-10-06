@@ -331,7 +331,7 @@ class TestManifestTracksEveryOrg:
         registry = await _two_org_registry(vdb)
         vdb.created.clear()
 
-        recreated = await registry.recreate_all_collections(2048)
+        recreated = await registry.recreate_records_collections(2048)
 
         assert set(recreated) == {COLL_A, COLL_B}
         assert set(vdb.created) == {COLL_A, COLL_B}

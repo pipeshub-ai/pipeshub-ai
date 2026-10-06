@@ -13,6 +13,11 @@ from fastapi.responses import JSONResponse
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
+@pytest.fixture(autouse=True)
+def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1294,6 +1299,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_custom_args(self):
@@ -1310,6 +1316,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=4,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_defaults_to_the_edition_worker_count(self):
@@ -1334,6 +1341,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=max_connector_workers(),
+            timeout_worker_healthcheck=60,
         )
 
     @staticmethod

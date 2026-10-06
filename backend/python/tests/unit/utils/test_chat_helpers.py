@@ -45,7 +45,6 @@ from app.utils.chat_helpers import (
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
     extract_bounding_boxes,
-    extract_start_end_text,
     flattened_result_sort_key,
     generate_text_fragment_url,
     get_enhanced_metadata,
@@ -500,64 +499,6 @@ class TestCountTokensText:
             # tiktoken not installed — falls back to heuristic
             result = count_tokens_text("hello world", None)
             assert result >= 1
-
-
-# ===================================================================
-# extract_start_end_text
-# ===================================================================
-class TestExtractStartEndText:
-    def test_empty_string(self):
-        assert extract_start_end_text("") == ("", "")
-
-    def test_none_input(self):
-        assert extract_start_end_text(None) == ("", "")
-
-    def test_no_alphanumeric(self):
-        assert extract_start_end_text("!!!@@@###") == ("", "")
-
-    def test_short_text_under_fragment_count(self):
-        """Text with fewer words than FRAGMENT_WORD_COUNT."""
-        start, end = extract_start_end_text("hello world")
-        assert start == "hello world"
-        # end may be empty for very short text
-        assert isinstance(end, str)
-
-    def test_normal_text(self):
-        snippet = "The quick brown fox jumps over the lazy dog and then some more words follow at the end"
-        start, end = extract_start_end_text(snippet)
-        assert len(start.split()) <= 8
-        assert start != ""
-        # end_text should contain trailing words
-        assert isinstance(end, str)
-
-    def test_single_word(self):
-        # The regex requires at least 2 consecutive alphabetic words; a single
-        # word produces no match and both values are empty strings.
-        start, end = extract_start_end_text("hello")
-        assert start == ""
-        assert end == ""
-
-    def test_text_with_special_chars_between_words(self):
-        snippet = "Hello—world! This is a test: of punctuation. And more words here at the very end."
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-
-    def test_long_text_has_both_start_and_end(self):
-        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
-        alpha_words = [
-            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
-            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
-            "pi", "rho", "sigma", "tau", "upsilon", "phi", "chi", "psi",
-            "omega", "lorem", "ipsum", "dolor", "sit", "amet", "consectetur",
-            "adipiscing", "elit", "sed", "perspiciatis", "unde", "omnis",
-            "iste", "natus", "error", "voluptatem", "accusantium", "laudantium",
-            "totam", "rem", "aperiam", "eaque", "ipsa", "quae", "veritatis",
-            "dicta",
-        ]
-        snippet = " ".join(alpha_words)
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-        assert end != ""
 
 
 # ===================================================================
@@ -3472,34 +3413,6 @@ class TestGetFlattenedResults:
 
 
 # ===================================================================
-# Additional edge cases for extract_start_end_text
-# ===================================================================
-class TestExtractStartEndTextEdgeCases:
-    """Additional tests for extract_start_end_text edge cases."""
-
-    def test_text_with_more_than_fragment_count_words_in_first_match(self):
-        """When first_text has > FRAGMENT_WORD_COUNT words and no last_text found."""
-        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
-        words = [
-            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
-            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
-            "pi", "rho", "sigma", "tau", "upsilon",
-        ]
-        snippet = " ".join(words)
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-        assert len(start.split()) <= 8
-        # end should come from the last part of the match
-        assert end != ""
-
-    def test_text_with_exactly_fragment_count_words(self):
-        # FRAGMENT_WORD_COUNT=4, so start_text is the first 4 words only
-        snippet = "one two three four five six seven eight"
-        start, end = extract_start_end_text(snippet)
-        assert start == "one two three four"
-
-
-# ===================================================================
 # Additional edge cases for generate_text_fragment_url
 # ===================================================================
 class TestGenerateTextFragmentUrlEdgeCases:
@@ -3610,46 +3523,6 @@ class TestCountTokensEdgeCases:
             current, new = count_tokens(messages, [[{"type": "text", "text": "content"}]])
             assert current >= 0
             assert new >= 0
-
-
-# ===================================================================
-# Additional extract_start_end_text branch coverage
-# ===================================================================
-class TestExtractStartEndTextBranches:
-    """Target remaining uncovered branches in extract_start_end_text."""
-
-    def test_first_match_all_spaces_returns_empty(self):
-        """When PATTERN matches spaces only, first_text.strip() is empty."""
-        # The regex [a-zA-Z0-9 ]+ matches space sequences.
-        # If leading with " " followed by non-alnum chars, the first match is spaces.
-        snippet = " !!!"
-        start, end = extract_start_end_text(snippet)
-        assert start == "" or isinstance(start, str)
-
-    def test_end_text_fallback_when_no_last_text_but_long_first(self):
-        """Lines 1610-1615: first_text has > FRAGMENT_WORD_COUNT words,
-        no last_text found in remaining. End text falls back to last words of first."""
-        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
-        words = [
-            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
-            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
-            "pi", "rho", "sigma", "tau", "upsilon",
-        ]
-        snippet = " ".join(words)
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-        assert end != ""
-        # end should be from the tail of the first match
-        assert end.split()[-1] in snippet
-
-    def test_generate_fragment_url_exception_branch(self):
-        """Lines 1657-1658: Exception in fragment URL generation returns base_url."""
-        # We can trigger this by making extract_start_end_text raise,
-        # but it's hard to do naturally. Test with mock.
-        url = "https://example.com/page"
-        with patch("app.utils.chat_helpers.extract_start_end_text", side_effect=Exception("boom")):
-            result = generate_text_fragment_url(url, "some text")
-            assert result == url
 
 
 # ===================================================================
@@ -3908,87 +3781,6 @@ class TestGetFlattenedResultsBranches:
         # Second table has children [0, 2] but 0 is already seen -> only 1
         _, children2 = table_results[1]["content"]
         assert len(children2) == 1
-
-
-# ===================================================================
-# extract_start_end_text — fallback to last words of first segment
-# ===================================================================
-class TestExtractStartEndTextFallback:
-    """Cover uncovered fallback branch in extract_start_end_text (lines 1611-1615)."""
-
-    def test_single_long_segment_no_remaining_text(self):
-        """Lines 1611-1615: When first_text has more words than FRAGMENT_WORD_COUNT
-        and there is no separate last_text, fall back to last words of first_text.
-        FRAGMENT_WORD_COUNT is 8, so we need >8 words in a single alphanumeric segment
-        and NO alphanumeric text remaining after start_text in the snippet.
-
-        The trick: start_text takes first 8 words; remaining = snippet[start_text_end:].
-        If remaining has no alpha matches, last_text stays None and fallback triggers.
-
-        We construct: 9+ words followed immediately by only special chars.
-        """
-        # Exactly 10 words, no special chars between them, followed by special chars only
-        # first_text = "a b c d e f g h i j" (10 words)
-        # start_text = "a b c d e f g h" (first 8 words)
-        # start_text_end points after "a b c d e f g h" -> remaining = " i j!@#$"
-        # But wait, remaining "i j" will match PATTERN. We need remaining to be ONLY special chars.
-        # So we need exactly 8+ words and nothing else after the 8th word.
-        # Actually: start_text = first 8 words. start_text_end = position after those 8 words in snippet.
-        # If snippet has exactly 9 words with no special chars, remaining = " word9" which matches.
-        # We need >8 words in first_text (first_match.group()) but after start_text_end,
-        # the remaining snippet must have zero alphanumeric chars.
-        # This means: the entire snippet is one first_match, >8 words, so remaining
-        # includes trailing words from the same match... which will match the pattern.
-        # The ONLY way remaining has no matches is if all chars after start_text_end
-        # are non-alphanumeric. So: first 8 words + only special chars.
-        # But first_text = first_match.group().strip(), words = first_text.split()
-        # If len(words) > 8, fallback triggers. But first_match covers all alphanumeric+space
-        # so if there are 10 words, first_text has 10 words. remaining starts after
-        # first 8 words of first_text within the snippet.
-        # remaining = snippet[start_text_end:] where start_text is 8 words.
-        # If snippet = "a b c d e f g h i j", start_text = "a b c d e f g h"
-        # start_text_begin = 0, start_text_end = len("a b c d e f g h") = 15
-        # remaining = " i j" -> matches "i j" -> last_text = "i j" -> line 1607 taken.
-        # So we CAN'T hit the fallback with a purely alphanumeric snippet.
-        # We need: first_match to capture >8 words, AND remaining to have NO alpha.
-        # e.g.: "a b c d e f g h i j" + "!@#" -> first_match = "a b c d e f g h i j"
-        # start_text = "a b c d e f g h", remaining = " i j!@#"
-        # PATTERN.finditer on remaining -> "i j" matches, so last_text = "i j".
-        # The ONLY way: the PATTERN regex match for first_text must include >8 words,
-        # but we truncate start_text to 8. remaining includes the rest of the match
-        # plus any trailing non-alpha chars. Those rest-of-match chars are alphanumeric.
-        # CONCLUSION: This branch is unreachable with normal text because
-        # first_text always covers all alphanumeric chars in the first match segment,
-        # and any extra words beyond 8 remain in `remaining` and match PATTERN.
-        # To trigger it, we'd need first_text.split() > 8 but remaining empty.
-        # This happens if start_text_end >= len(snippet), i.e. start_text covers
-        # the ENTIRE snippet. That requires first 8 words = entire snippet,
-        # meaning len(first_text.split()) == 8, which does NOT satisfy > 8.
-        # This branch may be truly dead code. Let's just verify the function
-        # handles a long single segment correctly regardless.
-        snippet = "a b c d e f g h i j k l m n o p"
-        start_text, end_text = extract_start_end_text(snippet)
-        assert start_text
-        assert end_text  # Will hit the last_text path (line 1607)
-
-    def test_snippet_with_only_special_chars_after_first_segment(self):
-        """Lines 1611-1615: To hit lines 1610-1615, we need:
-        1. first_text.split() > FRAGMENT_WORD_COUNT (>8)
-        2. last_text is None (no alphanumeric matches in remaining)
-
-        This can only happen if the remaining text after start_text_end has
-        zero alphanumeric characters. But remaining includes the leftover
-        from first_text (words 9+). Unless... start_text_end calculation
-        overshoots. Let's test the edge: snippet starts with spaces before
-        the match, so leading_spaces shifts start_text_begin forward,
-        making start_text_end cover beyond the snippet length? No, that's
-        unlikely. Let's just test a normal case and verify behavior.
-        """
-        snippet = "one two three four five six seven eight nine ten!@#"
-        start_text, end_text = extract_start_end_text(snippet)
-        assert start_text
-        # end_text will have "nine ten" since remaining includes them
-        assert end_text
 
 
 # ===================================================================

@@ -25,6 +25,11 @@ ArangoDB the same goes for a failed delete of a record's inherit-permissions or
 belongs-to edge, or of a user's permission on a record, which was answered with
 False: the rest committed, or the caller was told the permission was gone.
 
+Taking a user out of a user group, and deleting a user group or an app role,
+raise too when the delete fails. They used to answer False, which for a member
+removal is also the answer for "was not a member", so the user kept the group's
+access and the connector moved on.
+
 Looking up who a permission is for raises as well when the lookup fails. It used
 to answer "nobody by that email", and a rewrite then replaced the record's
 permissions without them. A read cannot be made to fail on a live database, so
@@ -65,6 +70,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.config.constants.neo4j import collection_to_label
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -590,6 +596,105 @@ async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_
     await remove()
     assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
     assert await _readers(w, record.id, alice, bob) == {alice}
+
+
+async def _share_with(w: _World, target: _Target, record: FileRecord) -> None:
+    """Let the user group or app role read the record."""
+    entity_type = EntityType.GROUP if target.kind == "user_group" else EntityType.ROLE
+    await w.graph.batch_create_edges(
+        [Permission(type=PermissionType.READ, entity_type=entity_type).to_arango_permission(
+            target.node.id, target.collection, record.id, CollectionNames.RECORDS.value)],
+        collection=CollectionNames.PERMISSION.value,
+    )
+
+
+async def test_a_failed_group_member_removal_is_raised_and_the_access_stays_until_it_succeeds(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    team = _Target("user_group", w)
+    await team.sync(alice_email, bob_email)
+    record = _file(w, "handbook")
+    await _upsert(w, record)
+    await _share_with(w, team, record)
+    assert await _sources(w, team.node.id, team.collection) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    def remove() -> Awaitable[bool]:
+        return w.processor.on_user_group_member_removed(team.node.source_user_group_id, bob_email, w.connector_id)
+
+    # Bob leaves the group at the source, and his membership edge cannot be deleted.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": bob})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(
+            w, CollectionNames.PERMISSION.value,
+            "FOR e IN permission FILTER e._from == @from AND e._to == @to "
+            "UPDATE e WITH {heldByTest: true} IN permission RETURN 1",
+            {"from": f"users/{bob}", "to": f"groups/{team.node.id}"},
+        )
+        expected = ARANGO_CONFLICT
+    async with hold:
+        # Raised, so the connector knows Bob is still in the group. False would
+        # have read as "he was not a member".
+        assert expected in await _failure(remove)
+
+    assert await _sources(w, team.node.id, team.collection) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    assert await remove() is True
+    assert await _sources(w, team.node.id, team.collection) == {alice}
+    assert await _readers(w, record.id, alice, bob) == {alice}
+
+    # Not a member any more: nothing to remove is an answer, not a failure.
+    assert await remove() is False
+
+
+@pytest.mark.parametrize("kind", ["user_group", "app_role"])
+async def test_a_failed_group_or_role_deletion_is_raised_and_the_access_stays_until_it_succeeds(
+    world: _World, kind: str
+) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    await _add_app(w, alice)
+    target = _Target(kind, w)
+    await target.sync(alice_email)
+    record = _file(w, "runbook")
+    await _upsert(w, record)
+    await _share_with(w, target, record)
+    assert await _readers(w, record.id, alice) == {alice}
+
+    def delete() -> Awaitable[bool]:
+        if kind == "user_group":
+            return w.processor.on_user_group_deleted(target.node.source_user_group_id, w.connector_id)
+        return w.processor.on_app_role_deleted(target.node.source_role_id, w.connector_id)
+
+    # The source deleted it while another sync is writing to it.
+    if w.neo4j:
+        hold = _neo4j_hold(
+            w, f"MATCH (n:{collection_to_label(target.collection)} {{id: $id}}) SET n.heldByTest = true RETURN count(n) AS n",
+            {"id": target.node.id},
+        )
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(
+            w, target.collection, f"UPDATE @key WITH {{updatedAtTimestamp: @now}} IN {target.collection} RETURN 1",
+            {"key": target.node.id, "now": get_epoch_timestamp_in_ms()},
+        )
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(delete)
+
+    # Still there with its member and its share, as the caller was told.
+    assert await w.graph.get_document(target.node.id, target.collection) is not None
+    assert await _sources(w, target.node.id, target.collection) == {alice}
+    assert await _readers(w, record.id, alice) == {alice}
+
+    assert await delete() is True
+    assert await w.graph.get_document(target.node.id, target.collection) is None
+    assert await _readers(w, record.id, alice) == set()
 
 
 async def test_a_rewrite_whose_principal_lookup_fails_replaces_nothing(world: _World) -> None:

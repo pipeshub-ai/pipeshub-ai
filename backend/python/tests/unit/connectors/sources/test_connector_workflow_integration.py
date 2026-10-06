@@ -531,6 +531,15 @@ class MockTransactionStore:
                           to_collection: str, collection: str) -> bool:
         return self._s.delete_edge(collection, from_id, from_collection, to_id, to_collection)
 
+    async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
+        """The number of edges removed, as both providers answer."""
+        before = len(self._s.edges.get(collection, []))
+        for edge in edges:
+            self._s.delete_edge(
+                collection, edge["from_id"], edge["from_collection"], edge["to_id"], edge["to_collection"]
+            )
+        return before - len(self._s.edges.get(collection, []))
+
     async def delete_edges_by_relationship_types(
         self, from_id: str, from_collection: str, collection: str, relationship_types: List[str]
     ) -> int:

@@ -350,6 +350,68 @@ describe('FiltersSection — single choice, free text, booleans, numbers', () =>
     expect(syncValue('folder_ids')).toEqual({ operator: 'in', value: ['f-1', 'f-2'], type: 'list' });
   });
 
+  const folderPaths: FilterSchemaField = {
+    name: 'folder_paths',
+    displayName: 'Folders',
+    filterType: 'list',
+    operators: ['in', 'not_in'],
+    optionSourceType: 'manual',
+    required: true,
+  };
+
+  it('keeps spaces and commas inside a typed folder path', () => {
+    setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Finance' } });
+    fireEvent.keyDown(input, { key: ' ' });
+    fireEvent.change(input, { target: { value: 'Finance Reports/Smith' } });
+    fireEvent.keyDown(input, { key: ',' });
+    fireEvent.change(input, { target: { value: 'Finance Reports/Smith, John' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(syncValue('folder_paths')).toEqual({ operator: 'in', value: ['Finance Reports/Smith, John'], type: 'list' });
+  });
+
+  it('does not save a folder on the Enter that confirms an IME candidate', () => {
+    setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '財務' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect((syncValue('folder_paths') as { value: string[] }).value).toEqual([]);
+
+    fireEvent.change(input, { target: { value: '財務 報告' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(syncValue('folder_paths')).toEqual({ operator: 'in', value: ['財務 報告'], type: 'list' });
+  });
+
+  it('splits pasted folder paths on new lines only, keeping paths that differ by case', () => {
+    setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: ['Reports'] } } });
+
+    fireEvent.paste(screen.getByRole('textbox'), {
+      clipboardData: { getData: () => 'Finance Reports/2026\r\nreports\nHR Docs' },
+    });
+
+    expect(syncValue('folder_paths')).toEqual({
+      operator: 'in',
+      value: ['Reports', 'Finance Reports/2026', 'reports', 'HR Docs'],
+      type: 'list',
+    });
+  });
+
+  it('still splits other free-form values on spaces', () => {
+    setup({
+      sync: [{ name: 'folder_ids', displayName: 'Folder IDs', filterType: 'list', operators: ['in'], optionSourceType: 'manual', required: true }],
+      syncValues: { folder_ids: { operator: 'in', value: [] } },
+    });
+
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { getData: () => 'f-1 f-2' } });
+
+    expect(syncValue('folder_ids')).toEqual({ operator: 'in', value: ['f-1', 'f-2'], type: 'list' });
+  });
+
   it('shows a sync boolean with a real default as set, and saves the untick', () => {
     setup({
       sync: [{ name: 'include_archived', displayName: 'Include archived', filterType: 'boolean', defaultValue: true }],

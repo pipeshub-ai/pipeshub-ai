@@ -29,7 +29,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
-from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -39,6 +38,7 @@ from pymongo import MongoClient
 from helper import local_auth
 from helper.clients.auth_client import UserAccountClient
 from helper.config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD
+from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import (
     SecondUser,
@@ -98,14 +98,6 @@ SESSIONS = pytest.mark.parametrize(
 )
 
 
-def _python_service_url(base_url: str) -> str:
-    explicit = os.getenv("PIPESHUB_CONNECTOR_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    parsed = urlparse(base_url)
-    return f"{parsed.scheme}://{parsed.hostname}:8088"
-
-
 def _node_status(user: SecondUser, token: str) -> int:
     return requests.get(
         f"{user.base_url}{NODE_ROUTE}",
@@ -117,7 +109,7 @@ def _node_status(user: SecondUser, token: str) -> int:
 def _python_status(user: SecondUser, token: str) -> int | None:
     try:
         return requests.get(
-            f"{_python_service_url(user.base_url)}{PYTHON_ROUTE}",
+            f"{connector_service_url(user.base_url)}{PYTHON_ROUTE}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=user.timeout,
         ).status_code
@@ -249,7 +241,7 @@ def _assert_access_refused_at_python(sessions: TwoSessions, which: str, event: s
     if before is None:
         pytest.skip(
             f"The connector service is not reachable at "
-            f"{_python_service_url(sessions.user.base_url)}; set PIPESHUB_CONNECTOR_URL."
+            f"{connector_service_url(sessions.user.base_url)}; set {CONNECTOR_URL_ENV}."
         )
     if before != 200:
         pytest.fail(

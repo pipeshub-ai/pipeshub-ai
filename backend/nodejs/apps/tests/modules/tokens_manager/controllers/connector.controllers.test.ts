@@ -2080,6 +2080,40 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
     expect(res.status.calledWith(200)).to.be.true
   })
 
+  for (const [status, detail] of [
+    [404, 'This connector was removed, or you no longer have access to it.'],
+    [403, 'Only administrators can update team connectors'],
+  ] as const) {
+    it(`answers ${status}, not 500, when the caller cannot open the connector`, async () => {
+      req.body = { type: 'sync' }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: status,
+        data: { detail },
+      })
+
+      await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+      expect(execStub.calledOnce).to.be.true
+      expect(res.status.called).to.be.false
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(status)
+      expect(error.message).to.equal(detail)
+    })
+  }
+
+  it('still answers 500 when the connectors service returns no connector', async () => {
+    req.body = { type: 'sync' }
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+      statusCode: 200,
+      data: {},
+    })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(execStub.calledOnce).to.be.true
+    expect(next.firstCall.args[0].statusCode).to.equal(500)
+  })
+
   it('does not fetch the instance for agent toggles', async () => {
     registerDesktopPresence(makePresence(false))
     req.body = { type: 'agent' }

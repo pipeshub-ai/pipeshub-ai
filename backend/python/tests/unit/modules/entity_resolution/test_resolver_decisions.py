@@ -70,10 +70,27 @@ class TestMergeIntoWinner:
         entity = resolution.entries[(TOPICS, "bug bash testing")]
         assert entity.new_aliases == []
 
+    async def test_a_node_with_twenty_aliases_still_records_a_new_one(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        """D-20: at the old cap of 20 a merged spelling was never stored, so
+        every later record re-asked the model about it."""
+        await seeded_store(_topic("k-bug", "Bug bash testing", aliases=[f"alias {i}" for i in range(20)]))
+        p1, p2 = _patched(_answer(MergeDecision(i=0, same=True, target="k-bug")))
+        with p1, p2:
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
+            )
+        entity = resolution.entries[(TOPICS, "bug bash testing")]
+        assert entity.new_aliases == ["Bug bash testing session"]
+        assert resolution.stats.alias_cap_hits == 0
+
     async def test_alias_cap_still_merges_but_does_not_append(
         self, make_resolver, seeded_store, metadata_factory, ctx_factory
     ) -> None:
-        aliases = [f"alias {i}" for i in range(20)]
+        from app.modules.entity_resolution.models import MAX_ALIASES_PER_NODE
+
+        aliases = [f"alias {i}" for i in range(MAX_ALIASES_PER_NODE)]
         await seeded_store(_topic("k-bug", "Bug bash testing", aliases=aliases))
         p1, p2 = _patched(_answer(MergeDecision(i=0, same=True, target="k-bug")))
         with p1, p2:
@@ -82,7 +99,7 @@ class TestMergeIntoWinner:
             )
         entity = resolution.entries[(TOPICS, "bug bash testing")]
         assert entity.key == "k-bug"
-        assert len(entity.aliases) == 20
+        assert len(entity.aliases) == MAX_ALIASES_PER_NODE
         assert entity.new_aliases == []
         assert resolution.stats.alias_cap_hits == 1
 
@@ -350,3 +367,38 @@ class TestConcurrencyByConstruction:
         a = await resolver.resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Onboarding checklist"])))
         b = await resolver.resolve(ctx_factory("r2", "acme", metadata_factory(topics=["onboarding  checklist"])))
         assert a.entries[(TOPICS, "onboarding checklist")].key == b.entries[(TOPICS, "onboarding checklist")].key
+
+
+class TestSeveralCandidates:
+    """KG-12: the model is offered the top candidates, and may merge into any
+    of them; anything it was not offered is still rejected."""
+
+    async def test_merging_into_the_second_ranked_candidate(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        await seeded_store(_topic("k-notes", "Release notes"), _topic("k-check", "Release checklist"))
+        p1, p2 = _patched(_answer(MergeDecision(i=0, same=True, target="k-check")))
+        with p1, p2:
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Release check list"]))
+            )
+        entity = resolution.entries[(TOPICS, "release checklist")]
+        assert entity.key == "k-check" and entity.decision == "merge"
+        assert resolution.stats.merges == 1
+
+    async def test_every_offered_candidate_reaches_the_prompt(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        from app.modules.entity_resolution import resolver as resolver_module
+
+        await seeded_store(_topic("k-a", "Release notes"), _topic("k-b", "Release checklist"), _topic("k-c", "Release plan"))
+        seen: list[str] = []
+
+        async def _capture(llm, messages, schema, **kwargs) -> MergeDecisions:
+            seen.append(messages[0].content)
+            return _answer(MergeDecision(i=0, same=False))
+
+        with patch.object(resolver_module, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), {}))), \
+                patch.object(resolver_module, "invoke_with_structured_output_and_reflection", side_effect=_capture):
+            await make_resolver().resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Release thing"])))
+        assert all(key in seen[0] for key in ("k-a", "k-b", "k-c"))

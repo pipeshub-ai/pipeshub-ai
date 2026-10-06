@@ -121,6 +121,7 @@ class TestTimestampDefaults:
             if k != "_key"
         }
         doc["lastRepublishedAt"] = 456
+        doc["republishCount"] = 2
         jsonschema.validate(instance=doc, schema=schema)
 
 

@@ -232,7 +232,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=["test_coll", "other"])
+        registry.recreate_records_collections = AsyncMock(return_value=["test_coll", "other"])
         registry.ensure_collection = AsyncMock()
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -240,7 +240,7 @@ class TestRecreateCollection:
         from app.api.routes.health import recreate_collection
         await recreate_collection(retrieval_svc, 768, logger)
 
-        registry.recreate_all_collections.assert_awaited_once()
+        registry.recreate_records_collections.assert_awaited_once()
         # Nothing to backfill when the registry already rebuilt something.
         registry.ensure_collection.assert_not_awaited()
 
@@ -256,7 +256,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=[])
+        registry.recreate_records_collections = AsyncMock(return_value=[])
         registry.ensure_collection = AsyncMock(return_value="test_coll")
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -271,7 +271,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(side_effect=Exception("fail"))
+        registry.recreate_records_collections = AsyncMock(side_effect=Exception("fail"))
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
 

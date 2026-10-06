@@ -137,6 +137,30 @@ class TestZoomConnectorRecordBuilders:
         assert rec.recording_url is None
         assert rec.weburl == "https://zoom.us/recording/meeting/transcript#:~:text=Fallback%20URL"
 
+    def test_build_meeting_record_weburl_encodes_hyphens_and_symbols_in_topic(self) -> None:
+        connector = _make_connector()
+        meeting_obj = ZoomMeetingReport(
+            id=789,
+            topic="Q3 sync - e-mail, (draft) & more",
+            host_id="host-1",
+            start_time="",
+            end_time="",
+            duration=30,
+            type=2,
+        )
+
+        rec = connector._build_meeting_record(
+            meeting_obj=meeting_obj,
+            meeting_uuid="uuid-3",
+            meeting_detail=None,
+            host_email="host@example.com",
+            record_group_id="group-1",
+        )
+
+        fragment = rec.weburl.split("#:~:text=", 1)[1]
+        assert fragment == "Q3%20sync%20%2D%20e%2Dmail%2C%20%28draft%29%20%26%20more"
+        assert "-" not in fragment
+
 
 
 class TestZoomConnectorPermissions:

@@ -1298,30 +1298,39 @@ class JiraConnector(BaseConnector):
             listed = await self._list_project_issue_ids(project.short_name)
             if listed is None:
                 continue
-            for record in stored:
-                if record.external_record_id in listed:
-                    continue
-                try:
-                    if await self._issue_gone_from_jira(record.external_record_id):
-                        await self._delete_issue_record(record, record.external_record_id)
-                        removed += 1
-                except Exception as e:
-                    self.logger.warning(
-                        "Could not remove issue %s of project %s; retrying next sync: %s",
-                        record.external_record_id, project.short_name, e,
-                    )
+            removed += await self._remove_unlisted_issues(project.short_name, stored, listed)
         if removed:
             self.logger.info("🗑️ Removed %d issue(s) Jira no longer has, found by comparing ids", removed)
 
-    async def _stored_issues(self, project_id: str) -> list[Record]:
-        """This connector's live issue records in the project, without placeholder ancestors."""
+    async def _remove_unlisted_issues(self, project_key: str, stored: list[Record], listed: set[str]) -> int:
+        """Remove each stored issue missing from ``listed`` that Jira confirms is gone; returns how many went."""
+        removed = 0
+        for record in stored:
+            if record.external_record_id in listed:
+                continue
+            try:
+                if await self._issue_gone_from_jira(record.external_record_id):
+                    await self._delete_issue_record(record, record.external_record_id)
+                    removed += 1
+            except Exception as e:
+                self.logger.warning(
+                    "Could not remove issue %s of project %s; retrying next sync: %s",
+                    record.external_record_id, project_key, e,
+                )
+        return removed
+
+    async def _stored_issues(self, project_id: str, *, with_placeholders: bool = False) -> list[Record]:
+        """This connector's live issue records in the project, without placeholder ancestors unless asked."""
         stored: list[Record] = []
         after_key: str | None = None
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
                 self.connector_id, project_id, RECORD_SCAN_PAGE_SIZE, after_key,
             )
-            stored.extend(r for r in page if r.record_type == RecordType.TICKET and not r.is_placeholder)
+            stored.extend(
+                r for r in page
+                if r.record_type == RecordType.TICKET and (with_placeholders or not r.is_placeholder)
+            )
             if len(page) < RECORD_SCAN_PAGE_SIZE:
                 return stored
             after_key = page[-1].id

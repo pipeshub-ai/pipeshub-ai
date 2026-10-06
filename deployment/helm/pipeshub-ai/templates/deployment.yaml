@@ -104,6 +104,8 @@ spec:
               value: {{ .Values.config.accessibleRecordsCacheTtl | quote }}
             - name: PIPESHUB_SIGNED_URL_CACHE_SECONDS
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
+            - name: PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS
+              value: {{ .Values.config.agentMaxTurnOutputChars | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
             - name: MCP_ALLOW_CUSTOM_STDIO

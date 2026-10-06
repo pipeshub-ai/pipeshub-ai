@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import CancelledError as FuturesCancelledError
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
@@ -37,7 +37,9 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
+from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
 from app.services.messaging.lease import LeaseRenewer
+from app.services.messaging.redis_streams.backlog import read_stream_backlog
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
@@ -497,6 +499,36 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     @override
     def is_running(self) -> bool:
         return self.running
+
+    @override
+    async def lane_backlog(self, topic: str) -> LaneBacklog:
+        return await self._run_on_main_loop(self._read_lane_backlog(topic))
+
+    async def _read_lane_backlog(self, topic: str) -> LaneBacklog:
+        if self.redis is None:
+            raise RuntimeError("Redis Streams consumer is not connected")
+        streams = [
+            stream
+            for stream in self.config.topics
+            if stream == topic
+            or (stream.startswith(f"{topic}.") and _LANE_SUFFIX.search(stream))
+        ]
+        if not streams:
+            raise RuntimeError(f"This consumer does not read {topic}")
+        oldest = await read_stream_backlog(self.redis, self.config.group_id, streams)
+
+        # The same settings the lane-aware producer routes by.
+        laned = topic in messaging_env.fair_scheduling_laned_topics
+        lane_count = messaging_env.fair_scheduling_lane_count if laned else 1
+        key_field = messaging_env.fair_scheduling_lane_key_field
+
+        def lanes_for_event(payload: Mapping[str, object]) -> set[str]:
+            key = payload.get(key_field)
+            return redis_lanes_for_key(
+                topic, None if key in (None, "") else str(key), streams, lane_count
+            )
+
+        return LaneBacklog(topic, oldest, lanes_for_event)
 
     def _stop_worker_thread(self) -> None:
         self._wait_for_active_futures()

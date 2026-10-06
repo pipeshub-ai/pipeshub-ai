@@ -125,10 +125,16 @@ class FakeStore:
         self.page_calls: list[tuple[str, list[str], str | None, int]] = []
         self.version_reads = 0
         self.recreate_requests: list[bool] = []
+        self.stamp = ""
+        self.stamp_reads = 0
 
     async def embedding_fingerprint(self, *, recreate: bool = False) -> str:
         self.recreate_requests.append(recreate)
         return self.fingerprint
+
+    async def collection_stamp(self) -> str:
+        self.stamp_reads += 1
+        return self.stamp
 
     async def embedding_config_version(self) -> str | None:
         self.version_reads += 1
@@ -238,6 +244,7 @@ async def _run_until_idle(rebuilder: EntityIndexRebuilder, limit: int = 50) -> l
     raise AssertionError(f"never went idle: {outcomes}")
 
 
+
 # ---------------------------------------------------------------------------
 # Marker
 # ---------------------------------------------------------------------------
@@ -251,9 +258,14 @@ class TestMarker:
     def test_marker_changes_with_the_fingerprint(self) -> None:
         assert entity_index_marker("a:b:3") != entity_index_marker("a:b:4")
 
-    @pytest.mark.parametrize("value", [None, "", "garbage", 7])
+    @pytest.mark.parametrize("value", [None, "", "garbage", 7, "v:x", "v@s1:x", "v1@:x", "v1:"])
     def test_unreadable_marker_has_no_fingerprint(self, value: object) -> None:
         assert fingerprint_of(value) is None
+
+    def test_marker_carries_the_collection_stamp(self) -> None:
+        assert entity_index_marker(FP, "s3fa9c21b7d0") == f"v{ENTITY_INDEX_VERSION}@s3fa9c21b7d0:{FP}"
+        assert entity_index_marker(FP, "s1") != entity_index_marker(FP, "s2")
+        assert fingerprint_of(entity_index_marker(FP, "s3fa9c21b7d0")) == FP
 
 
 # ---------------------------------------------------------------------------
@@ -894,16 +906,19 @@ class TestAModelSwitchReRunsThePasses:
         with embedding_models({"text-embedding-3-small": small}), \
                 patch.object(entity_vectorstore, "get_default_embedding_model", return_value=bge):
             await _run_until_idle(_rebuilder(graph, store))
-            old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4")
-            assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == old
+            first_stamp = db.stamp
+            old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4", first_stamp)
+            assert first_stamp and graph.docs[APPS]["app-1"][EntityIndexState.STATE] == old
 
             await switch_embedding_model(config, embedding_config("openAI", "text-embedding-3-small"))
             outcomes = await _run_until_idle(_rebuilder(graph, store))
 
-        new = entity_index_marker("openAI:text-embedding-3-small:6")
+        # Recreated for the new model, so stamped anew.
+        assert db.stamp and db.stamp != first_stamp
+        new = entity_index_marker("openAI:text-embedding-3-small:6", db.stamp)
         assert "connector" in outcomes
         assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == new
-        (point,) = db.points.values()
+        (point,) = db.entity_points.values()
         assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == "openAI:text-embedding-3-small:6"
         assert point.dense_vector == small.embed_query("Q3 plan")
 
@@ -956,8 +971,204 @@ class TestAModelSwitchReRunsThePasses:
             )
 
         assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == entity_index_marker(
-            "openAI:text-embedding-ada-002:6"
+            "openAI:text-embedding-ada-002:6", db.stamp,
         )
-        (point,) = db.points.values()
+        (point,) = db.entity_points.values()
         assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == "openAI:text-embedding-ada-002:6"
         assert point.dense_vector == ada.embed_query("Q3 plan")
+
+
+class TestTheStampIsPartOfTheMarker:
+    """A document is done only for the collection it was projected into. The
+    store's stamp goes when that collection's points go, so documents done
+    under another stamp, or under none, are due again."""
+
+    @staticmethod
+    def _done(graph: FakeGraph, marker: str) -> None:
+        graph.docs[APPS]["app-1"] = _app(**{EntityIndexState.STATE: marker, EntityIndexState.TARGET: marker})
+        graph.docs[ORGS]["org-1"] = _org(**{
+            EntityIndexState.STATE: marker, EntityIndexState.TARGET: marker, EntityIndexState.SWEPT_AT: NOW,
+        })
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan")]
+        graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "Billing"}]
+        graph.membership[("topic", "t1")] = {"connectorIds": ["app-1"], "recordGroupIds": ["g1"]}
+
+    async def test_documents_done_under_another_stamp_are_projected_again(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, entity_index_marker(FP, "sold"))
+        store.stamp = "snew"
+
+        outcomes = await _run_until_idle(_rebuilder(graph, store))
+
+        assert "connector" in outcomes and "taxonomy" in outcomes
+        assert {(e.entity_type, e.entity_id) for e in store.written()} == {
+            (EntityType.RECORD, "r1"), (EntityType.TOPIC, "t1"),
+        }
+        assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == entity_index_marker(FP, "snew")
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(FP, "snew")
+
+    async def test_documents_done_before_there_were_stamps_are_projected_again(self) -> None:
+        """Every deployment once, on upgrade: it cannot be known whether an
+        earlier cleanup emptied its collection, since indexing has written
+        points to it since."""
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, MARKER)
+        store.stamp = "sfirst"
+
+        outcomes = await _run_until_idle(_rebuilder(graph, store))
+
+        assert "connector" in outcomes and "taxonomy" in outcomes
+
+    async def test_documents_done_under_the_same_stamp_are_left_alone(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, entity_index_marker(FP, "s1"))
+        store.stamp = "s1"
+        rebuilder = _rebuilder(graph, store)
+
+        assert [await rebuilder.tick() for _ in range(5)] == ["idle"] * 5
+
+        assert store.stamp_reads == 5
+        assert store.written() == [] and graph.updates == []
+
+    async def test_a_pass_under_way_starts_over_under_a_new_stamp(self) -> None:
+        """Its cursor counts rows projected into the collection that is gone."""
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app(**{
+            EntityIndexState.TARGET: entity_index_marker(FP, "sold"),
+            EntityIndexState.PHASE: RECORDS, EntityIndexState.AFTER_KEY: "r1",
+        })
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2")]
+        store.stamp = "snew"
+
+        await _rebuilder(graph, store).tick()
+
+        assert graph.page_calls[0][:3] == (GROUPS, "app-1", None)
+
+    async def test_a_replica_that_is_not_leader_does_not_read_the_stamp(self) -> None:
+        """Reading it writes one when there is none."""
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, MARKER)
+
+        assert await _rebuilder(graph, store, FakeLock(leader=False)).tick() == "not_leader"
+
+        assert store.stamp_reads == 0
+
+    async def test_a_stamp_that_cannot_be_read_fails_the_tick(self) -> None:
+        """Without it there is no marker to compare the documents against."""
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, MARKER)
+        store.collection_stamp = AsyncMock(side_effect=RuntimeError("vector db down"))
+
+        with pytest.raises(RuntimeError, match="vector db down"):
+            await _rebuilder(graph, store).tick()
+
+        assert graph.updates == [] and store.written() == []
+
+
+class TestACollectionEmptiedFromOutside:
+    """With the real store. "Delete all embeddings" dropped the entities
+    collection with the records one on some deployments, and nothing rebuilt
+    it: every document still said done, until the embedding model changed."""
+
+    @staticmethod
+    def _deployment() -> tuple[Any, Any, FakeGraph, EntityIndexRebuilder]:
+        from app.modules.transformers.entity_vectorstore import EntityVectorStore
+        from tests.support.embedding_config import config_service
+        from tests.support.entity_vector_db import FakeEntityVectorDB
+
+        db = FakeEntityVectorDB()
+        store = EntityVectorStore(
+            logger=logging.getLogger("entity-index-test"), config_service=config_service(),
+            vector_db_service=db, recreate_on_dimension_mismatch=True,
+        )
+        graph = FakeGraph()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.docs[ORGS]["org-1"] = _org()
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
+        graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "Billing"}]
+        graph.membership[("topic", "t1")] = {"connectorIds": ["app-1"], "recordGroupIds": []}
+        graph.nodes[TOPICS] = {"t1": {"orgId": "org-1"}}
+        return db, store, graph, _rebuilder(graph, store)
+
+    @staticmethod
+    def _default_model() -> Any:  # noqa: ANN401
+        from app.modules.transformers import entity_vectorstore
+        from tests.support.entity_vector_db import FakeEmbeddingModel
+
+        return patch.object(
+            entity_vectorstore, "get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
+        )
+
+    @staticmethod
+    def _names(db: Any) -> set[str]:  # noqa: ANN401
+        return {point.payload["metadata"]["name"] for point in db.entity_points.values()}
+
+    async def test_a_collection_dropped_under_the_running_store_is_created_again_and_refilled(self) -> None:
+        with self._default_model():
+            db, _, _, rebuilder = self._deployment()
+            await _run_until_idle(rebuilder)
+            assert self._names(db) == {"Q3 plan", "Billing"}
+
+            await db.delete_collection("entities")
+            outcomes = await _run_until_idle(rebuilder)
+
+        assert "connector" in outcomes and "taxonomy" in outcomes
+        assert db.dimension == 4
+        assert self._names(db) == {"Q3 plan", "Billing"}
+
+    async def test_taxonomy_comes_back_when_reindexing_has_already_written_record_points(self) -> None:
+        """What a deployment looks like after the old cleanup and the reindex
+        that follows it: the collection recreated, the record points written
+        again by indexing, every app and org still done, and no taxonomy. A
+        count of its points says nothing is missing."""
+        from app.models.entities import EntityRecord
+
+        with self._default_model():
+            db, store, _, rebuilder = self._deployment()
+            await _run_until_idle(rebuilder)
+
+            await db.delete_collection("entities")
+            db.dimension = 4
+            await store.upsert_entities_batch(
+                [EntityRecord.for_record("r1", "Q3 plan", "org-1", "app-1", None)], merge_membership=False,
+            )
+            assert self._names(db) == {"Q3 plan"}
+            outcomes = await _run_until_idle(rebuilder)
+
+        assert "taxonomy" in outcomes
+        assert self._names(db) == {"Q3 plan", "Billing"}
+
+    async def test_a_deployment_from_before_stamps_is_projected_once_more_on_upgrade(self) -> None:
+        from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+
+        fingerprint = f"default:{DEFAULT_EMBEDDING_MODEL}:4"
+        with self._default_model():
+            db, _, graph, rebuilder = self._deployment()
+            await _run_until_idle(rebuilder)
+            legacy = entity_index_marker(fingerprint)
+            db.points = dict(db.entity_points)
+            for collection, key in ((APPS, "app-1"), (ORGS, "org-1")):
+                graph.docs[collection][key][EntityIndexState.STATE] = legacy
+                graph.docs[collection][key][EntityIndexState.TARGET] = legacy
+
+            first = await _run_until_idle(rebuilder)
+            second = await _run_until_idle(rebuilder)
+
+        assert "connector" in first and "taxonomy" in first
+        assert second == ["idle"]
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(fingerprint, db.stamp)
+
+    async def test_a_deployment_with_nothing_to_index_is_stamped_once(self) -> None:
+        """No point is ever written, and the collection must still not read
+        as emptied on every later tick."""
+        with self._default_model():
+            db, _, graph, rebuilder = self._deployment()
+            graph.sources.clear()
+            await _run_until_idle(rebuilder)
+            stamp, updates = db.stamp, len(graph.updates)
+
+            outcomes = [await rebuilder.tick() for _ in range(30)]
+
+        assert outcomes == ["idle"] * 30
+        assert db.stamp == stamp and db.entity_points == {}
+        assert len(graph.updates) == updates

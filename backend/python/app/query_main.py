@@ -558,6 +558,8 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         )
         workers = 1
         os.environ["QUERY_UVICORN_WORKERS"] = "1"
+    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+
     if workers > 1 and not os.getenv(_EXEC_SENTINEL):
         # uvicorn spawns workers, and a spawned child re-imports the parent's __main__.
         # Reached via `python -m app.query_main`, __main__ IS this module, so every child
@@ -572,6 +574,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
             sys.executable, "-m", "uvicorn", "app.query_main:app",
             "--host", host, "--port", str(port),
             "--log-level", "info", "--workers", str(workers),
+            "--timeout-worker-healthcheck", str(uvicorn_worker_healthcheck_timeout()),
         ]
         try:
             os.execvp(sys.executable, argv)
@@ -591,6 +594,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 if __name__ == "__main__":
