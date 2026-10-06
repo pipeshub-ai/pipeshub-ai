@@ -298,6 +298,28 @@ describe('createJwt', () => {
       const decoded = jwt.verify(token, secret) as any
       expect(decoded.exp - decoded.iat).to.equal(3600)
     })
+
+    it('should embed configId so the gateway can resolve the org itself', () => {
+      const token = slackJwtGenerator('slack@example.com', secret, undefined, {
+        configId: 'cfg-1',
+      })
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded.configId).to.equal('cfg-1')
+    })
+
+    it('should omit configId when no claims are passed', () => {
+      const token = slackJwtGenerator('slack@example.com', secret)
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded).to.not.have.property('configId')
+    })
+
+    it('should not put an orgId on the token in this edition', () => {
+      const token = slackJwtGenerator('slack@example.com', secret, undefined, {
+        configId: 'cfg-1',
+      })
+      const decoded = jwt.verify(token, secret) as any
+      expect(decoded).to.not.have.property('orgId')
+    })
   })
 
   describe('iamUserLookupJwtGenerator', () => {
