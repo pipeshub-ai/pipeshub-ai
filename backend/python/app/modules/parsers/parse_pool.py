@@ -173,13 +173,19 @@ class _Worker:
         os.close(reply_w)
         self._requests = os.fdopen(request_w, "wb")
         self._replies = os.fdopen(reply_r, "rb", buffering=0)
+        # poll, not select: a busy service holds more than the 1024 descriptors
+        # select can address, and these pipes are opened late.
+        self._reply_poller = select.poll()
+        self._reply_poller.register(self._replies, select.POLLIN)
 
     def send(self, obj: object) -> None:
+        # Blocks until the worker has read it, which it is always doing here: a
+        # worker is sent a job only while it waits for one.
         parse_worker.write_frame(self._requests, obj)
 
     def reply_ready(self, timeout: float) -> bool:
         """True once a reply (or the end of a dead worker's pipe) can be read."""
-        return bool(select.select([self._replies], [], [], timeout)[0])
+        return bool(self._reply_poller.poll(timeout * 1000))
 
     def receive(self) -> object:
         return pickle.loads(parse_worker.read_frame(self._replies))

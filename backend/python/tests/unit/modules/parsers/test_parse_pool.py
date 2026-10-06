@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -212,6 +213,26 @@ class TestJobs:
         # An ordinary failure is not a crash: the same worker takes the next job.
         first = await parse_pool.submit(os.getpid)
         assert await parse_pool.submit(os.getpid) == first
+
+    async def test_a_worker_starts_in_a_process_with_many_open_files(
+        self, governor: MagicMock
+    ) -> None:
+        """The indexing service holds thousands of sockets, so a worker's pipes
+        get descriptor numbers past the 1024 that ``select`` can wait on."""
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        wanted = 2048
+        if soft < wanted:
+            if hard != resource.RLIM_INFINITY and hard < wanted:
+                pytest.skip("this runner cannot open more than 1024 files")
+            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
+        held = [os.open(os.devnull, os.O_RDONLY) for _ in range(1100)]
+        try:
+            assert max(held) >= 1024
+            assert await parse_pool.submit(len, b"abc") == len(b"abc")
+        finally:
+            for fd in held:
+                os.close(fd)
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
     async def test_jobs_wait_their_turn_on_a_single_worker(self, governor: MagicMock) -> None:
         results = await asyncio.gather(*(parse_pool.submit(len, b"x" * n) for n in range(8)))
