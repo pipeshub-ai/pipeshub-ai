@@ -19947,9 +19947,18 @@ components:
       type: object
       description: |
         Email to send through the mail service: `emailTemplateType` selects the template and
-        `templateData` fills it.
+        `templateData` fills it. At least one address is needed in `sendEmailTo` or `sendCcTo`.
+
+        The route has no request validator. A body that cannot be rendered or sent is answered
+        with `500`, not `400` (see the operation). Fields not listed here are ignored.
       required:
         - emailTemplateType
+        - templateData
+      anyOf:
+        - required:
+            - sendEmailTo
+        - required:
+            - sendCcTo
       properties:
         emailTemplateType:
           type: string
@@ -19967,31 +19976,47 @@ components:
             - joinRequestNotify
             - joinRequestDecision
         sendEmailTo:
-          type: array
-          description: Recipient addresses
-          items:
-            type: string
+          description: |
+            Recipient addresses, as a list or as a single string. An empty list, or a value
+            that holds no usable address, counts as no recipient.
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: string
         sendCcTo:
-          type: array
-          description: Carbon-copy addresses
-          items:
-            type: string
+          description: Carbon-copy addresses, as a list or as a single string. Enough on its own when `sendEmailTo` is left out.
+          oneOf:
+            - type: array
+              items:
+                type: string
+            - type: string
         subject:
           type: string
-          description: Subject line
+          description: Subject line. The email goes out with an empty subject when it is left out. The value is not type-checked.
         templateData:
           type: object
-          description: Values the chosen template interpolates; the keys depend on the template
+          description: |
+            Values the chosen template interpolates; the keys depend on the template and an
+            empty object is enough for every template except `emailChangeNotice`, which needs
+            `name`, `orgName` and `newEmail` as strings. A missing, `null` or otherwise falsy
+            value fails the send with `500`. The value is not type-checked beyond that.
           additionalProperties: true
         attachments:
           type: array
-          description: Attachments passed to the mail library. Entries that point at a local file or a URL are refused.
+          description: |
+            Attachments passed to the mail library. An entry that points at a local file
+            (`path`) or a URL (`href`) is refused, and so is a value that is not a list: the
+            send fails with `500`.
           items:
             type: object
             additionalProperties: true
         orgId:
           type: string
-          description: Organization the email is sent for; stored with the audit record of the send
+          description: |
+            Organization the email is sent for; stored with the audit record of the send. A
+            value that is not an ObjectId only makes that record fail to save — the email is
+            still sent and the answer is still `200`.
         productName:
           type: string
           description: Accepted for backward compatibility; not used
@@ -20465,6 +20490,7 @@ paths:
       description: |
         Returns a cursor-paginated list of notifications assigned to the authenticated user
         from the last 30 days, newest first. Default page size is 20; at most 50 are returned per page.
+        Query parameters other than the ones listed are ignored.
       operationId: listInAppNotifications
       security:
         - bearerAuth: []
@@ -20484,6 +20510,11 @@ paths:
           description: |
             Page size (default 20). Values from 1 to 100 pass validation, but the page is
             capped at 50 items; anything outside 1–100 or non-integer fails validation (400).
+
+            An empty value (`limit=`) is treated as absent. The value is converted with
+            JavaScript `Number()`, so forms such as `2e0`, `0x2` or a number padded with spaces
+            are read as that number instead of being rejected.
+          allowEmptyValue: true
           schema:
             type: integer
             minimum: 1
@@ -20492,7 +20523,9 @@ paths:
         - name: cursor
           in: query
           required: false
-          description: Opaque base64url cursor from a previous response's `cursor` field
+          description: |
+            Opaque base64url cursor from a previous response's `cursor` field. An empty value
+            is treated as absent and returns the first page.
           schema:
             type: string
       responses:
@@ -20518,8 +20551,9 @@ paths:
                     type: boolean
         '400':
           description: |
-            Either the query failed validation (`status` not one of the allowed values, `limit`
-            outside 1–100) — standard error envelope with code `VALIDATION_ERROR` — or the
+            Either the query failed validation (`status` empty or not one of the allowed values,
+            `limit` outside 1–100 or not a whole number, or `status`, `limit` or `cursor` given
+            more than once) — standard error envelope with code `VALIDATION_ERROR` — or the
             `cursor` could not be decoded, which the controller reports as
             `{ "message": "Invalid cursor" }`.
           content:
@@ -20546,7 +20580,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -20560,7 +20597,7 @@ paths:
       description: |
         Returns per-status notification counts for the authenticated user within the
         30-day retention window. Counts are always global — independent of the `status`
-        filter used on the list endpoint.
+        filter used on the list endpoint. The query string is not read.
       operationId: getNotificationStats
       security:
         - bearerAuth: []
@@ -20603,7 +20640,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -20616,7 +20656,8 @@ paths:
       summary: Mark all unread notifications as read
       description: |
         Marks every unread notification assigned to the authenticated user within the
-        30-day retention window as read.
+        30-day retention window as read. The query string and the request body are not read,
+        so the update cannot be narrowed to some notifications.
       operationId: markAllInAppNotificationsRead
       security:
         - bearerAuth: []
@@ -20655,7 +20696,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -20668,6 +20712,7 @@ paths:
       summary: Mark a notification as read
       description: |
         Marks a single notification as read when it belongs to the authenticated user.
+        Only the `id` path parameter is read; the query string and the request body are not.
       operationId: markInAppNotificationRead
       security:
         - bearerAuth: []
@@ -20721,7 +20766,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -20734,6 +20782,7 @@ paths:
       summary: Mark a notification as unread
       description: |
         Marks a single notification as unread when it belongs to the authenticated user.
+        Only the `id` path parameter is read; the query string and the request body are not.
       operationId: markInAppNotificationUnread
       security:
         - bearerAuth: []
@@ -20787,7 +20836,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -20802,6 +20854,7 @@ paths:
         Moves a single non-archived notification to `archived` status.
         Archived notifications are excluded from the default list query and counts but
         can be retrieved by passing `status=archived`.
+        Only the `id` path parameter is read; the query string and the request body are not.
       operationId: archiveInAppNotification
       security:
         - bearerAuth: []
@@ -20855,7 +20908,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -20870,6 +20926,7 @@ paths:
         Restores an archived notification to `read` status.
         Because the original pre-archive status is not stored, unarchived notifications
         always land in `read` rather than `unread`.
+        Only the `id` path parameter is read; the query string and the request body are not.
       operationId: unarchiveInAppNotification
       security:
         - bearerAuth: []
@@ -20923,7 +20980,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -20934,7 +20994,10 @@ paths:
       tags:
         - Notifications
       summary: Dismiss (soft-delete) a notification
-      description: Soft-deletes the notification for the current user.
+      description: |
+        Soft-deletes the notification for the current user, whatever its status (archived
+        ones included). The document is kept with `isDeleted: true` and `deletedBy` set.
+        Only the `id` path parameter is read; the query string and the request body are not.
       operationId: dismissInAppNotification
       security:
         - bearerAuth: []
@@ -20989,7 +21052,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: Internal server error (e.g. MongoDB unavailable)
+          description: |
+            Internal server error (e.g. MongoDB unavailable). Also returned, before the token is
+            checked, when the request carries a body that is not valid JSON: the body parser
+            fails and the failure is reported with code `INTERNAL_ERROR`, not as a `400`.
           content:
             application/json:
               schema:
@@ -54857,7 +54923,8 @@ paths:
 
         The route is a catch-all: every `GET` under `/docs` other than `/docs/health` and
         `/docs/json` (for example `/docs/` or `/docs/any/sub/path`) returns this same page with
-        `200`, so there is no `404` under this prefix. Query parameters are ignored.
+        `200`, so there is no `404` under this prefix; `GET /docs/{subPath}` documents that part.
+        Query parameters are ignored.
 
         No authentication is required and a supplied token is not read.
       operationId: getApiDocsUi
@@ -54876,6 +54943,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: A malformed JSON request body. The body parser fails before the route is reached and the failure is reported as an internal error (code `INTERNAL_ERROR`), not as a `400`. This route reads no body, but one that does not parse still fails the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /docs/{subPath}:
+    x-catch-all: true
+    get:
+      tags:
+        - API Documentation
+      summary: API documentation UI (any other path under /docs)
+      description: |
+        The catch-all behind `GET /docs`: every `GET` under `/docs` that is not exactly
+        `/docs/health` or `/docs/json` returns the same HTML page as `GET /docs` with `200`,
+        so no path under this prefix answers `404`.
+
+        The match is not limited to one segment: `/docs/a/b/c` and `/docs/health/x` are served
+        the same way. An OpenAPI path parameter cannot hold a `/`, so a single segment is
+        documented here. Query parameters are ignored.
+
+        No authentication is required and a supplied token is not read.
+      operationId: getApiDocsUiSubPath
+      security: []
+      parameters:
+        - name: subPath
+          in: path
+          required: true
+          description: Any path other than `health` and `json`. The value is not read.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The documentation page
+          content:
+            text/html:
+              schema:
+                type: string
+                description: A complete HTML document.
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: A malformed JSON request body. The body parser fails before the route is reached and the failure is reported as an internal error (code `INTERNAL_ERROR`), not as a `400`. This route reads no body, but one that does not parse still fails the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /docs/health:
     get:
@@ -54901,6 +55020,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: A malformed JSON request body. The body parser fails before the route is reached and the failure is reported as an internal error (code `INTERNAL_ERROR`), not as a `400`. This route reads no body, but one that does not parse still fails the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /docs/json:
     get:
@@ -54933,11 +55058,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: The documentation could not be built. The body is this route's own shape, not the standard error envelope.
+          description: |
+            Either the documentation could not be built, which this route reports in its own
+            shape (`error` is a string), or the request carried a malformed JSON body: the
+            body parser fails before the route is reached and the failure is reported as an
+            internal error in the standard error envelope (code `INTERNAL_ERROR`), not as a `400`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiDocsLoadErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ApiDocsLoadErrorResponse'
 
   # ==================== MAIL ====================
   /mail/emails/sendEmail:
@@ -54951,14 +55082,25 @@ paths:
         service token carrying the `mail:send` scope; a user session token is rejected.
 
         Checks run in this order:
-        1. The stored SMTP configuration must have `host`, `port` and `fromEmail`, otherwise `400` —
+        1. The JSON body is parsed before the route is reached. A body that does not parse
+           answers `500` with code `INTERNAL_ERROR`, whatever the token.
+        2. The stored SMTP configuration must have `host`, `port` and `fromEmail`, otherwise `400` —
            this check runs before the token check, so it answers `400` to every caller.
-        2. The bearer token must be a scoped token with the `mail:send` scope, otherwise `401`.
-        3. The template is rendered and the message is handed to the SMTP server, with a
+        3. The bearer token must be a scoped token with the `mail:send` scope, otherwise `401`.
+        4. The template is rendered and the message is handed to the SMTP server, with a
            25 second deadline.
 
-        When the SMTP server refuses the message, cannot be reached or misses the deadline, the
-        answer is `500` with a generic message; the cause is only written to the server log.
+        The body is not validated. Every failure of step 4 answers `500` with code
+        `HTTP_INTERNAL_SERVER_ERROR` and the same generic message; the cause is only written to
+        the server log. That includes caller mistakes that would normally be a `400`: an unknown
+        or missing `emailTemplateType`, a missing `templateData`, `emailChangeNotice` data
+        without `name`, `orgName` and `newEmail`, no usable recipient address, an attachment
+        that points at a local file or a URL. It also covers an SMTP server that refuses the
+        message, cannot be reached or misses the deadline.
+
+        The scope check is `scopes.includes('mail:send')`. When the token's `scopes` claim is a
+        string instead of a list this is a substring test, so a token whose `scopes` string
+        merely contains `mail:send` is accepted. The token's `userId` and `orgId` are not read.
       operationId: sendMailEmail
       security:
         - scopedToken: []
@@ -55001,7 +55143,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: The email could not be sent
+          description: |
+            The email could not be rendered or sent (code `HTTP_INTERNAL_SERVER_ERROR`): an
+            unknown or missing `emailTemplateType`, a missing `templateData`, incomplete
+            `emailChangeNotice` data, no usable recipient address, a refused attachment, or an
+            SMTP failure. Also a request body that is not valid JSON (code `INTERNAL_ERROR`),
+            which is answered before the SMTP and token checks.
           content:
             application/json:
               schema:
@@ -55018,8 +55165,13 @@ paths:
         without a restart. The configuration manager calls it after the SMTP configuration is saved.
 
         Requires a scoped service token carrying the `fetch:config` scope; a user session token is
-        rejected. The request body is ignored — nothing is written, the stored configuration is
-        only loaded again.
+        rejected. The request body and the query string are not read — nothing is written, the
+        stored configuration is only loaded again. A body that is not valid JSON still fails
+        the request with `500`, because the body is parsed before the route is reached.
+
+        The scope check is `scopes.includes('fetch:config')`. When the token's `scopes` claim is
+        a string instead of a list this is a substring test, so a token whose `scopes` string
+        merely contains `fetch:config` is accepted.
       operationId: updateMailSmtpConfig
       security:
         - scopedToken: []
@@ -55050,7 +55202,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
-          description: The configuration could not be loaded from the configuration store
+          description: |
+            The configuration could not be loaded from the configuration store, or the request
+            carried a body that is not valid JSON (code `INTERNAL_ERROR`), which is answered
+            before the token check.
           content:
             application/json:
               schema:
@@ -55068,7 +55223,8 @@ paths:
         key-value store. The graph and vector databases are probed through the connectors service.
 
         A failing dependency does not change the HTTP status: the answer is `200` and the failure
-        is reported in `status` and `services`.
+        is reported in `status` and `services`. The one exception is a request that carries a
+        malformed JSON body, which is answered `500` before the check runs.
 
         No authentication is required and a supplied token is not read. Query parameters are ignored.
       operationId: getInfrastructureHealth
@@ -55086,6 +55242,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: A malformed JSON request body. The body parser fails before the route is reached and the failure is reported as an internal error (code `INTERNAL_ERROR`), not as a `400`. This route reads no body, but one that does not parse still fails the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /health/services:
     get:
@@ -55097,7 +55259,9 @@ paths:
         and embedding; parsing and extraction too when `USE_PARSING_SERVICE=true`) and reports
         the result per service. Only the query and connector services decide the overall `status`.
 
-        The answer is always `200`, including when services are down or the check itself fails.
+        The answer is `200` whatever the outcome, including when services are down or the check
+        itself fails. The one exception is a request that carries a malformed JSON body, which
+        is answered `500` before the check runs.
 
         No authentication is required and a supplied token is not read. Query parameters are ignored.
       operationId: getServicesHealth
@@ -55115,3 +55279,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: A malformed JSON request body. The body parser fails before the route is reached and the failure is reported as an internal error (code `INTERNAL_ERROR`), not as a `400`. This route reads no body, but one that does not parse still fails the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'

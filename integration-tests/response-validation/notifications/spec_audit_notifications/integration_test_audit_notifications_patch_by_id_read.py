@@ -7,7 +7,19 @@ from typing import Any, Callable
 import pytest
 from bson import ObjectId
 from pymongo.collection import Collection
-from strict_openapi import assert_strict_openapi_response
+from notifications_audit_support import (
+    NOT_FOUND_BODY,
+    OUT_OF_SCOPE_KINDS,
+    NotificationsClient,
+    SeedNotification,
+    out_of_scope_fields,
+)
+from helper.second_user import SecondUser
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -32,14 +44,14 @@ def test_mark_read_returns_updated_notification(
     assert notification["_id"] == notification_id
     assert notification["status"] == "read"
     assert notification["assignedTo"] == admin_user_id
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_mark_read_without_token_is_unauthorized(notifications_client: Any) -> None:
     resp = notifications_client.set_state(MISSING_NOTIFICATION_ID, "read", auth=False)
 
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 @pytest.mark.parametrize(
@@ -55,7 +67,7 @@ def test_mark_read_rejects_unusable_id(
     resp = notifications_client.set_state(notification_id, "read")
 
     assert resp.status_code == expected_status, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_mark_read_on_archived_notification_is_not_found(
@@ -72,4 +84,56 @@ def test_mark_read_on_archived_notification_is_not_found(
     assert resp.json() == {"message": "Notification not found"}
     stored = notifications_collection.find_one({"_id": ObjectId(notification_id)})
     assert stored is not None and stored["status"] == "archived"
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("kind", OUT_OF_SCOPE_KINDS)
+def test_read_notification_outside_the_filter_is_not_found(
+    notifications_client: NotificationsClient,
+    seed_notification: SeedNotification,
+    kind: str,
+) -> None:
+    notification_id = seed_notification(status="unread", **out_of_scope_fields(kind))
+
+    resp = notifications_client.set_state(notification_id, "read")
+
+    assert resp.status_code == 404, resp.text[:500]
+    assert resp.json() == NOT_FOUND_BODY
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_read_another_users_notification_is_not_found(
+    notifications_client: NotificationsClient,
+    seed_notification: SeedNotification,
+    second_user: SecondUser,
+    notifications_collection: Collection,
+) -> None:
+    notification_id = seed_notification(status="unread", assigned_to=second_user.user_id)
+
+    resp = notifications_client.set_state(notification_id, "read")
+
+    assert resp.status_code == 404, resp.text[:500]
+    assert resp.json() == NOT_FOUND_BODY
+    stored = notifications_collection.find_one({"_id": ObjectId(notification_id)})
+    assert stored is not None and stored["status"] == "unread"
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_read_reads_neither_query_nor_body(
+    notifications_client: NotificationsClient, seed_notification: SeedNotification
+) -> None:
+    notification_id = seed_notification(status="unread")
+
+    with outside_request_contract("the validator checks only the id path parameter"):
+        resp = notifications_client.set_state(
+            notification_id,
+            "read",
+            params={"status": "unread"},
+            json={"status": "unread", "isDeleted": True},
+        )
+
+    assert resp.status_code == 200, resp.text[:500]
+    notification = resp.json()["notification"]
+    assert notification["status"] == "read"
+    assert notification["isDeleted"] is False
     assert_strict_openapi_response(resp, ROUTE)

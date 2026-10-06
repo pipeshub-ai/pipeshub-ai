@@ -6,12 +6,15 @@ from typing import Any
 
 import pytest
 from api_docs_audit_support import JSON_ROUTE, UNIFIED_DOCS_KEYS, ApiDocsClient
-from helper.pipeshub_client import PipeshubClient
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
-ROUTE = "/api/v1/docs/json"
+ROUTE = JSON_ROUTE
 
 MODULE_KEYS = {"id", "name", "description", "version", "basePath", "tags", "source", "order"}
 ENDPOINT_KEYS = {
@@ -52,7 +55,7 @@ def test_json_is_public_and_returns_unified_docs(
         resp.headers.get("Content-Type")
     )
     _assert_unified_docs(resp.json())
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_json_modules_categories_and_endpoints_are_consistent(
@@ -79,13 +82,26 @@ def test_json_modules_categories_and_endpoints_are_consistent(
     for endpoint in body["endpoints"]:
         assert set(endpoint) >= ENDPOINT_KEYS, endpoint.get("path")
         assert endpoint["method"] in HTTP_METHODS, endpoint
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
-def test_json_ignores_query_parameters(pipeshub_client: PipeshubClient) -> None:
-    resp = pipeshub_client.request(
-        "GET", JSON_ROUTE, auth=False, params={"module": "no-such-module", "format": "yaml"}
-    )
+def test_json_lists_its_own_operations(api_docs_client: ApiDocsClient) -> None:
+    resp = api_docs_client.unified_json(auth=False)
     assert resp.status_code == 200, resp.text[:500]
-    _assert_unified_docs(resp.json())
+    listed = {(e["method"], e["path"]) for e in resp.json()["endpoints"]}
+    assert {("GET", "/docs"), ("GET", "/docs/health"), ("GET", "/docs/json")} <= listed
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_json_ignores_query_parameters(api_docs_client: ApiDocsClient) -> None:
+    plain = api_docs_client.unified_json(auth=False)
+    with outside_request_contract("the handler never reads the query string"):
+        resp = api_docs_client.unified_json(
+            auth=False, params={"module": "no-such-module", "format": "yaml"}
+        )
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.headers.get("Content-Type", "").startswith("application/json"), (
+        resp.headers.get("Content-Type")
+    )
+    assert resp.json() == plain.json()
     assert_strict_openapi_response(resp, ROUTE)

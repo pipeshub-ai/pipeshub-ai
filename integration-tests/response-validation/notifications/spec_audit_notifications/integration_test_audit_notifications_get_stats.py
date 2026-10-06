@@ -9,7 +9,11 @@ import pytest
 import requests
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -22,7 +26,7 @@ def _member_stats(user: SecondUser) -> dict[str, int]:
         f"{user.base_url}{ROUTE}", headers=user.headers, timeout=user.timeout
     )
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     body = resp.json()
     assert set(body) == set(COUNT_FIELDS), body
     return body
@@ -58,8 +62,8 @@ def test_stats_skips_deleted_expired_and_other_users_notifications(
 def test_stats_as_admin_ignores_unknown_query_params(
     pipeshub_client: PipeshubClient,
 ) -> None:
-    # The validator is an empty passthrough object, so stray params are not a 400.
-    resp = pipeshub_client.request("GET", ROUTE, params={"status": "bogus"})
+    with outside_request_contract("the validator is an empty object and the handler reads no query"):
+        resp = pipeshub_client.request("GET", ROUTE, params={"status": "bogus"})
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_response(resp, ROUTE)
     body = resp.json()
@@ -79,4 +83,4 @@ def test_stats_rejects_unauthenticated_calls(
 ) -> None:
     resp = pipeshub_client.request("GET", ROUTE, auth=False, headers=headers)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)

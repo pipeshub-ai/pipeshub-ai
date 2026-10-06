@@ -9,12 +9,19 @@ import pytest
 from notifications_audit_support import (
     MALFORMED_NOTIFICATION_ID,
     MISSING_NOTIFICATION_ID,
+    NOT_FOUND_BODY,
+    NOTIFICATION_STATUSES,
     NotificationsClient,
     SeedNotification,
+    out_of_scope_fields,
     request_as,
 )
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -31,7 +38,7 @@ def test_delete_soft_deletes_then_reports_not_found(
 
     resp = notifications_client.remove(notification_id)
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {"success": True}
 
     stored = notifications_collection.find_one({"_id": ObjectId(notification_id)})
@@ -41,7 +48,7 @@ def test_delete_soft_deletes_then_reports_not_found(
 
     again = notifications_client.remove(notification_id)
     assert again.status_code == 404, again.text[:500]
-    assert_strict_openapi_response(again, ROUTE)
+    assert_strict_openapi_exchange(again, ROUTE)
     assert again.json() == {"message": "Notification not found"}
 
 
@@ -57,7 +64,7 @@ def test_member_deletes_own_archived_notification(
 
     resp = request_as(second_user, "DELETE", f"/{notification_id}")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {"success": True}
 
     stored = notifications_collection.find_one({"_id": ObjectId(notification_id)})
@@ -76,7 +83,7 @@ def test_delete_another_users_notification_is_not_found(
 
     resp = notifications_client.remove(notification_id)
     assert resp.status_code == 404, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {"message": "Notification not found"}
 
     stored = notifications_collection.find_one({"_id": ObjectId(notification_id)})
@@ -89,7 +96,7 @@ def test_delete_malformed_id_is_rejected(
 ) -> None:
     resp = notifications_client.remove(MALFORMED_NOTIFICATION_ID)
     assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_delete_without_token_is_unauthorized(
@@ -97,4 +104,68 @@ def test_delete_without_token_is_unauthorized(
 ) -> None:
     resp = notifications_client.remove(MISSING_NOTIFICATION_ID, auth=False)
     assert resp.status_code == 401, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("status", NOTIFICATION_STATUSES)
+def test_delete_works_in_every_status(
+    notifications_client: NotificationsClient,
+    seed_notification: SeedNotification,
+    notifications_collection: Collection,
+    status: str,
+) -> None:
+    notification_id = seed_notification(status=status)
+
+    resp = notifications_client.remove(notification_id)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.json() == {"success": True}
+    stored = notifications_collection.find_one({"_id": ObjectId(notification_id)})
+    assert stored is not None
+    assert stored["isDeleted"] is True
+    assert stored["status"] == status
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_delete_notification_older_than_retention_is_not_found(
+    notifications_client: NotificationsClient, seed_notification: SeedNotification
+) -> None:
+    notification_id = seed_notification(**out_of_scope_fields("older_than_retention"))
+
+    resp = notifications_client.remove(notification_id)
+
+    assert resp.status_code == 404, resp.text[:500]
+    assert resp.json() == NOT_FOUND_BODY
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_delete_unknown_notification_is_not_found(
+    notifications_client: NotificationsClient,
+) -> None:
+    resp = notifications_client.remove(MISSING_NOTIFICATION_ID)
+
+    assert resp.status_code == 404, resp.text[:500]
+    assert resp.json() == NOT_FOUND_BODY
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_delete_reads_neither_query_nor_body(
+    notifications_client: NotificationsClient,
+    seed_notification: SeedNotification,
+    notifications_collection: Collection,
+) -> None:
+    notification_id = seed_notification()
+    untouched_id = seed_notification()
+
+    with outside_request_contract("the validator checks only the id path parameter"):
+        resp = notifications_client.remove(
+            notification_id,
+            params={"id": untouched_id},
+            json={"ids": [untouched_id], "hard": True},
+        )
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.json() == {"success": True}
+    stored = notifications_collection.find_one({"_id": ObjectId(untouched_id)})
+    assert stored is not None and stored["isDeleted"] is False
     assert_strict_openapi_response(resp, ROUTE)

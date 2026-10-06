@@ -15,7 +15,11 @@ from health_audit_support import (
     OVERALL_STATUSES,
     HealthClient,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -28,7 +32,6 @@ EXTRA_STATUSES = {"graphDb": ("pending", "unknown"), "vectorDb": ("pending",)}
 def _assert_health_body(resp: requests.Response) -> dict[str, Any]:
     # A down dependency is reported in the body; the HTTP status stays 200.
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, HEALTH_ROOT_ROUTE)
     body: dict[str, Any] = resp.json()
     assert set(body) == set(TOP_LEVEL_KEYS), body
     assert body["status"] in OVERALL_STATUSES, body
@@ -48,7 +51,9 @@ def _assert_health_body(resp: requests.Response) -> dict[str, Any]:
 def test_health_is_public_and_reports_every_infra_service(
     health_client: HealthClient, auth: bool, headers: dict[str, str]
 ) -> None:
-    body = _assert_health_body(health_client.get("", auth=auth, headers=headers))
+    resp = health_client.root(auth=auth, headers=headers)
+    body = _assert_health_body(resp)
+    assert_strict_openapi_exchange(resp, HEALTH_ROOT_ROUTE)
 
     services: dict[str, str] = body["services"]
     etcd_keys = {ETCD_SERVICE_KEY} if body["deployment"]["kvStoreType"] == "etcd" else set()
@@ -65,11 +70,17 @@ def test_health_is_public_and_reports_every_infra_service(
 
 
 def test_health_ignores_unknown_query_params(health_client: HealthClient) -> None:
-    # No validator on the route, so a stray param is not a 400.
-    body = _assert_health_body(
-        health_client.get("", auth=False, params={"verbose": "bogus"})
-    )
+    with outside_request_contract("the handler never reads the query string"):
+        resp = health_client.root(auth=False, params={"verbose": "bogus"})
+    body = _assert_health_body(resp)
+    assert_strict_openapi_response(resp, HEALTH_ROOT_ROUTE)
 
     deployment: dict[str, str] = body["deployment"]
     assert (body["services"]["graphDb"] == "pending") == (deployment["graphDbType"] == "pending"), body
     assert (body["services"]["vectorDb"] == "pending") == (deployment["vectorDbType"] == "pending"), body
+
+
+def test_health_with_trailing_slash_is_the_same_route(health_client: HealthClient) -> None:
+    resp = health_client.get("/", auth=False)
+    _assert_health_body(resp)
+    assert_strict_openapi_exchange(resp, HEALTH_ROOT_ROUTE)

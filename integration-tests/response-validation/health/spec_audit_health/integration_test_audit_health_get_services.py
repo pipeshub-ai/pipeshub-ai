@@ -12,7 +12,11 @@ from health_audit_support import (
     PYTHON_SERVICE_KEYS,
     HealthClient,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -30,7 +34,7 @@ def test_services_health_is_public_and_always_200(
 ) -> None:
     resp = health_client.services(auth=auth)
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     body = resp.json()
     assert set(body) == {"status", "timestamp", "services"}, body
@@ -47,3 +51,11 @@ def test_services_health_is_public_and_always_200(
     # Only query and connector decide the overall status.
     critical_ok = services["query"] == "healthy" and services["connector"] == "healthy"
     assert body["status"] == ("healthy" if critical_ok else "unhealthy"), body
+
+
+def test_services_health_ignores_query_parameters(health_client: HealthClient) -> None:
+    with outside_request_contract("the handler never reads the query string"):
+        resp = health_client.services(auth=False, params={"service": "query"})
+    assert resp.status_code == 200, resp.text[:500]
+    assert set(PYTHON_SERVICE_KEYS) <= set(resp.json()["services"]), resp.text[:500]
+    assert_strict_openapi_response(resp, ROUTE)
