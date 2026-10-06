@@ -28,6 +28,9 @@ fields:
   inherit_permissions:
     required: false
     type: boolean
+  is_deleted_at_source:
+    required: false
+    type: boolean
   is_internal:
     required: false
     type: boolean

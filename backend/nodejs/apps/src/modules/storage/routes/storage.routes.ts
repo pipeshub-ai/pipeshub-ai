@@ -421,6 +421,7 @@ export function createStorageRouter(container: Container): Router {
               storageConfig,
               logger,
               keyValueStoreService,
+              updatedConfig.scopedJwtSecret,
             );
           });
         res.status(200).json({

@@ -10,7 +10,11 @@ export type InstanceSetupStatusKey =
   | 'ready';
 
 /** Transient sync job from backend `status` (IDLE → no badge). */
-export type InstanceSyncOperationKey = 'syncing' | 'full_syncing' | 'deleting';
+export type InstanceSyncOperationKey =
+  | 'syncing'
+  | 'full_syncing'
+  | 'queued'
+  | 'deleting';
 
 export type InstanceSetupStatusView = {
   key: InstanceSetupStatusKey;
@@ -20,7 +24,7 @@ export type InstanceSetupStatusView = {
 
 export type InstanceSyncOperationView = {
   key: InstanceSyncOperationKey;
-  badgeColor: 'blue' | 'red';
+  badgeColor: 'blue' | 'amber' | 'red';
   icon: string;
 };
 
@@ -61,6 +65,9 @@ export function deriveInstanceSyncOperation(
   }
   if (normalized === CONNECTOR_INSTANCE_STATUS.SYNCING) {
     return { key: 'syncing', badgeColor: 'blue', icon: 'sync' };
+  }
+  if (normalized === CONNECTOR_INSTANCE_STATUS.QUEUED) {
+    return { key: 'queued', badgeColor: 'amber', icon: 'schedule' };
   }
 
   return null;

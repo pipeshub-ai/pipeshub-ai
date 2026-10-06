@@ -311,6 +311,23 @@ live in `scripts/shard_durations.json`; refresh them from a recent nightly's
 `reports-both-<shard>` artifacts (`*-results.xml`) when they look stale. The same
 check runs in CI through `python3 -m unittest discover -s scripts`.
 
+**Pull requests and secrets.** `integration-tests.yml` runs on `pull_request`.
+For a branch in this repository, the full suite runs with the connector and model
+secrets once a maintainer approves the `integration-test-dev` environment. A pull
+request from a fork never gets those secrets: it runs the `it-fork` job instead,
+which runs only the helper unit tests (`pytest unit/`) on a GitHub-hosted runner.
+To run the full suite on a fork's change, a maintainer reviews the pull request
+and then dispatches the workflow on that exact commit:
+
+```bash
+gh workflow run integration-tests.yml -f commit_hash=<full 40-character SHA you reviewed> -f connectors=integration
+```
+
+The environment approval still applies. `commit_hash` must be a full SHA, so the
+run cannot pick up a commit pushed after the review. Review everything that runs,
+not only the tests: `conftest.py`, `pyproject.toml`, `package.json` scripts,
+Dockerfiles and compose files all execute with the secrets.
+
 After each run, an **HTML** report is written to `integration-tests/reports/` with a graph-DB-tagged, timestamped filename, e.g. `INTEGRATION_TEST_REPORT_neo4j_2025-03-09_14-30-45.html`. Open it when debugging: verdict summary, pass/fail/skip counts, **parsed root cause** per failure, **cascade hints** when a later ordered test fails because shared state was never set (e.g. `KeyError: connector_id`), **full tracebacks**, optional captured stdout/stderr, and tables of all results by suite with durations. Keep multiple runs to compare over time.
 
 ---

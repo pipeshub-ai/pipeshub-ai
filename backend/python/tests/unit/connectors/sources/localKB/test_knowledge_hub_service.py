@@ -800,6 +800,62 @@ class TestGetPermissions:
         assert result is None
 
 
+class TestCollectionRole:
+    """``collectionRole``: the role the trash list and restore check, at every level of a collection."""
+
+    READER_CONTEXT = {
+        "role": "READER",
+        "canUpload": False,
+        "canCreateFolders": False,
+        "canEdit": False,
+        "canDelete": False,
+        "canManagePermissions": False,
+    }
+
+    @pytest.mark.asyncio
+    async def test_at_the_collection_it_is_the_users_role_on_it(self, service, mock_graph_provider) -> None:
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = dict(self.READER_CONTEXT)
+        mock_graph_provider.get_user_kb_permission = AsyncMock(return_value="FILEORGANIZER")
+        result = await service._get_permissions("uk1", "o1", "kb1", "app")
+        assert (result.role, result.collectionRole) == ("READER", "FILEORGANIZER")
+        mock_graph_provider.get_user_kb_permission.assert_awaited_once_with("kb1", "uk1")
+
+    @pytest.mark.asyncio
+    async def test_inside_a_folder_it_is_still_the_collection_role(self, service, mock_graph_provider) -> None:
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = dict(self.READER_CONTEXT)
+        mock_graph_provider.get_document = AsyncMock(return_value={"_key": "f1", "orgId": "o1", "connectorId": "kb1"})
+        mock_graph_provider.get_user_kb_permission = AsyncMock(return_value="FILEORGANIZER")
+        result = await service._get_permissions("uk1", "o1", "f1", "folder")
+        assert (result.role, result.collectionRole) == ("READER", "FILEORGANIZER")
+        mock_graph_provider.get_user_kb_permission.assert_awaited_once_with("kb1", "uk1")
+
+    @pytest.mark.asyncio
+    async def test_a_node_of_another_org_has_none(self, service, mock_graph_provider) -> None:
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = dict(self.READER_CONTEXT)
+        mock_graph_provider.get_document = AsyncMock(return_value={"_key": "f1", "orgId": "o2", "connectorId": "kb1"})
+        mock_graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        result = await service._get_permissions("uk1", "o1", "f1", "folder")
+        assert result.collectionRole is None
+        mock_graph_provider.get_user_kb_permission.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("parent_id", "parent_type"), [(None, None), ("rg1", "recordGroup"), ("p1", None)])
+    async def test_outside_a_collection_it_is_none(self, service, mock_graph_provider, parent_id, parent_type) -> None:
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = dict(self.READER_CONTEXT)
+        mock_graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        result = await service._get_permissions("uk1", "o1", parent_id, parent_type)
+        assert result.collectionRole is None
+        mock_graph_provider.get_user_kb_permission.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_keeps_the_other_permissions(self, service, mock_graph_provider) -> None:
+        mock_graph_provider.get_knowledge_hub_context_permissions.return_value = dict(self.READER_CONTEXT)
+        mock_graph_provider.get_user_kb_permission = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await service._get_permissions("uk1", "o1", "kb1", "app")
+        assert result is not None
+        assert (result.role, result.collectionRole) == ("READER", None)
+
+
 # ============================================================================
 # _get_available_filters
 # ============================================================================

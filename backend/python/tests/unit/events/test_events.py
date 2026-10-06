@@ -78,6 +78,15 @@ def _make_event_payload(
     return data
 
 
+def _rereads_as_still_in_flight(twin, doc) -> AsyncMock:
+    """The post-QUEUED re-read of the twin: same content and org, still running.
+
+    Read at call time, after dedup has stored the computed md5 on ``doc``."""
+    return AsyncMock(side_effect=lambda *_a, **_k: {
+        **twin, "md5Checksum": doc.get("md5Checksum"), "orgId": doc.get("orgId"),
+    })
+
+
 async def _drain(async_gen):
     """Collect all items from an async generator."""
     items = []
@@ -254,6 +263,23 @@ class TestCheckDuplicateMd5EdgeCases:
 
         result = await ep._check_duplicate_by_md5(b"", doc)
 
+        assert result.skip_indexing is False
+
+    @pytest.mark.asyncio
+    async def test_a_restored_record_without_its_checksum_is_hashed_again_and_indexed(self) -> None:
+        """A restore clears md5Checksum and keeps virtualRecordId; unchanged content must
+        get its checksum back and be indexed, never matched against itself."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = []
+        doc = {"_key": "restored-1", "virtualRecordId": "vr-old", "recordType": "FILE", "sizeInBytes": 4}
+
+        with patch.object(ep, "update_record_fields", new_callable=AsyncMock, return_value=True) as update:
+            result = await ep._check_duplicate_by_md5(b"same", doc)
+
+        md5 = ep._hash_for_dedup(b"same", "FILE", None)
+        update.assert_awaited_once_with(doc, {"md5Checksum": md5})
+        assert gp.find_duplicate_records.await_args.kwargs["record_key"] == "restored-1"
+        assert gp.find_duplicate_records.await_args.kwargs["md5_checksum"] == md5
         assert result.skip_indexing is False
 
     @pytest.mark.asyncio
@@ -514,6 +540,7 @@ class TestCheckDuplicateMd5CrossCollectionMatrix:
             "recordType": "FILE",
             "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(in_progress, doc)
 
         result = await ep._check_duplicate_by_md5(b"x", doc)
 
@@ -1823,12 +1850,12 @@ class TestOnEventDuplicate:
         ep, _, _, gp = _make_event_processor()
 
         # find_duplicate_records returns an in-progress duplicate (no processed one)
-        gp.find_duplicate_records = AsyncMock(return_value=[
-            {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
-        ])
+        twin = {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records = AsyncMock(return_value=[twin])
         gp.batch_update_nodes = AsyncMock()
 
         doc = {"_key": "rec-1", "md5Checksum": "abc123", "recordType": "FILE", "sizeInBytes": 100}
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
@@ -2442,15 +2469,17 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
     async def test_a_successful_in_flight_duplicate_still_skips(self):
         """The happy path is unchanged: raising is reserved for real failures."""
         ep, gp = _make_multi_collection_event_processor()
-        gp.find_duplicate_records.return_value = [{
+        twin = {
             "_key": "dup-1",
             "connectorName": "GOOGLE_DRIVE",
             "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-        }]
+        }
+        gp.find_duplicate_records.return_value = [twin]
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
 
         result = await ep._check_duplicate_by_md5(b"payload", doc)
 

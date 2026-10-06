@@ -42,7 +42,7 @@ def _make_orchestrator(
     vector_store.apply = AsyncMock(return_value=vector_result)
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value=graph_doc)
-    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
     orch = SinkOrchestrator(
         graphdb=graphdb,
@@ -166,12 +166,12 @@ class TestApply:
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=True,
         )
-        orch.graph_provider.batch_upsert_nodes.return_value = False
+        orch.graph_provider.batch_update_nodes.return_value = False
 
         await orch.index(_make_ctx())
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graph_provider.batch_upsert_nodes.assert_awaited()
+        orch.graph_provider.batch_update_nodes.assert_awaited()
 
 
 class TestSkipBlob:
@@ -188,7 +188,7 @@ class TestSkipBlob:
 
         orch.blob_storage.apply.assert_not_awaited()
         orch.vector_store.apply.assert_awaited_once_with(ctx)
-        orch.graph_provider.batch_upsert_nodes.assert_awaited()
+        orch.graph_provider.batch_update_nodes.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_skip_blob_reindexes_even_if_completed(self):
@@ -579,3 +579,53 @@ class TestSyncEntitiesForDuplicate:
         await orch.sync_entities_for_duplicate(self._RECORD_DOC)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
+
+
+class TestIndexedWriteWhenEnrichmentFollows:
+    """No reader may see a record indexed whose enrichment has not started:
+    a duplicate copies that as finished, before the taxonomy exists."""
+
+    @pytest.mark.asyncio
+    async def test_marks_enrichment_in_progress_in_the_same_write_and_keeps_the_start_time(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.settings = {"enrichment_follows": True}
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["indexingStatus"] == "COMPLETED"
+        assert row["extractionStatus"] == "IN_PROGRESS"
+        assert "processingStartedAt" not in row, "stale recovery ages a stuck enrichment by it"
+
+    @pytest.mark.asyncio
+    async def test_deferred_enrichment_leaves_extraction_alone(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert "extractionStatus" not in row
+        assert row["processingStartedAt"] is None
+
+
+class TestIndexedWriteWhenRecordWasDeleted:
+    """A record deleted while it was being indexed must stay deleted: recreated
+    as a bare node, it keeps its vectors from the orphan sweep for good."""
+
+    @pytest.mark.asyncio
+    async def test_does_not_recreate_or_announce_the_record(self, monkeypatch) -> None:
+        notify = AsyncMock()
+        monkeypatch.setattr(
+            "app.modules.transformers.sink_orchestrator.notify_record_indexed", notify
+        )
+        orch = _make_orchestrator()
+        orch.graph_provider.batch_update_nodes.return_value = False
+        ctx = _make_ctx()
+
+        await orch._update_indexing_status(ctx)
+
+        orch.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        notify.assert_not_awaited()
+        assert ctx.record.indexing_status != "COMPLETED"

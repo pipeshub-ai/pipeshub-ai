@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 import app.connectors.sources.demo.connector as demo_connector
-from app.connectors.sources.demo.harness.kb_harness import score
+from app.connectors.sources.demo.harness.kb_harness import mentions, score
 
 FIXTURE = Path(demo_connector.__file__).resolve().parent / "fixture" / "acme-corp.yaml"
 RESERVED_DOMAIN = "acme-demo.example"
@@ -158,8 +158,8 @@ def test_restricted_facts_come_only_from_restricted_records(fx: dict) -> None:
     inside = " ".join(r["body"] for r in fx["records"] if r["id"] in restricted_ids or r.get("thread") in restricted_ids).lower()
     group_of_record = _group_of_record(fx)
     outside = " ".join(r["body"] for r in fx["records"] if group_of_record[r["id"]] != "pricing-committee").lower()
-    assert [f for f in facts if f.lower() not in inside] == []
-    assert [f for f in facts if f.lower() in outside] == []
+    assert [f for f in facts if not mentions(inside, f)] == []
+    assert [f for f in facts if mentions(outside, f)] == []
 
 
 @pytest.mark.parametrize(

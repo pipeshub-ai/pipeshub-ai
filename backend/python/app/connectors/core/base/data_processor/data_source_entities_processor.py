@@ -59,7 +59,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     FolderChangedDuringDelete,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
-from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
+from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge
 from app.utils.retry import retry_async
@@ -74,6 +74,30 @@ if TYPE_CHECKING:
 PendingMove = tuple[str, str, str, str | tuple[str, ...] | None]
 
 _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
+
+
+class RestoreRefused(Exception):
+    """A restore that would break something, so nothing was restored.
+
+    ``reason`` is written for the person who asked, and says what to do next.
+    """
+
+    def __init__(self, code: int, reason: str, **details: object) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+        self.details = details
+
+
+def _same_source_refusal(record_id: str, external_id: str) -> RestoreRefused:
+    return RestoreRefused(
+        409,
+        "Two of the items being restored came from the same source item, so only one of them "
+        "can come back. Restore them one at a time, starting with the one you want to keep.",
+        record_id=record_id,
+        external_id=external_id,
+    )
+
 
 # ~39 bytes per vrid in the move-tree JSON body; Node accepts 10 MB.
 _MAX_FOLDER_MOVE_VRIDS = 100_000
@@ -485,7 +509,12 @@ class DataSourceEntitiesProcessor:
                 # and its subtree stay reachable from the record group.
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
                 if record_group_id:
-                    await self._link_record_to_group(parent_record, record_group_id, tx_store)
+                    # parent_record was read from the store, so pass it as the
+                    # existing record: without it the stale inherit-permissions
+                    # edge this branch exists to repair is never deleted.
+                    await self._link_record_to_group(
+                        parent_record, record_group_id, tx_store, parent_record
+                    )
 
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
@@ -602,6 +631,16 @@ class DataSourceEntitiesProcessor:
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
 
+        # A group kept only for the trash that the source has again. Taking it back
+        # writes the group, which waits for a purge deleting it; recordGroupId and
+        # the link come in later statements that the purge's lock does not cover.
+        if (
+            record_group is not None
+            and record_group.is_deleted_at_source
+            and not await tx_store.take_back_kept_record_group(record_group.id)
+        ):
+            record_group = None
+
         if record_group is None:
             # Create a new record group
             record_group = RecordGroup(
@@ -688,7 +727,10 @@ class DataSourceEntitiesProcessor:
 
             if record.inherit_permissions:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
-            else:
+            elif existing_record is not None:
+                # A record created moments ago cannot carry an inherit-permissions
+                # edge yet, so deleting one is a guaranteed no-op round trip —
+                # one per record, on the hot path of every full sync.
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.shared_with_me_record_group_ids:
@@ -1009,6 +1051,25 @@ class DataSourceEntitiesProcessor:
         ):
             record.queued_at = get_epoch_timestamp_in_ms()
 
+    @staticmethod
+    def _reindexes_on_restore(record: Record, existing_record: Record) -> bool:
+        """Whether a record a sync brings back from the trash is indexed again.
+
+        It is even when unchanged, since the delete took its vectors. A
+        manual-only item that was never indexed stays so. Decided before the
+        restore's write from the status the upsert would otherwise store.
+        """
+        status = record.indexing_status
+        if (
+            record.origin == OriginTypes.UPLOAD
+            and record.external_revision_id == existing_record.external_revision_id
+        ):
+            status = existing_record.indexing_status
+        return not (
+            status == ProgressStatus.AUTO_INDEX_OFF.value
+            and existing_record.indexing_status != ProgressStatus.COMPLETED.value
+        )
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -1181,6 +1242,18 @@ class DataSourceEntitiesProcessor:
                 )
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
+
+    @staticmethod
+    async def _write_permission_edges(
+        tx_store: TransactionStore, to_id: str, to_collection: str, edges: list[dict], *, replace: bool
+    ) -> None:
+        # Old edges go in the same call as the new ones, after every principal is
+        # resolved: on Neo4j a delete issued first committed on its own, so a group
+        # whose rewrite failed lost all its members until the next sync.
+        if replace:
+            await tx_store.replace_edges_to(to_id, to_collection, edges, CollectionNames.PERMISSION.value)
+        elif edges:
+            await tx_store.batch_create_edges(edges, collection=CollectionNames.PERMISSION.value)
 
     async def _resolve_principal(
         self, email: str, tx_store: TransactionStore, create_if_missing: bool = True
@@ -1386,18 +1459,47 @@ class DataSourceEntitiesProcessor:
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
                 )
                 return None, []
+        restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
-            # has the item. A connector-trashed item seen again is restored by the
-            # restore path; until then it is left alone too, since upserting it
-            # would bring it back live with its vectors already gone.
+            # has the item. An item the connector deleted and the source has
+            # again comes back, but only on a path that publishes an index event:
+            # its vectors went with the delete.
+            if not publishes_event or existing_record.delete_source != DeleteSource.CONNECTOR:
+                self.logger.info(
+                    "Skipping %s (%s): it is in the trash (deleted by %s)",
+                    record.record_name,
+                    existing_record.id,
+                    getattr(existing_record.delete_source, "value", existing_record.delete_source),
+                )
+                return None, []
+            reindex_restored = self._reindexes_on_restore(record, existing_record)
+            restore: dict = {"id": existing_record.id}
+            if reindex_restored:
+                # In the restore's own write, which commits on its own on Neo4j: if this
+                # upsert fails later, the stranded sweep finds the record and indexes it,
+                # where a stored COMPLETED would keep it out of search with no vectors.
+                # The sweep passes over a row with both md5Checksum and virtualRecordId as
+                # a duplicate behind a twin, so the checksum goes (indexing works it out
+                # again from the content); virtualRecordId stays for old citations.
+                restore["set"] = {
+                    "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                    "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "md5Checksum": None,
+                }
+            restored = await tx_store.restore_records([restore], existing_record.delete_batch_id)
+            if restored != [existing_record.id]:
+                raise RuntimeError(f"Could not bring record {existing_record.id} back from the trash")
+            existing_record = existing_record.model_copy(update={"is_deleted": False})
+            if reindex_restored:
+                # The upsert below writes the source's checksum back, and the row it
+                # leaves is what the sweep sees if the index event is then lost.
+                record.md5_hash = None
+            restored_from_trash = True
+            record_restored(DeleteSource.CONNECTOR.value, 1)
             self.logger.info(
-                "Skipping %s (%s): it is in the trash (deleted by %s)",
-                record.record_name,
-                existing_record.id,
-                getattr(existing_record.delete_source, "value", existing_record.delete_source),
+                "Restoring %s (%s) from the trash: the source has it again", record.record_name, existing_record.id
             )
-            return None, []
 
         # Set org_id only when the caller didn't supply one. KB and cross-org
         # callers pass an explicit request org that must win over self.org_id.
@@ -1512,6 +1614,9 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 if publishes_event:
                     self._stamp_queued_at(record)
+            if restored_from_trash and reindex_restored:
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
+                self._stamp_queued_at(record)
 
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.shared_with_me_record_group_ids:
@@ -2245,6 +2350,101 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
 
+    @retry_on_deadlock()
+    async def restore_trashed_records(
+        self,
+        connector_id: str,
+        batch_id: str | None,
+        items: list[dict[str, Any]],
+        *,
+        restore_source: DeleteSource = DeleteSource.USER,
+        require_live_parent: bool = False,
+    ) -> list[str]:
+        """Bring records back from the trash in one transaction; return their ids.
+
+        Each item is ``{"id", "name", "trashedExternalRecordId", "set"}``. A
+        record that gave its external id up to another record gets it back,
+        unless a live record holds it now: then nothing is restored, since two
+        live records on one id would each be returned at random to a sync.
+        Every item must still be in the trash under *batch_id*, or nothing is
+        restored either. With *require_live_parent*, so must be nothing an
+        item hangs under, unless it is restored with it. The caller re-indexes
+        what comes back.
+        """
+        ids = [item["id"] for item in items]
+        if not ids:
+            return []
+        reclaim: dict[str, str] = {}
+        for item in items:
+            external_id = item.get("trashedExternalRecordId")
+            if not external_id:
+                continue
+            if external_id in reclaim.values():
+                raise _same_source_refusal(item["id"], external_id)
+            reclaim[item["id"]] = external_id
+        restores = [
+            {
+                "id": item["id"],
+                "set": dict(item.get("set") or {}),
+                **({"reclaimExternalRecordId": reclaim[item["id"]]} if item["id"] in reclaim else {}),
+            }
+            for item in items
+        ]
+
+        async with self.data_store_provider.transaction() as tx_store:
+            # Taking an id back from another record in the trash happens in the same
+            # write as the restore: on Neo4j each statement commits on its own, so a
+            # release written first outlived a refused restore.
+            restored = await tx_store.restore_records(
+                restores, batch_id, connector_id=connector_id, require_live_parent=require_live_parent
+            )
+            if set(restored) != set(ids):
+                # Raising rolls the whole batch back, so it is never half restored.
+                raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
+        record_restored(DeleteSource(restore_source).value, len(restored))
+        await notify_kb_records_changed(connector_id)
+        return restored
+
+    @staticmethod
+    async def _restore_refusal(
+        tx_store: TransactionStore,
+        connector_id: str,
+        items: list[dict[str, Any]],
+        reclaim: dict[str, str],
+        ids: list[str],
+        restored: list[str],
+    ) -> RestoreRefused:
+        """Why a restore that wrote nothing was refused, for the person who asked."""
+        for item in items:
+            external_id = reclaim.get(item["id"])
+            if not external_id:
+                continue
+            holder = await tx_store.get_record_by_external_id(
+                connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.LIVE
+            )
+            if holder is not None and holder.id != item["id"]:
+                name = item.get("name") or "This item"
+                return RestoreRefused(
+                    409,
+                    f"'{name}' can't be restored because '{holder.record_name}' has taken its place. "
+                    "That usually means the same item was added again after this one was deleted. "
+                    f"To restore this one, delete '{holder.record_name}' first, then try again.",
+                    record_id=item["id"],
+                    conflicting_record_id=holder.id,
+                    conflicting_record_name=holder.record_name,
+                )
+            trashed = await tx_store.get_record_by_external_id(
+                connector_id=connector_id, external_id=external_id, visibility=RecordVisibility.DELETED
+            )
+            if trashed is not None and trashed.id != item["id"] and trashed.id in ids:
+                return _same_source_refusal(trashed.id, external_id)
+        return RestoreRefused(
+            409,
+            "Some of these items changed while they were being restored, so nothing was restored. "
+            "Refresh the page and try again.",
+            missing=sorted(set(ids) - set(restored)),
+        )
+
     async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
 
@@ -2273,17 +2473,18 @@ class DataSourceEntitiesProcessor:
                 self.logger.error(f"Skipping malformed deleteRecord payload: {payload!r}")
                 unpublished_record_ids.append(str(payload))
                 continue
+            async def publish(payload: dict = payload, record_id: str = record_id) -> None:
+                event = {
+                    "eventType": "deleteRecord",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                    "payload": payload,
+                }
+                if await self.messaging_producer.send_message("record-events", event, key=record_id) is False:
+                    raise RuntimeError("the message broker did not accept the event")
+
             try:
                 await retry_async(
-                    lambda payload=payload, record_id=record_id: self.messaging_producer.send_message(
-                        "record-events",
-                        {
-                            "eventType": "deleteRecord",
-                            "timestamp": get_epoch_timestamp_in_ms(),
-                            "payload": payload,
-                        },
-                        key=record_id,
-                    ),
+                    publish,
                     logger=self.logger,
                     description=f"publish deleteRecord event for record {record_id}",
                 )
@@ -2298,19 +2499,25 @@ class DataSourceEntitiesProcessor:
         return unpublished_record_ids
 
     @retry_on_deadlock()
-    async def on_record_deleted(self, record_id: str) -> None:
+    async def on_record_deleted(self, record_id: str) -> bool:
+        """Delete one connector record; True when it went to the trash instead.
+
+        On True a caller that also removes the record's stored file must keep
+        it: the file belongs to the trash entry until the purge removes both.
+        """
         if await is_soft_delete_enabled(self.config_service):
             async with self.data_store_provider.transaction() as tx_store:
                 # A failed read must raise: None would read as "already gone"
                 # and the caller does not deliver this delete again.
                 existing = await tx_store.get_record_by_key(record_id, raise_on_error=True)
             connector_id = (existing or {}).get("connectorId")
-            if connector_id:
-                # The record alone, as the hard delete removes only its vertex.
-                await self.on_records_soft_deleted(
-                    [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
-                )
-            return
+            if not connector_id:
+                return False
+            # The record alone, as the hard delete removes only its vertex.
+            await self.on_records_soft_deleted(
+                [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
+            )
+            return True
         # Connector per-record delete: remove the record vertex and its incoming
         # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
         # call is a no-op for root records with no parent). Capture VRID before the
@@ -2334,6 +2541,7 @@ class DataSourceEntitiesProcessor:
         await self._publish_delete_events(
             {"payloads": [event_payload]} if event_payload else None
         )
+        return False
 
     @retry_on_deadlock()
     async def on_records_detached_from_parent(self, record_ids: list[str]) -> None:
@@ -2540,11 +2748,13 @@ class DataSourceEntitiesProcessor:
             delete_source=delete_source,
         ):
             ids = event["payload"]["virtualRecordIds"]
+            async def publish(event: dict = event) -> None:
+                if await self.messaging_producer.send_message("record-events", event, key=batch_id) is False:
+                    raise RuntimeError("the message broker did not accept the event")
+
             try:
                 await retry_async(
-                    lambda event=event: self.messaging_producer.send_message(
-                        "record-events", event, key=batch_id
-                    ),
+                    publish,
                     logger=self.logger,
                     description=f"publish softDeleteRecords for batch {batch_id}",
                 )
@@ -2571,7 +2781,7 @@ class DataSourceEntitiesProcessor:
     @retry_on_deadlock()
     async def reindex_existing_records(
         self, records: list[Record], *, vector_db_only: bool = False
-    ) -> None:
+    ) -> list[str]:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
@@ -2581,11 +2791,14 @@ class DataSourceEntitiesProcessor:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
             vector_db_only: When True, indexing reloads blob content and re-embeds
                 without re-parsing the source.
+
+        Returns:
+            The ids whose reindex event reached the broker.
         """
         try:
             if not records:
                 self.logger.info("No records to reindex")
-                return
+                return []
 
             existing_keys = await self.data_store_provider.get_existing_record_keys(
                 [r.id for r in records]
@@ -2613,7 +2826,7 @@ class DataSourceEntitiesProcessor:
                 to_publish.append(record)
 
             if not to_publish:
-                return
+                return []
 
             acked = await self.messaging_producer.send_messages(
                 "record-events",
@@ -2647,6 +2860,7 @@ class DataSourceEntitiesProcessor:
                 f"skipped {skipped_records} internal, {missing} missing, "
                 f"{len(to_publish) - len(published_ids)} failed to publish"
             )
+            return published_ids
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
@@ -2717,13 +2931,6 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Updating existing record group with id: {record_group.id}")
                         # Ensure update timestamp is fresh for the edge
                         record_group.updated_at = get_epoch_timestamp_in_ms()
-
-                        # To Delete the previously existing edges to record group and create new permissions
-                        await tx_store.delete_edges_to(
-                            to_id=record_group.id,
-                            to_collection=CollectionNames.RECORD_GROUPS.value,
-                            collection=CollectionNames.PERMISSION.value
-                        )
 
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
@@ -2835,6 +3042,10 @@ class DataSourceEntitiesProcessor:
 
                     # 4. Handle User and Group Permissions (from the passed 'permissions' list)
                     if not permissions:
+                        await self._write_permission_edges(
+                            tx_store, record_group.id, CollectionNames.RECORD_GROUPS.value, [],
+                            replace=existing_record_group is not None,
+                        )
                         continue
 
                     record_group_permissions = []
@@ -2896,9 +3107,10 @@ class DataSourceEntitiesProcessor:
                     # Batch create (upsert) all permission edges for this record group
                     if record_group_permissions:
                         self.logger.debug(f"Creating/updating {len(record_group_permissions)} PERMISSION edges for RecordGroup {record_group.id}")
-                        await tx_store.batch_create_edges(
-                            record_group_permissions, collection=CollectionNames.PERMISSION.value
-                        )
+                    await self._write_permission_edges(
+                        tx_store, to_id, to_collection, record_group_permissions,
+                        replace=existing_record_group is not None,
+                    )
 
                     if record_group.parent_record_group_id:
                         await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
@@ -3162,13 +3374,6 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Updating existing user group with id: {user_group.id}")
                         user_group.updated_at = get_epoch_timestamp_in_ms()
 
-                        # To Delete the previously existing edges to user group and create new permissions
-                        await tx_store.delete_edges_to(
-                            to_id=user_group.id,
-                            to_collection=CollectionNames.GROUPS.value,
-                            collection=CollectionNames.PERMISSION.value
-                        )
-
                     # 1. Upsert the user group document
                     # (This uses batch_upsert_user_groups and the to_arango... method)
                     await tx_store.batch_upsert_user_groups([user_group])
@@ -3203,9 +3408,10 @@ class DataSourceEntitiesProcessor:
                     # Batch create (upsert) all permission edges for this user group
                     if user_group_permissions:
                         self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
-                        await tx_store.batch_create_edges(
-                            user_group_permissions, collection=CollectionNames.PERMISSION.value
-                        )
+                    await self._write_permission_edges(
+                        tx_store, to_id, to_collection, user_group_permissions,
+                        replace=existing_user_group is not None,
+                    )
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
@@ -3247,13 +3453,6 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Updating existing app role with id: {role.id}")
                         role.updated_at = get_epoch_timestamp_in_ms()
 
-                        # To Delete the previously existing edges to app role and create new permissions
-                        await tx_store.delete_edges_to(
-                            to_id=role.id,
-                            to_collection=CollectionNames.ROLES.value,
-                            collection=CollectionNames.PERMISSION.value
-                        )
-
                     # 1. Upsert the app role document
                     await tx_store.batch_upsert_app_roles([role])
 
@@ -3289,9 +3488,10 @@ class DataSourceEntitiesProcessor:
                     # Batch create (upsert) all permission edges for this role
                     if role_permissions:
                         self.logger.debug(f"Creating/updating {len(role_permissions)} PERMISSION edges for AppRole {role.id}")
-                        await tx_store.batch_create_edges(
-                            role_permissions, collection=CollectionNames.PERMISSION.value
-                        )
+                    await self._write_permission_edges(
+                        tx_store, to_id, to_collection, role_permissions,
+                        replace=existing_app_role is not None,
+                    )
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_app_roles failed: {str(e)}")
@@ -4159,6 +4359,18 @@ class DataSourceEntitiesProcessor:
                         f"Keeping record group '{record_group_name}' (external_id: {external_group_id}): "
                         "records in the trash still belong to it"
                     )
+                    # The mark tells the purge this group is gone at the source, so it
+                    # goes once its last record does. The next upsert clears it.
+                    marked = await tx_store.batch_update_nodes(
+                        [{
+                            "id": record_group_internal_id,
+                            "isDeletedAtSource": True,
+                            "deletedAtSourceTimestamp": get_epoch_timestamp_in_ms(),
+                        }],
+                        CollectionNames.RECORD_GROUPS.value,
+                    )
+                    if marked is False:
+                        raise RuntimeError(f"Could not mark record group {record_group_internal_id} for the purge")
                     return True
 
                 self.logger.debug(

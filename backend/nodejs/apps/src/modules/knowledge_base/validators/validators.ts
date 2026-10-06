@@ -37,6 +37,45 @@ export const deleteRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
 });
 
+export const restoreRecordSchema = z.object({
+  params: z.object({ recordId: z.string().min(1) }),
+});
+
+// Matches MAX_RESTORE_RECORD_IDS in the connector service.
+export const MAX_RESTORE_RECORD_IDS = 100;
+
+export const restoreRecordsSchema = z.object({
+  body: z.object({
+    recordIds: z
+      .array(z.string().min(1))
+      .min(1, 'Choose at least one item to restore.')
+      .max(
+        MAX_RESTORE_RECORD_IDS,
+        `Restore at most ${MAX_RESTORE_RECORD_IDS} items at a time.`,
+      ),
+  }),
+});
+
+// Matches MAX_TRASH_PAGE_SIZE in the connector service.
+export const MAX_TRASH_PAGE_SIZE = 100;
+
+const positiveIntString = (label: string, max?: number) =>
+  z
+    .string()
+    .regex(/^\d{1,9}$/, `${label} must be a whole number.`)
+    .refine((val) => {
+      const n = Number(val);
+      return n >= 1 && (max === undefined || n <= max);
+    }, max === undefined ? `${label} must be 1 or more.` : `${label} must be between 1 and ${max}.`);
+
+export const listTrashSchema = z.object({
+  params: z.object({ kbId: z.string().min(1) }),
+  query: z.object({
+    page: positiveIntString('Page').optional(),
+    limit: positiveIntString('Limit', MAX_TRASH_PAGE_SIZE).optional(),
+  }),
+});
+
 export const reindexRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
   body: z

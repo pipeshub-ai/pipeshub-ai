@@ -166,6 +166,8 @@ class PermittedEntityRows(EntityCandidateRows):
     ) -> "PermittedEntityRows":
         """Build from query hits shaped ``{"pos": int, "row": dict}``, where
         ``pos`` is the hit's index in the window."""
+        if limit <= 0:
+            return cls(capped=capped, window_size=window_size, examined=0)
         ordered = sorted(
             (h for h in hits if h and isinstance(h.get("row"), dict)),
             key=lambda h: int(h.get("pos") or 0),
@@ -271,12 +273,48 @@ def build_connector_stats_response(
     }
 
 
-# ArangoDB marks a subtree in pages of this many keys, one UPDATE each, inside
-# one stream transaction.
+# Trash writes go in pages of this many keys, one statement each: the ArangoDB
+# mark (inside one stream transaction) and restores.
 SOFT_DELETE_CHUNK = 1000
+
+# Cleared when a record leaves the trash; ``isDeleted`` is set to false instead.
+TRASH_STATE_FIELDS = (
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "deletedByUserId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+)
+
+# A Recently deleted row for a multi-select delete names this many of its other items.
+TRASH_LIST_OTHER_ROOT_NAMES = 3
 
 # Unique per record and never a source id, so no sync or move can land on it.
 TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
+# Stamped on a file in the same write that restores it from the trash. With the
+# file still NOT_STARTED it means the re-index its lost vectors need was never
+# taken up, which a retried restore and the stranded sweep both act on.
+RESTORED_AT_FIELD = "restoredAtTimestamp"
+
+
+def restore_items(
+    restores: list[dict[str, Any]], connector_id: str | None
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """``restore_records`` items as ``{id, set}``, and the ``{id, ext}`` external ids they take back."""
+    items: list[dict[str, Any]] = []
+    reclaims: list[dict[str, str]] = []
+    for item in restores:
+        fields = dict(item.get("set") or {})
+        if external_id := item.get("reclaimExternalRecordId"):
+            fields["externalRecordId"] = external_id
+            reclaims.append({"id": item["id"], "ext": external_id})
+        items.append({"id": item["id"], "set": fields})
+    if reclaims and not connector_id:
+        raise ValueError("restore_records needs connector_id to take an external id back")
+    return items, reclaims
 
 
 def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:
@@ -353,3 +391,45 @@ def uploaded_document_id(record: Dict[str, Any], type_doc: Optional[Dict[str, An
     if isinstance(document_id, str) and _STORAGE_DOCUMENT_ID.match(document_id):
         return document_id
     return None
+
+
+def is_storage_document_id(value: object) -> bool:
+    return isinstance(value, str) and _STORAGE_DOCUMENT_ID.match(value) is not None
+
+
+def trash_purge_row(
+    key: str, record: dict[str, Any], type_doc: dict[str, Any] | None, delete_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """What the purge needs about one record in the trash, the same on both stores.
+
+    ``deleteRecordPayload`` is the hard delete's own ``deleteRecord`` payload, so
+    indexing cleans a purged record exactly as it cleans a deleted one.
+    """
+    type_doc = type_doc or {}
+    return {
+        "id": key,
+        "orgId": record.get("orgId"),
+        "connectorId": record.get("connectorId"),
+        "connectorName": record.get("connectorName"),
+        "origin": record.get("origin"),
+        "deletedAtTimestamp": record.get("deletedAtTimestamp"),
+        "virtualRecordId": record.get("virtualRecordId"),
+        "storageDocumentId": record.get("storageDocumentId"),
+        "filePath": type_doc.get("path"),
+        "uploadDocumentId": uploaded_document_id(record, type_doc),
+        "deleteRecordPayload": {
+            **delete_payload,
+            "connectorName": record.get("connectorName"),
+            "origin": record.get("origin"),
+        },
+    }
+
+
+def jira_issue_browse_url_regex(issue_key: str) -> str:
+    """A regex matching a Jira webUrl for exactly ``issue_key``.
+
+    The key must end the URL or be followed by ``/``, ``?`` or ``#``, so ENG-1
+    does not match ENG-12. The leading ``.*`` and trailing ``$`` make it mean
+    the same under Neo4j's whole-string ``=~`` and Arango's substring REGEX_TEST.
+    """
+    return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"

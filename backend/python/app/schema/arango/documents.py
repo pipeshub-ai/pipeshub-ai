@@ -169,6 +169,8 @@ app_schema = {
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
+            "pendingResync": {"type": ["boolean", "null"]},
+            "queuedAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
@@ -276,6 +278,8 @@ record_schema = {
             "purgeLastError": {"type": ["string", "null"]},
             # The source id a trashed record gave up when a live record moved onto it.
             "trashedExternalRecordId": {"type": ["string", "null"]},
+            # When a restore brought the record back; see RESTORED_AT_FIELD.
+            "restoredAtTimestamp": {"type": ["number", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
             # Clocks the stranded-record sweep in indexing_main ages rows on.
             "queuedAtTimestamp": {"type": ["number", "null"]},

@@ -635,6 +635,9 @@ export class ConnectorFsWatcher {
 
     const depth = this.includeSubfolders ? undefined : 0;
     this.watcher = chokidar.watch(this.rootPath, {
+      // The root is a literal folder; a name like "Docs [2024]" would otherwise be
+      // read as a glob and no events would arrive for it.
+      disableGlobbing: true,
       ignored: IGNORED_PATTERNS as unknown as RegExp,
       persistent: true,
       ignoreInitial: true,

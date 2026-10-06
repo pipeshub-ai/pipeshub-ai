@@ -16,11 +16,18 @@ import pytest
 
 from app.config.constants.arangodb import AppStatus, Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
+from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def stub_lease_manager():
+    with installed_stub() as stub:
+        yield stub
 
 
 @pytest.fixture
@@ -102,7 +109,7 @@ class TestProcessEventDeleteAction:
 
 class TestSyncPointDeletionException:
     @pytest.mark.asyncio
-    async def test_sync_point_deletion_exception_continues(self, service):
+    async def test_sync_point_deletion_exception_continues(self, service, stub_lease_manager):
         """Exception during sync point deletion logs error and continues sync."""
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
@@ -116,8 +123,7 @@ class TestSyncPointDeletionException:
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
+             patch.object(stub_lease_manager, "spawn", AsyncMock(side_effect=spawned)):
 
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1",
@@ -351,9 +357,7 @@ class TestHandleDelete:
             "deleted_records_count": 2,
         })
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
-             patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
             mock_rtm.cancel_by_prefix = AsyncMock()
 
             result = await service._handle_delete("gmail", {
@@ -367,10 +371,8 @@ class TestHandleDelete:
         assert service.app_container.messaging_producer.send_message.await_count == 2
 
     async def _delete_with_helper(self, service, helper):
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
-             patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):
-            mock_stm.cancel_sync = AsyncMock()
             mock_rtm.cancel_by_prefix = AsyncMock()
             return await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
 
@@ -432,9 +434,7 @@ class TestHandleDelete:
             "error": "test failure",
         })
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
-             patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
             mock_rtm.cancel_by_prefix = AsyncMock()
 
             result = await service._handle_delete("gmail", {

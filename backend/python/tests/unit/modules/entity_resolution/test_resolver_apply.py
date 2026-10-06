@@ -81,8 +81,12 @@ class TestShadowMode:
         # Reads only: tier 0, and the merge-redirect check for new names.
         assert {name for name, _ in fake_graph.calls} == {"find_taxonomy_nodes", "get_nodes_by_field_in"}
         assert resolution is not None and resolution.decisions_for_log()
-        shadow_lines = [c.args[0] for c in resolver.logger.info.call_args_list if "shadow" in c.args[0]]
-        assert shadow_lines
+        shadow_calls = [c for c in resolver.logger.info.call_args_list if "shadow" in c.args[0]]
+        assert shadow_calls
+        # KG-19: ids, decisions and counts only; never the extracted text.
+        logged = " ".join(str(a) for c in shadow_calls for a in c.args)
+        assert "bug bash" not in logged.casefold() and "QA" not in logged
+        assert '"extracted": 1' in logged
 
 
 class TestOffAndGuards:

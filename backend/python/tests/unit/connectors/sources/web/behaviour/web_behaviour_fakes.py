@@ -391,6 +391,8 @@ class FakeRecordsDb:
         self.record_groups: list[Any] = []
         self.fail_writes = False
         self.unreadable_file_records: set[str] = set()
+        # ENABLE_SOFT_DELETE on: a delete keeps the record, marked, and says so.
+        self.soft_delete = False
 
     def _store(self, record: Record) -> None:
         existing = self.records.get(record.external_record_id)
@@ -437,9 +439,16 @@ class FakeRecordsDb:
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append(record)
 
-    async def on_record_deleted(self, record_id: str, **_: object) -> None:
+    async def on_record_deleted(self, record_id: str, **_: object) -> bool:
         self.deleted.append(record_id)
+        if self.soft_delete:
+            self.records = {
+                k: v.model_copy(update={"is_deleted": True}) if v.id == record_id else v
+                for k, v in self.records.items()
+            }
+            return True
         self.records = {k: v for k, v in self.records.items() if v.id != record_id}
+        return False
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         self.record_groups.extend(groups)

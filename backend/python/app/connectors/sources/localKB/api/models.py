@@ -363,6 +363,86 @@ class SuccessResponse(BaseModel):
     success: bool = Field(True, description="Success status")
     message: Optional[str] = Field(None, description="Success message")
 
+class RestoredRecord(BaseModel):
+    """One item brought back from the trash"""
+    recordId: str = Field(..., description="Record id")
+    name: str | None = Field(None, description="Name it has now")
+    renamedFrom: str | None = Field(
+        None, description="Its name before restore, when another item next to it had taken that name"
+    )
+
+
+class RestoreRecordResponse(BaseModel):
+    """Response model for restoring a deleted item and everything deleted with it"""
+    success: bool = Field(True, description="Success status")
+    message: str = Field(..., description="What happened")
+    batchId: str | None = Field(None, description="The delete batch that was restored")
+    restoredRecords: list[RestoredRecord] = Field(default_factory=list, description="Items restored")
+    reindexPending: bool | None = Field(None, description="Some restored files are not queued for indexing yet")
+    reindexPendingRecordIds: list[str] | None = Field(None, description="Files to reindex by hand")
+    reindexPendingReason: str | None = Field(None, description="What to do about them")
+    renamePendingRecordIds: list[str] | None = Field(
+        None, description="Items restored under a name another item next to them has"
+    )
+    renamePendingReason: str | None = Field(None, description="What to do about them")
+
+
+class RestoreRecordsRequest(BaseModel):
+    """Request model for restoring several deleted items"""
+    recordIds: list[str] = Field(..., min_length=1, max_length=100, description="Items to restore")
+
+
+class RestoreRecordsResponse(BaseModel):
+    """Response model for restoring several deleted items; each id has its own outcome"""
+    success: bool = Field(..., description="True when every item was restored")
+    restoredCount: int = Field(..., description="Items restored, counting those restored with them")
+    failedCount: int = Field(..., description="Ids that could not be restored")
+    results: list[dict[str, Any]] = Field(..., description="Outcome per requested id")
+
+
+class TrashDeletedBy(BaseModel):
+    """The user who deleted an item"""
+    name: str | None = Field(None, description="Their name")
+    email: str | None = Field(None, description="Their email address")
+
+
+class TrashItem(BaseModel):
+    """What one delete action put in the trash (a folder with its contents, or a whole
+    multi-select); restoring it brings back all of it"""
+    id: str = Field(..., description="Record id to restore")
+    name: str | None = Field(None, description="Name when it was deleted")
+    recordType: str | None = Field(None, description="Record type")
+    isFolder: bool = Field(..., description="A folder, deleted with everything in it")
+    mimeType: str | None = Field(None, description="File type, for files")
+    sizeInBytes: int | None = Field(None, description="File size, for files")
+    parentId: str | None = Field(None, description="Folder it was in; none at the collection's top level")
+    parentName: str | None = Field(None, description="Name of that folder")
+    parentInTrash: bool = Field(..., description="That folder is in the trash too and must be restored first")
+    itemCount: int = Field(..., description="Records the delete removed, all of which a restore brings back")
+    rootCount: int = Field(1, description="Items selected in the delete: more than one for a multi-select")
+    otherRootNames: list[str] = Field(
+        default_factory=list, description="Names of some of the other items selected with this one"
+    )
+    deletedAtTimestamp: int = Field(..., description="When it was deleted (epoch ms)")
+    deletedBy: TrashDeletedBy | None = Field(None, description="Who deleted it, when known")
+    removableAfterTimestamp: int | None = Field(
+        None, description="From when the scheduled cleanup may remove it for good (epoch ms); none when unknown"
+    )
+
+
+class TrashRetention(BaseModel):
+    """How long the trash keeps items"""
+    minAgeMs: int = Field(..., description="Items stay at least this long before the cleanup may remove them")
+
+
+class ListTrashResponse(BaseModel):
+    """One page of a collection's recently deleted items"""
+    success: bool = Field(True, description="Success status")
+    items: list[TrashItem] = Field(..., description="Deleted items, newest first")
+    pagination: PaginationResponse = Field(..., description="Pagination information")
+    retention: TrashRetention | None = Field(None, description="Retention; none when it can't be read")
+
+
 class ListAllRecordsResponse(ListRecordsResponse):
     """Response model for listing all records (across KBs)"""
     pass

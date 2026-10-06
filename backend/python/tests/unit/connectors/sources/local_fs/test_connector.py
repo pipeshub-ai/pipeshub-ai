@@ -137,6 +137,7 @@ from app.models.entities import (  # noqa: E402
     User,
 )
 from app.models.permission import PermissionType  # noqa: E402
+from app.utils.user_messages import action_failed  # noqa: E402
 
 
 class TestLocalFsApp:
@@ -198,7 +199,8 @@ def folder_connector() -> LocalFsConnector:
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_file_record_by_id = AsyncMock(return_value=None)
     proc.get_records_by_status = AsyncMock(return_value=[])
-    proc.on_record_deleted = AsyncMock()
+    # A hard delete, unless a test moves the record to the trash.
+    proc.on_record_deleted = AsyncMock(return_value=False)
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
@@ -753,6 +755,44 @@ class TestLocalFsConnectorAsync:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.NOT_FOUND.value
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            LocalFsDesktopRemoteError(
+                "INTERNAL", "SENTINEL EACCES /Users/ada/Notes/a.txt", retryable=True
+            ),
+            LocalFsDesktopTimeoutError("SENTINEL Desktop content fetch timed out (a.txt)"),
+        ],
+        ids=["desktop-answered-with-a-failure", "desktop-did-not-answer"],
+    )
+    async def test_stream_record_desktop_failure_is_503_with_fixed_text(
+        self, folder_connector: LocalFsConnector, error: Exception
+    ):
+        folder_connector._fetch_desktop_content = AsyncMock(side_effect=error)
+        rec = FileRecord(
+            record_name="a.txt",
+            record_type=RecordType.FILE,
+            external_record_id="e5",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="c1",
+            is_file=True,
+            path="a.txt",
+            local_fs_relative_path="a.txt",
+            mime_type="text/plain",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.stream_record(rec)
+        assert ei.value.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value
+        assert ei.value.detail == action_failed("open this file from the desktop app")
+        assert "SENTINEL" not in ei.value.detail
+        assert ei.value.__cause__ is error
+        log_call = folder_connector.logger.warning.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
+
     async def test_stream_record_storage_path_delegates_to_storage(
         self, folder_connector: LocalFsConnector
     ):
@@ -1003,7 +1043,7 @@ class TestLocalFsConnectorAsync:
         folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
             return_value=existing
         )
-        folder_connector.data_entities_processor.on_record_deleted = AsyncMock()
+        folder_connector.data_entities_processor.on_record_deleted = AsyncMock(return_value=False)
         folder_connector._delete_storage_document = AsyncMock()
 
         with patch(
@@ -1793,6 +1833,26 @@ class TestDeleteExternalIds:
 
         assert failed == []
         folder_connector._delete_storage_document.assert_awaited_once_with("doc-7")
+
+    async def test_a_push_flow_record_moved_to_the_trash_keeps_its_stored_copy(
+        self, folder_connector
+    ) -> None:
+        """The trash entry owns the file until the purge removes both."""
+        record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            return_value=record
+        )
+        folder_connector.data_entities_processor.on_record_deleted = AsyncMock(return_value=True)
+        folder_connector._delete_storage_document = AsyncMock()
+
+        failed = await folder_connector._delete_external_ids(["ext-1"], "user-1")
+
+        assert failed == []
+        folder_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+        folder_connector._delete_storage_document.assert_not_awaited()
 
     async def test_a_record_whose_file_record_cannot_be_read_is_kept_owed(
         self, folder_connector

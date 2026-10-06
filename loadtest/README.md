@@ -355,3 +355,11 @@ jitter, sending the `rev` it last saw. A 304 is a success; any other status, a 4
   req/min while most of its answers are empty.
 - **A growing corpus biases comparisons.** Load tests create records. If a
   baseline and its comparison are days apart, note the record counts.
+
+---
+
+## Other harnesses in this directory
+
+`README-connector.md` covers the connector-service sync harness (`run.py`,
+`lt/`, `scenarios/`). It measures sync throughput rather than query latency and
+shares only this directory and `.env` with the tooling above.

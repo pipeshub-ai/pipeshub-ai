@@ -33,6 +33,10 @@ _SYNC_LOOKUP = (
 )
 _BY_KEY = "point read by key; the caller already holds the id and decides"
 _STRUCTURE = "graph structure around a record the caller already resolved"
+_FK_NEIGHBOURS = (
+    _STRUCTURE + "; callers that name the neighbours (chat, fetch_full_record) keep only "
+    "those get_records_by_record_ids returns LIVE"
+)
 
 REGISTRY: dict[str, tuple[Rule, str]] = {
     # Visibility chosen by the caller.
@@ -68,6 +72,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "filter_nodes_with_permission_role": (
+        Rule.LIVE, "the Location trail's ancestor check: a trashed folder ends the trail, unnamed",
+    ),
     "get_records_pending_duplicate_reconcile": (
         Rule.LIVE, "the reconcile sweep copies taxonomy onto duplicates; a trashed record gets none",
     ),
@@ -96,10 +103,12 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_existing_record_keys": (Rule.ALL, "upsert pre-check by key"),
     "page_records_for_vector_membership_backfill": (Rule.ALL, "backfill walks every stored record"),
     "get_virtual_record_ids_for_record_ids": (Rule.ALL, _BY_KEY),
-    "get_child_record_ids_by_relation_type": (Rule.ALL, _STRUCTURE),
-    "get_parent_record_ids_by_relation_type": (Rule.ALL, _STRUCTURE),
+    "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
+    "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_record_relations_batch": (Rule.ALL, _STRUCTURE),
-    "get_record_parent_adjacency": (Rule.ALL, _STRUCTURE),
+    "get_record_parent_adjacency": (
+        Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor with filter_nodes_with_permission_role",
+    ),
     "get_record_parent_info": (Rule.ALL, _STRUCTURE),
     "is_record_folder": (Rule.ALL, _STRUCTURE),
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
@@ -113,6 +122,16 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     ),
     "get_record_path": (Rule.ALL, _STRUCTURE),
     "get_record_path_segments": (Rule.ALL, "storage path of a record the caller already resolved"),
+    "get_records_in_delete_batch": (
+        Rule.ALL,
+        "restore reads the batch it brings back, and every record in it is in the trash",
+    ),
+    "get_purgeable_trashed_records": (
+        Rule.ALL, "the purge reads only the trash: records past the retention, never a live one",
+    ),
+    "list_trashed_records": (
+        Rule.ALL, "the Recently deleted page lists only the trash: what a user may restore, never a live record",
+    ),
     "get_descendant_virtual_record_ids": (
         Rule.ALL,
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
@@ -132,4 +151,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "delete_records_recursive": (Rule.WRITE, ""),
     "delete_single_record": (Rule.WRITE, ""),
     "soft_delete_records": (Rule.WRITE, "marks live records only"),
+    "restore_records": (Rule.WRITE, "all or nothing: only records still in the trash under the batch named"),
+    "purge_trashed_records": (Rule.WRITE, "removes only records still in the trash and due, checked in the delete"),
+    "record_purge_failure": (Rule.WRITE, "counts only on records still in the trash"),
 }

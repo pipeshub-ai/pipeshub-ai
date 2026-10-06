@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("delete-footprint")
 
 POLL = 5
+RECORDS_COLLECTION = "records"
 
 # Statuses after which indexing will not touch a record again on its own.
 SETTLED_STATUSES = frozenset({
@@ -251,7 +252,11 @@ async def capture(
     blobs = {p: await blob.count_under(p, vendor) for p in blob_keys}
     doc_keys = [f"prefix:{envelopes[v]}" for v in vrids] + [f"id:{d}" for d in sorted(paths)]
     documents = {k: await _document_count(mongo, k) for k in doc_keys}
-    connector_points = await vector.count_for_connector(connector_id) if connector_id else None
+    # Records only, as in the recreate check: entity points carry connectorIds too, and
+    # enrichment and the entity index rebuild write them after a record reads COMPLETED.
+    connector_points = (
+        await vector.count_for_connector(connector_id, collection=RECORDS_COLLECTION) if connector_id else None
+    )
     footprint = StoresFootprint(graph_fp, connector_points, points, blobs, documents, paths, envelopes)
     logger.info("Captured footprint: %s", footprint)
     return footprint

@@ -17,6 +17,7 @@ import {
   selectUserContextEnabled,
   selectChatMentionsEnabled,
   selectCollaborativeChatsEnabled,
+  selectSoftDeleteEnabled,
 } from '../feature-flags-store';
 
 describe('feature-flags-store selectors', () => {
@@ -64,6 +65,19 @@ describe('feature-flags-store selectors', () => {
     it('is false only when explicitly false', () => {
       useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: false } });
       expect(selectActionsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+  });
+
+  describe('selectSoftDeleteEnabled (defaults to disabled)', () => {
+    it('is false while flags are unloaded or the key is absent', () => {
+      expect(selectSoftDeleteEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: {} });
+      expect(selectSoftDeleteEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+
+    it('is true only when explicitly true', () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } });
+      expect(selectSoftDeleteEnabled(useFeatureFlagsStore.getState())).toBe(true);
     });
   });
 

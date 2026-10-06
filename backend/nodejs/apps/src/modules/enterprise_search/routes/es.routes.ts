@@ -195,7 +195,8 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/create',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    // Same scope as /stream and as the query service's /chat, which answers the first message.
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     defaultChatModel,
     guards.caller(),

@@ -3574,7 +3574,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_duplicate_lookup_is_scoped_to_reference_org(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100, "extractionStatus": "COMPLETED"}],
             [],
         ]
         await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")
@@ -3594,7 +3594,7 @@ class TestUpdateQueuedDuplicatesStatus:
     @pytest.mark.asyncio
     async def test_queued_duplicates_found_and_updated(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100}],  # reference
+            [{"_key": "r1", "orgId": "org-1", "md5Checksum": "abc123", "sizeInBytes": 100, "extractionStatus": "COMPLETED"}],  # reference
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(
@@ -4174,9 +4174,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()), \
              patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(return_value={"recordId": "r1"})):
             result = await connected_provider.delete_records_recursive(["r1"], "kb-1")
@@ -4207,9 +4207,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             result = await connected_provider.delete_records_recursive(["r1"], "kb-1")
 
@@ -4237,6 +4237,37 @@ class TestDeleteRecordsRecursive:
             await connected_provider.delete_records_recursive(["r1"], "kb-1", transaction="ext-txn")
 
         mock_begin.assert_not_awaited()
+        mock_commit.assert_not_awaited()
+
+    @pytest.mark.parametrize("failing", ["records", "permission", "files"])
+    @pytest.mark.asyncio
+    async def test_a_failed_removal_fails_the_callers_transaction(self, connected_provider, failing) -> None:
+        """A REMOVE refused by a write conflict was logged and counted, and the delete
+        reported success, so the caller committed with the records still in the graph."""
+        conflict = 'Query failed (status=409): {"code":409,"error":true,"errorNum":1200}'
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {"_key": "r1", "recordName": "doc.md"},
+                "type_target": {"collection": "files", "key": "r1", "full_id": "files/r1", "doc": {}},
+            }],
+        }
+
+        async def aql(query: str, bind_vars: dict | None = None, txn_id: str | None = None) -> list:
+            bind_vars = bind_vars or {}
+            if failing in (bind_vars.get("@collection"), bind_vars.get("@edge_collection")):
+                raise RuntimeError(conflict)
+            # A REMOVE ... RETURN 1 answers one row per document it removed.
+            return [1] * len(bind_vars.get("keys", []))
+
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=aql)
+        with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
+             patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
+             patch.object(connected_provider, "commit_transaction", AsyncMock()) as mock_commit, \
+             pytest.raises(RuntimeError) as raised:
+            await connected_provider.delete_records_recursive(["r1"], "kb-1", transaction="ext-txn")
+
+        assert connected_provider.is_write_conflict(raised.value)
         mock_commit.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -4269,9 +4300,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()), \
              patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(return_value={"recordId": "x"})):
             result = await connected_provider.delete_records_recursive(["r1", "r2", "r-missing"], "kb-1")
@@ -4297,9 +4328,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()), \
              patch.object(connected_provider, "_create_deleted_record_event_payload", AsyncMock(side_effect=RuntimeError("bad payload"))):
             result = await connected_provider.delete_records_recursive(["r1"], "kb-1")
@@ -4334,9 +4365,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(side_effect=exec_query)), \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             result = await connected_provider.delete_records_recursive(
                 ["epic-1"], "conn-1", cascade_children=False
@@ -4372,9 +4403,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             await connected_provider.delete_records_recursive(
                 ["epic-1"], "conn-1", cascade_children=True
@@ -4396,9 +4427,9 @@ class TestDeleteRecordsRecursive:
         with patch.object(connected_provider, "_get_all_edge_collections", AsyncMock(return_value=["permission"])), \
              patch.object(connected_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
              patch.object(connected_provider, "execute_query", AsyncMock(return_value=[inventory])) as mock_exec, \
-             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock()), \
+             patch.object(connected_provider, "_delete_edges_by_node_ids", AsyncMock(return_value=(0, []))), \
              patch.object(connected_provider, "_delete_isoftype_targets_from_collected", AsyncMock()), \
-             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock()), \
+             patch.object(connected_provider, "_delete_nodes_by_keys", AsyncMock(return_value=(1, 0))), \
              patch.object(connected_provider, "commit_transaction", AsyncMock()):
             await connected_provider.delete_records_recursive(
                 ["epic-1"], "conn-1", cascade_children=False
@@ -4645,6 +4676,20 @@ class TestDeleteRecordRouting:
     async def test_routes_to_outlook(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {
             "_key": "r1", "orgId": "org1", "connectorName": "OUTLOOK", "origin": "CONNECTOR"
+        }
+        with patch.object(
+            connected_provider, "delete_outlook_record",
+            new_callable=AsyncMock,
+            return_value={"success": True}
+        ) as mock_outlook:
+            result = await connected_provider.delete_record("r1", "u1", "org1")
+            assert result["success"] is True
+            mock_outlook.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_routes_outlook_personal_to_outlook(self, connected_provider) -> None:
+        connected_provider.http_client.get_document.return_value = {
+            "_key": "r1", "orgId": "org1", "connectorName": "OUTLOOK PERSONAL", "origin": "CONNECTOR"
         }
         with patch.object(
             connected_provider, "delete_outlook_record",
@@ -5012,7 +5057,20 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 48
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 51
+
+    @pytest.mark.asyncio
+    async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
+        """The walk hints this index by name, so its fields and name must stay as the query expects."""
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        walks = [
+            c for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if c.kwargs.get("name") == "records_org_deleted_at"
+        ]
+        assert len(walks) == 1
+        assert walks[0].args[:2] == ("records", ["orgId", "deletedAtTimestamp", "_key"])
+        assert walks[0].kwargs.get("sparse", False) is False
 
 
 # ---------------------------------------------------------------------------
@@ -7357,7 +7415,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 48
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 51
 
 
 # ---------------------------------------------------------------------------
@@ -22233,3 +22291,33 @@ class TestCheckConnectorNameExistsExcludesSelf:
         assert "@exclude_key" not in mock_query.call_args.args[0]
 
 
+
+
+class TestTrashWalkIndexReadiness:
+    WALK_FIELDS = ["orgId", "deletedAtTimestamp", "_key"]
+
+    @pytest.mark.asyncio
+    async def test_an_equivalent_index_under_another_name_is_found_and_hinted(self, connected_provider) -> None:
+        """ensureIndex keeps an existing index's name, so the walk must hint the name the server has."""
+        connected_provider.http_client.get_indexes = AsyncMock(return_value=[
+            {"name": "primary", "type": "primary", "fields": ["_key"]},
+            {"name": "some_older_name", "type": "persistent", "fields": self.WALK_FIELDS, "sparse": False},
+        ])
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
+        assert await connected_provider.is_trash_walk_index_ready() is True
+        await connected_provider.get_purgeable_trashed_records("org-1", 10, limit=5)
+
+        queries = [c.args[0] for c in connected_provider.http_client.execute_aql.await_args_list]
+        assert queries and all('indexHint: "some_older_name"' in q for q in queries)
+        assert not any("records_org_deleted_at" in q for q in queries)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("index", [
+        {"name": "records_org_deleted_at", "type": "persistent", "fields": WALK_FIELDS, "sparse": True},
+        {"name": "records_org_deleted_at", "type": "persistent", "fields": ["orgId", "deletedAtTimestamp"]},
+        {"name": "records_org_deleted_at", "type": "hash", "fields": WALK_FIELDS},
+    ])
+    async def test_an_index_of_another_definition_does_not_count(self, connected_provider, index) -> None:
+        connected_provider.http_client.get_indexes = AsyncMock(return_value=[index])
+        assert await connected_provider.is_trash_walk_index_ready() is False

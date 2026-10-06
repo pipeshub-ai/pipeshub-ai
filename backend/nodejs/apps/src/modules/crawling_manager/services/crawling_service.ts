@@ -528,6 +528,55 @@ export class CrawlingSchedulerService {
   }
 
   /**
+   * Remove every schedule a connector has, reading its type from the queued
+   * runs. A deleted connector's type can't always be looked up: the connector
+   * service shows a personal connector's config only to its creator, so an
+   * admin deleting a member's connector never learns it.
+   */
+  async removeJobsForConnector(
+    connectorId: string,
+    orgId: string,
+  ): Promise<void> {
+    const connectorTypes = new Set<string>();
+    const queued = (await this.queue.getJobs([
+      ...PENDING_STATES,
+      'active',
+    ])) as Job<CrawlingJobData>[];
+    for (const job of queued) {
+      if (job.data.connectorId === connectorId && job.data.orgId === orgId) {
+        connectorTypes.add(job.data.connector);
+      }
+    }
+    for (const paused of this.pausedJobs.values()) {
+      if (paused.connectorId === connectorId && paused.orgId === orgId) {
+        connectorTypes.add(paused.connector);
+      }
+    }
+
+    // One type's failure must not leave the others' schedules running.
+    const notRemoved: string[] = [];
+    for (const connector of connectorTypes) {
+      try {
+        await this.removeJob(connector, connectorId, orgId);
+      } catch (error) {
+        notRemoved.push(connector);
+        this.logger.warn('Could not remove a schedule of a deleted connector', {
+          connector,
+          connectorId,
+          orgId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+    if (notRemoved.length > 0) {
+      throw new InternalServerError(SCHEDULE_NOT_REMOVED_MESSAGE, {
+        connectorId,
+        connectorTypes: notRemoved,
+      });
+    }
+  }
+
+  /**
    * Get job status for a specific connector type
    */
   async getJobStatus(

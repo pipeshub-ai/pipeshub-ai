@@ -81,6 +81,17 @@ async def test_capture_keys_the_envelope_and_the_original_upload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_counts_a_connectors_records_points_only() -> None:
+    """Entity points carry connectorIds and are written after indexing finishes."""
+    _, vector, _, _ = stores = _stores()
+
+    before = await _capture(stores, connector_id="conn-1")
+
+    vector.count_for_connector.assert_awaited_once_with("conn-1", collection="records")
+    assert before.connector_points == 3
+
+
+@pytest.mark.asyncio
 async def test_capture_reads_the_envelope_folder_inside_the_given_collection() -> None:
     _, _, _, mongo = stores = _stores()
     await _capture(stores)

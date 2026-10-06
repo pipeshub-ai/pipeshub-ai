@@ -1444,6 +1444,21 @@ class TestQueryAndFilterHelpers:
         assert result == []
 
     @pytest.mark.asyncio
+    async def test_get_nodes_by_filters_raises_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("filters fail"))
+
+        with pytest.raises(RuntimeError, match="filters fail"):
+            await neo4j_provider.get_nodes_by_filters("apps", {"status": "ACTIVE"}, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_with_target_name_raises_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("edges fail"))
+
+        assert await neo4j_provider.get_edges_from_node_with_target_name("records/r1", "belongsTo") == []
+        with pytest.raises(RuntimeError, match="edges fail"):
+            await neo4j_provider.get_edges_from_node_with_target_name("records/r1", "belongsTo", raise_on_error=True)
+
+    @pytest.mark.asyncio
     async def test_get_documents_by_status_returns_raw_nodes(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             return_value=[{"n": {"id": "n1", "indexingStatus": "FAILED"}}]
@@ -2523,7 +2538,7 @@ class TestDuplicateAndSyncOperations:
         self, neo4j_provider: Neo4jProvider
     ):
         neo4j_provider.client.execute_query = AsyncMock(
-            side_effect=[[{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}}], []]
+            side_effect=[[{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "extractionStatus": "COMPLETED"}}], []]
         )
         await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED")
         call = neo4j_provider.client.execute_query.await_args_list[1]
@@ -2536,7 +2551,7 @@ class TestDuplicateAndSyncOperations:
     ):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "sizeInBytes": 12}}],
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "sizeInBytes": 12, "extractionStatus": "COMPLETED"}}],
                 [{"record": {"id": "rec-2"}}, {"record": {"id": "rec-3"}}],
             ]
         )
@@ -2593,6 +2608,50 @@ class TestDuplicateAndSyncOperations:
         empty_payload = neo4j_provider.batch_update_nodes.await_args_list[1].args[0]
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
         assert empty_payload[-1]["duplicateReconcilePending"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("primary_extraction", ["IN_PROGRESS"])
+    async def test_queued_duplicates_wait_while_the_primarys_enrichment_has_not_ended(
+        self, neo4j_provider: Neo4jProvider, primary_extraction: str | None
+    ) -> None:
+        primary = {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "extractionStatus": primary_extraction}
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"record": primary}], [{"record": {"id": "rec-2"}}]])
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1") == 0
+
+        neo4j_provider.batch_update_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_primary_from_before_the_status_was_written_still_promotes(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        primary = {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1"}
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"record": primary}], [{"record": {"id": "rec-2"}}]])
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1") == 1
+
+        assert neo4j_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == "COMPLETED"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("primary_extraction", ["FAILED", "NOT_STARTED"])
+    async def test_promoted_duplicates_take_the_primarys_enrichment_outcome(
+        self, neo4j_provider: Neo4jProvider, primary_extraction: str
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"record": {"id": "rec-1", "orgId": "org-1", "md5Checksum": "m1", "extractionStatus": primary_extraction}}],
+                [{"record": {"id": "rec-2"}}],
+            ]
+        )
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1")
+
+        assert neo4j_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == primary_extraction
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_includes_reason(
@@ -3970,6 +4029,51 @@ class TestNeo4jGetFilteredConnectorInstances:
         )
         assert total == 4
 
+    @pytest.mark.asyncio
+    async def test_configured_and_agent_filters_go_into_both_the_count_and_the_page(self, neo4j_provider: Neo4jProvider) -> None:
+        """The total and the page must both leave out unconfigured or agent-off connectors."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 0}], []])
+
+        await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", is_configured=True, is_agent_active=True,
+        )
+
+        assert neo4j_provider.client.execute_query.await_count == 2
+        for call in neo4j_provider.client.execute_query.await_args_list:
+            query, params = call.args[0], call.kwargs["parameters"]
+            assert "coalesce(doc.isConfigured, false) = $is_configured" in query
+            assert "coalesce(doc.isAgentActive, false) = $is_agent_active" in query
+            assert params["is_configured"] is True
+            assert params["is_agent_active"] is True
+
+    @pytest.mark.asyncio
+    async def test_only_the_page_query_is_sorted_with_a_tie_break(self, neo4j_provider: Neo4jProvider) -> None:
+        """Pages are a stable slice; the count needs no order."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 0}], []])
+
+        await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", skip=20, limit=10,
+        )
+
+        count_call, page_call = neo4j_provider.client.execute_query.await_args_list
+        assert "ORDER BY doc.createdAtTimestamp DESC, doc.id" not in count_call.args[0]
+        assert "ORDER BY doc.createdAtTimestamp DESC, doc.id" in page_call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_registered_types_limit_both_the_count_and_the_page(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 0}], []])
+
+        await neo4j_provider.get_filtered_connector_instances(
+            collection="App", edge_collection="orgAppRelation",
+            org_id="org1", user_id="user1", allowed_connector_types=["Gmail", "Slack"],
+        )
+
+        for call in neo4j_provider.client.execute_query.await_args_list:
+            assert "doc.type IN $allowed_connector_types" in call.args[0]
+            assert call.kwargs["parameters"]["allowed_connector_types"] == ["Gmail", "Slack"]
+
 
 # ---------------------------------------------------------------------------
 # _get_user_accessible_team_app_ids (Neo4j)
@@ -4522,6 +4626,24 @@ class TestListUserKnowledgeBases:
         assert main_query.count("coalesce(kb2.isHidden, false) = false") == 1
         assert count_query.count("coalesce(kb.isHidden, false) = false") == 1
         assert count_query.count("coalesce(kb2.isHidden, false) = false") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_name_search_filters_each_branch_on_its_own_knowledge_base(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        """kb is null on the team branch for a team-only grant; searching kb.name there dropped it."""
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[[], [{"total": 0}], []]
+        )
+
+        await neo4j_provider.list_user_knowledge_bases(
+            "user1", "org1", skip=0, limit=10, search="roadmap"
+        )
+
+        for call in neo4j_provider.client.execute_query.call_args_list[:2]:
+            query = call[0][0]
+            assert query.count("toLower(kb.name) CONTAINS toLower($search_term)") == 1
+            assert query.count("toLower(kb2.name) CONTAINS toLower($search_term)") == 1
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self, neo4j_provider: Neo4jProvider):

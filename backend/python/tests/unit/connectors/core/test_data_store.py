@@ -59,6 +59,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_by_external_id(self, connector_id, external_id):
         return None
 
+    async def take_back_kept_record_group(self, group_id) -> bool:
+        return True
+
     async def get_record_by_external_revision_id(self, connector_id, external_revision_id):
         return None
 

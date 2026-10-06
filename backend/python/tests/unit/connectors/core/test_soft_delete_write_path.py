@@ -214,6 +214,21 @@ class TestFlagOn:
         assert result["vectorCleanupPending"] is True
         assert result["vectorCleanupFailedVirtualRecordIds"] == ["v1"]
 
+    async def test_a_cleanup_the_broker_refuses_is_reported_as_unpublished(self) -> None:
+        """send_message answers False without raising when the broker refuses the event."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.soft_delete_records = AsyncMock(return_value=_soft_result([("r1", "v1")]))
+        proc.messaging_producer.send_message = AsyncMock(return_value=False)
+
+        async def once(fn, **_kwargs) -> object:
+            return await fn()
+
+        with flag(True), patch(f"{MODULE}.retry_async", once):
+            result = await proc.on_records_deleted_cascade(["r1"], "c1")
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedVirtualRecordIds"] == ["v1"]
+
     async def test_an_unpublished_cleanup_names_the_records_like_the_hard_path(self) -> None:
         """KB folder delete reads vectorCleanupFailedRecordIds; the soft path must set it too."""
         proc = _processor()
@@ -307,9 +322,12 @@ class TestDeleteByExternalId:
 
 
 class TestSyncSkipsTheTrash:
-    @pytest.mark.parametrize("source", [DeleteSource.USER, DeleteSource.CONNECTOR])
+    @pytest.mark.parametrize("source", [DeleteSource.USER, DeleteSource.SYSTEM])
     async def test_an_upsert_of_a_trashed_record_is_skipped(self, source) -> None:
-        """A user's delete holds until the purge, though the source still has the item."""
+        """A user's delete holds until the purge, though the source still has the item.
+
+        An item the connector deleted comes back instead: test_restore_write_path.py.
+        """
         proc = _processor()
         store = AsyncMock()
         # A plain Record, as get_record_by_external_id returns on both providers.

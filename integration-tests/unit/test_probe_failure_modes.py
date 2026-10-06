@@ -128,6 +128,23 @@ async def test_a_connector_count_can_be_held_to_one_collection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_org_count_can_be_held_to_one_collection() -> None:
+    """The Labs cleanup drops the records collection; the org's entity points stay."""
+    from types import SimpleNamespace
+
+    probe = VectorStoreProbe(host="localhost")
+    client = MagicMock()
+    client.count = AsyncMock(
+        side_effect=lambda collection_name, **_: SimpleNamespace(count={"records": 0, "entities": 4}[collection_name])
+    )
+    probe._conn = AsyncMock(return_value=client)
+    probe.collections = AsyncMock(return_value=["entities", "records"])
+
+    assert await probe.count_for_org("org-1") == 4
+    assert await probe.count_for_org("org-1", collection="records") == 0
+
+
+@pytest.mark.asyncio
 async def test_a_transport_failure_raises_rather_than_counting_zero() -> None:
     """Zero from a failed count is read as "the store is clean"."""
     probe = VectorStoreProbe(host="localhost")

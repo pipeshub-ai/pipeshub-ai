@@ -1368,7 +1368,7 @@ class TestDeleteConnectorInstanceDeep:
 
         producer = req.app.container.messaging_producer
         producer.send_message = AsyncMock(
-            side_effect=lambda topic, message: calls.append(message["eventType"])
+            side_effect=lambda topic, message, **_: calls.append(message["eventType"])
         )
 
         with patch(_BETA_PATCH, new_callable=AsyncMock), \

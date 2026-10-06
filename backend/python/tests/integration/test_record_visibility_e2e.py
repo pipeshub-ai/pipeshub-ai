@@ -479,6 +479,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_knowledge_hub_search": "test_knowledge_hub_search",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "get_file_record_by_id": "test_point_reads_return_the_trash_with_its_state",
+    "filter_nodes_with_permission_role": "test_location_trail_stops_at_a_trashed_folder",
 }
 
 
@@ -529,6 +530,41 @@ async def test_access_check(world: _World) -> None:
     g = world.graph
     assert await g.check_record_access_with_details(world.user_id, world.org_id, world.ids["kb_live"]) is not None
     assert await g.check_record_access_with_details(world.user_id, world.org_id, world.ids["kb_trashed"]) is None
+
+
+async def test_location_trail_stops_at_a_trashed_folder(world: _World) -> None:
+    """A live file can sit under a trashed folder: deleting a folder alone leaves its children live.
+
+    The parent walk returns the folder with its name, so the ancestor check is
+    what keeps the name out of the hit's Location.
+    """
+    from app.agents.actions.knowledge_graph.location import resolve_ancestor_locations
+
+    g = world.graph
+    now = get_epoch_timestamp_in_ms()
+    await g.batch_create_edges(
+        [{"from_id": world.ids["trashed_failed"], "from_collection": CollectionNames.RECORDS.value,
+          "to_id": world.ids["live_failed"], "to_collection": CollectionNames.RECORDS.value,
+          "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.RECORD_RELATIONS.value,
+    )
+    adjacency = await g.get_record_parent_adjacency([world.ids["live_failed"]], world.org_id)
+    assert adjacency["nodes"][world.ids["trashed_failed"]]["name"] == "trashed_failed.pdf"
+
+    accessible = await g.filter_nodes_with_permission_role(
+        [{"id": world.ids[n], "type": "record"} for n in ("ref_trash_q", "trashed_failed")],
+        world.user_key, world.org_id,
+    )
+    assert accessible == {world.ids["ref_trash_q"]}
+
+    locations = await resolve_ancestor_locations(
+        [world.ids["live"], world.ids["live_failed"]],
+        graph_provider=g, org_id=world.org_id, user_key=world.user_key,
+    )
+    assert f"ref_trash_q.pdf (Record ID: {world.ids['ref_trash_q']})" in locations[world.ids["live"]]
+    said = repr(locations)
+    assert "trashed_failed" not in said
+    assert world.ids["trashed_failed"] not in said
 
 
 async def test_duplicates(world: _World) -> None:

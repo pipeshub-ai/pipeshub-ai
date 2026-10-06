@@ -93,8 +93,6 @@ DRIVE_NAMES = ("drive_file", "drive_child")
 # A mail with a direct attachment, an attachment of that attachment, and a PARENT_CHILD child.
 MAIL_NAMES = ("mail", "mail_attachment", "mail_attachment_attachment", "mail_child")
 OUTLOOK_NAMES = ("outlook_mail", "outlook_attachment", "outlook_attachment_attachment")
-# Neo4j's hard delete takes a mail's direct attachments once #3879 is merged in; before, the mail alone.
-NEO4J_HARD_DELETE_TAKES_ATTACHMENTS = hasattr(Neo4jProvider, "_attachments_to_delete")
 
 
 class _Producer:
@@ -536,14 +534,10 @@ async def test_an_api_folder_delete_takes_the_folder_alone(world: _World, soft: 
     assert before - await _visible(world, names) == {"folder"}
 
 
-def _takes_attachments(w: _World, soft: bool) -> bool:
-    return soft or isinstance(w.graph, ArangoHTTPProvider) or NEO4J_HARD_DELETE_TAKES_ATTACHMENTS
-
-
 @pytest.mark.parametrize("soft", [True, False], ids=["soft", "hard"])
 async def test_an_api_mail_delete_takes_the_mail_and_its_direct_attachments(world: _World, soft: bool) -> None:
     """Never the attachment's own attachment or a PARENT_CHILD child, which the hard delete keeps."""
-    expected = {"mail", "mail_attachment"} if _takes_attachments(world, soft) else {"mail"}
+    expected = {"mail", "mail_attachment"}
     before = await _visible(world, MAIL_NAMES)
     result = await world.graph.delete_record(world.ids["mail"], world.user_id, world.org_id, soft_delete=soft)
     assert result["success"] is True, result
@@ -556,9 +550,7 @@ async def test_an_outlook_sync_delete_takes_the_message_and_its_direct_attachmen
 ) -> None:
     """Outlook deletes by external id, and the trash takes what Arango's hard path removes."""
     _flag(monkeypatch, soft)
-    expected = (
-        {"outlook_mail", "outlook_attachment"} if _takes_attachments(world, soft) else {"outlook_mail"}
-    )
+    expected = {"outlook_mail", "outlook_attachment"}
     before = await _visible(world, OUTLOOK_NAMES)
     await world.processor.delete_record_by_external_id(
         world.mail_connector_id, f"ext-{world.ids['outlook_mail']}", world.user_id,
