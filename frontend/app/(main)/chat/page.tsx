@@ -667,10 +667,21 @@ function ChatContent() {
     if (!convId) return;
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const generationOf = () => useChatStore.getState().slots[activeSlotId]?.refreshGeneration ?? 0;
     // A notification can invalidate the conversation while this request is in flight; a response
-    // fetched before that is stale, so fetch again (bounded, then keep the latest response).
+    // fetched before that is stale. Refetch at once a few times; past that, back off and start over,
+    // so a stale response (or error) never marks the slot initialized.
     const MAX_REFETCHES = 3;
+    const RETRY_DELAY_MS = 500;
+
+    const retryStale = (attempt: number): Promise<void> | undefined => {
+      if (attempt < MAX_REFETCHES) return loadHistory(attempt + 1);
+      retryTimer = setTimeout(() => {
+        if (!cancelled) void loadHistory(0);
+      }, RETRY_DELAY_MS);
+      return undefined;
+    };
 
     const loadHistory = async (attempt = 0): Promise<void> => {
       const generation = generationOf();
@@ -679,8 +690,8 @@ function ChatContent() {
           ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
           : await ChatApi.fetchConversation(convId);
         if (cancelled) return;
-        if (generationOf() !== generation && attempt < MAX_REFETCHES) {
-          return loadHistory(attempt + 1);
+        if (generationOf() !== generation) {
+          return retryStale(attempt);
         }
 
         const messages = detail.messages;
@@ -752,8 +763,8 @@ function ChatContent() {
           pendingAskUserQuestion: unansweredAskUserQuestion,
         });
       } catch (error) {
-        if (!cancelled && generationOf() !== generation && attempt < MAX_REFETCHES) {
-          return loadHistory(attempt + 1);
+        if (!cancelled && generationOf() !== generation) {
+          return retryStale(attempt);
         }
         console.error('Failed to load conversation history:', error);
         if (!cancelled) {
@@ -775,6 +786,7 @@ function ChatContent() {
 
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
   }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
 
