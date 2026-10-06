@@ -29,6 +29,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
+import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -255,7 +256,7 @@ export function createSamlRouter(container: Container) {
         recordEvent('login', {
           orgId: session.orgId?.toString(),
           userId: user._id?.toString(),
-          email: user.email,
+          domain: domainFromEmail(user.email),
           first_login: !user.hasLoggedIn,
           auth_method: 'saml',
         });

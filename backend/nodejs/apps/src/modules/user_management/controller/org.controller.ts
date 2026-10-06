@@ -299,7 +299,6 @@ export class OrgController {
       recordEvent(ORG_CREATED_EVENT, {
         orgId: (org._id as mongoose.Types.ObjectId).toString(),
         userId: (adminUser._id as mongoose.Types.ObjectId).toString(),
-        email: contactEmail,
         domain: domainFromEmail(contactEmail),
         fullName: adminFullName,
       });
