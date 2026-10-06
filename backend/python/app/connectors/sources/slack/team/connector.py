@@ -91,6 +91,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
+from app.connectors.sources.slack.common.people import file_uploader
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
     slack_stream_error,
@@ -2594,6 +2595,7 @@ class SlackConnector(BaseConnector):
                 sha256_hash=file_hash,
                 is_dependent_node=True,
                 inherit_permissions=True,
+                authored_by=file_uploader(fd, ctx.user_id_to_email, ctx.user_id_to_name),
             )
         except Exception as exc:
             self.logger.error(f"_process_file_raw({fid}): {exc}")
