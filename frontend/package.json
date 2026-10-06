@@ -107,7 +107,7 @@
     "jsdom": "^26.1.0",
     "monocart-reporter": "^2.12.4",
     "pngjs": "^7.0.0",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "text-fragments-polyfill": "^6.7.0",
     "typescript": "^5.9.2",
     "vitest": "^4.1.11"
