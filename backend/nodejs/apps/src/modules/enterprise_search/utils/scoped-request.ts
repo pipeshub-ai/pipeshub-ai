@@ -32,6 +32,27 @@ const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 
 export const STAND_IN_TOKEN_TTL_SECONDS = 60;
 
+/**
+ * The OSS Slack bot configuration carries no orgId, so this edition only has a
+ * safe answer when there is exactly one org. On a multi-org instance the old
+ * `Org.findOne` picked whichever document came back first, which could answer a
+ * Slack workspace with another tenant's data — refuse instead. Multi-org Slack
+ * is an EE feature and resolves the org from the bot config's own orgId.
+ */
+const resolveSoleOrgId = async (): Promise<string> => {
+  const orgs = await Org.find({ isDeleted: false }, { _id: 1 }).limit(2).lean().exec();
+  const soleOrg = orgs.length === 1 ? orgs[0] : undefined;
+  if (!soleOrg?._id) {
+    if (orgs.length > 1) {
+      throw new UnauthorizedError(
+        'Slack access is limited to single-organization deployments on this edition',
+      );
+    }
+    throw new NotFoundError('Organization not found');
+  }
+  return String(soleOrg._id);
+};
+
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
 export const stableObjectIdHexForExternalEmail = (email: string): string =>
   crypto
@@ -56,10 +77,13 @@ export const hydrateScopedRequestAsUser = async (
   }
 
   const tokenOrgId = (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+  // A scoped token names its org; only a token without one falls back to the sole org.
+  const orgId = tokenOrgId ?? (await resolveSoleOrgId());
+
   const user = await Users.findOne({
     email,
+    orgId,
     isDeleted: false,
-    ...(tokenOrgId ? { orgId: tokenOrgId } : {}),
   });
 
   if (!user && tokenOrgId) {
@@ -94,7 +118,7 @@ export const hydrateScopedRequestAsUser = async (
             appConfig,
           );
           if (isServiceAccount) {
-            const org = await Org.findOne({ isDeleted: false });
+            const org = await Org.findOne({ _id: orgId, isDeleted: false });
             if (!org?._id) {
               throw new NotFoundError('Organization not found');
             }

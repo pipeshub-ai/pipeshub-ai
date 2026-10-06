@@ -59,10 +59,16 @@ const activeUser = (extra: any = {}) => ({
 describe('hydrateScopedRequestAsUser (S4b / F-9)', () => {
   let findOne: sinon.SinonStub
   let genToken: sinon.SinonStub
+  let orgFind: sinon.SinonStub
 
   beforeEach(() => {
     findOne = sinon.stub(Users, 'findOne')
     genToken = sinon.stub(AuthTokenService.prototype, 'generateToken').returns('jwt')
+    orgFind = sinon.stub(Org, 'find').returns({
+      limit: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves([{ _id: ORG }]),
+    } as any)
   })
   afterEach(() => sinon.restore())
 
@@ -110,12 +116,20 @@ describe('hydrateScopedRequestAsUser (S4b / F-9)', () => {
     expect(req.headers.authorization).to.equal('Bearer jwt')
   })
 
-  it('token without orgId does not add an org filter', async () => {
+  it('token without orgId looks the user up in the sole org', async () => {
     findOne.resolves(activeUser())
     const req = makeReq({ email: 'a@x.com' })
     await hydrateScopedRequestAsUser(req, appConfig)
-    expect(findOne.firstCall.args[0]).to.not.have.property('orgId')
+    expect(String(findOne.firstCall.args[0].orgId)).to.equal(ORG.toString())
     expect(findOne.callCount).to.equal(1)
+  })
+
+  it('token that names its org never guesses the org', async () => {
+    findOne.resolves(activeUser())
+    const req = makeReq({ email: 'a@x.com', orgId: ORG.toString() })
+    await hydrateScopedRequestAsUser(req, appConfig)
+    expect(orgFind.called).to.be.false
+    expect(findOne.firstCall.args[0].orgId).to.equal(ORG.toString())
   })
 
   it('PH01-11: a disabled user does not fall into the Slack service-account branch', async () => {
@@ -163,9 +177,15 @@ describe('hydrateScopedRequestAsUser stand-in token', () => {
   })
 
   it('gives the token it mints the role claim Node requires of a session, as member', async () => {
+    const orgId = new mongoose.Types.ObjectId()
+    sinon.stub(Org, 'find').returns({
+      limit: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves([{ _id: orgId }]),
+    } as any)
     sinon.stub(Users, 'findOne').resolves({
       _id: new mongoose.Types.ObjectId(),
-      orgId: new mongoose.Types.ObjectId(),
+      orgId,
       email: 'person@example.com',
       fullName: 'Person',
       role: 'admin',
