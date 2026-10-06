@@ -127,14 +127,16 @@ def _links_for(record_type: type) -> Callable[[Callable[..., list[PersonLink]]],
 def _ticket_links(ticket: TicketRecord) -> list[PersonLink]:
     if ticket.is_email_hidden:
         # The "email" fields then hold the connector's native ids.
+        assignee_ids = [sid for sid in ticket.assignee_source_id or [] if sid]
+        assignee_name = ticket.assignee if len(assignee_ids) == 1 else None
         links = [
-            PersonLink(EntityRelations.ASSIGNED_TO, source_id=sid,
+            PersonLink(EntityRelations.ASSIGNED_TO, source_id=sid, display_name=assignee_name,
                        source_timestamp=_first(ticket.assignee_source_timestamp, ticket.source_updated_at))
-            for sid in ticket.assignee_source_id or [] if sid
+            for sid in assignee_ids
         ]
         if ticket.reporter_source_id:
             links.append(PersonLink(
-                EntityRelations.REPORTED_BY, source_id=ticket.reporter_source_id,
+                EntityRelations.REPORTED_BY, source_id=ticket.reporter_source_id, display_name=ticket.reporter_name,
                 source_timestamp=_first(ticket.reporter_source_timestamp, ticket.source_created_at),
             ))
         return links
