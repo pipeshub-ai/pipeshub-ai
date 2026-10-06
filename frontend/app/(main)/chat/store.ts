@@ -272,6 +272,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     projectId: null,
     isTemp: isNew,
     isInitialized: isNew,      // new chats have nothing to load
+    refreshGeneration: 0,
     hasLoaded: false,
     messages: [],
     isStreaming: false,
@@ -951,9 +952,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let changed = false;
       const slots = { ...state.slots };
       for (const [slotId, slot] of Object.entries(state.slots)) {
-        if (slot.convId !== convId || !slot.isInitialized) continue;
+        if (slot.convId !== convId) continue;
         if (slot.isTemp || slot.isStreaming || slot.stopping) continue;
-        slots[slotId] = { ...slot, isInitialized: false };
+        // A load already in flight (isInitialized false) must not swallow this: the bump makes it
+        // discard its now-older response and fetch again.
+        slots[slotId] = { ...slot, isInitialized: false, refreshGeneration: slot.refreshGeneration + 1 };
         changed = true;
       }
       return changed ? { slots } : state;

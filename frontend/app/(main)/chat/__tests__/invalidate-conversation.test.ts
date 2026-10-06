@@ -35,6 +35,26 @@ describe('invalidateConversation', () => {
     expect(slot(stopping).isInitialized).toBe(true);
   });
 
+  it('counts an invalidation that arrives while the history is still loading', () => {
+    const store = useChatStore.getState();
+    const loading = store.createSlot('conv-1');
+    const before = slot(loading).refreshGeneration;
+
+    useChatStore.getState().invalidateConversation('conv-1');
+
+    expect(slot(loading).isInitialized).toBe(false);
+    expect(slot(loading).refreshGeneration).toBe(before + 1);
+  });
+
+  it('does not count an invalidation for a streaming slot', () => {
+    const streaming = loadedSlot('conv-1', { isStreaming: true });
+    const before = slot(streaming).refreshGeneration;
+
+    useChatStore.getState().invalidateConversation('conv-1');
+
+    expect(slot(streaming).refreshGeneration).toBe(before);
+  });
+
   it('changes nothing when no slot holds the conversation', () => {
     loadedSlot('conv-2');
     const before = useChatStore.getState().slots;

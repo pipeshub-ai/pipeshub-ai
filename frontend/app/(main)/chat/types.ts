@@ -1009,6 +1009,11 @@ export interface ChatSlot {
   isTemp: boolean;
   /** True once messages have been loaded (or immediately for new chats). */
   isInitialized: boolean;
+  /**
+   * Bumped by every `invalidateConversation`, including one that arrives while a history load is
+   * in flight; the loader discards and repeats a response fetched under an older value.
+   */
+  refreshGeneration: number;
   /** True after first successful message load — drives tracker selection. */
   hasLoaded: boolean;
 

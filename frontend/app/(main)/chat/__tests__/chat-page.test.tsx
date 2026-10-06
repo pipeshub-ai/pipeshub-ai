@@ -361,6 +361,29 @@ describe('Chat page — opening a conversation', () => {
     expect(fetchConversation).toHaveBeenCalledTimes(2);
   });
 
+  it('drops a history response fetched before an invalidation that arrived while it was loading', async () => {
+    let resolveFirst: (v: ReturnType<typeof conversationDetail>) => void = () => {};
+    fetchConversation.mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }));
+    fetchConversation.mockResolvedValueOnce(
+      conversationDetail({
+        messages: [
+          apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
+          apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
+          apiMessage({ _id: 'u2', messageType: 'user_query', content: 'And sick days?' }),
+          apiMessage({ _id: 'b2', messageType: 'bot_response', content: 'Ten paid sick days.' }),
+        ],
+      }),
+    );
+    renderPage('conversationId=conv-1');
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalledTimes(1));
+
+    await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+    await act(async () => resolveFirst(conversationDetail()));
+
+    expect(await screen.findByText('Ten paid sick days.')).toBeTruthy();
+    expect(fetchConversation).toHaveBeenCalledTimes(2);
+  });
+
   it('restores the collections the last question was scoped to', async () => {
     fetchConversation.mockResolvedValue(
       conversationDetail({
