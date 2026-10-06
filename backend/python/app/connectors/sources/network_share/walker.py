@@ -257,10 +257,17 @@ class ShareWalker:
                         directory_path,
                     )
 
-        async def selected_prefix_is_walkable(directory_path: str) -> bool:
-            # Listing starts at the chosen path, so a reparse prefix is invisible
-            # to the child check. A failed stat must not prune.
+        async def selected_prefix_dirs(
+            directory_path: str,
+        ) -> list[tuple[int, datetime | None, datetime | None, str]] | None:
+            """The folders along a selected path, or None when it must not be walked.
+
+            Listing starts at the chosen path, so a reparse prefix is invisible to
+            the child check, and neither the chosen folder nor the folders above it
+            are ever listed as entries. A failed stat must not prune.
+            """
             nonlocal complete
+            along: list[tuple[int, datetime | None, datetime | None, str]] = []
             parts = [part for part in directory_path.split("/") if part]
             for index in range(len(parts)):
                 path = "/".join(parts[: index + 1])
@@ -274,17 +281,26 @@ class ShareWalker:
                         path,
                         exc,
                     )
-                    return False
+                    return None
                 if info is None:
-                    return True
+                    return along
                 if info.is_symlink or info.is_reparse:
                     self.logger.warning(
                         "Not walking %s/%s: the path is a reparse point",
                         share,
                         path,
                     )
-                    return False
-            return True
+                    return None
+                if usable_file_id(info.file_id):
+                    along.append(
+                        (
+                            info.file_id,
+                            info.created_time,
+                            info.last_write_time,
+                            f"{share}/{identity_rel_path(path)}",
+                        )
+                    )
+            return along
 
         try:
             root = await self.data_source.stat(share, "")
@@ -295,9 +311,14 @@ class ShareWalker:
 
         for prefix in scope.list_prefixes:
             directory = prefix.rstrip("/")
-            if directory and not await selected_prefix_is_walkable(directory):
+            along = await selected_prefix_dirs(directory) if directory else []
+            if along is None:
                 continue
-            await traverse(directory, prefix=bool(prefix))
+            open_dirs.extend(along)
+            try:
+                await traverse(directory, prefix=bool(prefix))
+            finally:
+                del open_dirs[len(open_dirs) - len(along) :]
 
         # Settled only after the whole walk: the revision lookup returns one record
         # per file id, so for a hard link walked before its other path it hands

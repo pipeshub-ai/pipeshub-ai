@@ -280,6 +280,60 @@ class TestShareWalkerLinkedFolders:
         assert (SHARE, "policies/top") not in ds.list_calls
         assert f"{SHARE}/policies/top" not in result.seen
 
+    async def test_with_a_folder_filter_a_link_to_the_chosen_folder_is_not_walked(self):
+        chosen = _entry("policies", is_directory=True, file_id=3)
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, "policies"): [
+                    _entry("leave.txt", file_id=4),
+                    _entry("self", is_directory=True, file_id=3),
+                    _entry("2026", is_directory=True, file_id=5),
+                ],
+                (SHARE, "policies/2026"): [_entry("up", is_directory=True, file_id=3)],
+            },
+            stats={(SHARE, "policies"): chosen},
+        )
+        result, _upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("policies")))
+        assert result.complete is True
+        assert (SHARE, "policies/self") not in ds.list_calls
+        assert (SHARE, "policies/2026/up") not in ds.list_calls
+        assert {f"{SHARE}/policies/self", f"{SHARE}/policies/2026/up"}.isdisjoint(result.seen)
+        assert f"{SHARE}/policies/leave.txt" in result.seen
+
+    async def test_with_a_folder_filter_a_link_to_a_folder_above_it_is_not_walked(self):
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, "a/b"): [
+                    _entry("in-scope.txt", file_id=4),
+                    _entry("to-a", is_directory=True, file_id=2),
+                ],
+                (SHARE, "a/b/to-a"): [_entry("outside-the-filter.txt", file_id=6)],
+            },
+            stats={
+                (SHARE, "a"): _entry("a", is_directory=True, file_id=2),
+                (SHARE, "a/b"): _entry("b", is_directory=True, file_id=3),
+            },
+        )
+        result, _upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("a/b")))
+        assert (SHARE, "a/b/to-a") not in ds.list_calls
+        assert f"{SHARE}/a/b/to-a/outside-the-filter.txt" not in result.seen
+        assert f"{SHARE}/a/b/in-scope.txt" in result.seen
+
+    async def test_one_chosen_folder_is_not_an_enclosing_folder_of_another(self):
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, "x"): [_entry("x.txt", file_id=4)],
+                (SHARE, "y"): [_entry("same-as-x", is_directory=True, file_id=3)],
+                (SHARE, "y/same-as-x"): [_entry("y.txt", file_id=6)],
+            },
+            stats={
+                (SHARE, "x"): _entry("x", is_directory=True, file_id=3),
+                (SHARE, "y"): _entry("y", is_directory=True, file_id=7),
+            },
+        )
+        result, _upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("x", "y")))
+        assert f"{SHARE}/y/same-as-x/y.txt" in result.seen
+
     async def test_second_path_elsewhere_with_the_same_id_and_times_is_walked(self):
         # A snapshot or cloned volume inside the share matches a live folder exactly.
         ds = FakeNetworkShareDataSource(
