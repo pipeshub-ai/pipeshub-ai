@@ -9,6 +9,7 @@ often a repr. Callers log the exception and store ``to_user_reason(exc)``.
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import TYPE_CHECKING
 
 from app.agents.agent_loop.error_classification import classify_error
@@ -117,6 +118,19 @@ EPUB_NO_READABLE_CHAPTERS = (
     "This e-book has no chapters we could read. Check that it opens in an e-book reader, "
     "save a fresh copy from there, and upload it again."
 )
+GENERATED_FILE_SKIPPED = (
+    "This is a generated file (a lock file, minified bundle, source map or test snapshot), "
+    "so PipesHub skips it to keep search results useful. Nothing needs fixing."
+)
+BINARY_FILE_SKIPPED = (
+    "This file holds binary data rather than text, so PipesHub can't read it. If it is "
+    "meant to be text, save it as plain text (UTF-8) and sync or upload it again."
+)
+PARSE_WORKER_OUT_OF_MEMORY = (
+    "PipesHub ran out of memory while reading this file, so it wasn't indexed. Split it "
+    "into smaller files and sync or upload them again; if it keeps failing, ask your admin "
+    "to give PipesHub more memory."
+)
 
 
 # Written for people by the code that raised them, and more specific than any
@@ -128,6 +142,8 @@ _STORED_AS_WRITTEN = frozenset({
     EPUB_TOO_LARGE,
     EPUB_UNSAFE_PATHS,
     EPUB_NO_READABLE_CHAPTERS,
+    PARSE_WORKER_OUT_OF_MEMORY,
+    PROCESSING_TIMED_OUT,
 })
 
 
@@ -135,6 +151,20 @@ def unsupported_file_type(extension: str | None) -> str:
     ext = (extension or "").strip().lstrip(".").lower()
     what = f".{ext} files" if ext and ext not in {"unknown", "none"} else "this type of file"
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
+
+
+def _megabytes(size_bytes: int, *, round_up: bool = False) -> str:
+    tenths = size_bytes / (1024 * 1024) * 10
+    return f"{(math.ceil(tenths) if round_up else round(tenths)) / 10:.1f}".removesuffix(".0")
+
+
+def text_file_too_large(size_bytes: int, limit_bytes: int) -> str:
+    # Rounded up, so a file one byte over a 5 MB limit never reads as "5 MB".
+    return (
+        f"This file is {_megabytes(size_bytes, round_up=True)} MB, and PipesHub reads code "
+        f"and plain-text files up to {_megabytes(limit_bytes)} MB. Split it into smaller "
+        "files, or ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then Reindex it."
+    )
 
 
 def duplicate_failed(primary_reason: str | None) -> str:

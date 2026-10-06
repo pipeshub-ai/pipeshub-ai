@@ -9,6 +9,7 @@ import pytest
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
+    is_generated_file_name,
     is_ignored_path,
     should_index_code_file,
 )
@@ -110,3 +111,21 @@ def test_a_directory_named_build_is_ignored_not_merely_labelled():
     # `build/` is dependency output; the whole tree is skipped rather than
     # indexed with role=build.
     assert is_ignored_path("build/generated/app.js") is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["package-lock.json", "yarn.lock", "Cargo.lock", "app.min.js", "site.min.css",
+     "bundle.js.map", "Button.test.tsx.snap", "web/static/app.min.js"],
+)
+def test_generated_file_names(name: str) -> None:
+    assert is_generated_file_name(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    # The directory rules of is_ignored_path are deliberately not applied.
+    ["bin/deploy.sh", "vendor/lib.py", "build/app.js", "package.json", "locksmith.py", "minimal.js"],
+)
+def test_names_that_are_not_generated(name: str) -> None:
+    assert is_generated_file_name(name) is False

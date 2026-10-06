@@ -1603,3 +1603,126 @@ class TestGetTableSummaryContentCoercion:
 
         result = await parser.get_table_summary(llm=MagicMock(), rows=[{"a": 1}])
         assert result == "Final summary"
+
+
+# ---------------------------------------------------------------------------
+# Large tables: the row loops leave the event loop
+# ---------------------------------------------------------------------------
+class TestLargeTables:
+    @pytest.fixture
+    def single_header(self) -> object:
+        from app.modules.parsers.excel.prompt_template import CSVHeaderDetection
+        return CSVHeaderDetection(
+            has_headers=True, num_header_rows=1, confidence="high", reasoning="first row"
+        )
+
+    @staticmethod
+    def _rows(count: int) -> list[list[str]]:
+        return [["id", "name"]] + [[str(i), f"customer {i}"] for i in range(count)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("row_count", [3, 2500])
+    async def test_rows_become_the_same_dicts_inline_or_in_a_thread(
+        self, parser, single_header, row_count: int
+    ) -> None:
+        from app.modules.parsers.csv import csv_parser
+
+        assert (row_count >= csv_parser.ROWS_WORTH_A_THREAD) == (row_count == 2500)
+
+        result, line_numbers = await parser.process_table_with_header_info(
+            self._rows(row_count), single_header, 1, MagicMock()
+        )
+
+        assert result == [{"id": i, "name": f"customer {i}"} for i in range(row_count)]
+        assert line_numbers == list(range(2, row_count + 2))
+
+    @pytest.mark.asyncio
+    async def test_a_table_over_the_llm_row_limit_gets_plain_row_blocks_in_order(
+        self, parser, single_header, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("MAX_TABLE_ROWS_FOR_LLM", "10")
+        parser.detect_headers_with_llm = AsyncMock(return_value=single_header)
+        parser.get_table_summary = AsyncMock(return_value="customers")
+        parser.get_rows_text = AsyncMock()
+        small = {"raw_rows": self._rows(2), "start_row": 1, "end_row": 3}
+        large = {"raw_rows": self._rows(2500), "start_row": 10, "end_row": 2510}
+        parser.get_rows_text.return_value = ["row zero", "row one"]
+
+        container = await parser.get_blocks_from_csv_with_multiple_tables([small, large], MagicMock())
+
+        # The small table went to the LLM, the large one did not.
+        parser.get_rows_text.assert_awaited_once()
+        assert [b.index for b in container.blocks] == list(range(2502))
+        large_group = container.block_groups[1]
+        assert [b.parent_index for b in container.blocks[2:]] == [1] * 2500
+        assert container.blocks[2].data == {
+            "row_natural_language_text": "id: 0, name: customer 0",
+            "row_number": 11,
+        }
+        assert container.blocks[-1].data["row_number"] == 2510
+        assert large_group.table_metadata.num_of_rows == 2500
+
+    @pytest.mark.asyncio
+    async def test_the_event_loop_keeps_ticking_while_a_large_table_becomes_blocks(
+        self, parser, single_header, monkeypatch
+    ) -> None:
+        """Both row loops ran on the event loop, so nothing else on it ran until
+        the last row. Ticks are counted, not timed: a held loop gives zero."""
+        import asyncio
+
+        monkeypatch.setenv("MAX_TABLE_ROWS_FOR_LLM", "10")
+        parser.detect_headers_with_llm = AsyncMock(return_value=single_header)
+        parser.get_table_summary = AsyncMock(return_value="customers")
+        table = {"raw_rows": self._rows(60_000), "start_row": 1, "end_row": 60_001}
+        ticks = 0
+        running = True
+
+        async def heartbeat() -> None:
+            nonlocal ticks
+            while running:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        beat = asyncio.create_task(heartbeat())
+        await asyncio.sleep(0)
+        try:
+            ticks = 0
+            container = await parser.get_blocks_from_csv_with_multiple_tables([table], MagicMock())
+            ticks_while_building = ticks
+        finally:
+            running = False
+            await beat
+
+        assert len(container.blocks) == 60_000
+        assert ticks_while_building >= 3
+
+
+class TestTableDetectionModule:
+    def test_read_csv_tables_matches_the_parser_methods(self, parser) -> None:
+        from app.modules.parsers.csv.table_detection import read_csv_tables
+
+        content = "id,name\n1,Ada\n2,Grace\n\n\nx,y\n9,8\n"
+        rows = parser.read_raw_rows(io.StringIO(content))
+
+        assert read_csv_tables(content.encode()) == parser.find_tables_in_csv(rows)
+
+    def test_read_csv_tables_honours_the_delimiter(self) -> None:
+        from app.modules.parsers.csv.table_detection import read_csv_tables
+
+        (table,) = read_csv_tables(b"id\tname\n1\tAda\n", "\t")
+
+        assert table["raw_rows"] == [["id", "name"], ["1", "Ada"]]
+
+    def test_read_csv_tables_is_none_for_a_file_with_no_rows(self) -> None:
+        from app.modules.parsers.csv.table_detection import read_csv_tables
+
+        assert read_csv_tables(b"") is None
+
+    def test_rows_that_cannot_be_read_raise_one_error_type(self) -> None:
+        from app.modules.parsers.csv.table_detection import (
+            DelimitedReadError,
+            read_csv_tables,
+        )
+
+        with pytest.raises(DelimitedReadError, match="field larger than field limit"):
+            read_csv_tables(b'a,b\n"' + b"x" * 200_000)
