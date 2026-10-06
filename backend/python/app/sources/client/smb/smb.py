@@ -194,7 +194,11 @@ class SmbClient(IClient):
             self.register()
             smbclient = self._smbclient()
             target = unc(self.server, share, path)
-            return smbclient.open_file(target, mode="rb", buffering=0, **self._kwargs())
+            # The default share mode for "rb" is read-only, so two overlapping
+            # previews of one file fail with STATUS_SHARING_VIOLATION.
+            return smbclient.open_file(
+                target, mode="rb", buffering=0, share_access="rwd", **self._kwargs()
+            )
 
     def list_shares(self) -> list[ShareInfo]:
         with self._io_lock:
