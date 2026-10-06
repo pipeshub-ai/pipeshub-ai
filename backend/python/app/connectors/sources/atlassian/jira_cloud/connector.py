@@ -1298,20 +1298,26 @@ class JiraConnector(BaseConnector):
             listed = await self._list_project_issue_ids(project.short_name)
             if listed is None:
                 continue
-            for record in stored:
-                if record.external_record_id in listed:
-                    continue
-                try:
-                    if await self._issue_gone_from_jira(record.external_record_id):
-                        await self._delete_issue_record(record, record.external_record_id)
-                        removed += 1
-                except Exception as e:
-                    self.logger.warning(
-                        "Could not remove issue %s of project %s; retrying next sync: %s",
-                        record.external_record_id, project.short_name, e,
-                    )
+            removed += await self._remove_unlisted_issues(project.short_name, stored, listed)
         if removed:
             self.logger.info("🗑️ Removed %d issue(s) Jira no longer has, found by comparing ids", removed)
+
+    async def _remove_unlisted_issues(self, project_key: str, stored: list[Record], listed: set[str]) -> int:
+        """Remove each stored issue missing from ``listed`` that Jira confirms is gone; returns how many went."""
+        removed = 0
+        for record in stored:
+            if record.external_record_id in listed:
+                continue
+            try:
+                if await self._issue_gone_from_jira(record.external_record_id):
+                    await self._delete_issue_record(record, record.external_record_id)
+                    removed += 1
+            except Exception as e:
+                self.logger.warning(
+                    "Could not remove issue %s of project %s; retrying next sync: %s",
+                    record.external_record_id, project_key, e,
+                )
+        return removed
 
     async def _stored_issues(self, project_id: str) -> list[Record]:
         """This connector's live issue records in the project, without placeholder ancestors."""
