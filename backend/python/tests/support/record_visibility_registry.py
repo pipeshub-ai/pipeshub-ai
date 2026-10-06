@@ -143,6 +143,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "delete_parent_child_edge_to_record": (Rule.WRITE, ""),
     "batch_upsert_records": (Rule.WRITE, ""),
     "create_record_relation": (Rule.WRITE, ""),
+    "link_record_to_group": (Rule.WRITE, ""),
+    "replace_record_permissions": (Rule.WRITE, ""),
     "batch_upsert_record_permissions": (Rule.WRITE, ""),
     "delete_records_and_relations": (Rule.WRITE, ""),
     "delete_record": (Rule.WRITE, ""),
