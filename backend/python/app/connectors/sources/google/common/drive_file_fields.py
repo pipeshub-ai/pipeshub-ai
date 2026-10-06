@@ -17,8 +17,8 @@ _DRIVE_FILE_ACCESS_FIELDS = (
 # google/drive/individual/connector.py
 DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
-    "headRevisionId, version, shared, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    f"driveId, {_DRIVE_FILE_ACCESS_FIELDS}"
+    "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
+    f"sha256Checksum, parents, driveId, {_DRIVE_FILE_ACCESS_FIELDS}"
 )
 
 DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS = (
@@ -39,8 +39,8 @@ DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS = (
 # Workspace / delegated Drive connector lists include `owners`.
 DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
-    "headRevisionId, version, shared, owners, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    f"driveId, sharedWithMeTime, {_DRIVE_FILE_ACCESS_FIELDS}, inheritedPermissionsDisabled"
+    "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
+    f"sha256Checksum, parents, driveId, sharedWithMeTime, {_DRIVE_FILE_ACCESS_FIELDS}, inheritedPermissionsDisabled"
 )
 
 DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (

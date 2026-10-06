@@ -115,6 +115,7 @@ from app.connectors.sources.google.drive.utils.drive_run_report import (
 )
 from app.connectors.sources.google.drive.utils.folder_removal import remove_folder_confirming_contents
 from app.connectors.sources.google.drive.utils.native_revisions import native_content_changed
+from app.connectors.sources.google.common.drive_people import drive_file_people
 from app.connectors.sources.google.common.impersonation import (
     MAX_IMPERSONATION_CANDIDATES,
     get_impersonation_candidates,
@@ -2672,6 +2673,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             parent_external_record_id = (metadata.get("parents") or [None])[0]
 
+            people = drive_file_people(metadata)
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -2707,6 +2709,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
+                authored_by=people.authored_by,
+                last_modified_by=people.last_modified_by,
+                owners=people.owners,
             )
 
             if existing_record and not content_changed:
