@@ -176,6 +176,11 @@ jobs:
       # With the inventory goes the check on the helper that creates and removes
       # what the conditional-admin cases act on in the shared test org.
       - name: Run the integration-suite guards
+        # Runs even when the coverage step above failed, like the evals below.
+        # These guards read route tables and schemas, which a red unit suite
+        # says nothing about; skipped, they go unenforced on every pull request
+        # for as long as any unit test on main is failing.
+        if: ${{ !cancelled() }}
         run: |
           uv pip install --system pyyaml
           # `-c` and `--noconftest` because the file sits inside integration-tests,
