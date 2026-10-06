@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pytest
 import requests
@@ -25,12 +25,16 @@ from helper.config import MONGO_DB_NAME, MONGO_URI  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
 from conversations_audit_support import (  # noqa: E402
+    CHEAP_QUERY,
     COLLECTION,
+    LLM_TIMEOUT_SECONDS,
     ConversationsAuditClient,
     MultipartFiles,
     SeedConversation,
     UploadAttachment,
     attachment_files,
+    forget_access_token,
+    mint_narrow_scope_token,
     uploaded_record_ids,
 )
 
@@ -59,7 +63,7 @@ def chat_sessions_collection() -> Iterator[Collection]:
         client.admin.command("ping")
     except Exception as exc:  # noqa: BLE001 - any connection failure means "cannot seed"
         client.close()
-        pytest.skip(f"MongoDB is not reachable at TEST_MONGO_URI, cannot seed conversations: {exc}")
+        pytest.fail(f"MongoDB is not reachable at TEST_MONGO_URI, cannot seed conversations: {exc}")
     try:
         yield client[MONGO_DB_NAME][COLLECTION]
     finally:
@@ -147,3 +151,47 @@ def upload_attachment(
                 logger.warning(
                     "Could not delete attachment %s: HTTP %s", record_id, resp.status_code
                 )
+
+
+@pytest.fixture(scope="session")
+def narrow_scope_headers(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]]:
+    """Headers of an OAuth token of the suite's own client without any ``conversation:*`` scope."""
+    token = mint_narrow_scope_token(pipeshub_client.base_url, pipeshub_client.timeout_seconds)
+    try:
+        yield {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    finally:
+        forget_access_token(token)
+
+
+@pytest.fixture
+def delete_conversation_later(
+    conversations_audit_client: ConversationsAuditClient,
+) -> Iterator[Callable[[str], None]]:
+    """Register a conversation a test created through the API; it is deleted on teardown."""
+    created: list[str] = []
+    try:
+        yield created.append
+    finally:
+        for conversation_id in created:
+            resp = conversations_audit_client.delete_conversation(conversation_id)
+            if resp.status_code not in (200, 404):
+                logger.warning("Could not delete conversation %s: HTTP %s", conversation_id, resp.status_code)
+
+
+@pytest.fixture(scope="session")
+def live_conversation(
+    conversations_audit_client: ConversationsAuditClient,
+) -> Iterator[requests.Response]:
+    """One real assistant conversation (a single LLM turn), shared by the tests that read it.
+
+    Yields the ``POST /create`` response; the conversation is deleted at the end of the session.
+    """
+    resp = conversations_audit_client.create_conversation(
+        query=CHEAP_QUERY, timeout=LLM_TIMEOUT_SECONDS
+    )
+    conversation_id = resp.headers.get("X-Conversation-Id")
+    try:
+        yield resp
+    finally:
+        if conversation_id:
+            conversations_audit_client.delete_conversation(conversation_id)

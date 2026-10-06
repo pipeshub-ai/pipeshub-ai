@@ -15,6 +15,7 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
         sys.path.insert(0, str(_p))
 
 from helper.http.session_client import SessionClient  # noqa: E402
+from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
 from oauth_clients_audit_support import (  # noqa: E402
@@ -29,6 +30,12 @@ from oauth_clients_audit_support import (  # noqa: E402
 def oauth_clients_client(user_session_client: SessionClient) -> OAuthClientsAuditClient:
     """The shared admin in person: this router refuses OAuth and personal access tokens."""
     return OAuthClientsAuditClient(user_session_client)
+
+
+@pytest.fixture(scope="session")
+def oauth_token_clients_client(pipeshub_client: PipeshubClient) -> OAuthClientsAuditClient:
+    """The same admin behind an OAuth client-credentials token, which requireSessionAuth refuses."""
+    return OAuthClientsAuditClient(pipeshub_client)
 
 
 @pytest.fixture

@@ -40,6 +40,7 @@ from helper.agui_sse import (
 from helper.clients.conversations_client import AgentConversationsClient
 from helper.conversation_seeds import seed_query
 from openapi_search_validator import assert_matches_component_schema
+from strict_openapi import outside_request_contract  # noqa: E402
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
@@ -548,12 +549,13 @@ class TestAgentConversationDelete(AgentConversationsTestBase):
             created_conversations=created_conversations,
         )
 
-        resp = self.conversations.delete_conversation(
-            self.agent_key,
-            conversation_id,
-            params=params,
-            timeout=self.timeout,
-        )
+        with outside_request_contract("undocumented query parameters are sent to show they are ignored"):
+            resp = self.conversations.delete_conversation(
+                self.agent_key,
+                conversation_id,
+                params=params,
+                timeout=self.timeout,
+            )
         assert resp.status_code == 200, f"[{label}] {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)

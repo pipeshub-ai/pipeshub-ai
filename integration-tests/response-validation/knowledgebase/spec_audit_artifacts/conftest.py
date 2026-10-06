@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncGenerator
+from typing import TYPE_CHECKING, AsyncGenerator, Iterator
 
 import pytest
 import pytest_asyncio
@@ -18,8 +18,11 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
 from artifacts_audit_support import (  # noqa: E402
+    UNRELATED_SCOPE,
     ArtifactsClient,
     SeededArtifact,
+    bearer,
+    oauth_token_with_scopes,
     remove_artifact,
     seed_artifact,
 )
@@ -31,6 +34,15 @@ if TYPE_CHECKING:
 @pytest.fixture(scope="session")
 def artifacts_client(pipeshub_client: PipeshubClient) -> ArtifactsClient:
     return ArtifactsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def unscoped_headers(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]]:
+    """Headers of an OAuth token for the admin's org that carries neither kb:read nor connector:read."""
+    with oauth_token_with_scopes(
+        pipeshub_client.base_url, [UNRELATED_SCOPE], pipeshub_client.timeout_seconds
+    ) as token:
+        yield bearer(token)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")

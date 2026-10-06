@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import requests
 
 from helper.http.api_client import APIClient
+from helper.local_auth import obtain_user_session_token
 from helper.second_user import SecondUser
 
 if TYPE_CHECKING:
@@ -33,20 +36,75 @@ GALLERY_ARTIFACT_TYPES = (
 )
 GALLERY_SORT_FIELDS = ("name", "createdAtTimestamp", "updatedAtTimestamp", "artifactType")
 
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+
+OAUTH_CLIENTS_PATH = "/api/v1/oauth-clients"
+OAUTH_TOKEN_PATH = "/api/v1/oauth2/token"
+# The routes accept kb:read or connector:read; this is neither.
+UNRELATED_SCOPE = "org:read"
+SCOPE_REFUSAL = "Insufficient scope. Required: kb:read or connector:read"
+
 
 class ArtifactsClient(APIClient):
     """Client for /api/v1/artifacts, acting as the shared org admin."""
 
     BASE = ARTIFACTS_BASE
 
-    def list(self, *, auth: bool = True, **params: Any) -> requests.Response:
-        return self.get("", auth=auth, params=params)
+    def list(
+        self, *, auth: bool = True, headers: dict[str, str] | None = None, **params: Any
+    ) -> requests.Response:
+        return self.get("", auth=auth, headers=headers, params=params)
 
-    def get_one(self, artifact_id: str, *, auth: bool = True) -> requests.Response:
-        return self.get(f"/{artifact_id}", auth=auth)
+    def get_one(
+        self, artifact_id: str, *, auth: bool = True, **kwargs: Any
+    ) -> requests.Response:
+        return self.get(f"/{artifact_id}", auth=auth, **kwargs)
 
-    def versions(self, artifact_id: str, *, auth: bool = True) -> requests.Response:
-        return self.get(f"/{artifact_id}/versions", auth=auth)
+    def versions(
+        self, artifact_id: str, *, auth: bool = True, **kwargs: Any
+    ) -> requests.Response:
+        return self.get(f"/{artifact_id}/versions", auth=auth, **kwargs)
+
+
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+@contextmanager
+def oauth_token_with_scopes(base_url: str, scopes: list[str], timeout: int = 60) -> Iterator[str]:
+    """A client-credentials token limited to ``scopes``, from an OAuth app that is deleted on exit.
+
+    The suite's own token carries every scope, and a session JWT is never scope-checked, so this is
+    the only caller that can be refused for a missing scope.
+    """
+    admin = bearer(obtain_user_session_token(base_url, timeout))
+    created = requests.post(
+        f"{base_url}{OAUTH_CLIENTS_PATH}",
+        headers=admin,
+        json={
+            "name": f"spec-audit-artifacts-scope-{uuid.uuid4().hex[:8]}",
+            "allowedGrantTypes": ["client_credentials"],
+            "allowedScopes": scopes,
+        },
+        timeout=timeout,
+    )
+    assert created.status_code == 201, f"creating an OAuth app failed: {created.status_code} {created.text[:300]}"
+    app = created.json()["app"]
+    try:
+        issued = requests.post(
+            f"{base_url}{OAUTH_TOKEN_PATH}",
+            json={
+                "grant_type": "client_credentials",
+                "client_id": app["clientId"],
+                "client_secret": app["clientSecret"],
+            },
+            timeout=timeout,
+        )
+        assert issued.status_code == 200, f"token request failed: {issued.status_code}"
+        yield issued.json()["access_token"]
+    finally:
+        requests.delete(f"{base_url}{OAUTH_CLIENTS_PATH}/{app['id']}", headers=admin, timeout=timeout)
 
 
 def request_as(user: SecondUser, path: str = "", **kwargs: Any) -> requests.Response:

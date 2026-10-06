@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Callable
 
 import requests
 
 from helper.clients.kb_client import KBClient
+from helper.local_auth import obtain_user_session_token
+from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
 
 KB_BASE = "/api/v1/knowledgeBase"
@@ -19,6 +23,23 @@ KB_BASE = "/api/v1/knowledgeBase"
 MISSING_RECORD_ID = "00000000-0000-4000-8000-000000000000"
 MISSING_RECORD_GROUP_ID = "00000000-0000-4000-8000-000000000001"
 MALFORMED_ID = "not-a-graph-id"
+# Decoded by Express to "a%b": guardPathParams refuses "%" in an id it pastes into a service URL.
+UNSAFE_ID = "a%25b"
+UNSAFE_ID_MESSAGE = "This address contains an ID that isn't valid"
+
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+
+HTML_REFUSED_MESSAGE = "HTML tags, scripts, and XSS content are not allowed"
+
+OAUTH_CLIENTS_PATH = "/api/v1/oauth-clients"
+OAUTH_TOKEN_PATH = "/api/v1/oauth2/token"
+# A scope none of the knowledge base routes accept.
+UNRELATED_SCOPE = "org:read"
+
+PLATFORM_SETTINGS_PATH = "/api/v1/configurationManager/platform/settings"
+SOFT_DELETE_FLAG = "ENABLE_SOFT_DELETE"
+SOFT_DELETE_OFF_MESSAGE = "Restoring deleted items is turned off in this workspace"
 
 # MAX_RESTORE_RECORD_IDS in the Node validator and the connector service.
 MAX_RESTORE_RECORD_IDS = 100
@@ -76,3 +97,83 @@ def request_as(
     return requests.request(
         method, f"{user.base_url}{KB_BASE}{path}", headers=headers, **kwargs
     )
+
+
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+@contextmanager
+def oauth_token_with_scopes(base_url: str, scopes: list[str], timeout: int = 60) -> Iterator[str]:
+    """A client-credentials token limited to ``scopes``, from an OAuth app that is deleted on exit.
+
+    The suite's own token carries every scope, and a session JWT is never scope-checked, so this is
+    the only caller that can be refused for a missing scope.
+    """
+    admin = bearer(obtain_user_session_token(base_url, timeout))
+    created = requests.post(
+        f"{base_url}{OAUTH_CLIENTS_PATH}",
+        headers=admin,
+        json={
+            "name": unique_name("spec-audit-kb-scope"),
+            "allowedGrantTypes": ["client_credentials"],
+            "allowedScopes": scopes,
+        },
+        timeout=timeout,
+    )
+    assert created.status_code == 201, f"creating an OAuth app failed: {created.status_code} {created.text[:300]}"
+    app = created.json()["app"]
+    try:
+        issued = requests.post(
+            f"{base_url}{OAUTH_TOKEN_PATH}",
+            json={
+                "grant_type": "client_credentials",
+                "client_id": app["clientId"],
+                "client_secret": app["clientSecret"],
+            },
+            timeout=timeout,
+        )
+        assert issued.status_code == 200, f"token request failed: {issued.status_code}"
+        yield issued.json()["access_token"]
+    finally:
+        requests.delete(f"{base_url}{OAUTH_CLIENTS_PATH}/{app['id']}", headers=admin, timeout=timeout)
+
+
+def _write_soft_delete_flag(client: PipeshubClient, value: bool | None) -> bool | None:
+    """Set the flag (``None`` removes it) and return what it was.
+
+    Read and written in one go because the POST replaces every platform setting, and other suites
+    change other flags while this runs.
+    """
+    current = client.request("GET", PLATFORM_SETTINGS_PATH)
+    assert current.status_code == 200, f"reading platform settings: {current.status_code} {current.text[:300]}"
+    settings = current.json()
+    flags = dict(settings.get("featureFlags") or {})
+    before = flags.get(SOFT_DELETE_FLAG)
+    if before is value:
+        return before
+    if value is None:
+        flags.pop(SOFT_DELETE_FLAG, None)
+    else:
+        flags[SOFT_DELETE_FLAG] = value
+    saved = client.request(
+        "POST",
+        PLATFORM_SETTINGS_PATH,
+        json={"fileUploadMaxSizeBytes": settings["fileUploadMaxSizeBytes"], "featureFlags": flags},
+    )
+    assert saved.status_code == 200, f"saving platform settings: {saved.status_code} {saved.text[:300]}"
+    return before
+
+
+@contextmanager
+def soft_delete_set_to(client: PipeshubClient, enabled: bool) -> Iterator[None]:
+    """Hold "Move Deleted Records to the Trash" at ``enabled`` for the block, then put it back.
+
+    The flag is org-wide and the connector service reads it on every delete and restore, so keep
+    the block short: other suites delete records while it is on.
+    """
+    before = _write_soft_delete_flag(client, enabled)
+    try:
+        yield
+    finally:
+        _write_soft_delete_flag(client, before)

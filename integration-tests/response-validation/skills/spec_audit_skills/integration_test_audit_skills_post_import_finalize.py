@@ -1,13 +1,15 @@
 """Strict OpenAPI audit of POST /api/v1/skills/import/finalize.
 
-The import routes share a 10 requests/minute per-user limiter that counts
-refused requests too, so this file makes three admin calls, one member call
-and one anonymous call.
+The import routes share a 10 calls/minute limiter per user that counts refused requests
+too, so most calls run as a disposable member and the admin makes four.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from helper.second_user import SecondUser
 from skills_audit_support import (
     RESOURCE_PATH,
     SeedSkill,
@@ -16,18 +18,16 @@ from skills_audit_support import (
     skill_md,
     unique_skill_name,
 )
-from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_spec_forbids_request,
+    assert_strict_openapi_exchange,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/api/v1/skills/import/finalize"
 FINALIZE = "/import/finalize"
-
-
-def _skip_if_skills_disabled(status_code: int, text: str) -> None:
-    if status_code == 403:
-        pytest.skip(f"skills are not usable on this stack: {text[:200]}")
 
 
 def test_finalize_creates_skill_with_resources(skills_client: SkillsClient) -> None:
@@ -39,50 +39,112 @@ def test_finalize_creates_skill_with_resources(skills_client: SkillsClient) -> N
                 "content": skill_md(name),
                 "resources": {RESOURCE_PATH: "# Spec audit reference\n"},
                 "category": "spec-audit",
+                "subcategory": "imported",
             },
         )
-        _skip_if_skills_disabled(resp.status_code, resp.text)
         assert resp.status_code == 201, resp.text[:500]
-        assert_strict_openapi_response(resp, ROUTE)
-        assert resp.json()["name"] == name
+        assert_strict_openapi_exchange(resp, ROUTE)
+        created = resp.json()
+        assert created["name"] == name
+        assert created["category"] == "spec-audit"
+        assert skills_client.fetch(name).json()["resources"] == {"references": [RESOURCE_PATH]}
     finally:
         skills_client.remove(name, detach="true")
 
 
+def test_finalize_name_overrides_the_frontmatter_name(import_user: SecondUser) -> None:
+    original, renamed = unique_skill_name(), unique_skill_name()
+    try:
+        resp = request_as(import_user, "POST", FINALIZE, json={"content": skill_md(original), "name": renamed})
+        assert resp.status_code == 201, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+        assert resp.json()["name"] == renamed
+    finally:
+        request_as(import_user, "DELETE", f"/{renamed}", params={"detach": "true"})
+
+
+def test_finalize_ignores_unknown_body_field(import_user: SecondUser) -> None:
+    name = unique_skill_name()
+    try:
+        with outside_request_contract("an undocumented body field, to show it is ignored"):
+            resp = request_as(
+                import_user, "POST", FINALIZE, json={"content": skill_md(name), "spec_audit_unknown": 1}
+            )
+            assert resp.status_code == 201, resp.text[:500]
+            assert_strict_openapi_exchange(resp, ROUTE)
+    finally:
+        request_as(import_user, "DELETE", f"/{name}", params={"detach": "true"})
+
+
 def test_finalize_without_token_is_unauthorized(skills_client: SkillsClient) -> None:
-    resp = skills_client.post(
-        FINALIZE, auth=False, json={"content": skill_md(unique_skill_name())}
-    )
+    resp = skills_client.post(FINALIZE, auth=False, json={"content": skill_md(unique_skill_name())})
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
-def test_finalize_without_content_is_unprocessable(skills_client: SkillsClient) -> None:
+@pytest.mark.parametrize(
+    ("body", "loc"),
+    [
+        pytest.param({"resources": {}}, ["body", "content"], id="missing-content"),
+        pytest.param({"content": "x", "resources": {"a.md": 1}}, ["body", "resources", "a.md"], id="resource-not-text"),
+    ],
+)
+def test_finalize_invalid_body_is_unprocessable(
+    import_user: SecondUser, body: dict[str, Any], loc: list[str]
+) -> None:
     # Node has no validator here: the pydantic 422 from Python passes through.
-    resp = skills_client.post(FINALIZE, json={"resources": {}})
-    _skip_if_skills_disabled(resp.status_code, resp.text)
-    assert resp.status_code == 422, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    with outside_request_contract("a body the spec does not allow"):
+        resp = request_as(import_user, "POST", FINALIZE, json=body)
+        assert resp.status_code == 422, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["detail"][0]["loc"] == loc
+    assert_spec_forbids_request(resp, ROUTE)
 
 
-def test_member_finalize_without_frontmatter_name_is_bad_request(
-    second_user: SecondUser,
+@pytest.mark.parametrize(
+    ("content", "detail_start"),
+    [
+        pytest.param("# No frontmatter here\n", "Imported SKILL.md is missing a 'name' field.", id="no-name"),
+        pytest.param("---\n- a\n---\nbody\n", "Could not read 'name' from the imported SKILL.md", id="frontmatter-not-a-mapping"),
+        pytest.param(skill_md("Spec_Audit_Bad_Name"), "Skill name 'Spec_Audit_Bad_Name' must be lowercase", id="bad-name"),
+    ],
+)
+def test_finalize_unreadable_skill_md_is_bad_request(
+    import_user: SecondUser, content: str, detail_start: str
 ) -> None:
-    resp = request_as(
-        second_user, "POST", FINALIZE, json={"content": "# No frontmatter here\n"}
-    )
-    _skip_if_skills_disabled(resp.status_code, resp.text)
+    resp = request_as(import_user, "POST", FINALIZE, json={"content": content})
     assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
-    assert resp.json() == {"detail": "Imported SKILL.md is missing a 'name' field."}
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["detail"].startswith(detail_start), resp.json()
 
 
-def test_finalize_existing_name_is_conflict(
-    skills_client: SkillsClient, seed_skill: SeedSkill
-) -> None:
+def test_finalize_existing_name_is_conflict(skills_client: SkillsClient, seed_skill: SeedSkill) -> None:
     name = seed_skill()["name"]
 
     resp = skills_client.post(FINALIZE, json={"content": skill_md(name)})
     assert resp.status_code == 409, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {"detail": f"Skill {name!r} already exists"}
+
+
+def test_finalize_builtin_name_is_conflict(import_user: SecondUser, builtin_skill_name: str) -> None:
+    resp = request_as(import_user, "POST", FINALIZE, json={"content": skill_md(builtin_skill_name)})
+    assert resp.status_code == 409, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json() == {"detail": f"{builtin_skill_name!r} is a built-in skill name."}
+
+
+def test_finalize_over_another_users_skill_takes_it_over(
+    skills_client: SkillsClient, seed_skill: SeedSkill, second_user: SecondUser
+) -> None:
+    # API bug: the duplicate check sees only the caller's skills, but the stored key is
+    # org-wide, so this overwrites the member's skill and makes the admin its owner.
+    name = seed_skill(owner=second_user)["name"]
+    try:
+        resp = skills_client.post(FINALIZE, json={"content": skill_md(name)})
+        assert resp.status_code == 201, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+        assert request_as(second_user, "GET", f"/{name}").status_code == 404
+        assert skills_client.fetch(name).status_code == 200
+    finally:
+        skills_client.remove(name, detach="true")

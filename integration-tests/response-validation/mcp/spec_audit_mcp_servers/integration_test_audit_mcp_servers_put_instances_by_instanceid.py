@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import pytest
+from helper.second_user import SecondUser
 from mcp_servers_audit_support import (
     MISSING_INSTANCE_ID,
+    MISSING_TYPE_ID,
+    UNSAFE_PATH_ID,
+    JsonObject,
     McpServersClient,
     SeedMcpInstance,
     instance_body,
+    request_as,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_spec_forbids_request,
+    assert_strict_openapi_exchange,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -29,7 +38,7 @@ def test_update_replaces_config_and_keeps_identity(
 
     resp = mcp_servers_client.update_instance(seeded["_id"], body)
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     record = resp.json()
     assert record["_id"] == seeded["_id"]
@@ -43,16 +52,52 @@ def test_update_replaces_config_and_keeps_identity(
     assert record["isCustom"] is True
 
 
-def test_update_body_missing_required_field_is_unprocessable(
-    mcp_servers_client: McpServersClient,
+@pytest.mark.parametrize(
+    ("overrides", "omit"),
+    [
+        pytest.param({}, "transport", id="missing-transport"),
+        pytest.param({}, "name", id="missing-name"),
+        pytest.param({"authMode": "kerberos"}, None, id="unknown-auth-mode"),
+        pytest.param({"scopes": "read"}, None, id="scopes-not-a-list"),
+    ],
+)
+def test_update_with_invalid_body_is_unprocessable(
+    mcp_servers_client: McpServersClient, overrides: JsonObject, omit: str | None
 ) -> None:
-    body = instance_body()
-    del body["transport"]
+    body = instance_body(**overrides)
+    if omit:
+        del body[omit]
 
     # Pydantic rejects the body before the handler looks the instance up.
     resp = mcp_servers_client.update_instance(MISSING_INSTANCE_ID, body)
     assert resp.status_code == 422, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert_spec_forbids_request(resp, ROUTE)
+
+
+def test_update_ignores_unknown_fields_and_keeps_identity(
+    mcp_servers_client: McpServersClient,
+    seed_mcp_instance: SeedMcpInstance,
+) -> None:
+    seeded = seed_mcp_instance()
+    with outside_request_contract("sends body fields the route does not define"):
+        resp = mcp_servers_client.update_instance(
+            seeded["_id"], instance_body(_id="spec-audit-other-id", createdBy="someone-else")
+        )
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["_id"] == seeded["_id"]
+    assert resp.json()["createdBy"] == seeded["createdBy"]
+
+
+def test_update_to_an_unknown_catalog_type_is_rejected(
+    mcp_servers_client: McpServersClient,
+    seed_mcp_instance: SeedMcpInstance,
+) -> None:
+    seeded = seed_mcp_instance()
+    resp = mcp_servers_client.update_instance(seeded["_id"], instance_body(typeId=MISSING_TYPE_ID))
+    assert resp.status_code == 400, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_update_custom_http_server_without_url_is_rejected(
@@ -63,7 +108,7 @@ def test_update_custom_http_server_without_url_is_rejected(
 
     resp = mcp_servers_client.update_instance(seeded["_id"], instance_body(url=None))
     assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     stored = mcp_servers_client.get_instance(seeded["_id"])
     assert stored.status_code == 200, stored.text[:500]
@@ -75,7 +120,7 @@ def test_update_unknown_instance_is_not_found(
 ) -> None:
     resp = mcp_servers_client.update_instance(MISSING_INSTANCE_ID, instance_body())
     assert resp.status_code == 404, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_update_without_token_is_unauthorized(
@@ -85,4 +130,24 @@ def test_update_without_token_is_unauthorized(
         MISSING_INSTANCE_ID, instance_body(), auth=False
     )
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_update_as_member_is_forbidden(
+    mcp_servers_client: McpServersClient,
+    seed_mcp_instance: SeedMcpInstance,
+    second_user: SecondUser,
+) -> None:
+    seeded = seed_mcp_instance()
+    resp = request_as(second_user, "PUT", f"/instances/{seeded['_id']}", json=instance_body())
+    assert resp.status_code == 403, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert mcp_servers_client.get_instance(seeded["_id"]).json()["name"] == seeded["name"]
+
+
+def test_update_unsafe_instance_id_is_rejected_before_auth(
+    mcp_servers_client: McpServersClient,
+) -> None:
+    resp = mcp_servers_client.update_instance(UNSAFE_PATH_ID, instance_body(), auth=False)
+    assert resp.status_code == 400, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)

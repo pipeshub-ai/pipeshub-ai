@@ -12,10 +12,12 @@ from helper.pipeshub_client import PipeshubClient
 from saml_audit_support import (
     CODE_CHALLENGE,
     DESKTOP_STATE,
+    IDP_ENTRY_POINT,
     SIGN_IN_ROUTE,
+    DummyIdp,
     SamlClient,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -30,6 +32,25 @@ def _relay_state(location: str) -> dict[str, Any]:
     raw = parse_qs(urlsplit(location).query).get("RelayState", [""])[0]
     assert raw, f"IdP redirect carries no RelayState: {location[:300]}"
     return json.loads(base64.b64decode(raw))
+
+
+# Defined first: it has to run before any test here saves an IdP.
+def test_sign_in_without_a_registered_idp_is_an_internal_error(
+    saml_client: SamlClient, saml_configured: bool
+) -> None:
+    if saml_configured:
+        pytest.skip(
+            "An IdP is registered with this Node process. passport keeps a registered "
+            "strategy until the process restarts, so once any SSO setting has been saved "
+            "(by this suite's own dummy_idp fixture too) the never-configured state cannot "
+            "come back in the same run"
+        )
+    # passport's "Unknown authentication strategy" error reaches the global
+    # handler as an unknown error, not as a 404.
+    resp = saml_client.sign_in(email="spec-audit@example.com")
+    assert resp.status_code == 500, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
 
 
 @pytest.mark.parametrize(
@@ -53,26 +74,34 @@ def _relay_state(location: str) -> dict[str, Any]:
             True,
             id="desktop_flow",
         ),
+        pytest.param(
+            {"client": "desktop", "state": DESKTOP_STATE},
+            False,
+            id="desktop_without_code_challenge",
+        ),
+        pytest.param(
+            {"client": "desktop", "state": "not-a-desktop-state", "code_challenge": CODE_CHALLENGE},
+            False,
+            id="desktop_with_malformed_state",
+        ),
     ],
 )
 def test_sign_in_redirects_to_idp(
     saml_client: SamlClient,
     pipeshub_client: PipeshubClient,
-    saml_configured: bool,
+    dummy_idp: DummyIdp,
     params: dict[str, str],
     desktop: bool,
 ) -> None:
-    if not saml_configured:
-        pytest.skip(
-            "No SAML identity provider is configured on this deployment (the "
-            'passport "saml" strategy is not registered), so there is no IdP to redirect to'
-        )
     # Nothing in the query is validated; every variant goes to the IdP.
     resp = saml_client.sign_in(**params)
     assert resp.status_code == 302, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
-    relay = _relay_state(resp.headers["Location"])
+    location = resp.headers["Location"]
+    assert location.startswith(f"{IDP_ENTRY_POINT}?"), location[:200]
+    assert parse_qs(urlsplit(location).query).get("SAMLRequest")
+    relay = _relay_state(location)
     assert relay["orgId"] == pipeshub_client.org_id
     assert relay.get("sessionToken") == params.get("sessionToken")
     if desktop:
@@ -83,17 +112,13 @@ def test_sign_in_redirects_to_idp(
         assert not DESKTOP_KEYS & relay.keys(), relay
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="API bug: GET /saml/signIn answers 500 INTERNAL_ERROR when SAML SSO is not configured",
-)
-def test_sign_in_without_saml_configured_is_not_found(
-    saml_client: SamlClient, saml_configured: bool
+def test_sign_in_ignores_what_it_does_not_read(
+    saml_client: SamlClient, dummy_idp: DummyIdp
 ) -> None:
-    if saml_configured:
-        pytest.skip("A SAML identity provider is configured on this deployment")
-    # passport's "Unknown authentication strategy" error goes to next() and
-    # reaches the global handler as an unknown error.
-    resp = saml_client.sign_in(email="spec-audit@example.com")
-    assert resp.status_code == 404, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    with outside_request_contract(
+        "the route has no validator: any other client value and unknown query keys are ignored"
+    ):
+        resp = saml_client.sign_in(client="web", specAuditUnknown="1")
+        assert resp.status_code == 302, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+    assert not DESKTOP_KEYS & _relay_state(resp.headers["Location"]).keys()

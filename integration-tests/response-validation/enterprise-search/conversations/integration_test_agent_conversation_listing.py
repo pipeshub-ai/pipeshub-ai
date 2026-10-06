@@ -39,6 +39,7 @@ from helper.agui_sse import (
     run_finished_result,
 )
 from helper.clients.conversations_client import AgentConversationsClient
+from strict_openapi import outside_request_contract  # noqa: E402
 from openapi_schema_validator import (
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
@@ -699,12 +700,13 @@ class TestAgentConversationListing:
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
 
-        resp = self._list_grouped_archived_agent_conversations(
-            params={
-                "agentPage": "0",
-                "agentLimit": "999",
-            },
-        )
+        with outside_request_contract("out-of-range paging is sent to show the validator clamps it"):
+            resp = self._list_grouped_archived_agent_conversations(
+                params={
+                    "agentPage": "0",
+                    "agentLimit": "999",
+                },
+            )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -744,9 +746,10 @@ class TestAgentConversationListing:
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
 
-        resp = self._list_grouped_archived_agent_conversations(
-            params={"agentPage": "abc", "agentLimit": "xyz"},
-        )
+        with outside_request_contract("non-numeric paging is sent to show the validator defaults it"):
+            resp = self._list_grouped_archived_agent_conversations(
+                params={"agentPage": "abc", "agentLimit": "xyz"},
+            )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)

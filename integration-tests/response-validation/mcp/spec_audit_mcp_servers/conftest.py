@@ -27,7 +27,11 @@ from mcp_servers_audit_support import (  # noqa: E402
     McpServersClient,
     SeedAgent,
     SeedMcpInstance,
+    forget_access_token,
     instance_body,
+    mcp_fixture_connector_url,
+    mcp_fixture_healthy,
+    mint_narrow_scope_token,
 )
 
 logger = logging.getLogger("mcp-servers-audit")
@@ -86,6 +90,24 @@ def mcp_feature_enabled(
 @pytest.fixture(scope="session")
 def mcp_servers_client(pipeshub_client: PipeshubClient) -> McpServersClient:
     return McpServersClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
+def narrow_scope_headers(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]]:
+    """Headers of an OAuth token of the suite's own client without any mcp:* scope."""
+    token = mint_narrow_scope_token(pipeshub_client.base_url, pipeshub_client.timeout_seconds)
+    try:
+        yield {"Authorization": f"Bearer {token}"}
+    finally:
+        forget_access_token(token)
+
+
+@pytest.fixture(scope="session")
+def mcp_fixture_url() -> str:
+    """URL of the MCP fixture server (integration-tests/mcp_fixture) as the connectors service sees it."""
+    if not mcp_fixture_healthy():
+        pytest.fail("the MCP fixture (integration-tests/mcp_fixture/server.py) is not answering on MCP_FIXTURE_TEST_URL")
+    return mcp_fixture_connector_url()
 
 
 @pytest.fixture

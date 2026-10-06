@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import copy
+import os
 import uuid
 from functools import lru_cache
 from typing import Any, Callable
 
+import pytest
+import redis
 import requests
 import strict_openapi
 from openapi_schema_validator import (
@@ -42,8 +45,71 @@ INVALID_BEARER_HEADERS = {"Authorization": "Bearer invalid-token"}
 # What every admin-facing read returns in place of a stored secret.
 SECRET_PLACEHOLDER = "****************"
 
+MALFORMED_JSON_BODY = "{not json"
+JSON_HEADERS = {"Content-Type": "application/json"}
+
+# Where the controller keeps each config no route can delete (configuration_manager/paths/paths.ts).
+# The connector ones are per organization: the org id is appended as one more path segment.
+KV_STORAGE = "/services/storage"
+KV_SMTP = "/services/smtp"
+KV_AUTH_AZURE_AD = "/services/auth/azureAd"
+KV_AUTH_MICROSOFT = "/services/auth/microsoft"
+KV_AUTH_GOOGLE = "/services/auth/google"
+KV_AUTH_SSO = "/services/auth/sso"
+KV_AUTH_OAUTH = "/services/auth/oauth"
+KV_CONNECTOR_ATLASSIAN = "/services/connectors/atlassian/config"
+KV_CONNECTOR_ONEDRIVE = "/services/connectors/onedrive/config"
+KV_CONNECTOR_SHAREPOINT = "/services/connectors/sharepoint/config"
+
+_KV_INVALIDATION_CHANNEL = "pipeshub:cache:invalidate"
+
+# Not a real certificate: the route stores the text and builds the SAML strategy without parsing it.
+SSO_CERTIFICATE_BODY = "MIIBspecAuditNotARealCertificate0123456789+/AAAA"
+SSO_CERTIFICATE_PEM = (
+    f"-----BEGIN CERTIFICATE-----\n{SSO_CERTIFICATE_BODY[:24]}\n{SSO_CERTIFICATE_BODY[24:]}\n-----END CERTIFICATE-----\n"
+)
+# Port 9 (discard) and the "spec-audit-dummy" marker: a leftover is recognisable and leads nowhere.
+SSO_VALID_BODY: dict[str, Any] = {
+    "entryPoint": "http://127.0.0.1:9/spec-audit-dummy-idp/sso",
+    "certificate": SSO_CERTIFICATE_PEM,
+    "emailKey": "email",
+    "enableJit": False,
+    "samlPlatform": "spec-audit-dummy",
+}
+# GET /authConfig/sso adds this to whatever is stored; POST does not take it.
+SSO_DERIVED_FIELDS = ("spEntityId",)
+
+# (method, path under the router) of every operation the two request-wide checks below cover:
+# the JSON body parser and the HTML filter both run before the router, whatever the route.
+PRE_ROUTER_OPERATIONS: list[tuple[str, str]] = [
+    ("POST", "/storageConfig"),
+    ("GET", "/storageConfig"),
+    ("POST", "/smtpConfig"),
+    ("GET", "/smtpConfig"),
+    ("GET", "/smtpConfig/status"),
+    ("GET", "/connectors/atlassian/config"),
+    ("POST", "/connectors/atlassian/config"),
+    ("GET", "/connectors/onedrive/config"),
+    ("POST", "/connectors/onedrive/config"),
+    ("GET", "/connectors/sharepoint/config"),
+    ("POST", "/connectors/sharepoint/config"),
+    ("GET", "/authConfig/azureAd"),
+    ("POST", "/authConfig/azureAd"),
+    ("GET", "/authConfig/microsoft"),
+    ("POST", "/authConfig/microsoft"),
+    ("GET", "/authConfig/google"),
+    ("POST", "/authConfig/google"),
+    ("GET", "/authConfig/sso"),
+    ("POST", "/authConfig/sso"),
+    ("GET", "/authConfig/oauth"),
+    ("POST", "/authConfig/oauth"),
+    ("POST", "/platform/settings"),
+]
+
 SeedSlackBot = Callable[..., dict[str, Any]]
 MetricsCollectionConfig = dict[str, Any]
+# guard(sub_path, kv_path, derived=()) -> the config GET returned before the test touched it.
+GuardSavedConfig = Callable[..., dict[str, Any]]
 
 _OPENAPI_ANNOTATION_KEYS = frozenset({"example", "examples", "discriminator", "xml", "externalDocs"})
 
@@ -57,6 +123,68 @@ def slack_bot_body(**overrides: Any) -> dict[str, Any]:
     }
     body.update(overrides)
     return body
+
+
+def _kv_store(kv_path: str) -> tuple[redis.Redis, str, str]:
+    """A client for the deployment's key-value store, the full key of ``kv_path`` and the cache channel."""
+    if os.getenv("KV_STORE_TYPE", "redis").strip().lower() != "redis":
+        pytest.fail(
+            f"cannot reach {kv_path} directly: KV_STORE_TYPE is not redis, and no API removes a saved config"
+        )
+    namespace = os.getenv("REDIS_KEY_NAMESPACE", "").strip()
+    scope = f"{namespace}:" if namespace else ""
+    client = redis.Redis(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", "6379")),
+        password=os.getenv("REDIS_PASSWORD") or None,
+        db=int(os.getenv("REDIS_DB", "0")),
+        socket_timeout=10,
+    )
+    key = f"{scope}{os.getenv('REDIS_KV_PREFIX', 'pipeshub:kv:')}{kv_path}"
+    return client, key, f"{scope}{_KV_INVALIDATION_CHANNEL}"
+
+
+def read_stored_value(kv_path: str) -> bytes | None:
+    """The bytes the deployment holds at ``kv_path`` (None when the key is absent)."""
+    client, key, _ = _kv_store(kv_path)
+    try:
+        return client.get(key)
+    finally:
+        client.close()
+
+
+def write_stored_value(kv_path: str, raw: bytes) -> None:
+    """Put back bytes read earlier with ``read_stored_value``; never used to invent a value."""
+    client, key, channel = _kv_store(kv_path)
+    try:
+        client.set(key, raw)
+        client.publish(channel, kv_path)
+    finally:
+        client.close()
+
+
+def forget_stored_config(kv_path: str) -> None:
+    """Remove one key from the deployment's key-value store, as KeyValueStoreService.delete does.
+
+    The auth and connector config routes only ever create or replace; this is the
+    one way to put back "nothing was saved" after a test saved something.
+    """
+    client, key, channel = _kv_store(kv_path)
+    try:
+        client.delete(key)
+        # The Python services cache config values and drop them on this message.
+        client.publish(channel, kv_path)
+    finally:
+        client.close()
+
+
+def assert_validation_error(resp: requests.Response, *fields: str) -> None:
+    """A 400 from the Node request validator that names exactly ``fields`` (``body.clientId``...)."""
+    assert resp.status_code == 400, resp.text[:500]
+    error = resp.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR", resp.text[:500]
+    named = sorted(detail["field"] for detail in error["metadata"]["errors"])
+    assert named == sorted(fields), resp.text[:500]
 
 
 def request_as(
