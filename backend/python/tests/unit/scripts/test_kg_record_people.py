@@ -81,6 +81,14 @@ async def test_a_failed_page_is_reported_and_the_run_carries_on() -> None:
     assert lines[-1]["total"] == {"records": 1, "edges": 2, "skipped": 0, "failed_pages": 1}
 
 
+async def test_a_failed_page_logs_its_traceback(caplog) -> None:
+    graph, out = _graph([["m1"]], failing=frozenset({"m1"})), io.StringIO()
+    with caplog.at_level(logging.ERROR, logger="t"):
+        await backfill(graph, MagicMock(), "org-1", apply=False, logger=logging.getLogger("t"), out=out)
+    (failed,) = [r for r in caplog.records if r.exc_info]
+    assert "after=m1" in failed.getMessage()
+
+
 def test_apply_is_off_by_default() -> None:
     assert build_parser().parse_args(["backfill", "--org", "o"]).apply is False
 
