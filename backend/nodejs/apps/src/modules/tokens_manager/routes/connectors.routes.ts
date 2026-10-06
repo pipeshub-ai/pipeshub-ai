@@ -59,6 +59,7 @@ import {
   reindexVectorStore,
   reindexConnector,
   resyncConnectorRecords,
+  stopConnectorSync,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
@@ -223,6 +224,9 @@ const saveConnectorInstanceFilterOptionsSchema = z.object({
   }),
 });
 
+// The connector service pages filter options 100 at a time at most.
+const FILTER_OPTIONS_LIMIT_MESSAGE = 'Limit must be between 1 and 100.';
+
 /**
  * Schema for getting filter field options (dynamic with pagination)
  */
@@ -236,7 +240,7 @@ const getFilterFieldOptionsSchema = z.object({
       .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1, FILTER_OPTIONS_LIMIT_MESSAGE).max(100, FILTER_OPTIONS_LIMIT_MESSAGE))
       .optional(),
     search: z.string().optional(),
     cursor: z.string().optional(),
@@ -688,6 +692,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, config),
+  );
+
+  /**
+   * POST /:connectorId/sync/stop
+   * Request cancellation of the in-flight sync for a connector.
+   */
+  router.post(
+    '/:connectorId/sync/stop',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    stopConnectorSync(config),
   );
 
   // ============================================================================

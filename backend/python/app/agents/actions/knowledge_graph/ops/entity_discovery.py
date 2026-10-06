@@ -123,7 +123,6 @@ def _render_hits(
             "entityId": hit.entity_id,
             "entityType": hit.entity_type,
             "name": _trunc(hit.name),
-            "score": round(hit.score, 4),
         }
         if hit.aliases:
             # Other spellings merged into this entity, so the model can tell

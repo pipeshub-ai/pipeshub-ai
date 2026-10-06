@@ -1083,9 +1083,10 @@ class TestHandleRecordPermissions:
         permission.entity_type = EntityType.USER.value
         permission.email = "user@example.com"
 
-        await proc._handle_record_permissions(record, [permission], tx_store)
+        with pytest.raises(RuntimeError, match="db error"):
+            await proc._handle_record_permissions(record, [permission], tx_store)
 
-        proc.logger.error.assert_called()
+        tx_store.batch_create_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1096,7 +1097,7 @@ class TestHandleRecordPermissions:
 class TestOnUpdatedRecordPermissions:
     @pytest.mark.asyncio
     async def test_deletes_and_recreates_permissions(self):
-        """Old permissions are deleted and new ones created."""
+        """Old permissions and new ones go to the store in one call."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -1122,7 +1123,11 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [permission])
 
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with(
+            "rec-1", [{"_from": "u/1", "_to": "r/1"}], None, inherit=False
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
+        tx_store.batch_create_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1577,25 +1582,107 @@ class TestLinkRecordToGroup:
 
         await proc._link_record_to_group(record, "group-1", tx_store)
 
-        tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "group-1")
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once()
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=True, leaving_group_id=None
+        )
 
     @pytest.mark.asyncio
-    async def test_deletes_inherit_when_no_inherit(self):
-        """Deletes inherit permissions edge when inherit is False."""
+    async def test_deletes_inherit_when_no_inherit_on_an_existing_record(self):
+        """Deletes the inherit-permissions edge when inherit is turned off."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         record = _make_record()
         record.id = "rec-1"
         record.inherit_permissions = False
 
-        await proc._link_record_to_group(record, "group-1", tx_store)
+        existing = _make_record()
+        existing.id = "rec-1"
 
-        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once()
+        await proc._link_record_to_group(record, "group-1", tx_store, existing)
+
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=False, leaving_group_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_pre_existing_placeholder_still_gets_its_stale_edge_removed(self):
+        """The skip above is for *new* records, and must not swallow this one.
+
+        `_handle_parent_record` re-anchors a placeholder that already exists in
+        the store, precisely to repair edges a full sync deleted. It reaches
+        `_link_record_to_group`, whose `existing_record` defaults to None -- so
+        omitting it there made the brand-new-record skip fire for a row that is
+        not new, and the stale inherit-permissions edge survived.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        placeholder = _make_record()
+        placeholder.id = "ph-1"
+        placeholder.is_placeholder = True
+        placeholder.inherit_permissions = False
+
+        # Read back from the store: this is a pre-existing row, not a new one.
+        tx_store.get_record_by_external_id = AsyncMock(return_value=placeholder)
+
+        child = _make_record()
+        child.id = "child-1"
+        child.parent_external_record_id = "ext-1"
+        child.parent_record_type = RecordType.FILE
+
+        with patch.object(
+            proc, "_handle_record_group", new=AsyncMock(return_value="group-1")
+        ):
+            await proc._handle_parent_record(child, tx_store)
+
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "ph-1", "group-1", inherit=False, leaving_group_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_inherit_delete_for_a_brand_new_record(self):
+        """A record created moments ago has no edge to remove.
+
+        Issuing the delete anyway cost one round trip per record on the hot path
+        of every full sync — measured at one seventh of all graph traffic.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+        record.inherit_permissions = False
+
+        await proc._link_record_to_group(record, "group-1", tx_store, None)
+
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=None, leaving_group_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_new_record_keeps_the_id_its_connector_set(self):
+        """Connectors hand that id to other records before processing.
+
+        Jira, Confluence, Linear, Slack, Outlook and Zammad copy a new parent's id
+        into its attachments' parent_node_id, Gmail writes sibling edges with it,
+        and the object stores move a record by reusing its id under a new key.
+        Replacing it here left all of those pointing at a record that does not
+        exist.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+
+        for origin in (OriginTypes.CONNECTOR.value, OriginTypes.UPLOAD.value):
+            record = _make_record(origin=origin)
+            record.id = "given-by-caller"
+
+            await proc._process_record(record, [], tx_store)
+
+            assert record.id == "given-by-caller"
 
     @pytest.mark.asyncio
     async def test_deletes_old_group_edge_when_group_changed(self):
-        """Deletes old edge when group changes."""
+        """Leaving the old group and joining the new one are one call to the store."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         record = _make_record()
@@ -1606,10 +1693,13 @@ class TestLinkRecordToGroup:
         existing.id = "rec-1"
         existing.record_group_id = "old-group"
 
-        await proc._link_record_to_group(record, "new-group", tx_store, existing_record=existing)
+        moved = await proc._link_record_to_group(record, "new-group", tx_store, existing_record=existing)
 
-        # Should delete edge from old group
-        tx_store.delete_edge.assert_awaited()
+        assert moved is True
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "new-group", inherit=True, leaving_group_id="old-group"
+        )
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_shared_with_me_group_linked(self):
@@ -1629,8 +1719,10 @@ class TestLinkRecordToGroup:
 
         await proc._link_record_to_group(record, "group-1", tx_store)
 
-        # Should create relation for shared group too
-        assert tx_store.create_record_group_relation.call_count >= 2
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "group-1", inherit=True, leaving_group_id=None
+        )
+        tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "shared-group-internal-id")
 
 
 # ===========================================================================
@@ -1865,7 +1957,10 @@ class TestOnNewUserGroups:
         )
         await proc.on_new_user_groups([(group, [])])
         assert group.id == "existing-ug-id"
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "existing-ug-id", CollectionNames.GROUPS.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1918,13 +2013,13 @@ class TestResolvePrincipal:
         assert result == ("person-1", CollectionNames.PEOPLE.value)
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_error(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.side_effect = Exception("db fail")
 
-        result = await proc._resolve_principal("ext@test.com", tx_store)
-        assert result is None
+        with pytest.raises(Exception, match="db fail"):
+            await proc._resolve_principal("ext@test.com", tx_store)
 
 
 # ===========================================================================
@@ -2322,7 +2417,7 @@ class TestOnUpdatedRecordPermissionsAdditional:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=True)
 
     @pytest.mark.asyncio
     async def test_no_belongs_to_triggers_process_record(self):
@@ -2834,6 +2929,8 @@ class TestNewRecordsAreStoredNotStarted:
         await proc.on_new_records([(record, [])])
 
         proc.messaging_producer.send_messages.assert_awaited_once()
+        published = proc.messaging_producer.send_messages.await_args.args[1]
+        assert [key for key, _ in published] == ["rec-1"]
         proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
             ["rec-1"],
             ProgressStatus.NOT_STARTED.value,

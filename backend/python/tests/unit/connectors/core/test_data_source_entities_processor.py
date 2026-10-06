@@ -55,6 +55,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -1012,7 +1013,10 @@ class TestOnNewUserGroups:
         await proc.on_new_user_groups([(ug, [])])
 
         assert ug.id == "existing-ug-id"
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "existing-ug-id", CollectionNames.GROUPS.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -1131,7 +1135,10 @@ class TestOnNewAppRoles:
         await proc.on_new_app_roles([(role, [])])
 
         assert role.id == "existing-role-id"
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "existing-role-id", CollectionNames.ROLES.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -1408,6 +1415,193 @@ class TestOnUserGroupDeleted:
 # ===========================================================================
 
 
+class TestFailedPermissionWritesAreRaised:
+    @pytest.mark.asyncio
+    async def test_a_failed_record_permission_write_is_raised(self) -> None:
+        """Logged and swallowed, it let the surrounding write commit the record with no permissions."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        user = MagicMock()
+        user.id = "user-1"
+        tx_store.get_user_by_email.return_value = user
+        tx_store.batch_create_edges.side_effect = RuntimeError("write conflict")
+
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, email="user@test.com")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await proc._handle_record_permissions(record, [perm], tx_store)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_permission_rewrite_is_raised_before_anything_is_reported_done(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_edges_from_node.return_value = [{"some": "edge"}]
+        tx_store.replace_record_permissions.side_effect = RuntimeError("lock timeout")
+
+        record = _make_record()
+        record.id = "rec-1"
+
+        with pytest.raises(RuntimeError, match="lock timeout"):
+            await proc.on_updated_record_permissions(record, [])
+
+
+class TestFailedPrincipalLookupsStopRewrites:
+    """A lookup that cannot be read must not be taken for "no such principal": every one
+    of these writes replaces what was there, so the principal would lose its access."""
+
+    @staticmethod
+    def _proc_and_store() -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_record_permission_rewrite(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_edges_from_node.return_value = [{"some": "edge"}]
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, email="user@test.com")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_updated_record_permissions(record, [perm])
+
+        tx_store.replace_record_permissions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_permission_rewrite_keeps_an_absent_principal_out(self) -> None:
+        """A principal that truly is not there is left out, as before."""
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_edges_from_node.return_value = [{"some": "edge"}]
+        tx_store.get_user_group_by_external_id.return_value = None
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.GROUP.value, external_id="gone")
+
+        await proc.on_updated_record_permissions(record, [perm])
+
+        tx_store.replace_record_permissions.assert_awaited_once()
+        assert tx_store.replace_record_permissions.await_args.args[1] == []
+
+    @pytest.mark.asyncio
+    async def test_user_group_members(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        existing = MagicMock()
+        existing.id = "ug-1"
+        tx_store.get_user_group_by_external_id.return_value = existing
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+        group = AppUserGroup(
+            app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_group_id="ext-ug-1", name="G"
+        )
+        member = AppUser(
+            app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_id="s1",
+            email="member@test.com", full_name="Member",
+        )
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_new_user_groups([(group, [member])])
+
+        tx_store.replace_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_app_role_members(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        existing = MagicMock()
+        existing.id = "role-1"
+        tx_store.get_app_role_by_external_id.return_value = existing
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+        role = AppRole(app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_role_id="ext-r-1", name="R")
+        member = AppUser(
+            app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_id="s1",
+            email="member@test.com", full_name="Member",
+        )
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_new_app_roles([(role, [member])])
+
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        tx_store.replace_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("entity_type", "lookup", "principal"),
+        [
+            (EntityType.USER, "get_user_by_email", {"email": "user@test.com"}),
+            (EntityType.GROUP, "get_user_group_by_external_id", {"external_id": "ext-g"}),
+            (EntityType.ROLE, "get_app_role_by_external_id", {"external_id": "ext-r"}),
+        ],
+    )
+    async def test_record_group_permissions(self, entity_type: EntityType, lookup: str, principal: dict) -> None:
+        proc, tx_store = self._proc_and_store()
+        existing = MagicMock()
+        existing.id = "rg-1"
+        existing.name = "Drive"
+        tx_store.get_record_group_by_external_id.return_value = existing
+        getattr(tx_store, lookup).side_effect = RuntimeError("read failed")
+        group = RecordGroup(
+            external_group_id="ext-rg", name="Drive", group_type="DRIVE",
+            connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1",
+        )
+        perm = Permission(type=PermissionType.READ, entity_type=entity_type, **principal)
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_new_record_groups([(group, [perm])])
+
+        assert getattr(tx_store, lookup).await_args.kwargs["raise_on_error"] is True
+        tx_store.replace_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_external_app_users(self) -> None:
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_external_app_users(["out@x.io"], "conn-1")
+
+        tx_store.ensure_app_membership.assert_not_awaited()
+
+
+class TestUpsertPermissionEdge:
+    @staticmethod
+    def _proc_with(existing_edge: dict | None) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_edge.return_value = existing_edge
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_changed_role_is_written_without_a_delete_first(self) -> None:
+        """A delete first lost the grant when the write after it failed."""
+        proc, tx_store = self._proc_with({"role": "READER"})
+        perm = Permission(type=PermissionType.WRITE, entity_type=EntityType.USER.value)
+
+        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm)
+
+        assert old == {"role": "READER"}
+        tx_store.delete_edge.assert_not_awaited()
+        tx_store.batch_create_edges.assert_awaited_once()
+        (edge,) = tx_store.batch_create_edges.await_args.args[0]
+        assert (edge["from_id"], edge["to_id"], edge["role"]) == ("user-1", "rec-1", "WRITER")
+
+    @pytest.mark.asyncio
+    async def test_upgrade_only_keeps_a_higher_role(self) -> None:
+        proc, tx_store = self._proc_with({"role": "OWNER"})
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value)
+
+        old = await proc.upsert_permission_edge("user-1", "users", "rec-1", "records", perm, upgrade_only=True)
+
+        assert old == {"role": "OWNER"}
+        tx_store.batch_create_edges.assert_not_awaited()
+
+
 class TestMigrateGroupPermissionsToUser:
     @pytest.mark.asyncio
     async def test_no_tx_store_creates_transaction(self):
@@ -1541,9 +1735,11 @@ class TestMigrateGroupPermissionsToUser:
         )
 
         assert result is None
-        # Should delete old edge and create new one
-        tx_store.delete_edge.assert_awaited()
-        tx_store.batch_create_edges.assert_awaited()
+        # The upsert overwrites the edge: a delete first would lose it if the upsert failed.
+        tx_store.delete_edge.assert_not_awaited()
+        tx_store.batch_create_edges.assert_awaited_once()
+        (edge,) = tx_store.batch_create_edges.await_args.args[0]
+        assert (edge["from_id"], edge["to_id"], edge["role"]) == ("user-1", "rec-1", "WRITER")
 
     @pytest.mark.asyncio
     async def test_skips_existing_permission_same_or_higher(self):
@@ -1738,6 +1934,95 @@ class TestOnRecordGroupDeleted:
         assert result is False
         proc.logger.error.assert_called()
 
+    @staticmethod
+    def _kept_for_the_trash(marked: bool | None) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = MagicMock()
+        group.id = "rg-internal-1"
+        group.name = "Team"
+        tx_store.get_record_group_by_external_id.return_value = group
+        tx_store.get_records_by_status = AsyncMock(return_value=[MagicMock()])
+        tx_store.batch_update_nodes = AsyncMock(return_value=marked)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_group_kept_for_the_trash_is_marked_for_the_purge(self) -> None:
+        proc, tx_store = self._kept_for_the_trash(marked=True)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=True),
+        ):
+            result = await proc.on_record_group_deleted("ext-grp-1", "conn-1")
+
+        assert result is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
+        [nodes, collection] = tx_store.batch_update_nodes.await_args.args
+        assert collection == CollectionNames.RECORD_GROUPS.value
+        assert nodes[0]["id"] == "rg-internal-1" and nodes[0]["isDeletedAtSource"] is True
+        assert isinstance(nodes[0]["deletedAtSourceTimestamp"], int)
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_the_store_would_not_mark_is_retried(self) -> None:
+        """Unmarked, the purge would never remove it, so the removal is reported as not done."""
+        proc, tx_store = self._kept_for_the_trash(marked=False)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=True),
+        ):
+            result = await proc.on_record_group_deleted("ext-grp-1", "conn-1")
+
+        assert result is False
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
+
+
+class TestHandleRecordGroupKeptForTheTrash:
+    """A sync filing a record under a group kept only for the trash takes the group back first."""
+
+    @staticmethod
+    def _found(kept: bool) -> MagicMock:
+        group = MagicMock()
+        group.id = "rg-kept"
+        group.is_deleted_at_source = kept
+        return group
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_still_there_is_taken_back_and_used(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=True)
+        record = _make_record(external_record_group_id="ext-g")
+
+        assert await proc._handle_record_group(record, tx_store) == "rg-kept"
+
+        tx_store.take_back_kept_record_group.assert_awaited_once_with("rg-kept")
+        tx_store.batch_upsert_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_kept_group_the_purge_removed_meanwhile_is_made_again(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
+        tx_store.take_back_kept_record_group = AsyncMock(return_value=False)
+        record = _make_record(external_record_group_id="ext-g")
+
+        group_id = await proc._handle_record_group(record, tx_store)
+
+        assert group_id and group_id != "rg-kept"
+        [created] = tx_store.batch_upsert_record_groups.await_args.args[0]
+        assert created.id == group_id and created.external_group_id == "ext-g"
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_is_not_kept_costs_no_extra_write(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = self._found(kept=False)
+        tx_store.take_back_kept_record_group = AsyncMock()
+
+        assert await proc._handle_record_group(_make_record(external_record_group_id="ext-g"), tx_store) == "rg-kept"
+        tx_store.take_back_kept_record_group.assert_not_awaited()
+
 
 # ===========================================================================
 # _delete_group_organization_edges (lines 1905-1921)
@@ -1838,16 +2123,21 @@ class TestDeletePermissionFromRecord:
         mock_user = MagicMock()
         mock_user.id = "user-1"
         tx_store.get_user_by_email.return_value = mock_user
-        tx_store.delete_edge.return_value = True
+        tx_store.batch_delete_edges.return_value = 1
 
         await proc.delete_permission_from_record("rec-1", "user@test.com")
 
-        tx_store.delete_edge.assert_awaited()
+        # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+        tx_store.batch_delete_edges.assert_awaited_once_with(
+            [{"from_id": "user-1", "from_collection": "users", "to_id": "rec-1", "to_collection": "records"}],
+            collection="permission",
+        )
+        tx_store.delete_edge.assert_not_awaited()
         proc.logger.info.assert_called()
 
     @pytest.mark.asyncio
-    async def test_delete_fails_logs_warning(self):
-        """Logs warning when delete edge returns False."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Swallowed, it left the user with a permission the caller believed removed."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -1855,7 +2145,36 @@ class TestDeletePermissionFromRecord:
         mock_user = MagicMock()
         mock_user.id = "user-1"
         tx_store.get_user_by_email.return_value = mock_user
-        tx_store.delete_edge.return_value = False
+        tx_store.batch_delete_edges.side_effect = RuntimeError("write conflict")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await proc.delete_permission_from_record("rec-1", "user@test.com")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_lookup_is_raised(self) -> None:
+        """Taken for "no such user", it returned with the permission still in place."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_email.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.delete_permission_from_record("rec-1", "user@test.com")
+
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        tx_store.batch_delete_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_fails_logs_warning(self):
+        """Logs a warning when there was no permission edge to delete."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        tx_store.batch_delete_edges.return_value = 0
 
         await proc.delete_permission_from_record("rec-1", "user@test.com")
 
@@ -2278,7 +2597,7 @@ class TestOnUpdatedRecordPermissionsAdditional:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=True)
 
     @pytest.mark.asyncio
     async def test_inherit_permissions_false_deletes_edge(self):
@@ -2298,7 +2617,8 @@ class TestOnUpdatedRecordPermissionsAdditional:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.delete_edge.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=False)
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -2389,7 +2709,8 @@ class TestHandleParentRecordParentChild:
         await proc._handle_parent_record(record, tx_store)
 
         tx_store.batch_upsert_records.assert_awaited()
-        tx_store.create_record_group_relation.assert_awaited()
+        tx_store.link_record_to_group.assert_awaited()
+        assert tx_store.link_record_to_group.await_args.args[1] == "grp-internal-1"
 
     @pytest.mark.asyncio
     async def test_existing_placeholder_parent_reanchored_to_group(self):
@@ -2414,7 +2735,8 @@ class TestHandleParentRecordParentChild:
 
         await proc._handle_parent_record(record, tx_store)
 
-        tx_store.create_record_group_relation.assert_awaited_with("parent-id", "grp-internal-1")
+        tx_store.link_record_to_group.assert_awaited_once()
+        assert tx_store.link_record_to_group.await_args.args[:2] == ("parent-id", "grp-internal-1")
         tx_store.create_record_relation.assert_awaited()
 
     @pytest.mark.asyncio
@@ -3639,9 +3961,36 @@ class TestLinkRecordToGroupEdgeCases:
 
         await proc._link_record_to_group(record, "new-grp", tx_store, existing)
 
-        tx_store.delete_edge.assert_awaited()
-        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited()
-        tx_store.create_record_group_relation.assert_awaited_with("rec-1", "new-grp")
+        # One call: apart, a failure between them left the record out of its old
+        # group but still inheriting that group's permissions.
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "new-grp", inherit=False, leaving_group_id="old-grp"
+        )
+        tx_store.delete_edge.assert_not_awaited()
+        tx_store.create_record_group_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leaving_a_group_for_none_still_removes_its_edges(self) -> None:
+        """A record left with only shared-with-me groups leaves its old group."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_group_by_external_id.return_value = None
+
+        record = _make_record()
+        record.id = "rec-1"
+        record.shared_with_me_record_group_ids = ["shared-ext-grp"]
+        record.inherit_permissions = False
+
+        existing = MagicMock()
+        existing.id = "rec-1"
+        existing.record_group_id = "old-grp"
+
+        moved = await proc._link_record_to_group(record, None, tx_store, existing)
+
+        assert moved is True
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", None, inherit=False, leaving_group_id="old-grp"
+        )
 
     @pytest.mark.asyncio
     async def test_shared_with_me_record_group_found(self):
@@ -3660,8 +4009,10 @@ class TestLinkRecordToGroupEdgeCases:
 
         await proc._link_record_to_group(record, "main-grp", tx_store)
 
-        # Should be called at least twice: main group + shared group
-        assert tx_store.create_record_group_relation.await_count >= 2
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "main-grp", inherit=None, leaving_group_id=None
+        )
+        tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "shared-grp-id")
 
     @pytest.mark.asyncio
     async def test_inherit_permissions_true_creates_edge(self):
@@ -3675,7 +4026,9 @@ class TestLinkRecordToGroupEdgeCases:
 
         await proc._link_record_to_group(record, "grp-1", tx_store)
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_with("rec-1", "grp-1")
+        tx_store.link_record_to_group.assert_awaited_once_with(
+            "rec-1", "grp-1", inherit=True, leaving_group_id=None
+        )
 
 
 # ===========================================================================
@@ -4104,8 +4457,8 @@ class TestHandleRecordPermissionsEntityTypes:
         assert edges[0]["from_collection"] == CollectionNames.PEOPLE.value
 
     @pytest.mark.asyncio
-    async def test_exception_logs_error(self):
-        """Logs error when exception during permission creation."""
+    async def test_a_failed_principal_lookup_is_raised_and_nothing_is_written(self) -> None:
+        """Answered as "no such user", the grant was dropped without an error or a retry."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.side_effect = RuntimeError("boom")
@@ -4119,9 +4472,30 @@ class TestHandleRecordPermissionsEntityTypes:
             email="user@test.com",
         )
 
-        await proc._handle_record_permissions(record, [perm], tx_store)
+        with pytest.raises(RuntimeError, match="boom"):
+            await proc._handle_record_permissions(record, [perm], tx_store)
 
-        proc.logger.error.assert_called()
+        tx_store.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("entity_type", "lookup"),
+        [(EntityType.GROUP, "get_user_group_by_external_id"), (EntityType.ROLE, "get_app_role_by_external_id")],
+    )
+    async def test_group_and_role_lookups_are_asked_to_raise(self, entity_type: EntityType, lookup: str) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        getattr(tx_store, lookup).side_effect = RuntimeError("read failed")
+
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=entity_type.value, external_id="ext-1")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc._handle_record_permissions(record, [perm], tx_store)
+
+        assert getattr(tx_store, lookup).await_args.kwargs["raise_on_error"] is True
+        tx_store.batch_create_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -4158,7 +4532,7 @@ class TestResolvePrincipal:
             "person-9", CollectionNames.PEOPLE.value
         )
         tx_store.upsert_person_by_email.assert_not_awaited()
-        tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id)
+        tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id, raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_returns_surviving_id_not_local_uuid(self):
@@ -4194,13 +4568,32 @@ class TestResolvePrincipal:
         tx_store.upsert_person_by_email.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    @pytest.mark.parametrize("failing", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
+    async def test_a_failed_lookup_is_raised(self, failing: str) -> None:
+        """None means "no such principal", and every caller acts on it: a rewrite
+        drops the grant. A lookup that could not be read must not look the same."""
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.get_user_by_email.side_effect = RuntimeError("db fail")
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-1")
+        getattr(tx_store, failing).side_effect = RuntimeError("db fail")
 
-        assert await proc._resolve_principal("out@x.io", tx_store) is None
-        proc.logger.error.assert_called()
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc._resolve_principal("out@x.io", tx_store)
+
+        assert getattr(tx_store, failing).await_args.kwargs["raise_on_error"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_email_with_no_principal_is_still_none(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=None)
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        assert await proc._resolve_principal("out@x.io", tx_store, create_if_missing=False) is None
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
 
 # ===========================================================================
@@ -4790,7 +5183,10 @@ class TestOnNewRecordGroupsExistingUpdate:
 
         await proc.on_new_record_groups([(rg, [])])
 
-        tx_store.delete_edges_to.assert_awaited()
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "rg-existing", CollectionNames.RECORD_GROUPS.value, [], CollectionNames.PERMISSION.value
+        )
+        tx_store.delete_edges_to.assert_not_awaited()
 
 
 # ===========================================================================
@@ -4833,7 +5229,7 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.create_inherit_permissions_relation_record_group.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=True)
 
     @pytest.mark.asyncio
     async def test_deletes_inherit_permissions_when_false(self):
@@ -4853,7 +5249,8 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [])
 
-        tx_store.delete_edge.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once_with("rec-1", [], "rg-1", inherit=False)
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_with_permissions_handles_them(self):
@@ -4879,7 +5276,11 @@ class TestOnUpdatedRecordPermissions:
 
         await proc.on_updated_record_permissions(record, [perm])
 
-        tx_store.batch_create_edges.assert_awaited()
+        tx_store.replace_record_permissions.assert_awaited_once()
+        record_id, edges, group_id = tx_store.replace_record_permissions.await_args.args
+        assert (record_id, group_id) == ("rec-1", None)
+        assert tx_store.replace_record_permissions.await_args.kwargs == {"inherit": False}
+        assert [(e["from_id"], e["to_id"], e["role"]) for e in edges] == [("user-1", "rec-1", "READER")]
 
 
 # ===========================================================================
@@ -5237,12 +5638,21 @@ def _make_old_record(
     return rec
 
 
+def _live_lookup(record) -> AsyncMock:
+    """An external-id lookup that finds *record* (live) and nothing in the trash."""
+
+    async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> object:
+        return None if visibility is RecordVisibility.DELETED else record
+
+    return AsyncMock(side_effect=lookup)
+
+
 def _setup_proc_for_moved(tx_store, *, old_record, new_record_id: str = "old-rec-1"):
     """Wire up a processor for on_records_moved with all internal helpers mocked."""
     proc = _make_processor()
     proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-    tx_store.get_record_by_external_id = AsyncMock(return_value=old_record)
+    tx_store.get_record_by_external_id = _live_lookup(old_record)
 
     # Mock complex graph-building internals that are tested elsewhere
     proc._handle_record_group = AsyncMock(return_value=None)
@@ -5520,7 +5930,7 @@ class TestOnRecordsMovedReindex:
         }
         # on_records_moved calls tx_store.get_record_by_external_id(connector_id=..., external_id=...)
         tx_store.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id, external_id: record_map.get(external_id)
+            side_effect=lambda connector_id, external_id, visibility=RecordVisibility.ALL: record_map.get(external_id)
         )
         queued = MagicMock(indexing_status=ProgressStatus.COMPLETED.value)
         tx_store.get_record_by_key = AsyncMock(return_value=queued)
@@ -6024,7 +6434,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record(parent_external_record_id="parent-folder")
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
@@ -6045,7 +6455,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record(parent_external_record_id=None)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
@@ -6078,7 +6488,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "new-rev"
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -6099,7 +6509,7 @@ class TestOnRecordsMovedKbUpload:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "same"
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -6124,7 +6534,7 @@ class TestOnRecordsMovedKbUpload:
             indexing_status=ProgressStatus.COMPLETED.value,
             virtual_record_id="vr-1",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "new-rev"
         new_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -6156,7 +6566,7 @@ class TestOnRecordsMovedKbUpload:
             indexing_status=ProgressStatus.COMPLETED.value,
             virtual_record_id="vr-1",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         new_record = _make_kb_upload_record()
         new_record.external_revision_id = "new-rev"
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -6192,6 +6602,15 @@ class TestPublishDeleteEvents:
         assert "r3" not in unpublished
         proc.messaging_producer.send_message.assert_awaited_once()
 
+
+    @pytest.mark.asyncio
+    async def test_an_event_the_broker_refuses_is_unpublished(self) -> None:
+        """send_message answers False without raising when the broker refuses an event."""
+        proc = _make_processor()
+        proc.messaging_producer.send_message = AsyncMock(return_value=False)
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            unpublished = await proc._publish_delete_events({"payloads": [{"recordId": "r1"}]})
+        assert unpublished == ["r1"]
 
 class TestProcessRecordOrgId:
     @pytest.mark.asyncio
@@ -6232,7 +6651,7 @@ class TestOnRecordsMovedOrgId:
             mime_type="application/pdf",
             record_name="upload.pdf",
         )
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.get_record_by_external_id = _live_lookup(old)
         tx_store.delete_parent_child_edge_to_record = AsyncMock()
         tx_store.batch_upsert_records = AsyncMock()
         new_record = _make_kb_upload_record()
@@ -6478,8 +6897,9 @@ class TestOnRecordsMovedDuplicateGuard:
     def _setup(tx_store, old_record, interloper):
         proc = _setup_proc_for_moved(tx_store, old_record=old_record)
 
-        async def by_external_id(*, connector_id, external_id):  # noqa: ARG001
-            return old_record if external_id == "/ns/-/blob/HEAD/src/old.py" else interloper
+        async def by_external_id(*, connector_id, external_id, visibility=RecordVisibility.ALL):  # noqa: ARG001
+            found = old_record if external_id == "/ns/-/blob/HEAD/src/old.py" else interloper
+            return None if visibility is RecordVisibility.DELETED else found
 
         tx_store.get_record_by_external_id = AsyncMock(side_effect=by_external_id)
         tx_store.delete_parent_child_edge_to_record = AsyncMock()
@@ -6891,3 +7311,73 @@ class TestOnRecordsMovedFlushBeforePublish:
 
         assert call_order[0] == "flush"
         assert "publish" in call_order
+
+
+class TestMovesAgainstTheTransactionCache:
+    """on_records_moved retires whatever already holds a destination path. With
+    the transaction store caching lookups, a path vacated earlier in the same
+    batch must not still answer with the record that left it, or the guard
+    deletes a record that was only just moved.
+    """
+
+    @staticmethod
+    def _graph(rows: dict[str, str]):
+        from types import SimpleNamespace
+
+        graph = AsyncMock()
+        graph.rows = {
+            rid: SimpleNamespace(
+                id=rid, connector_id="conn-1", external_record_id=ext,
+                external_revision_id="rev", indexing_status=ProgressStatus.COMPLETED.value,
+                is_placeholder=False, version=1, virtual_record_id=f"vr-{rid}",
+                source_created_at=1, source_updated_at=1, org_id="org-1",
+                # A move carries the stored lifecycle onto the rewritten vertex.
+                created_at=1, parsing_status=None, extraction_status=None,
+                processing_started_at=None, reason=None, is_vlm_ocr_processed=False,
+                md5_hash=None, size_in_bytes=None, storage_document_id=None,
+            )
+            for rid, ext in rows.items()
+        }
+
+        async def get_record_by_external_id(connector_id, external_id, transaction=None, visibility=None):
+            for row in graph.rows.values():
+                if row.connector_id == connector_id and row.external_record_id == external_id:
+                    return row
+            return None
+
+        async def batch_upsert_records(records, transaction=None, release_trashed_external_ids=False):
+            for r in records:
+                row = graph.rows.get(r.id) or SimpleNamespace(id=r.id, connector_id=r.connector_id)
+                row.external_record_id = r.external_record_id
+                graph.rows[r.id] = row
+
+        async def delete_nodes(keys, collection, transaction=None):
+            for key in keys:
+                graph.rows.pop(key, None)
+
+        graph.get_record_by_external_id = get_record_by_external_id
+        graph.batch_upsert_records = batch_upsert_records
+        graph.delete_nodes = delete_nodes
+        graph.get_edges_from_node = AsyncMock(return_value=[])
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_a_rotation_batch_keeps_every_moved_record(self) -> None:
+        """log.1 -> log.2 then log -> log.1, the shape a rotated log produces."""
+        from app.connectors.core.base.data_store.graph_data_store import (
+            GraphTransactionStore,
+        )
+
+        graph = self._graph({"X": "log.1", "Y": "log"})
+        tx_store = GraphTransactionStore(graph, "txn-1")
+        proc = _setup_proc_for_moved(tx_store, old_record=None)
+        # _setup_proc_for_moved stubs the lookup; this test needs the real one.
+        del tx_store.get_record_by_external_id
+
+        await proc.on_records_moved([
+            ("log.1", _make_code_record(record_id="fresh-1", external_record_id="log.2"), []),
+            ("log", _make_code_record(record_id="fresh-2", external_record_id="log.1"), []),
+        ])
+
+        survivors = {rid: row.external_record_id for rid, row in graph.rows.items()}
+        assert survivors == {"X": "log.2", "Y": "log.1"}

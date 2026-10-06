@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import Routes
 from app.models.entities import FileRecord, RecordType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +315,16 @@ class TestMoveRecordTree:
 # ---------------------------------------------------------------------------
 
 
+
+def _live_lookup(record) -> AsyncMock:
+    """An external-id lookup that finds *record* (live) and nothing in the trash."""
+
+    async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> object:
+        return None if visibility is RecordVisibility.DELETED else record
+
+    return AsyncMock(side_effect=lookup)
+
+
 class TestOnRecordsMovedWithBlobMove:
     """NOTE: `new_record` deliberately never carries `virtual_record_id` --
     the path-based move design (`build_record_path`) doesn't consult vrid at
@@ -341,7 +352,7 @@ class TestOnRecordsMovedWithBlobMove:
         proc = _make_processor()
         tx_store = _make_tx_store()
         old_record = self._make_old_record()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old_record)
+        tx_store.get_record_by_external_id = _live_lookup(old_record)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         mock_cleanup = MagicMock()
@@ -371,7 +382,7 @@ class TestOnRecordsMovedWithBlobMove:
         proc = _make_processor()
         tx_store = _make_tx_store()
         old_record = self._make_old_record()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old_record)
+        tx_store.get_record_by_external_id = _live_lookup(old_record)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         mock_cleanup = MagicMock()
@@ -401,7 +412,7 @@ class TestOnRecordsMovedWithBlobMove:
         proc = _make_processor()
         tx_store = _make_tx_store()
         old_record = self._make_old_record(record_name="same.txt", parent_external_record_id="parent-1")
-        tx_store.get_record_by_external_id = AsyncMock(return_value=old_record)
+        tx_store.get_record_by_external_id = _live_lookup(old_record)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         mock_cleanup = MagicMock()

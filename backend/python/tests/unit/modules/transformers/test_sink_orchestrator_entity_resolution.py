@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 
 
@@ -78,7 +79,7 @@ class TestDuplicateSyncIsOrgScoped:
         graph = AsyncMock()
         graph.get_taxonomy_entities_for_record = AsyncMock(return_value=rows)
         graph.get_record_group_by_id = AsyncMock(return_value=None)
-        store = MagicMock(upsert_entities_batch=upsert or AsyncMock(return_value=0))
+        store = MagicMock(upsert_entities_batch=upsert or AsyncMock(return_value=EntityWriteOutcome()))
         orch = _orchestrator(entity_vector_store=store, graph_provider=graph)
         ok = await orch.sync_entities_for_duplicate({"_key": "rec-1", "orgId": "org-1", "connectorId": "c1"})
         return ok, store.upsert_entities_batch
@@ -119,7 +120,7 @@ class TestDuplicateSyncReportsFailure:
     async def test_write_failures_report_false(self) -> None:
         ok, _ = await TestDuplicateSyncIsOrgScoped()._sync(
             [{"entityId": "t1", "entityType": "topic", "name": "A", "orgId": "org-1"}],
-            upsert=AsyncMock(return_value=1),
+            upsert=AsyncMock(return_value=EntityWriteOutcome(failed=1)),
         )
         assert ok is False
 
@@ -133,11 +134,11 @@ class TestDuplicateSyncReportsFailure:
     async def test_taxonomy_read_failure_reports_false(self) -> None:
         graph = AsyncMock()
         graph.get_taxonomy_entities_for_record = AsyncMock(side_effect=RuntimeError("graph down"))
-        orch = _orchestrator(entity_vector_store=MagicMock(upsert_entities_batch=AsyncMock(return_value=0)),
+        orch = _orchestrator(entity_vector_store=MagicMock(upsert_entities_batch=AsyncMock(return_value=EntityWriteOutcome())),
                              graph_provider=graph)
         assert await orch.sync_entities_for_duplicate({"_key": "r", "orgId": "org-1"}) is False
 
     async def test_nothing_to_do_is_success(self) -> None:
         assert await _orchestrator().sync_entities_for_duplicate({"_key": "r", "orgId": "org-1"}) is True
-        orch = _orchestrator(entity_vector_store=MagicMock(upsert_entities_batch=AsyncMock(return_value=0)))
+        orch = _orchestrator(entity_vector_store=MagicMock(upsert_entities_batch=AsyncMock(return_value=EntityWriteOutcome())))
         assert await orch.sync_entities_for_duplicate({"orgId": "org-1"}) is True

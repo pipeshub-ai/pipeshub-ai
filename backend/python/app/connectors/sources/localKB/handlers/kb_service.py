@@ -7,30 +7,38 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
     Connectors,
+    DeleteSource,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.services.entity_cleanup_intents import (
+    EntityCleanupIntentError,
+    record_pending_entity_cleanup,
+)
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.trash_purge import load_purge_settings
 from app.connectors.services.vector_cleanup_events import (
-    build_connector_vector_cleanup_events,
+    build_connector_cleanup_events,
     build_stored_document_cleanup_events,
     log_cleanup_publish_failure,
 )
+from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
-from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
+from app.services.featureflag.platform_settings import is_soft_delete_enabled
+from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH, RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_messages import PEOPLE_GONE, action_failed
+from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
-    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 read_collections = [
     collection.value for collection in CollectionNames
@@ -49,6 +57,31 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # KB folders use this mime type in the RECORDS doc (matches the legacy create_folder
 # path). Note this differs from MimeTypes.FOLDER ("text/directory").
 KB_FOLDER_MIME_TYPE = "application/vnd.folder"
+# Restore asks for the role its delete needed: a single file can be deleted by a
+# file organizer, a folder or several items only by an owner or writer.
+RESTORE_FILE_ROLES = ("OWNER", "WRITER", "FILEORGANIZER")
+RESTORE_BATCH_ROLES = ("OWNER", "WRITER")
+MAX_RESTORE_RECORD_IDS = 100
+# "name (restored)", "name (restored 2)", ... before giving up on a free name.
+MAX_RESTORED_NAME_ATTEMPTS = 50
+RESTORE_TURNED_OFF_REASON = (
+    "Restoring deleted items is turned off in this workspace. Ask an admin to turn on "
+    "\"Move Deleted Records to the Trash\" in Labs, then try again."
+)
+TRASH_TURNED_OFF_REASON = (
+    "The trash is turned off in this workspace. Ask an admin to turn on "
+    "\"Move Deleted Records to the Trash\" in Labs, then try again."
+)
+TRASH_NEEDS_EDIT_ACCESS_REASON = (
+    "You need edit access to this collection to see and restore its deleted items. "
+    "Ask the collection's owner for edit access."
+)
+DEFAULT_TRASH_PAGE_SIZE = 25
+MAX_TRASH_PAGE_SIZE = 100
+RESTORE_CHANGED_REASON = (
+    "This item changed while it was being restored, so nothing was restored. "
+    "Refresh the page and try again."
+)
 FOLDER_DEPTH_LIMIT_REASON = (
     f"Folders can be nested at most {KB_MAX_FOLDER_DEPTH} levels deep. "
     "Move this content higher up, or flatten some of the folders."
@@ -59,6 +92,18 @@ def folder_levels_in_path(file_path: str) -> int:
     """Folder levels a relative upload path adds: 'a/b/c.txt' -> 2."""
     parts = [part for part in (file_path or "").split("/") if part]
     return max(len(parts) - 1, 0)
+
+
+def restored_name(name: str, attempt: int, *, is_file: bool) -> str:
+    """The name a restored item takes when its own is taken: ``report (restored).pdf``.
+
+    A file keeps its extension last, so its type still reads from the name.
+    """
+    label = "restored" if attempt <= 1 else f"restored {attempt}"
+    stem, dot, extension = name.rpartition(".")
+    if is_file and dot and stem:
+        return f"{stem} ({label}).{extension}"
+    return f"{name} ({label})"
 
 
 def _mutation_succeeded(result: object) -> bool:
@@ -122,7 +167,6 @@ class KnowledgeBaseService:
         kafka_service : KafkaService,
         processor_for_kb: Callable[[str], Awaitable["DataSourceEntitiesProcessor"]] = None,
         config_service=None,
-        entity_vector_store: "EntityVectorStore | None" = None,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
@@ -132,9 +176,6 @@ class KnowledgeBaseService:
         self.processor_for_kb = processor_for_kb
         # Needed to resolve the storage endpoint for upload signed-url routes.
         self.config_service = config_service
-        # Entities-collection cleanup on KB delete; optional so this class stays
-        # constructible without it (e.g. in tests).
-        self.entity_vector_store = entity_vector_store
 
     def _mutation_failure(self, result: object, action: str) -> dict:
         """Turn a failed graph-provider write into something a person can act on.
@@ -740,6 +781,21 @@ class KnowledgeBaseService:
 
             self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
 
+            # Recorded before anything is removed: a lost deleteConnectorEntities
+            # is then still reconciled by the indexing service.
+            try:
+                await record_pending_entity_cleanup(
+                    self.config_service, org_id=org_id, connector_id=kb_id,
+                    connector_name=Connectors.KNOWLEDGE_BASE.value,
+                )
+            except EntityCleanupIntentError:
+                self.logger.error("❌ Could not record entity cleanup for KB %s; not deleting it", kb_id)
+                return {
+                    "success": False,
+                    "reason": action_failed("delete this knowledge base"),
+                    "code": 500,
+                }
+
             refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
             if refused:
                 return refused
@@ -767,10 +823,11 @@ class KnowledgeBaseService:
                     "code": 500,
                 }
 
-            # Vector cleanup for every record at once: one connector-scoped
+            # Vector cleanup for every record at once (one connector-scoped
             # event normally, chunked id lists for a KB whose points predate the
-            # membership arrays.
-            events = build_connector_vector_cleanup_events(
+            # membership arrays), then the entity cleanup, which the indexing
+            # service runs and retries.
+            events = build_connector_cleanup_events(
                 org_id=org_id,
                 connector_id=kb_id,
                 vector_membership_backfilled=result.get(
@@ -780,7 +837,8 @@ class KnowledgeBaseService:
                     "vector_membership_backfill_exhausted", False
                 ),
                 connector_name=result.get("connector_name"),
-                record_group_ids=result.get("record_group_ids", []),
+                # None (the graph did not say) reaches the entity cleanup as None.
+                record_group_ids=result.get("record_group_ids"),
                 virtual_record_ids=result.get("virtual_record_ids", []),
             )
             published = 0
@@ -795,24 +853,6 @@ class KnowledgeBaseService:
                     f"Published only {published}/{len(events)} vector-cleanup "
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
-
-            # Entities collection cleanup: KB records/groups carry connectorIds=[kb_id]
-            # (see SinkOrchestrator._sync_record_name_entity/_sync_record_group_entity),
-            # so the connector-scoped shrink-or-delete applies unchanged here. Entities
-            # can exist for a KB with no indexed record behind them (e.g. a synced
-            # RecordGroup), which is why this does not ride bulkDeleteRecords above.
-            if self.entity_vector_store is not None:
-                try:
-                    await self.entity_vector_store.delete_entities_by_connector(
-                        org_id=org_id,
-                        connector_id=kb_id,
-                        record_group_ids=result.get("record_group_ids"),
-                        membership_lookup=lambda refs: self.graph_provider.get_taxonomy_entity_membership(
-                            refs, org_id,
-                        ),
-                    )
-                except Exception as e:
-                    self.logger.error(f"❌ Failed to clean up entity vectors for KB {kb_id}: {str(e)}")
 
             # Fire-and-forget: etcd config + blob storage cleanup runs in the
             # background so the API response is not blocked (mirrors the async
@@ -1296,11 +1336,17 @@ class KnowledgeBaseService:
             # which cascades to remove the folder + all descendants (records/subfolders +
             # edges + files docs) and publishes a deleteRecord event per contained file,
             # so the router does not need to publish eventData for this path.
-            refused = await self._schedule_upload_removal(kb_id, record_ids=[folder_id])
-            if refused:
-                return refused
             processor = await self.processor_for_kb(kb_id)
-            cascade_result = await processor.on_records_deleted_cascade([folder_id], kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=[folder_id])
+                if refused:
+                    return refused
+            cascade_result = await processor.on_records_deleted_cascade(
+                [folder_id], kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
+            )
             if not (cascade_result and cascade_result.get("success")):
                 # The recursive delete itself failed (not just the cleanup-event
                 # publish) — do not report a success the graph doesn't back up.
@@ -1316,7 +1362,7 @@ class KnowledgeBaseService:
                 # failed after retries. Report the deletion as what it is
                 # (successful) while flagging that embeddings need reconciliation.
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = cascade_result["vectorCleanupFailedRecordIds"]
+                response["vectorCleanupFailedRecordIds"] = cascade_result.get("vectorCleanupFailedRecordIds", [])
             return response
 
         except Exception as e:
@@ -1483,11 +1529,17 @@ class KnowledgeBaseService:
             # Delete through the shared processor: recursively deletes each record + its
             # subtree, cascades all edges + type docs, publishes a deleteRecord per
             # indexed record (Qdrant cleanup). Returns the provider result for the response.
-            refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
-            if refused:
-                return refused
             processor = await self.processor_for_kb(kb_id)
-            result = await processor.on_records_deleted_cascade(record_ids, kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
+                if refused:
+                    return refused
+            result = await processor.on_records_deleted_cascade(
+                record_ids, kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
+            )
             if result and result.get("success"):
                 result.pop("eventData", None)
                 # Bulk-delete best practice: none of the requested ids matched (foreign /
@@ -1546,12 +1598,17 @@ class KnowledgeBaseService:
             # folder, the KB root, or moved out since the request began is kept and
             # reported as failed. Its files are safe in the removal scheduled here,
             # since the consumer skips any file a record still lists.
-            refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
-            if refused:
-                return refused
             processor = await self.processor_for_kb(kb_id)
+            soft_delete = await is_soft_delete_enabled(processor.config_service)
+            if not soft_delete:
+                # The trash keeps uploaded files until the purge.
+                refused = await self._schedule_upload_removal(kb_id, record_ids=record_ids)
+                if refused:
+                    return refused
             result = await processor.on_records_deleted_cascade(
-                record_ids, kb_id, within_folder_id=folder_id
+                record_ids, kb_id, within_folder_id=folder_id,
+                delete_source=DeleteSource.USER, deleted_by_user_id=user_key,
+                soft_delete=soft_delete,
             )
             if result and result.get("success"):
                 result.pop("eventData", None)
@@ -1577,6 +1634,443 @@ class KnowledgeBaseService:
                 "reason": action_failed("delete these files"),
                 "code": 500
             }
+
+    async def restore_record(self, record_id: str, user_id: str, org_id: str) -> dict:
+        """Bring a deleted KB file or folder back from the trash, with everything
+        deleted along with it.
+
+        A delete action puts everything it reaches in one batch (a folder and
+        its contents, a file and its attachments, a multi-select), and restore
+        brings that batch back whole. It needs the role the delete needed. It
+        is refused while the folder the item was in is still in the trash, and
+        when another item has taken the item's source id since. An item whose
+        name is now used by another one beside it comes back as
+        "name (restored)". Restored files are indexed again: their vectors went
+        when they were deleted.
+        """
+        try:
+            if not await is_soft_delete_enabled(self.config_service):
+                return {"success": False, "code": 403, "reason": RESTORE_TURNED_OFF_REASON}
+            record = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+            # Another org's record answers exactly like a missing one, so ids can't be probed.
+            if not record or not org_id or record.get("orgId") != org_id:
+                return {"success": False, "code": 404, "reason": not_found("This item")}
+            if (
+                record.get("origin") != OriginTypes.UPLOAD.value
+                and record.get("connectorName") != Connectors.KNOWLEDGE_BASE.value
+            ):
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": (
+                        "Only files and folders from a collection can be restored here. An item from a "
+                        "connected app comes back on its own once it is in that app again: restore it "
+                        "there, and it returns at the next sync."
+                    ),
+                }
+            kb_id = record.get("connectorId")
+            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id)
+            if err:
+                return err
+            if is_live_record(record):
+                if self._owes_restore_reindex(record):
+                    return await self._requeue_restored_file(record_id, kb_id, user_role)
+                return {
+                    "success": True,
+                    "code": 200,
+                    "message": "This item isn't in the trash, so there was nothing to restore.",
+                    "batchId": None,
+                    "restoredRecords": [],
+                }
+
+            batch_id = record.get("deleteBatchId")
+            batch = await self.graph_provider.get_records_in_delete_batch(batch_id, org_id) if batch_id else []
+            members = [item for item in batch if item["record"].get("connectorId") == kb_id]
+            member_ids = {item["record"]["_key"] for item in members}
+            if record_id not in member_ids:
+                return {"success": False, "code": 409, "reason": RESTORE_CHANGED_REASON}
+
+            single_file = len(members) == 1 and members[0].get("isFile") is True
+            required_roles = RESTORE_FILE_ROLES if single_file else RESTORE_BATCH_ROLES
+            if user_role not in required_roles:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": (
+                        "You need edit access to this collection to restore this item. Ask the "
+                        "collection's owner to restore it, or to give you edit access."
+                    ),
+                }
+
+            name = record.get("recordName") or "This item"
+            if parent_refusal := self._trashed_parent_refusal(name, members, member_ids):
+                return parent_refusal
+
+            renames = await self._restore_renames(kb_id, members, member_ids)
+            if renames is None:
+                return {
+                    "success": False,
+                    "code": 409,
+                    "reason": (
+                        f"There are already many items named like '{name}' where it would go back. "
+                        "Rename or move some of them, then try again."
+                    ),
+                }
+
+            reindex_ids = [
+                item["record"]["_key"]
+                for item in members
+                if item.get("isFile") is True
+                and item["record"].get("indexingStatus") != ProgressStatus.AUTO_INDEX_OFF.value
+            ]
+            to_reindex = set(reindex_ids)
+            now = get_epoch_timestamp_in_ms()
+            # Written with the restore itself: the re-index is published after it
+            # commits, and if that publish is lost the marker is what lets a retry
+            # or the stranded sweep queue the file again.
+            owed = {
+                "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                "queuedAtTimestamp": now,
+                RESTORED_AT_FIELD: now,
+            }
+            items = [
+                {
+                    "id": item["record"]["_key"],
+                    "name": item["record"].get("recordName"),
+                    "trashedExternalRecordId": item["record"].get("trashedExternalRecordId"),
+                    "set": dict(owed) if item["record"]["_key"] in to_reindex else {},
+                }
+                for item in members
+            ]
+            processor = await self.processor_for_kb(kb_id)
+            try:
+                # The write checks the folder again, as it can go to the trash after the check above.
+                await processor.restore_trashed_records(
+                    kb_id, batch_id, items, restore_source=DeleteSource.USER, require_live_parent=True
+                )
+            except RestoreRefused as refused:
+                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id)
+
+            return await self._finish_restore(processor, batch_id, members, renames, reindex_ids)
+        except Exception as e:
+            self.logger.error("❌ Failed to restore record %s: %s", record_id, e, exc_info=True)
+            return {"success": False, "code": 500, "reason": action_failed("restore this item")}
+
+    @staticmethod
+    def _owes_restore_reindex(record: dict) -> bool:
+        return bool(record.get(RESTORED_AT_FIELD)) and (
+            record.get("indexingStatus") == ProgressStatus.NOT_STARTED.value
+        )
+
+    async def _requeue_restored_file(self, record_id: str, kb_id: str, user_role: str | None) -> dict:
+        """A retried restore of a file that is back but whose re-index never went out."""
+        if user_role not in RESTORE_FILE_ROLES:
+            return {
+                "success": False,
+                "code": 403,
+                "reason": (
+                    "You need edit access to this collection to restore this item. Ask the "
+                    "collection's owner to restore it, or to give you edit access."
+                ),
+            }
+        processor = await self.processor_for_kb(kb_id)
+        response = await self._finish_restore(processor, None, [], {}, [record_id])
+        response["message"] = (
+            "This item was already restored but isn't searchable yet, and we couldn't queue it for "
+            "indexing. Try again in a few minutes."
+            if response.get("reindexPending")
+            else "This item was already restored but wasn't searchable yet. It's now queued for "
+            "indexing and will show up in search once that finishes."
+        )
+        return response
+
+    @staticmethod
+    def _trashed_parent_refusal(name: str, members: list[dict], member_ids: set[str]) -> dict | None:
+        """The 409 for a batch whose folder is in the trash outside it, else None."""
+        for item in members:
+            if item.get("parentIsDeleted") and item.get("parentId") not in member_ids:
+                parent = item.get("parentName") or "the folder it was in"
+                return {
+                    "success": False,
+                    "code": 409,
+                    "reason": (
+                        f"'{name}' was in '{parent}', which is also in the trash. Restore "
+                        f"'{parent}' first, then restore '{name}'."
+                    ),
+                    "parentId": item.get("parentId"),
+                }
+        return None
+
+    async def _restore_refused_response(
+        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str
+    ) -> dict:
+        """The answer for a restore the write refused, nothing written.
+
+        The write only says the batch no longer qualifies, so a folder that
+        went to the trash meanwhile is looked up again to give its own message.
+        """
+        try:
+            batch = await self.graph_provider.get_records_in_delete_batch(batch_id, org_id)
+            members = [item for item in batch if item["record"].get("connectorId") == kb_id]
+            parent_refusal = self._trashed_parent_refusal(
+                name, members, {item["record"]["_key"] for item in members}
+            )
+        except Exception as e:
+            self.logger.warning("Could not re-read delete batch %s after a refused restore: %s", batch_id, e)
+            parent_refusal = None
+        return parent_refusal or {
+            "success": False, "code": refused.code, "reason": refused.reason, **refused.details,
+        }
+
+    async def _restore_renames(
+        self, kb_id: str, members: list[dict], member_ids: set[str]
+    ) -> dict[str, str] | None:
+        """New names for the batch roots whose name a live sibling has taken.
+
+        Files clash with files and folders with folders, by name alone. Only
+        roots can clash: everything else comes back inside a restored folder.
+        None when no free name turned up. A failed lookup raises: read as "no
+        clash", it would bring the record back under a name already taken.
+        """
+        gp = self.graph_provider
+        live_file_names: dict[str | None, set[str]] = {}
+        renames: dict[str, str] = {}
+        claimed: set[tuple] = set()
+        for item in members:
+            parent_id = item.get("parentId")
+            if parent_id in member_ids or item.get("parentRelation") == "ATTACHMENT":
+                continue
+            record = item["record"]
+            record_id = record["_key"]
+            name = record.get("recordName") or ""
+            is_file = item.get("isFile") is True
+            if is_file and parent_id not in live_file_names:
+                existing = await gp._fetch_existing_file_names_in_parent(
+                    kb_id=kb_id, parent_folder_id=parent_id, raise_on_error=True,
+                )
+                live_file_names[parent_id] = {existing_name for existing_name, _mime in existing}
+            candidate = name
+            for attempt in range(MAX_RESTORED_NAME_ATTEMPTS + 1):
+                if attempt:
+                    candidate = restored_name(name, attempt, is_file=is_file)
+                key = (parent_id, is_file, candidate.lower())
+                if key in claimed:
+                    continue
+                if is_file:
+                    taken = any(
+                        variant in live_file_names[parent_id]
+                        for variant in gp._normalized_name_variants_lower(candidate)
+                    )
+                else:
+                    taken = await gp.find_folder_by_name_in_parent(
+                        kb_id=kb_id,
+                        folder_name=candidate,
+                        parent_folder_id=parent_id,
+                        exclude_folder_id=record_id,
+                        raise_on_error=True,
+                    )
+                if not taken:
+                    break
+            else:
+                return None
+            claimed.add(key)
+            if candidate != name:
+                renames[record_id] = candidate
+        return renames
+
+    async def _finish_restore(
+        self,
+        processor: "DataSourceEntitiesProcessor",
+        batch_id: str | None,
+        members: list[dict],
+        renames: dict[str, str],
+        reindex_ids: list[str],
+    ) -> dict:
+        """After the restore committed: rename what clashed, then index the files again.
+
+        Neither step can undo the restore, so a failure is reported, not raised.
+        """
+        rename_failed: list[str] = []
+        for record_id, new_name in renames.items():
+            try:
+                # The rename path moves the stored content to the new name too.
+                renamed = await self.graph_provider.get_file_record_by_id(record_id)
+                if renamed is None:
+                    raise LookupError(f"record {record_id} not found after restore")
+                renamed.record_name = new_name
+                renamed.updated_at = get_epoch_timestamp_in_ms()
+                await processor.on_record_metadata_update(renamed)
+            except Exception as e:
+                self.logger.error("❌ Restored record %s but could not rename it: %s", record_id, e)
+                rename_failed.append(record_id)
+
+        published: list[str] = []
+        if reindex_ids:
+            try:
+                typed = await self.graph_provider.get_typed_records_batch(reindex_ids)
+                published = await processor.reindex_existing_records(
+                    [typed[i] for i in reindex_ids if i in typed]
+                )
+            except Exception as e:
+                self.logger.error("❌ Restored batch %s but could not queue it for indexing: %s", batch_id, e)
+
+        restored: list[dict] = []
+        for item in members:
+            record_id, original = item["record"]["_key"], item["record"].get("recordName")
+            entry = {"recordId": record_id, "name": original}
+            if record_id in renames and record_id not in rename_failed:
+                entry.update(name=renames[record_id], renamedFrom=original)
+            restored.append(entry)
+        response: dict = {
+            "success": True,
+            "code": 200,
+            "message": f"Restored {len(restored)} item(s).",
+            "batchId": batch_id,
+            "restoredRecords": restored,
+        }
+        reindex_pending = sorted(set(reindex_ids) - set(published or []))
+        if reindex_pending:
+            response["reindexPending"] = True
+            response["reindexPendingRecordIds"] = reindex_pending
+            response["reindexPendingReason"] = (
+                "Restored, but some files aren't searchable yet because we couldn't queue them for "
+                "indexing. PipesHub queues them again on its own within about an hour. To do it "
+                "sooner, open each file's menu and choose Start indexing."
+            )
+        if rename_failed:
+            response["renamePendingRecordIds"] = rename_failed
+            response["renamePendingReason"] = (
+                "Restored, but some items have the same name as another item next to them. Rename "
+                "them so you can tell them apart."
+            )
+        return response
+
+    async def restore_records(self, record_ids: list[str], user_id: str, org_id: str) -> dict:
+        """Restore several deleted items, each with the batch it was deleted in.
+
+        Ids from one batch restore it once. Each id gets its own outcome, so
+        one refusal does not hold the others back.
+        """
+        if not record_ids or len(record_ids) > MAX_RESTORE_RECORD_IDS:
+            return {
+                "success": False,
+                "code": 400,
+                "reason": f"Choose between 1 and {MAX_RESTORE_RECORD_IDS} items to restore.",
+            }
+        results: list[dict] = []
+        restored_ids: set[str] = set()
+        for record_id in dict.fromkeys(record_ids):
+            if record_id in restored_ids:
+                results.append({
+                    "recordId": record_id,
+                    "success": True,
+                    "code": 200,
+                    "message": "Restored together with an item listed before it.",
+                })
+                continue
+            outcome = await self.restore_record(record_id, user_id, org_id)
+            if outcome.get("success"):
+                restored_ids.update(r["recordId"] for r in outcome.get("restoredRecords", []))
+            results.append({"recordId": record_id, **outcome})
+        failed = [r for r in results if not r.get("success")]
+        return {
+            "success": not failed,
+            "code": 200,
+            "restoredCount": len(restored_ids),
+            "failedCount": len(failed),
+            "results": results,
+        }
+
+    async def list_trash(
+        self, kb_id: str, user_id: str, org_id: str, page: int = 1, limit: int = DEFAULT_TRASH_PAGE_SIZE
+    ) -> dict:
+        """One page of the collection's "Recently deleted" list: what this user may restore.
+
+        Each item is what one delete action removed, as restore brings it back
+        whole: a folder with its contents, or every item of a multi-select. It
+        says where it was, who deleted it and from when the purge may remove it
+        for good. Owners and writers see every item; a
+        file organizer only single files, as those are all they may restore.
+        """
+        if (
+            isinstance(page, bool) or isinstance(limit, bool)
+            or not isinstance(page, int) or not isinstance(limit, int)
+            or page < 1 or not 1 <= limit <= MAX_TRASH_PAGE_SIZE
+        ):
+            return {
+                "success": False,
+                "code": 400,
+                "reason": f"Ask for a page from 1 up, with 1 to {MAX_TRASH_PAGE_SIZE} items per page.",
+            }
+        try:
+            if not await is_soft_delete_enabled(self.config_service):
+                return {"success": False, "code": 403, "reason": TRASH_TURNED_OFF_REASON}
+            if not org_id:
+                return {"success": False, "code": 404, "reason": "Knowledge base not found"}
+            _user_key, user_role, err = await self._resolve_user_and_kb_access(
+                kb_id, user_id, required_roles=list(RESTORE_FILE_ROLES),
+                permission_denied_reason=TRASH_NEEDS_EDIT_ACCESS_REASON,
+            )
+            if err:
+                return err
+            found = await self.graph_provider.list_trashed_records(
+                kb_id, org_id,
+                skip=(page - 1) * limit, limit=limit,
+                single_file_batches_only=user_role not in RESTORE_BATCH_ROLES,
+            )
+            min_age_ms = await self._trash_min_age_ms()
+            total = found.get("total") or 0
+            return {
+                "success": True,
+                "code": 200,
+                "items": [self._trash_item(item, min_age_ms) for item in found.get("items") or []],
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "totalCount": total,
+                    "totalPages": -(-total // limit),
+                },
+                "retention": None if min_age_ms is None else {"minAgeMs": min_age_ms},
+            }
+        except Exception as e:
+            self.logger.error("❌ Failed to list the trash of KB %s: %s", kb_id, e, exc_info=True)
+            return {"success": False, "code": 500, "reason": action_failed("load the recently deleted items")}
+
+    async def _trash_min_age_ms(self) -> int | None:
+        """How long the purge keeps an item, or None when the settings can't be read."""
+        try:
+            return (await load_purge_settings(self.config_service)).min_age_ms
+        except Exception as e:
+            self.logger.warning("Could not read the trash retention settings: %s", e)
+            return None
+
+    @staticmethod
+    def _trash_item(item: dict, min_age_ms: int | None) -> dict:
+        record = item["record"]
+        deleted_at = record.get("deletedAtTimestamp")
+        is_folder = item.get("isFile") is False or record.get("mimeType") == KB_FOLDER_MIME_TYPE
+        deleted_by = None
+        if item.get("deletedByName") or item.get("deletedByEmail"):
+            deleted_by = {"name": item.get("deletedByName"), "email": item.get("deletedByEmail")}
+        return {
+            "id": record["_key"],
+            "name": record.get("recordName"),
+            "recordType": record.get("recordType"),
+            "isFolder": is_folder,
+            "mimeType": None if is_folder else (item.get("fileMimeType") or record.get("mimeType")),
+            "sizeInBytes": None if is_folder else (item.get("sizeInBytes") or record.get("sizeInBytes")),
+            "parentId": item.get("parentId"),
+            "parentName": item.get("parentName"),
+            "parentInTrash": item.get("parentIsDeleted") is True,
+            "itemCount": max(item.get("batchSize") or 1, 1),
+            "rootCount": max(item.get("rootCount") or 1, 1),
+            "otherRootNames": [name for name in item.get("otherRootNames") or [] if isinstance(name, str)],
+            "deletedAtTimestamp": deleted_at,
+            "deletedBy": deleted_by,
+            "removableAfterTimestamp": (
+                deleted_at + min_age_ms if isinstance(deleted_at, int) and min_age_ms is not None else None
+            ),
+        }
 
     async def create_kb_permissions(
         self,

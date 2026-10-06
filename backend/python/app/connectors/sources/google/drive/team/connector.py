@@ -1669,7 +1669,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         file_name = file_metadata.get("name")
 
         if not pass_folder_filter(file_metadata, tracked_folder_ids):
-            await self._delete_on_scope_exit(file_id, file_name, tracked_folder_ids)
+            # A user the item is only shared with sees no parent, which says nothing about
+            # where it lives; a real move out shows its new parent in the owner's feed.
+            if file_metadata.get("parents"):
+                await self._delete_on_scope_exit(file_id, file_name, tracked_folder_ids)
             return []
 
         items = [file_metadata]
@@ -1822,8 +1825,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"Removing only {user.email}'s access to file {file_id}: Google Drive has refused "
                 f"the check with no reason this connector recognises (HTTP 403) on {MAX_UNRECOGNISED_403_RUNS} "
                 "runs in a row. The file stays indexed for anyone else who has access, so "
-                f"{user.email}'s other changes can sync. If the file was deleted, it is removed "
-                "once another user's sync, or a full sync, can confirm it."
+                f"{user.email}'s other changes can sync. A file still in the trash is removed by a "
+                "full sync; one deleted for good stays indexed until another user's sync reports the delete."
             )
             record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=file_id

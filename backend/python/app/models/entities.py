@@ -290,6 +290,7 @@ class Record(BaseModel):
     delete_batch_id: str | None = Field(default=None, description="Shared by every record one delete action trashed, so a restore brings back the same set")
     purge_attempts: int | None = Field(default=None, description="Failed purge attempts")
     purge_last_error: str | None = Field(default=None, description="Last purge error, shortened")
+    trashed_external_record_id: str | None = Field(default=None, description="External id this trashed record held before a live record moved onto it; restore puts it back")
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
@@ -415,6 +416,7 @@ class Record(BaseModel):
             "deleteBatchId": self.delete_batch_id,
             "purgeAttempts": self.purge_attempts,
             "purgeLastError": self.purge_last_error,
+            "trashedExternalRecordId": self.trashed_external_record_id,
         }
         base.update({k: v for k, v in delete_state.items() if v is not None})
         return base
@@ -435,6 +437,7 @@ class Record(BaseModel):
             "delete_batch_id": record_doc.get("deleteBatchId"),
             "purge_attempts": record_doc.get("purgeAttempts"),
             "purge_last_error": record_doc.get("purgeLastError"),
+            "trashed_external_record_id": record_doc.get("trashedExternalRecordId"),
         }
 
     @staticmethod
@@ -2594,6 +2597,10 @@ class RecordGroup(BaseModel):
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
     )
+    is_deleted_at_source: bool = Field(
+        default=False,
+        description="Gone at the source and kept only while records in the trash belong to it",
+    )
     permission_model: PermissionModel | None = Field(
         default=None,
         description=(
@@ -2624,6 +2631,9 @@ class RecordGroup(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            # A source that lists the group again takes back a group kept only for the trash.
+            "isDeletedAtSource": False,
+            "deletedAtSourceTimestamp": None,
         }
 
     @staticmethod
@@ -2647,6 +2657,7 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
             permission_model=arango_base_record_group.get("permissionModel"),
+            is_deleted_at_source=arango_base_record_group.get("isDeletedAtSource") is True,
         )
 
 class ArtifactsRecordGroup(RecordGroup):

@@ -281,12 +281,12 @@ class TestTier2:
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
             EntityRecord(entity_id="k-legal", entity_type=EntityType.CATEGORY, name="Legal", org_id="acme"),
         ])
-        from app.modules.entity_resolution.models import MergeDecisions
+        from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
 
         get_llm = AsyncMock(return_value=(MagicMock(name="llm"), {}))
-        # A successful (empty) answer: after a failed call the client is
-        # rebuilt on purpose (test_resolver_model_call_and_winner_check), so reuse is about success.
-        invoke = AsyncMock(return_value=MergeDecisions())
+        # A usable answer: after a failed or empty one the client is rebuilt on
+        # purpose (test_resolver_model_call_and_winner_check), so reuse is about success.
+        invoke = AsyncMock(return_value=MergeDecisions(decisions=[MergeDecision(i=0, same=False)]))
         with patch("app.modules.entity_resolution.resolver.get_llm_for_role", new=get_llm), patch(
             "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",
             new=invoke,
@@ -487,8 +487,10 @@ class TestWinnerCheckedAgainstTheGraph:
             "r1", "acme", metadata_factory(topics=["Bug bash session", "Release checklist v2"]),
         ))
 
+        # The first lookup is the winner check; a second may follow for the
+        # merge-redirect check of names that ended up new.
         lookups = [args for name, args in fake_graph.calls if name == "get_nodes_by_field_in"]
-        assert len(lookups) == 1
+        assert 1 <= len(lookups) <= 2
         collection, field, ids = lookups[0]
         assert (collection, field) == (TOPICS, "id")
         assert set(ids) <= {"k-bug", "k-rel"}

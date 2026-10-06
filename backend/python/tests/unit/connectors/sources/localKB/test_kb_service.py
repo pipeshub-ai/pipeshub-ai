@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import DeleteSource
+
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.utils.user_messages import action_failed
 from app.config.constants.service import DefaultEndpoints
@@ -463,9 +465,10 @@ class TestDeleteKnowledgeBase:
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
-        mock_kafka_service.publish_event.assert_awaited_once()
-        event = mock_kafka_service.publish_event.await_args[0][1]
-        assert event["eventType"] == "bulkDeleteRecords"
+        # The record cleanup, then the entity cleanup.
+        sent = [c.args[1] for c in mock_kafka_service.publish_event.await_args_list]
+        assert [e["eventType"] for e in sent] == ["bulkDeleteRecords", "deleteConnectorEntities"]
+        event = sent[0]
         assert event["payload"]["virtualRecordIds"] == ["v1", "v2"]
 
     @pytest.mark.asyncio
@@ -483,33 +486,66 @@ class TestDeleteKnowledgeBase:
         service.logger.error.assert_called()
 
     @pytest.mark.asyncio
-    async def test_cleans_up_entity_vector_store_scoped_to_kb(self, service):
-        """KB records/groups carry connectorIds=[kb_id], so connector-scoped
-        entity cleanup applies unchanged to a KB delete."""
+    async def test_the_entity_cleanup_intent_is_recorded_before_the_graph_delete(
+        self, service, mock_config_service,
+    ) -> None:
+        calls: list[str] = []
+
+        async def record(key, value):
+            calls.append(f"intent:{key}")
+            return True
+
+        async def delete_graph(**kwargs):
+            calls.append("graph-delete")
+            return {"success": True, "virtual_record_ids": []}
+
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock(side_effect=delete_graph)
+        mock_config_service.set_config = AsyncMock(side_effect=record)
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+        assert result["success"] is True
+        assert calls == ["intent:/services/entityCleanup/pending/kb1", "graph-delete"]
+
+    @pytest.mark.asyncio
+    async def test_no_graph_delete_without_a_recorded_intent(self, service, mock_config_service) -> None:
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        mock_config_service.set_config = AsyncMock(return_value=False)
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+        assert result["success"] is False and result["code"] == 500
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+
+    @staticmethod
+    def _entity_events(kafka) -> list[dict]:
+        return [
+            c.args[1] for c in kafka.publish_event.await_args_list
+            if c.args[1]["eventType"] == "deleteConnectorEntities"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_entity_cleanup_is_published_for_the_indexing_service(self, service, mock_kafka_service):
+        """Run in the indexing service's retried handler, not inline here
+        where a failure was only logged after the graph rows were gone (KG-45)."""
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": [], "record_group_ids": ["rg-1", "rg-2"],
         })
-        service.entity_vector_store = AsyncMock()
-
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
 
         assert result["success"] is True
-        # The graph's record groups are gone after deletion; the entity store
-        # needs them to strip shared entities.
-        kwargs = service.entity_vector_store.delete_entities_by_connector.await_args.kwargs
-        assert kwargs["org_id"] == "org1" and kwargs["connector_id"] == "kb1"
-        assert kwargs["record_group_ids"] == ["rg-1", "rg-2"]
-        # Exclusive-looking entities are checked against the graph, in this org.
-        service.graph_provider.get_taxonomy_entity_membership = AsyncMock(return_value={})
-        await kwargs["membership_lookup"]([{"id": "t1", "type": "topic"}])
-        service.graph_provider.get_taxonomy_entity_membership.assert_awaited_once_with(
-            [{"id": "t1", "type": "topic"}], "org1",
-        )
+        (event,) = self._entity_events(mock_kafka_service)
+        assert event["payload"] == {
+            "orgId": "org1", "connectorId": "kb1", "connectorName": None,
+            "recordGroupIds": ["rg-1", "rg-2"],
+        }
 
     @pytest.mark.asyncio
-    async def test_an_empty_graph_list_is_passed_as_is(self, service):
+    async def test_an_empty_graph_list_is_passed_as_is(self, service, mock_kafka_service):
         """[] means the graph knew of no groups; None would make the store scan
         every record point for them, which Redis cannot do past 10k."""
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
@@ -517,60 +553,24 @@ class TestDeleteKnowledgeBase:
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": [], "record_group_ids": [],
         })
-        service.entity_vector_store = AsyncMock()
 
         await service.delete_knowledge_base("kb1", "user1", "org1")
 
-        assert service.entity_vector_store.delete_entities_by_connector.await_args.kwargs[
-            "record_group_ids"
-        ] == []
+        (event,) = self._entity_events(mock_kafka_service)
+        assert event["payload"]["recordGroupIds"] == []
 
     @pytest.mark.asyncio
-    async def test_no_record_groups_from_the_graph_lets_the_store_recover_them(self, service):
+    async def test_no_record_groups_from_the_graph_lets_the_store_recover_them(self, service, mock_kafka_service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": [],
         })
-        service.entity_vector_store = AsyncMock()
 
         await service.delete_knowledge_base("kb1", "user1", "org1")
 
-        assert service.entity_vector_store.delete_entities_by_connector.await_args.kwargs[
-            "record_group_ids"
-        ] is None
-
-    @pytest.mark.asyncio
-    async def test_missing_entity_vector_store_still_succeeds(self, service):
-        """entity_vector_store is optional (defaults to None) — KB delete
-        must not depend on it being wired up."""
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
-            "success": True, "virtual_record_ids": [],
-        })
-        assert service.entity_vector_store is None
-
-        result = await service.delete_knowledge_base("kb1", "user1", "org1")
-
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_entity_vector_store_cleanup_failure_still_succeeds(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
-            "success": True, "virtual_record_ids": [],
-        })
-        service.entity_vector_store = AsyncMock()
-        service.entity_vector_store.delete_entities_by_connector = AsyncMock(
-            side_effect=RuntimeError("vector db down")
-        )
-
-        result = await service.delete_knowledge_base("kb1", "user1", "org1")
-
-        assert result["success"] is True
-        service.logger.error.assert_called()
+        (event,) = self._entity_events(mock_kafka_service)
+        assert event["payload"]["recordGroupIds"] is None
 
 
 class TestDeleteKBStorageCleanup:
@@ -928,7 +928,9 @@ class TestDeleteFolder:
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["f1"], "kb1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["f1"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1", soft_delete=False
+        )
 
     @pytest.mark.asyncio
     async def test_not_owner(self, service):
@@ -975,6 +977,24 @@ class TestDeleteFolder:
         assert result["success"] is True
         assert result["vectorCleanupPending"] is True
         assert result["vectorCleanupFailedRecordIds"] == ["f1"]
+
+    @pytest.mark.asyncio
+    async def test_a_pending_cleanup_without_record_ids_is_still_a_success(self, service) -> None:
+        """The folder is gone once the cascade returns; a missing id list must not turn that into a 500."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True,
+            "softDeleted": True,
+            "vectorCleanupPending": True,
+            "vectorCleanupFailedVirtualRecordIds": ["v1"],
+        })
+
+        result = await service.delete_folder("kb1", "f1", "user1")
+        assert result["success"] is True and result["code"] == 200
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == []
 
     @pytest.mark.asyncio
     async def test_cascade_failure_is_not_reported_as_success(self, service):
@@ -1201,7 +1221,9 @@ class TestDeleteRecordsInKb:
 
         result = await service.delete_records_in_kb("kb1", ["r1", "r2"], "user1")
         assert result["success"] is True
-        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(["r1", "r2"], "kb1")
+        service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
+            ["r1", "r2"], "kb1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1", soft_delete=False
+        )
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
@@ -1306,7 +1328,8 @@ class TestDeleteRecordsInFolder:
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
         service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
-            ["r1"], "kb1", within_folder_id="f1"
+            ["r1"], "kb1", within_folder_id="f1", delete_source=DeleteSource.USER, deleted_by_user_id="uk1",
+            soft_delete=False,
         )
 
     @pytest.mark.asyncio
@@ -1318,7 +1341,8 @@ class TestDeleteRecordsInFolder:
         await service.delete_records_in_folder("kb1", "f1", ["in-f1", "in-f2"], "user1")
 
         service.processor_for_kb.return_value.on_records_deleted_cascade.assert_awaited_once_with(
-            ["in-f1", "in-f2"], "kb1", within_folder_id="f1"
+            ["in-f1", "in-f2"], "kb1", within_folder_id="f1", delete_source=DeleteSource.USER,
+            deleted_by_user_id="uk1", soft_delete=False,
         )
 
     @pytest.mark.asyncio

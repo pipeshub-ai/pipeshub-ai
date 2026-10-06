@@ -6,6 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.entities import TicketRecord
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 
 
 class TestFetchFullRecordArgs:
@@ -42,35 +46,171 @@ class TestFetchFullRecordArgs:
 # ===========================================================================
 
 
+class _FkGraph:
+    """Foreign keys and record documents, answered the way both graph providers answer.
+
+    The edge reads return every neighbour as a dict, trashed or not: the trash
+    keeps a dropped table's node and edges until the purge. The batched record
+    read filters by org and visibility, as its query does.
+    """
+
+    def __init__(self, org_id: str = "org-1") -> None:
+        self.org_id = org_id
+        self.records: dict[str, dict] = {}
+        self.fks: list[tuple[str, str]] = []
+        self.lookups: list[tuple[list[str], str, RecordVisibility]] = []
+        self.config_service = MagicMock()
+
+    def table(self, record_id: str, *, trashed: bool = False, org_id: str | None = None) -> None:
+        doc = {"_key": record_id, "id": record_id, "orgId": org_id or self.org_id, "recordName": record_id}
+        if trashed:
+            doc["isDeleted"] = True
+        self.records[record_id] = doc
+
+    def fk(self, child: str, parent: str) -> None:
+        self.fks.append((child, parent))
+
+    async def get_child_record_ids_by_relation_type(
+        self, record_id: str, relation_type: str, transaction: str | None = None
+    ) -> list[dict]:
+        assert relation_type == "FOREIGN_KEY"
+        return [
+            {"record_id": c, "childTable": f"public.{c}", "sourceColumn": f"{p}_id", "targetColumn": "id"}
+            for c, p in self.fks if p == record_id
+        ]
+
+    async def get_parent_record_ids_by_relation_type(
+        self, record_id: str, relation_type: str, transaction: str | None = None
+    ) -> list[dict]:
+        assert relation_type == "FOREIGN_KEY"
+        return [
+            {"record_id": p, "parentTable": f"public.{p}", "sourceColumn": f"{p}_id", "targetColumn": "id"}
+            for c, p in self.fks if c == record_id
+        ]
+
+    async def get_records_by_record_ids(
+        self, record_ids: list[str], org_id: str, visibility: RecordVisibility = RecordVisibility.LIVE
+    ) -> list[dict]:
+        self.lookups.append((list(record_ids), org_id, visibility))
+        return [
+            dict(doc) for rid in record_ids
+            if (doc := self.records.get(rid)) and doc["orgId"] == org_id and matches_visibility(doc, visibility)
+        ]
+
+
+def _shop(*, trashed: tuple[str, ...] = ()) -> _FkGraph:
+    """orders -> customers, orders -> products, products -> suppliers, reviews -> orders."""
+    graph = _FkGraph()
+    for name in ("orders", "customers", "products", "suppliers", "reviews"):
+        graph.table(name, trashed=name in trashed)
+    graph.fk("orders", "customers")
+    graph.fk("orders", "products")
+    graph.fk("products", "suppliers")
+    graph.fk("reviews", "orders")
+    return graph
+
+
+def _ids(relations: list[dict]) -> set[str]:
+    return {rel["record_id"] for rel in relations}
+
+
 class TestEnrichSqlTableWithFkRelations:
     @pytest.mark.asyncio
-    async def test_enriches_with_fk_ids(self):
+    async def test_enriches_with_fk_relations(self) -> None:
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
-        record = {"id": "rec-1", "record_name": "users"}
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=["child-1", "child-2"])
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=["parent-1"])
+        graph = _shop()
+        result = await _enrich_sql_table_with_fk_relations(
+            {"id": "orders", "record_name": "orders"}, graph, "org-1"
+        )
 
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
+        assert _ids(result["fk_parent_record_ids"]) == {"customers", "products"}
+        assert _ids(result["fk_child_record_ids"]) == {"reviews"}
+        parent = next(r for r in result["fk_parent_record_ids"] if r["record_id"] == "customers")
+        assert parent == {
+            "record_id": "customers", "parentTable": "public.customers",
+            "sourceColumn": "customers_id", "targetColumn": "id",
+        }
 
-        assert result["fk_child_record_ids"] == ["child-1", "child-2"]
-        assert result["fk_parent_record_ids"] == ["parent-1"]
+    @pytest.mark.asyncio
+    async def test_leaves_out_tables_in_the_trash(self) -> None:
+        """The edges outlive the drop; the trashed table's name and columns must not reach the agent."""
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph = _shop(trashed=("customers", "reviews"))
+        result = await _enrich_sql_table_with_fk_relations(
+            {"id": "orders", "record_name": "orders"}, graph, "org-1"
+        )
+
+        assert _ids(result["fk_parent_record_ids"]) == {"products"}
+        assert result["fk_child_record_ids"] == []
+        said = repr(result)
+        assert "customers" not in said
+        assert "reviews" not in said
+
+    @pytest.mark.asyncio
+    async def test_checks_every_neighbour_in_one_live_lookup(self) -> None:
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph = _shop()
+        await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+
+        assert len(graph.lookups) == 1
+        ids, org_id, visibility = graph.lookups[0]
+        assert set(ids) == {"customers", "products", "reviews"}
+        assert org_id == "org-1"
+        assert visibility is RecordVisibility.LIVE
+
+    @pytest.mark.asyncio
+    async def test_no_neighbours_needs_no_lookup(self) -> None:
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph = _shop()
+        graph.table("audit_log")
+        result = await _enrich_sql_table_with_fk_relations({"id": "audit_log"}, graph, "org-1")
+
+        assert graph.lookups == []
+        assert result["fk_parent_record_ids"] == []
+        assert result["fk_child_record_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_neighbour_in_another_org_is_left_out(self) -> None:
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph = _shop()
+        graph.table("customers", org_id="org-2")
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+
+        assert _ids(result["fk_parent_record_ids"]) == {"products"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_live_lookup_lists_no_neighbours(self) -> None:
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph = _shop()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+
+        assert result["fk_parent_record_ids"] == []
+        assert result["fk_child_record_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_without_an_org_no_neighbour_is_listed(self) -> None:
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph = _shop()
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, None)
+
+        assert graph.lookups == []
+        assert result["fk_parent_record_ids"] == []
+        assert result["fk_child_record_ids"] == []
 
     @pytest.mark.asyncio
     async def test_returns_copy_not_original(self):
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
-        record = {"id": "rec-1", "record_name": "orders"}
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
-
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
+        record = {"id": "orders", "record_name": "orders"}
+        result = await _enrich_sql_table_with_fk_relations(record, _shop(), "org-1")
 
         assert "fk_parent_record_ids" not in record
         assert "fk_parent_record_ids" in result
@@ -80,81 +220,39 @@ class TestEnrichSqlTableWithFkRelations:
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
         record = {"record_name": "no_id_table"}
-        graph_provider = AsyncMock()
-
-        result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
+        result = await _enrich_sql_table_with_fk_relations(record, _shop(), "org-1")
         assert result is record
 
     @pytest.mark.asyncio
     async def test_uses_record_id_field(self):
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
-        record = {"record_id": "rec-alt", "record_name": "alt"}
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+        result = await _enrich_sql_table_with_fk_relations({"record_id": "products"}, _shop(), "org-1")
 
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
-
-        assert "fk_child_record_ids" in result
+        assert _ids(result["fk_parent_record_ids"]) == {"suppliers"}
+        assert _ids(result["fk_child_record_ids"]) == {"orders"}
 
     @pytest.mark.asyncio
     async def test_child_fetch_exception_handled(self):
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
-        record = {"id": "rec-1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(
-            side_effect=RuntimeError("graph down")
-        )
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=["p1"])
-
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
+        graph = _shop()
+        graph.get_child_record_ids_by_relation_type = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
 
         assert result["fk_child_record_ids"] == []
-        assert result["fk_parent_record_ids"] == ["p1"]
+        assert _ids(result["fk_parent_record_ids"]) == {"customers", "products"}
 
     @pytest.mark.asyncio
     async def test_parent_fetch_exception_handled(self):
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
-        record = {"id": "rec-1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=["c1"])
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(
-            side_effect=RuntimeError("graph down")
-        )
+        graph = _shop()
+        graph.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=RuntimeError("graph down"))
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
 
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
-
-        assert result["fk_child_record_ids"] == ["c1"]
+        assert _ids(result["fk_child_record_ids"]) == {"reviews"}
         assert result["fk_parent_record_ids"] == []
-
-    @pytest.mark.asyncio
-    async def test_converts_non_list_iterables(self):
-        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
-
-        record = {"id": "rec-1"}
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(
-            return_value={"c1", "c2"}
-        )
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(
-            return_value=("p1",)
-        )
-
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _enrich_sql_table_with_fk_relations(record, graph_provider)
-
-        assert isinstance(result["fk_child_record_ids"], list)
-        assert isinstance(result["fk_parent_record_ids"], list)
 
 
 # ===========================================================================
@@ -386,22 +484,38 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "record_name": "test", "record_type": "SQL_TABLE"},
+            "vr1": {"id": "products", "record_name": "products", "record_type": "SQL_TABLE"},
         }
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=["c1"])
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=["p1"])
-
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _fetch_multiple_records_impl(
-                ["r1"], records_map, graph_provider=graph_provider
-            )
+        result = await _fetch_multiple_records_impl(
+            ["products"], records_map, graph_provider=_shop(), org_id="org-1"
+        )
 
         assert result["ok"] is True
         rec = result["records"][0]
-        assert rec["fk_child_record_ids"] == ["c1"]
-        assert rec["fk_parent_record_ids"] == ["p1"]
+        assert _ids(rec["fk_child_record_ids"]) == {"orders"}
+        assert _ids(rec["fk_parent_record_ids"]) == {"suppliers"}
+
+    @pytest.mark.asyncio
+    async def test_sql_table_lists_only_live_neighbours(self) -> None:
+        from app.utils.fetch_full_record import _fetch_multiple_records_impl
+
+        records_map = {
+            "vr1": {"id": "orders", "record_name": "orders", "record_type": "SQL_TABLE"},
+            "vr2": {"id": "products", "record_name": "products", "record_type": "SQL_TABLE"},
+        }
+        result = await _fetch_multiple_records_impl(
+            ["orders", "products"], records_map,
+            graph_provider=_shop(trashed=("customers", "suppliers")), org_id="org-1",
+        )
+
+        by_id = {rec["id"]: rec for rec in result["records"]}
+        assert _ids(by_id["orders"]["fk_parent_record_ids"]) == {"products"}
+        assert _ids(by_id["orders"]["fk_child_record_ids"]) == {"reviews"}
+        assert by_id["products"]["fk_parent_record_ids"] == []
+        assert _ids(by_id["products"]["fk_child_record_ids"]) == {"orders"}
+        said = repr(result)
+        assert "customers" not in said
+        assert "suppliers" not in said
 
     @pytest.mark.asyncio
     async def test_sql_table_not_enriched_without_graph_provider(self):
@@ -478,19 +592,16 @@ class TestFetchMultipleRecordsImpl:
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {}
-        graph_provider = AsyncMock()
+        graph_provider = _shop(trashed=("customers",))
         graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
         graph_provider.get_document = AsyncMock(return_value={
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "virtualRecordId": "vrid-1",
             "recordType": "SQL_TABLE",
         })
-        graph_provider.config_service = MagicMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=["c1"])
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
 
         async def fake_get_record(vrid, map_, *args, **kwargs):
-            map_[vrid] = {"id": "r1", "record_type": "SQL_TABLE", "content": "data"}
+            map_[vrid] = {"id": "orders", "record_type": "SQL_TABLE", "content": "data"}
 
         mock_blob_instance = MagicMock()
         mock_blob_instance.config_service = MagicMock()
@@ -502,10 +613,9 @@ class TestFetchMultipleRecordsImpl:
         ), patch(
             "app.utils.fetch_full_record.get_record",
             side_effect=fake_get_record,
-        ), patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
+        ):
             result = await _fetch_multiple_records_impl(
-                ["r1"], records_map,
+                ["orders"], records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
                 user_id="u1",
@@ -513,28 +623,23 @@ class TestFetchMultipleRecordsImpl:
 
         assert result["ok"] is True
         rec = result["records"][0]
-        assert rec["fk_child_record_ids"] == ["c1"]
+        assert _ids(rec["fk_child_record_ids"]) == {"reviews"}
+        assert _ids(rec["fk_parent_record_ids"]) == {"products"}
 
     @pytest.mark.asyncio
     async def test_recordType_key_also_triggers_fk_enrichment(self):
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
 
         records_map = {
-            "vr1": {"id": "r1", "record_name": "test", "recordType": "SQL_TABLE"},
+            "vr1": {"id": "suppliers", "record_name": "suppliers", "recordType": "SQL_TABLE"},
         }
-        graph_provider = AsyncMock()
-        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
-        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
-
-        with patch("app.config.constants.arangodb.RecordRelations") as mock_rr:
-            mock_rr.FOREIGN_KEY.value = "FOREIGN_KEY"
-            result = await _fetch_multiple_records_impl(
-                ["r1"], records_map, graph_provider=graph_provider
-            )
+        result = await _fetch_multiple_records_impl(
+            ["suppliers"], records_map, graph_provider=_shop(), org_id="org-1"
+        )
 
         assert result["ok"] is True
         rec = result["records"][0]
-        assert "fk_child_record_ids" in rec
+        assert _ids(rec["fk_child_record_ids"]) == {"products"}
 
 
 # ===========================================================================

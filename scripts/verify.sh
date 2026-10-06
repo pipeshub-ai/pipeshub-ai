@@ -139,7 +139,6 @@ run python "python service tests (no infra)" \
   bash -c "cd backend/python && $PY -m pytest tests/integration \
       --ignore=tests/integration/redis_cluster \
       --ignore=tests/integration/skills/test_npm_import_live.py \
-      --ignore=tests/integration/test_model_reasoning_effort_e2e.py \
       -q -p no:warnings --timeout=300"
 
 # ── frontend ─────────────────────────────────────────────────────────────────

@@ -8,9 +8,10 @@ import asyncio
 import base64
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -269,6 +270,92 @@ def connector():
         conn.gmail_data_source.client = MagicMock()
         conn.config = {"credentials": {"auth": {"type": "service_account"}}}
         yield conn
+
+
+_GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
+_DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
+
+
+class TestDelegatedScopesAreReadOnly:
+    """Google refuses a delegated token request naming any scope the admin did not
+    grant, and the setup docs tell admins to grant read-only scopes. These run the
+    real GoogleClient so the check covers the scopes that reach Google."""
+
+    @asynccontextmanager
+    async def _record_delegated_scopes(self) -> AsyncIterator[dict[str, list[list[str]]]]:
+        from app.sources.client.google import google as google_client_module
+
+        requested: dict[str, list[list[str]]] = {}
+
+        def fake_credentials(info, scopes, subject) -> MagicMock:
+            return MagicMock(scopes=list(scopes), subject=subject)
+
+        def fake_build(service_name, version, credentials, **kwargs) -> MagicMock:
+            requested.setdefault(service_name, []).append(credentials.scopes)
+            return MagicMock()
+
+        with patch(
+            "app.connectors.sources.google.gmail.team.connector.GoogleClient",
+            google_client_module.GoogleClient,
+        ), patch.object(google_client_module, "service_account") as mock_sa, patch.object(
+            google_client_module, "build", side_effect=fake_build
+        ):
+            mock_sa.Credentials.from_service_account_info.side_effect = fake_credentials
+            yield requested
+
+    @pytest.mark.asyncio
+    async def test_init_asks_only_for_gmail_readonly(self, connector) -> None:
+        async with self._record_delegated_scopes() as requested:
+            assert await connector.init() is True
+
+        assert requested["gmail"] == [[_GMAIL_READONLY]]
+
+    @pytest.mark.asyncio
+    async def test_impersonated_mailbox_asks_only_for_gmail_readonly(self, connector) -> None:
+        async with self._record_delegated_scopes() as requested:
+            await connector._create_user_gmail_client("user@example.com")
+
+        assert requested["gmail"] == [[_GMAIL_READONLY]]
+
+    @pytest.mark.asyncio
+    async def test_drive_attachment_download_asks_only_for_drive_readonly(self, connector) -> None:
+        async with self._record_delegated_scopes() as requested:
+            with patch(
+                "app.connectors.sources.google.gmail.team.connector.create_stream_record_response"
+            ):
+                await connector._stream_from_drive(
+                    "drive-id", _make_mock_record(), "file.txt", "text/plain",
+                    user_email="user@example.com",
+                )
+
+        assert requested["drive"] == [[_DRIVE_READONLY]]
+
+
+class TestDriveDownloadWithoutAMailboxUser:
+    """When no mailbox user can be impersonated, the Gmail side reads as the admin. The
+    Drive download must do the same through delegation: a service account acting as
+    itself, with no scopes, can't get a token or see anyone's files."""
+
+    @pytest.mark.asyncio
+    async def test_acts_as_the_admin_with_drive_readonly(self, connector) -> None:
+        from app.sources.client.google import google as google_client_module
+
+        with patch(
+            "app.connectors.sources.google.gmail.team.connector.GoogleClient",
+            google_client_module.GoogleClient,
+        ), patch.object(google_client_module, "service_account") as mock_sa, patch.object(
+            google_client_module, "build", return_value=MagicMock()
+        ), patch(
+            "app.connectors.sources.google.gmail.team.connector.create_stream_record_response"
+        ) as mock_stream:
+            await connector._stream_from_drive(
+                "drive-id", _make_mock_record(), "file.txt", "text/plain", user_email=None,
+            )
+
+        mock_stream.assert_called_once()
+        delegated = mock_sa.Credentials.from_service_account_info.call_args.kwargs
+        assert delegated["scopes"] == [_DRIVE_READONLY]
+        assert delegated["subject"] == "admin@example.com"
 
 
 # ===========================================================================
@@ -2205,44 +2292,26 @@ class TestStreamFromDrive:
             mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_stream_fallback_to_service_account(self, connector):
-        connector.config = {"credentials": {"auth": {"type": "service_account"}}}
+    async def test_failed_user_client_is_reported_not_retried_as_bare_service_account(
+        self, connector
+    ) -> None:
         record = _make_mock_record()
 
         with patch("app.connectors.sources.google.gmail.team.connector.GoogleClient") as MockGoogleClient, \
              patch("google.oauth2.service_account.Credentials.from_service_account_info") as mock_creds, \
-             patch("app.connectors.sources.google.gmail.team.connector.build") as mock_build, \
              patch("app.connectors.sources.google.gmail.team.connector.create_stream_record_response") as mock_stream:
             MockGoogleClient.build_from_services = AsyncMock(side_effect=Exception("user client failed"))
-            mock_build.return_value = MagicMock()
             mock_stream.return_value = MagicMock()
 
-            await connector._stream_from_drive(
-                "drive-id", record, "file.txt", "text/plain",
-                user_email="u@e.com"
-            )
+            with pytest.raises(HTTPException):
+                await connector._stream_from_drive(
+                    "drive-id", record, "file.txt", "text/plain",
+                    user_email="u@e.com"
+                )
 
-    @pytest.mark.asyncio
-    async def test_stream_no_credentials(self, connector):
-        connector.config = None
-        record = _make_mock_record()
-
-        with pytest.raises(HTTPException) as exc_info:
-            await connector._stream_from_drive(
-                "drive-id", record, "file.txt", "text/plain"
-            )
-        assert exc_info.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_stream_no_auth_in_credentials(self, connector):
-        connector.config = {"credentials": {"auth": {}}}
-        record = _make_mock_record()
-
-        with pytest.raises(HTTPException) as exc_info:
-            await connector._stream_from_drive(
-                "drive-id", record, "file.txt", "text/plain"
-            )
-        assert exc_info.value.status_code == 500
+        MockGoogleClient.build_from_services.assert_awaited_once()
+        mock_creds.assert_not_called()
+        mock_stream.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])

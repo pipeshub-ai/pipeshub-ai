@@ -634,7 +634,7 @@ class TestUploadRecordsToFolder:
 
 class TestKbRouterDependencyWiring:
     @staticmethod
-    async def _service_with_kb_connector(connector, kb_doc=None, entity_store=None):
+    async def _service_with_kb_connector(connector, kb_doc=None):
         from app.connectors.sources.localKB.api.kb_router import get_kb_service
 
         request = MagicMock()
@@ -643,8 +643,6 @@ class TestKbRouterDependencyWiring:
         request.app.state.graph_provider.get_document = AsyncMock(
             return_value={"orgId": "org1"} if kb_doc is None else kb_doc
         )
-        if entity_store is not None:
-            request.app.container.entity_vector_store = AsyncMock(return_value=entity_store)
         event_service = MagicMock()
         event_service.get_or_init_connector = AsyncMock(return_value=connector)
         with patch("app.edition_services.EventService", return_value=event_service, create=True):
@@ -661,19 +659,9 @@ class TestKbRouterDependencyWiring:
         assert svc.graph_provider is request.app.state.graph_provider
         assert await svc.processor_for_kb("kb1") is connector.data_entities_processor
         event_service.get_or_init_connector.assert_awaited_once_with("kb", "kb1")
-        # container.entity_vector_store is unconfigured on this bare MagicMock,
-        # so awaiting it raises — must degrade to None rather than propagate.
-        assert svc.entity_vector_store is None
-
-    @pytest.mark.asyncio
-    async def test_get_kb_service_resolves_entity_vector_store(self):
-        """When the container resolves entity_vector_store successfully, it
-        must be threaded into the KnowledgeBaseService for KB-delete cleanup."""
-        entity_store = MagicMock()
-
-        svc, _, _ = await self._service_with_kb_connector(MagicMock(), entity_store=entity_store)
-
-        assert svc.entity_vector_store is entity_store
+        # Entity cleanup runs in the indexing service now (deleteConnectorEntities),
+        # so the KB service no longer needs the entity store on every request.
+        request.app.container.entity_vector_store.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -828,65 +816,6 @@ class TestFolderUploadRouteGaps:
         )
         assert result["success"] is True
         logger.error.assert_called()
-
-
-class TestCreateRecordsInKb:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(return_value={
-            "success": True, "recordCount": 1, "insertedRecordIds": ["r1"],
-            "insertedFileIds": ["f1"], "kbId": "kb1"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 200
-
-    def test_invalid_body(self):
-        app, kb_svc, _ = _make_app()
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", content="bad", headers={"content-type": "application/json"})
-        assert resp.status_code == 400
-
-    def test_failure(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(return_value={
-            "success": False, "code": 403, "reason": "Forbidden"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 403
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_kb = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/records", json={"records": [{}]})
-        assert resp.status_code == 500
-
-
-class TestCreateRecordsInFolder:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_folder = AsyncMock(return_value={
-            "success": True, "recordCount": 1, "insertedRecordIds": ["r1"],
-            "insertedFileIds": ["f1"], "kbId": "kb1", "folderId": "f1"
-        })
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", json={"records": [{}], "fileRecords": [{}]})
-        assert resp.status_code == 200
-
-    def test_invalid_body(self):
-        app, kb_svc, _ = _make_app()
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", content="bad", headers={"content-type": "application/json"})
-        assert resp.status_code == 400
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.create_records_in_folder = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.post("/api/v1/kb/kb1/folder/f1/records", json={"records": [{}]})
-        assert resp.status_code == 500
 
 
 class TestListKbRecords:

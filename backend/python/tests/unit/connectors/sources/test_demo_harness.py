@@ -134,12 +134,25 @@ def test_the_installer_is_scored_on_its_own_groups_not_alices(fx: dict, qid: str
     [
         ("Enterprise moves to a $48,000 annual platform fee.", True),
         ("A $48k platform fee covering 250 seats.", True),
+        ("Move to a platform-fee model: $48k a year.", True),
+        ("A platform‑fee of $48,000.", True),
+        ("Per-seat pricing stays at $48 a seat.", False),
     ],
 )
 def test_q5_still_accepts_the_pricing_documents_own_wording(fx: dict, answer: str, ok: bool) -> None:
     # The chat landing's questions are scored as on main: plain substrings.
     q = _question(fx, "q5")
     assert kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer)[0] is ok
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["The 2026 plan moves Enterprise to a platform-fee model.", "Pricing follows usage-bands now."],
+)
+def test_a_hyphenated_restricted_fact_in_alices_answer_is_a_leak(fx: dict, answer: str) -> None:
+    passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
+    assert passed is False, verdict
+    assert "leaked restricted" in verdict
 
 
 def test_an_upload_run_asks_only_the_knowledge_bases_it_loaded() -> None:

@@ -18,6 +18,7 @@ from app.api.routes.health import (
     recreate_collection,
     survey_managed_collections,
 )
+from app.services.vector_db.collection_manifest import ManagedCollection
 from app.services.vector_db.models import VectorCollectionInfo
 from tests.support.vector_db import make_collection_registry
 
@@ -147,3 +148,64 @@ class TestEmptyManifestRebuild:
 
         with pytest.raises(RuntimeError):
             await recreate_collection(svc, 1024, MagicMock())
+
+
+def _managed(name: str, collection_type: str, dimension: int) -> ManagedCollection:
+    return ManagedCollection(
+        name=name,
+        collection_type=collection_type,
+        embedding_dimension=dimension,
+        strategy_name="single",
+    )
+
+
+def _service_with(
+    managed: list[ManagedCollection], infos: dict[str, VectorCollectionInfo]
+) -> AsyncMock:
+    registry = make_collection_registry("records")
+    registry.list_managed_collections = AsyncMock(return_value=managed)
+    svc = _retrieval_service(registry=registry)
+    svc.vector_db_service.get_collection_info = AsyncMock(side_effect=lambda name: infos[name])
+    return svc
+
+
+class TestEntityIndexIsNotIndexedContent:
+    """The entity index rebuild embeds graph nodes with the built-in model on a
+    fresh org; counting those points refused the admin's first embedding model
+    as if their content were already indexed."""
+
+    @pytest.mark.asyncio
+    async def test_entity_points_are_not_counted(self) -> None:
+        svc = _service_with(
+            [_managed("entities", "entities", 1024)],
+            {"entities": VectorCollectionInfo(name="entities", exists=True, dense_dimension=1024, points_count=3)},
+        )
+
+        assert await survey_managed_collections(svc, MagicMock()) == (0, 0)
+        svc.vector_db_service.get_collection_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_model_change_with_only_entity_points_is_allowed(self) -> None:
+        svc = _service_with(
+            [_managed("entities", "entities", 1024)],
+            {"entities": VectorCollectionInfo(name="entities", exists=True, dense_dimension=1024, points_count=3)},
+        )
+
+        await check_collection_info(svc, MagicMock(), 1536, MagicMock())
+
+        svc.collection_registry.recreate_all_collections.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_records_points_still_refuse_with_the_records_dimension(self) -> None:
+        svc = _service_with(
+            [_managed("entities", "entities", 1024), _managed("records", "records", 1536)],
+            {
+                "entities": VectorCollectionInfo(name="entities", exists=True, dense_dimension=1024, points_count=3),
+                "records": VectorCollectionInfo(name="records", exists=True, dense_dimension=1536, points_count=5),
+            },
+        )
+
+        assert await survey_managed_collections(svc, MagicMock()) == (1536, 5)
+        with pytest.raises(HTTPException) as exc:
+            await check_collection_info(svc, MagicMock(), 1536, MagicMock())
+        assert exc.value.status_code == 400

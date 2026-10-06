@@ -63,6 +63,7 @@ from app.modules.transformers.blob_storage import (
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
@@ -1530,6 +1531,15 @@ async def _create_skill_edges(
     return linked_names
 
 
+def _stored_default_effort(llm_config: dict[str, Any], model_key: str, logger: Logger) -> dict[str, str]:
+    try:
+        effort = model_default_reasoning_effort(llm_config)
+    except ValueError as e:
+        logger.warning(f"Ignoring the stored default reasoning effort of model {model_key}: {e}")
+        return {}
+    return {"defaultReasoningEffort": effort} if effort else {}
+
+
 async def _enrich_agent_models(agent: dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
     """Enrich agent models with full configurations from etcd.
 
@@ -1587,6 +1597,7 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
                     "isDefault": matching_config.get("isDefault", False),
                     "modelType": "llm",
                     "modelFriendlyName": matching_config.get("modelFriendlyName", model_name),
+                    **_stored_default_effort(matching_config, model_key, logger),
                 })
             else:
                 logger.warning(f"Model key {model_key} not found in LLM configs")
@@ -2628,13 +2639,17 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         "Cannot disable org-wide sharing for a service account agent. "
                         "Service account agents must always be shared across the organisation."
                     )
-                # Turning OFF org sharing: delete the org permission edge
-                await services["graph_provider"].delete_edge(
-                    from_id=org_key,
-                    from_collection=CollectionNames.ORGS.value,
-                    to_id=agent_id,
-                    to_collection=CollectionNames.AGENT_INSTANCES.value,
-                    collection=CollectionNames.PERMISSION.value
+                # Turning OFF org sharing: delete the org permission edge. Not
+                # delete_edge: ArangoDB's answers False when the delete fails, and the
+                # agent stayed shared with the whole org while reporting that it was not.
+                await services["graph_provider"].batch_delete_edges(
+                    [{
+                        "from_id": org_key,
+                        "from_collection": CollectionNames.ORGS.value,
+                        "to_id": agent_id,
+                        "to_collection": CollectionNames.AGENT_INSTANCES.value,
+                    }],
+                    CollectionNames.PERMISSION.value,
                 )
                 logger.info(f"Deleted org permission edge for agent {agent_id}")
 

@@ -16,12 +16,14 @@ from zammad_behaviour_fakes import (
     FakeStore,
     FakeZammad,
     epoch_ms,
+    iso,
 )
 
 from app.connectors.sources.zammad import connector as zammad_connector
-from app.connectors.sources.zammad.connector import ZammadConnector
+from app.connectors.sources.zammad.connector import MIN_SPLIT_WINDOW_MS, ZammadConnector
 
 CONNECTOR_ID = "zm-1"
+NOW = epoch_ms(30)
 
 
 class World:
@@ -55,6 +57,16 @@ class World:
         self.config.sync_filters = values
         self.store.clear()
         await self.sync()
+
+
+def _clock(monkeypatch: pytest.MonkeyPatch, now: int) -> None:
+    monkeypatch.setattr(zammad_connector, "get_epoch_timestamp_in_ms", lambda: now)
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Search windows are halved up to now, so the real clock would move every window edge between runs."""
+    _clock(monkeypatch, NOW)
 
 
 @pytest.fixture
@@ -304,6 +316,19 @@ async def test_an_excluded_group_ticket_that_cannot_be_read_back_is_retried(worl
     assert "20" not in world.db.external_ids()
 
 
+def _count_ticket_writes(world: World) -> list[str]:
+    """External ids of every record written from here on, one entry per write."""
+    writes: list[str] = []
+    record_writes = world.db.on_new_records
+
+    async def counted(records_with_permissions: list) -> None:
+        writes.extend(r.external_record_id for r, _ in records_with_permissions)
+        await record_writes(records_with_permissions)
+
+    world.db.on_new_records = counted
+    return writes
+
+
 def _group_point(world: World, group_name: str) -> dict:
     return next((v for k, v in world.store.sync_points.items() if k.endswith(group_name)), {})
 
@@ -347,6 +372,114 @@ async def test_a_burst_read_that_fails_part_way_carries_on_from_the_id_it_reache
     assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
     assert _group_point(world, "Support").get("burst_next_id") == 0
     assert _checkpoint(world, "Support") > epoch_ms(6)
+
+
+async def test_a_burst_resumed_beside_a_window_edge_in_its_own_second_is_not_read_again(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Queries state window edges to the second, so an edge half a second after a burst used to share its second."""
+    _search_window(world, monkeypatch, 60)
+    burst_at = epoch_ms(5)
+    edge = burst_at + 500
+    # A window from edge - MIN_SPLIT_WINDOW_MS to now is split once, at edge.
+    _clock(monkeypatch, edge + MIN_SPLIT_WINDOW_MS)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    world.zammad.add_ticket(1200, 1, day=5, minute=1)
+    world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
+
+    await world.save_filters({"modified": {
+        "operator": "is_after", "value": {"start": edge - MIN_SPLIT_WINDOW_MS, "end": None}, "type": "datetime",
+    }})
+    assert all(str(t) in world.db.external_ids() for t in range(1000, 1100))
+    assert "1120" not in world.db.external_ids() and "1200" not in world.db.external_ids()
+    assert _group_point(world, "Support").get("burst_next_id") == 1100
+    assert (_checkpoint(world, "Support") or 0) <= burst_at
+
+    world.zammad.fail_search = lambda _query: False
+    world.zammad.search_queries.clear()
+    await world.sync()
+
+    assert all(str(t) in world.db.external_ids() for t in [*range(1100, 1150), 1200])
+    burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
+    assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    assert _group_point(world, "Support").get("burst_next_id") == 0
+    assert _checkpoint(world, "Support") > burst_at + 60_000
+
+
+async def test_a_burst_on_a_modified_before_filter_that_a_window_edge_lands_on_is_read_once(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user's inclusive bound must not keep the second of an edge that sits on it in the window before."""
+    _search_window(world, monkeypatch, 60)
+    edge = epoch_ms(5)
+    # A window from edge - MIN_SPLIT_WINDOW_MS to now is split once, at edge.
+    _clock(monkeypatch, edge + MIN_SPLIT_WINDOW_MS)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    world.zammad.add_ticket(1200, 1, day=5, minute=1)
+    writes = _count_ticket_writes(world)
+    world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
+
+    await world.save_filters({"modified": {
+        "operator": "is_between", "value": {"start": edge - MIN_SPLIT_WINDOW_MS, "end": edge}, "type": "datetime",
+    }})
+    assert _group_point(world, "Support").get("burst_next_id") == 1100
+
+    world.zammad.fail_search = lambda _query: False
+    world.zammad.search_queries.clear()
+    await world.sync()
+
+    burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
+    assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    burst = [w for w in writes if 1000 <= int(w) < 1150]
+    assert sorted(burst) == sorted(str(t) for t in range(1000, 1150)), "every ticket in the burst is read once"
+    assert "1200" not in world.db.external_ids()
+    assert _group_point(world, "Support").get("burst_next_id") == 0
+
+
+@pytest.mark.parametrize("clock_past_burst_ms", [0, 500])
+async def test_a_burst_in_the_current_second_of_a_narrow_window_is_resumed_not_read_again(
+    world: World, monkeypatch: pytest.MonkeyPatch, clock_past_burst_ms: int,
+) -> None:
+    """A window too narrow to halve ends after the clock's second, which the query can state exactly."""
+    _search_window(world, monkeypatch, 60)
+    burst_at = epoch_ms(5)
+    _clock(monkeypatch, burst_at + clock_past_burst_ms)
+    for ticket_id in range(1000, 1150):
+        world.zammad.add_ticket(ticket_id, 1, day=5)
+    # Edited after the window's edge, while the burst is read: it belongs to the next window.
+    world.zammad.add_ticket(990, 1, day=5)
+    world.zammad.tickets[990]["updated_at"] = iso(burst_at + 2_000)
+    writes = _count_ticket_writes(world)
+    world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
+
+    await world.save_filters({"modified": {
+        "operator": "is_after", "value": {"start": burst_at - 30_000, "end": None}, "type": "datetime",
+    }})
+    assert _group_point(world, "Support").get("burst_next_id") == 1100
+
+    world.zammad.fail_search = lambda _query: False
+    world.zammad.search_queries.clear()
+    await world.sync()
+
+    burst_reads = [q for q in world.zammad.search_queries if "updated_at" in q and " AND id:[" in q]
+    assert burst_reads and not any("id:[1000 TO" in q for q in burst_reads), "ranges already read are not read again"
+    expected = sorted(str(t) for t in [990, *range(1000, 1150)])
+    assert sorted(w for w in writes if w in expected) == expected, "every ticket is read once"
+    assert _group_point(world, "Support").get("burst_next_id") == 0
+
+
+async def test_a_window_edge_later_in_the_second_of_the_modified_before_filter_is_still_exclusive(
+    world: World,
+) -> None:
+    """A burst resume's edge comes from the clock, so it can share a second with the filter yet lie after it."""
+    edge = epoch_ms(5)
+    world.connector._date_filter_bounds = lambda key: (None, edge) if key.value == "modified" else (None, None)
+
+    query = world.connector._build_ticket_search_query(1, edge - 60_000, until=edge + 500)
+
+    assert query.endswith("updated_at:[* TO 2026-01-06T00:00:00Z}")
 
 
 async def test_a_window_past_the_search_window_is_split_after_one_probe_not_after_paging_to_its_end(

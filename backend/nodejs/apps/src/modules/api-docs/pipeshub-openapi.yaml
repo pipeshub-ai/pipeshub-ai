@@ -5209,6 +5209,307 @@ components:
           type: integer
           format: int64
           nullable: true
+        softDeleted:
+          type: boolean
+          description: True when the record went to the trash instead of being removed
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch; restoring any record in it restores all of it
+        vectorCleanupPending:
+          type: boolean
+          description: The record is deleted, but removing its embeddings is still owed
+        vectorCleanupFailedRecordIds:
+          type: array
+          items:
+            type: string
+        vectorCleanupFailedVirtualRecordIds:
+          type: array
+          items:
+            type: string
+
+    RestoredRecordSchema:
+      type: object
+      additionalProperties: false
+      required:
+        - recordId
+      properties:
+        recordId:
+          type: string
+        name:
+          type: string
+          nullable: true
+          description: The name it has now
+        renamedFrom:
+          type: string
+          description: Its name before restore, when another item next to it had taken that name
+
+    RestoreRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/record/{recordId}/restore.
+      required:
+        - success
+        - message
+        - restoredRecords
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+
+    TrashItemSchema:
+      type: object
+      additionalProperties: false
+      description: What one delete removed (a folder with its contents, or every item of a multi-select); restoring it brings back all of it.
+      required:
+        - id
+        - isFolder
+        - parentInTrash
+        - itemCount
+        - deletedAtTimestamp
+      properties:
+        id:
+          type: string
+          description: Record ID to restore
+        name:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        isFolder:
+          type: boolean
+          description: A folder, deleted with everything in it
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          format: int64
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+          description: The folder it was in; null at the collection's top level
+        parentName:
+          type: string
+          nullable: true
+        parentInTrash:
+          type: boolean
+          description: That folder is in the trash too; restore it first
+        itemCount:
+          type: integer
+          minimum: 0
+          description: Records this delete removed, all of which a restore brings back
+        rootCount:
+          type: integer
+          minimum: 1
+          description: Items selected in the delete; more than one for a multi-select delete, which is one item here
+        otherRootNames:
+          type: array
+          items:
+            type: string
+          description: Names of up to three of the other items selected with this one
+        deletedAtTimestamp:
+          type: integer
+          format: int64
+        deletedBy:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+        removableAfterTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: From when the scheduled cleanup may remove it for good; null when unknown
+
+    ListTrashResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/{kbId}/trash.
+      required:
+        - success
+        - items
+        - pagination
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrashItemSchema'
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+            - page
+            - limit
+            - totalCount
+            - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+        retention:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - minAgeMs
+          properties:
+            minAgeMs:
+              type: integer
+              format: int64
+              description: Items stay at least this long before the cleanup may remove them
+
+    RestoreRecordsRequestBody:
+      type: object
+      additionalProperties: false
+      required:
+        - recordIds
+      properties:
+        recordIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            minLength: 1
+
+    RestoreRecordsResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/records/restore.
+      required:
+        - success
+        - restoredCount
+        - failedCount
+        - results
+      properties:
+        success:
+          type: boolean
+          description: True when every requested record was restored
+        restoredCount:
+          type: integer
+          description: Records restored, counting those restored along with them
+        failedCount:
+          type: integer
+        results:
+          type: array
+          description: |
+            One entry per requested id: `recordId`, `success`, `code`, and either the
+            restore response fields or a `reason` that says what to do next.
+          items:
+            $ref: '#/components/schemas/RestoreRecordsResultItemSchema'
+
+    RestoreRecordsResultItemSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        The outcome for one id of POST /knowledgeBase/records/restore. A restored item
+        carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
+        and, when the refusal names other records, the snake_case details below.
+      required:
+        - recordId
+        - success
+      properties:
+        recordId:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: integer
+        reason:
+          type: string
+          description: Why it was not restored, and what to do next
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+        record_id:
+          type: string
+          description: The item a refusal is about
+        external_id:
+          type: string
+          description: The source item two of the restored items came from
+        conflicting_record_id:
+          type: string
+          description: The live item that holds this item's place
+        conflicting_record_name:
+          type: string
+          nullable: true
+        missing:
+          type: array
+          items:
+            type: string
+          description: Items of the batch that were no longer in the trash
+        parentId:
+          type: string
+          nullable: true
+          description: The folder still in the trash that must be restored first
 
     reIndexRecordResponseSchema:
       type: object
@@ -6013,6 +6314,15 @@ components:
               type: boolean
             canManagePermissions:
               type: boolean
+            collectionRole:
+              type: string
+              nullable: true
+              description: |
+                The caller's own role on the collection (knowledge base) this node is in, as
+                restore and `GET /knowledgeBase/{kbId}/trash` check it: OWNER, WRITER,
+                FILEORGANIZER, COMMENTER or READER. Unlike `role`, which ranks record
+                permissions inside a folder, it is the same at every level of the collection.
+                Null outside a collection.
 
     KBPermission:
       type: object
@@ -10305,6 +10615,16 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+                  defaultReasoningEffort:
+                    type: string
+                    enum: [none, low, medium, high, max]
+                    description: >-
+                      The model's own reasoning effort, read from its stored
+                      configuration. It applies only when the chat request sets
+                      no `reasoningEffort` and the agent has no
+                      `defaultReasoningEffort`. Omitted when nothing valid is
+                      stored; `none` is a legacy value that runs as `low`.
+                    example: low
         usesOrgDefault:
           type: boolean
           description: |
@@ -12907,7 +13227,7 @@ components:
           properties:
             auth:
               type: object
-              description: Authentication configuration (sensitive data redacted)
+              description: "Authentication configuration. Each stored secret is returned as `••••••••`: a field the connector type's auth schema marks secret (such as an API token or password), a secret field of its OAuth app registration (such as `clientSecret`), or the `private_key` of an older Google Workspace service account."
             sync:
               type: object
               description: Sync configuration (schedule, options)
@@ -12948,7 +13268,7 @@ components:
     # Sub-schemas for connector configuration
     ConnectorAuthConfig:
       type: object
-      description: Authentication configuration for a connector instance
+      description: "Authentication configuration for a connector instance. A secret field sent as `••••••••` (the mask the config routes return) keeps the stored value; send a new value to replace it."
       properties:
         values:
           type: object
@@ -13362,9 +13682,9 @@ components:
               example: "12345678-1234-1234-1234-123456789abc"
         baseUrl:
           type: string
-          description: "Base URL for self-hosted instances (e.g., GitLab Self-Managed)"
+          description: "PipesHub's public origin, prefixed to the connector's redirect path to build the stored redirectUri. When omitted, the frontend public endpoint is used. Not the provider's URL; a self-hosted provider's address goes in config."
           format: uri
-          example: "https://gitlab.mycompany.com"
+          example: "https://pipeshub.mycompany.com"
 
     ConnectorPagination:
       type: object
@@ -13638,7 +13958,8 @@ components:
       description: |
         Success response from getAIModelsProviders. Returns the stored models
         bucket map. Each entry's `configuration` includes only `model`,
-        `modelFriendlyName`, and `dimensions` when those keys were stored.
+        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` when
+        those keys were stored.
       required:
         - status
         - models
@@ -13662,7 +13983,7 @@ components:
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
         Each entry's `configuration` includes only `model`, `modelFriendlyName`,
-        and `dimensions` when stored.
+        `dimensions`, and `defaultReasoningEffort` when stored.
       required:
         - status
         - models
@@ -14470,8 +14791,8 @@ components:
         Provider-specific configuration stored on each AI model entry.
 
         **Read shape:** user-facing GET responses return only `model`,
-        `modelFriendlyName`, and `dimensions` (when stored). Values are copied as-is;
-        other keys including credentials are omitted.
+        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` (when stored).
+        Values are copied as-is; other keys including credentials are omitted.
 
         **Write shape:** create and update still accept the full provider payload
         (Zod `configurationSchema` with `.passthrough()`). An omitted key retains
@@ -14577,6 +14898,15 @@ components:
         cache_folder:
           type: string
           description: Cache folder for models
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: ['none', 'low', 'medium', 'high', 'max', '', null]
+          description: |
+            Reasoning effort for this model when a chat or agent request doesn't
+            choose one. Applies only when `isReasoning` is true. Empty or absent
+            means the platform default (`high`). `none` is accepted for
+            compatibility and treated as `low`.
 
     AddAIModelProviderRequest:
       type: object
@@ -24859,7 +25189,7 @@ paths:
         - Knowledge Base
       summary: Delete record
       description: |
-        Permanently delete a record from the knowledge base.
+        Delete a record from the knowledge base.
 
         **Required permission:**
 
@@ -24871,7 +25201,12 @@ paths:
         - Associated storage file
         - Indexed content and embeddings
 
-        **Warning:** This action is irreversible.
+        **Trash:** With "Move Deleted Records to the Trash" on in Labs, the record
+        goes to the trash instead: it disappears from search, chat and lists at once,
+        its embeddings are removed, and the record and its file stay until the scheduled
+        purge. The response then carries `softDeleted: true` and the `batchId`, and the
+        record can be brought back with `POST /knowledgeBase/record/{recordId}/restore`.
+        With the setting off, the delete is immediate and cannot be undone.
       operationId: deleteRecord
       x-pipeshub-sdk: true
       security:
@@ -24917,6 +25252,258 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while deleting record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/record/{recordId}/restore:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Restore a deleted record
+      description: |
+        Bring a record back from the trash, together with everything deleted in the
+        same action: a folder comes back with its contents, a file with its
+        attachments, a multi-select delete with every item it removed.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Required permission:** the role the delete needed. A single file needs
+        OWNER, WRITER or FILEORGANIZER on its collection; a folder or several items
+        need OWNER or WRITER.
+
+        **Names:** an item whose name another item next to it now uses comes back
+        as "name (restored)" (a file keeps its extension: "report (restored).pdf").
+
+        **Search:** restored files are indexed again, so they return to search and
+        chat once indexing finishes. `reindexPending` lists any that could not be
+        queued; reindex those by hand. A file that is back but whose indexing never
+        started is queued again when it is restored again, and the indexing service
+        queues it on its own after about an hour.
+
+        A record that is not in the trash answers 200 with nothing restored.
+      operationId: restoreRecord
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:delete]
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          description: Record ID of any item in the delete batch
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record restored, with everything deleted along with it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordResponseSchema'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: restoring is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), the record comes
+            from a connected app (restore it in that app; it returns at the next sync),
+            or the OAuth token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such record in this workspace, or it was removed for good when the trash was emptied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Nothing was restored. The message says what to do: the folder the record was
+            in is still in the trash (restore that folder first), another item has taken
+            this record's place (delete that item first, then restore), or the record
+            changed while it was being restored (refresh and try again).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring the record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/records/restore:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Restore several deleted records
+      description: |
+        Restore up to 100 records from the trash. Each id is restored as
+        `POST /knowledgeBase/record/{recordId}/restore` restores it, with everything
+        deleted along with it; ids from one delete are restored once. Every id gets its
+        own outcome in `results`, so one refusal does not hold the others back, and the
+        answer is 200 whatever the outcomes.
+      operationId: restoreRecords
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:delete]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreRecordsRequestBody'
+      responses:
+        '200':
+          description: Outcome for each requested record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordsResponseSchema'
+        '400':
+          description: recordIds is missing, empty, or longer than 100. Send between 1 and 100 record ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:delete scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/{kbId}/trash:
+    get:
+      tags:
+        - Knowledge Base
+      summary: List a collection's recently deleted items
+      description: |
+        One page of what was deleted from a collection and can still be restored,
+        newest first. Each item is what one delete removed, as a restore brings it back
+        whole: a folder deleted with its contents is one item, and so is a multi-select
+        delete (`rootCount` items selected, some named in `otherRootNames`). `itemCount`
+        says how many records it holds.
+        Restore an item with `POST /knowledgeBase/record/{recordId}/restore`, using its `id`.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Who sees what:** the list holds what the caller may restore. OWNER and
+        WRITER see every item; FILEORGANIZER sees single files only; other roles are
+        refused. The workspace and user always come from the sign-in.
+
+        **Removed for good:** the scheduled cleanup may remove an item from
+        `removableAfterTimestamp` on (at least 14 days after it was deleted by
+        default; it runs every 14 days, so an item stays 14 to 28 days). It is
+        absent when the retention settings can't be read.
+
+        An item whose folder is also in the trash (`parentInTrash`) can only be
+        restored after that folder.
+      operationId: listTrash
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:delete]
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Collection (knowledge base) ID
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: One page of recently deleted items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTrashResponseSchema'
+        '400':
+          description: page or limit is not a whole number in range. Ask for a page from 1 up, with 1 to 100 items per page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: the trash is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), or the OAuth
+            token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such collection in this workspace, or the caller has no role on it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while listing deleted items
           content:
             application/json:
               schema:
@@ -25353,7 +25940,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:upload]
+        - oauth2: [kb:upload, kb:read]
       parameters:
         - name: kbId
           in: path
@@ -27392,7 +27979,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [conversation:write]
+        - oauth2: [conversation:chat]
       requestBody:
         required: true
         description: The first question, with optional scope, model and mode.
@@ -34730,15 +35317,19 @@ paths:
         - Connector Instances
       summary: Delete connector instance
       description: |
-        Delete a connector instance and all associated data.<br><br>
+        Delete a connector instance and everything synced from it. The request
+        answers `202` as soon as the deletion has started; the deletion itself
+        runs in the background.<br><br>
         <b>Warning:</b><br>
-        This permanently removes the connector configuration.
-        Synced records in knowledge bases are NOT deleted.<br><br>
+        Deletion is permanent. The connector's records, record groups,
+        permissions and relations are removed from the graph database, its
+        embeddings are removed from the vector store, its stored configuration
+        and credentials are deleted, and its stored files are deleted (content
+        another connector still uses is kept). The records don't go to the
+        trash and can't be restored. Its sync schedule is removed too.<br><br>
         <b>Permissions:</b><br>
-        <ul>
-        <li>Team scope: Requires admin</li>
-        <li>Personal scope: Only creator can delete</li>
-        </ul>
+        The connector's creator or an admin, for either scope. An admin can
+        delete a member's personal connector.
       operationId: deleteConnectorInstance
       security:
         - bearerAuth: []
@@ -34750,8 +35341,8 @@ paths:
           schema:
             type: string
       responses:
-        '200':
-          description: Connector deleted
+        '202':
+          description: Deletion started
           content:
             application/json:
               schema:
@@ -34761,12 +35352,32 @@ paths:
                     type: boolean
                   message:
                     type: string
+                  connectorId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [DELETING]
+              example:
+                success: true
+                message: Connector deletion initiated
+                connectorId: 3f1c9a52-7d0e-4b8a-9c1e-2a6b5d4e7f80
+                status: DELETING
         '401':
           description: Unauthorized
         '403':
-          description: Permission denied
+          description: |
+            An OAuth or personal access token without the `connector:delete`
+            scope, or a beta connector while beta connectors are turned off.
         '404':
-          description: Connector not found
+          description: |
+            The connector doesn't exist, or the caller is neither its creator
+            nor an admin. The two answers are the same, so the route doesn't
+            reveal connectors the caller can't delete.
+        '409':
+          description: |
+            A deletion is already in progress, a sync is running, or an agent
+            uses the connector as a knowledge source (the message names the
+            agents; remove the connector from them first).
 
   /connectors/{connectorId}/stats:
     get:
@@ -34797,9 +35408,13 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Insufficient OAuth scope or no access to connector stats
+          description: |
+            Insufficient OAuth scope, or a collection the caller has a role on
+            other than OWNER, WRITER or READER
         '404':
-          description: Connector not found
+          description: |
+            Connector not found, or one the caller cannot open (another user's
+            personal connector, admins included)
 
   /connectors/record/{recordId}/content:
     get:
@@ -35341,7 +35956,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LocalFsDesktopRefusal'
+        '503':
+          description: |
+            The sync could not be queued, so nothing was synced. Try again in a
+            minute.
 
+  /connectors/{connectorId}/sync/stop:
+    post:
+      tags:
+        - Connector Instances
+      summary: Stop the running sync for a connector
+      description: |
+        Ask the in-flight sync for a connector instance to stop.
+
+        **Overview:**
+
+        Returns as soon as the request is recorded; the sync halts at its next
+        interruptible point, which for a connector inside a long provider call
+        is when that call returns. `stopped` reports whether a sync was actually
+        running, and `false` is a normal answer rather than a failure.
+
+        Deliberately not refused while the connector is busy or locked: this is
+        the endpoint that has to work precisely then, including against a lock a
+        crashed process left behind. When nothing is running it also repairs a
+        stale SYNCING or FULL_SYNCING status, unless the service cannot tell a
+        live sync on another worker from a stale one, in which case it changes
+        nothing and says so.
+      operationId: stopConnectorSync
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:sync]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stop recorded, or nothing was running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  stopped:
+                    type: boolean
+                    description: >-
+                      Whether a sync was running and has been asked to stop.
+                      False is a normal answer, not an error.
+                  status:
+                    type: string
+                    description: >-
+                      The status the connector is actually left in.
+                    enum: [IDLE, SYNCING, FULL_SYNCING, QUEUED, DELETING]
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient scope (connector:sync is required)
+        '404':
+          description: Connector instance not found or not accessible
   /connectors/{connectorId}/name:
     put:
       tags:
@@ -35396,8 +36075,11 @@ paths:
       description: |
         Get the current configuration for a connector instance.<br><br>
         <b>Security:</b><br>
-        Sensitive data (credentials, OAuth tokens) are redacted from the response.
-        Only admins can see partial credential information.
+        OAuth tokens are never returned. Each stored secret in <code>config.auth</code>
+        is returned as <code>••••••••</code>: a field the connector type's auth schema
+        marks secret (such as an API token or password), a secret field of its OAuth
+        app registration (such as <code>clientSecret</code>), or the <code>private_key</code>
+        of an older Google Workspace service account.
       operationId: getConnectorConfig
       security:
         - bearerAuth: []
@@ -35438,7 +36120,21 @@ paths:
         Disable it first using <code>POST /{id}/toggle</code>.<br><br>
         <b>Partial Updates:</b><br>
         Only provide the sections you want to update. Omitted sections
-        are not modified.
+        are not modified.<br><br>
+        <b>Secrets:</b><br>
+        A secret field in <code>auth</code> sent as <code>••••••••</code> keeps the
+        stored value, so the configuration can be sent back as it was read. The
+        response masks stored secrets the same way.<br><br>
+        <b>Signing out:</b><br>
+        Only a change to <code>auth</code>, or a different top-level
+        <code>oauthConfigId</code>, signs the connector out and clears its OAuth
+        tokens. Sending <code>auth</code> back unchanged, with secrets as the mask,
+        keeps it signed in.<br><br>
+        <b>OAuth apps:</b><br>
+        A new secret in <code>auth</code> replaces only this connector's own stored
+        value. It does not change the <code>clientSecret</code> of a linked OAuth app,
+        which is what sign-in uses. To rotate that, update the OAuth app
+        (<code>PUT /oauth/{connectorType}/{configId}</code>).
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
@@ -35489,7 +36185,10 @@ paths:
         sync or filter settings. Useful for credential rotation.<br><br>
         <b>Prerequisites:</b><br>
         Connector must be disabled. This endpoint clears OAuth state,
-        requiring re-authentication for OAuth connectors.
+        requiring re-authentication for OAuth connectors.<br><br>
+        <b>Secrets:</b><br>
+        A secret field sent as <code>••••••••</code> keeps the stored value; send a
+        new value to replace it. The response masks stored secrets the same way.
       operationId: updateConnectorAuthConfig
       security:
         - bearerAuth: []
@@ -38748,6 +39447,9 @@ paths:
                       type: string
                     tenantId:
                       type: string
+                baseUrl:
+                  type: string
+                  description: "PipesHub's public origin. Used only when the stored configuration has no redirectUri yet, to build one; an existing redirectUri is kept whether or not this is sent."
       responses:
         '200':
           description: OAuth configuration updated
@@ -39421,7 +40123,8 @@ paths:
       summary: Get models by type
       description: |
         Get all configured models of a specific type. Each entry's `configuration`
-        includes only `model`, `modelFriendlyName`, and `dimensions` when stored.
+        includes only `model`, `modelFriendlyName`, `dimensions`, and
+        `defaultReasoningEffort` when stored.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -39463,6 +40166,10 @@ paths:
           `isDefault: true`; all subsequent models from the same entry get `false`.
         - `modelFriendlyName` is included **only** when the provider entry contains
           exactly one model name (not a comma-separated list).
+        - `defaultReasoningEffort` is included on every model of an entry whose
+          `configuration.defaultReasoningEffort` (or, when that is unset, a
+          top-level `defaultReasoningEffort`) holds a valid effort. It is left out
+          when no default is stored.
         - When no providers of the requested type are configured the endpoint still
           returns HTTP **200** with an empty `models` array — this is **not** an error.
 
@@ -39590,6 +40297,20 @@ paths:
                             **and** a friendly name was added during
                             configuration.
                           example: "Reasoning model"
+                        defaultReasoningEffort:
+                          type: string
+                          enum: [none, low, medium, high, max]
+                          description: >-
+                            The model's own reasoning effort. It applies only
+                            when the chat request sets no `reasoningEffort` and
+                            the agent has no `defaultReasoningEffort`; a level
+                            the user picks always wins. Read from
+                            `configuration.defaultReasoningEffort`, falling back
+                            to a top-level `defaultReasoningEffort`. Present on
+                            every model expanded from the entry, and left out
+                            when no default is stored. `none` is a legacy value
+                            that runs as `low`.
+                          example: low
               examples:
                 two_llm_models:
                   summary: Two LLM models from an Azure OpenAI provider
@@ -39612,6 +40333,7 @@ paths:
                         isReasoning: true
                         isDefault: false
                         modelFriendlyName: "Reasoning model"
+                        defaultReasoningEffort: low
                 no_models_configured:
                   summary: modelType key present in config but zero models after expansion
                   value:
@@ -41611,8 +42333,8 @@ paths:
       summary: Get AI models configuration
       description: |
         Retrieve the AI models configuration for the organization. Each entry's
-        `configuration` includes only `model`, `modelFriendlyName`, and
-        `dimensions` when stored.
+        `configuration` includes only `model`, `modelFriendlyName`, `dimensions`,
+        and `defaultReasoningEffort` when stored.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -41668,7 +42390,8 @@ paths:
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
         list from getAvailableModelsByType. Each entry's `configuration` includes
-        only `model`, `modelFriendlyName`, and `dimensions` when stored.
+        only `model`, `modelFriendlyName`, `dimensions`, and
+        `defaultReasoningEffort` when stored.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []

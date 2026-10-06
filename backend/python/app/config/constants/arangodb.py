@@ -671,8 +671,11 @@ class EventTypes(Enum):
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
     DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
+    DELETE_CONNECTOR_ENTITIES = "deleteConnectorEntities"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
+    SOFT_DELETE_RECORDS = "softDeleteRecords"
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
 
 
@@ -692,6 +695,7 @@ class AppStatus(Enum):
     IDLE = "IDLE"
     FULL_SYNCING = "FULL_SYNCING"
     SYNCING = "SYNCING"
+    QUEUED = "QUEUED"
 
 
 RECORD_TYPE_COLLECTION_MAPPING = {

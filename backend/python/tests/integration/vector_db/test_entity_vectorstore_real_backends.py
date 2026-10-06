@@ -40,7 +40,7 @@ import logging
 import os
 import uuid
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -51,6 +51,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from app.services.vector_db.models import HealthStatus
+from tests.support.embedding_config import config_service as embedding_config_service
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -129,10 +130,10 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[EntityVectorSto
     service = await {"qdrant": _qdrant, "redis": _redis, "opensearch": _opensearch}[request.param]()
     collection = f"entities_it_{uuid.uuid4().hex[:8]}"
     store = EntityVectorStore(
-        logger=logger, config_service=MagicMock(), vector_db_service=service, collection_name=collection,
+        logger=logger, config_service=embedding_config_service(), vector_db_service=service, collection_name=collection,
     )
 
-    async def _stub_embeddings() -> None:
+    async def _stub_embeddings(embedding_configs: list | None = None) -> None:
         store._dense_embeddings = _StubEmbeddings()
         store._embedding_size = DIM
         store._model_id = "stub:hash"
@@ -366,7 +367,7 @@ class TestDeletesWithoutEmbeddings:
         await store.upsert_entities_batch([_entity("r1", EntityType.RECORD, org=org, connectors=["A"])])
         await _publish_writes(store)
         fresh = EntityVectorStore(
-            logger=logger, config_service=MagicMock(),
+            logger=logger, config_service=embedding_config_service(),
             vector_db_service=store.vector_db_service, collection_name=store.collection_name,
         )
         fresh._init_embeddings = AsyncMock(side_effect=RuntimeError("embedding endpoint down"))  # type: ignore[method-assign]
@@ -548,7 +549,7 @@ class TestRebuildSupport:
         store.vector_db_service.upsert_points.assert_not_awaited()
 
         store._model_id = "other:model"
-        assert await store.upsert_entities_batch([entity], merge_membership=False) == 0
+        assert (await store.upsert_entities_batch([entity], merge_membership=False)).written == 1
         store.vector_db_service.upsert_points.assert_awaited_once()
         payload = await _point(store, org, "topic", "t1")
         assert payload["metadata"]["embeddingModel"] == f"other:model:{DIM}"
@@ -559,11 +560,11 @@ class TestRebuildSupport:
 
         def _wider(recreate: bool) -> EntityVectorStore:
             wider = EntityVectorStore(
-                logger=logger, config_service=MagicMock(), vector_db_service=store.vector_db_service,
+                logger=logger, config_service=embedding_config_service(), vector_db_service=store.vector_db_service,
                 collection_name=store.collection_name, recreate_on_dimension_mismatch=recreate,
             )
 
-            async def _stub() -> None:
+            async def _stub(embedding_configs: list | None = None) -> None:
                 wider._dense_embeddings = _StubEmbeddings()
                 wider._embedding_size = DIM * 2
 
@@ -574,7 +575,10 @@ class TestRebuildSupport:
             await _wider(False)._ensure_initialized()
         assert await _point(store, org, "topic", "t1") is not None
 
-        await _wider(True)._ensure_initialized()
+        with pytest.raises(VectorStoreError):
+            await _wider(True)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+        await _wider(True)._ensure_initialized(recreate=True)
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM * 2
         assert await _point(store, org, "topic", "t1") is None
@@ -594,3 +598,121 @@ class TestRebuildSupport:
         with pytest.raises(Exception):
             await store.search_entities("pricing", org, set(), {"c1"})
         assert store._initialized is False
+
+    async def test_a_same_dimension_model_change_waits_for_the_owner_to_recreate(
+        self, store: EntityVectorStore,
+    ) -> None:
+        """Every store reads the model one point records, through a scroll
+        projected to that field, which every backend must answer. Only the
+        rebuild leader's request recreates; every other store, an indexing
+        replica included, refuses the old vectors until it has."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
+        await _publish_writes(store)
+
+        def _restarted(model_id: str, *, owner: bool) -> EntityVectorStore:
+            restarted = EntityVectorStore(
+                logger=logger, config_service=embedding_config_service(), vector_db_service=store.vector_db_service,
+                collection_name=store.collection_name, recreate_on_dimension_mismatch=owner,
+            )
+
+            async def _stub(embedding_configs: list | None = None) -> None:
+                restarted._dense_embeddings = _StubEmbeddings()
+                restarted._embedding_size = DIM
+                restarted._model_id = model_id
+
+            restarted._init_embeddings = _stub  # type: ignore[method-assign]
+            return restarted
+
+        assert await _restarted(store._model_id, owner=True)._model_of_a_stored_point() == store._fingerprint()
+        await _restarted(store._model_id, owner=True)._ensure_initialized()
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await _restarted("other:model", owner=False)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await _restarted("other:model", owner=True)._ensure_initialized()
+        assert await _point(store, org, "topic", "t1") is not None
+        await _restarted("other:model", owner=True)._ensure_initialized(recreate=True)
+        info = await store.vector_db_service.get_collection_info(store.collection_name)
+        assert info.exists and info.dense_dimension == DIM
+        assert await _point(store, org, "topic", "t1") is None
+        await _restarted("other:model", owner=False)._ensure_initialized()
+
+
+class TestWriteOutcomeAndLocks:
+    """Embedding outside the locks, and the reported outcome, per backend."""
+
+    async def test_outcome_on_a_real_backend(self, store: EntityVectorStore) -> None:
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("same", org=org, connectors=["c1"]),
+                                           _entity("moved", org=org, connectors=["c1"])], merge_membership=False)
+        outcome = await store.upsert_entities_batch(
+            [_entity("same", org=org, connectors=["c1"]), _entity("moved", org=org, connectors=["c2"]),
+             _entity("new", org=org, connectors=["c1"])],
+            merge_membership=False,
+        )
+        assert (outcome.written, outcome.membership_only, outcome.unchanged, outcome.failed) == (1, 1, 1, 0)
+        assert (await _point(store, org, "topic", "moved"))["connectorIds"] == ["c2"]
+
+    async def test_concurrent_writers_on_one_entity_keep_both_memberships(self, store: EntityVectorStore) -> None:
+        import asyncio
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        writers = [_entity("eng", EntityType.DEPARTMENT, org=org, connectors=[f"c{i}"]) for i in range(6)]
+        await asyncio.gather(*(store.upsert_entities_batch([w]) for w in writers))
+        payload = await _point(store, org, "department", "eng")
+        assert sorted(payload["connectorIds"]) == [f"c{i}" for i in range(6)]
+
+    async def test_cleanup_keeps_a_connector_added_after_the_scroll(self, store: EntityVectorStore) -> None:
+        """KG-34 residue: the strip phase re-reads by id under the lock, so a
+        connector indexed between the page scroll and the write survives."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c-gone", "c-other"])])
+        await _publish_writes(store)
+        service = store.vector_db_service
+        real_retrieve = service.retrieve_points
+        added = False
+
+        async def _retrieve_after_a_concurrent_index(collection: str, ids: list[str]) -> list:
+            nonlocal added
+            if not added:
+                added = True
+                await service.update_payload_by_ids(
+                    collection, [store._point_id(org, "topic", "t1")],
+                    {"connectorIds": ["c-gone", "c-other", "c-new"]},
+                )
+            return await real_retrieve(collection, ids)
+
+        service.retrieve_points = _retrieve_after_a_concurrent_index
+        try:
+            await store.delete_entities_by_connector(org, "c-gone", record_group_ids=[])
+        finally:
+            service.retrieve_points = real_retrieve
+        payload = await _point(store, org, "topic", "t1")
+        assert payload["connectorIds"] == ["c-other", "c-new"]
+
+
+class TestSearchPasses:
+    async def test_passes_answer_separately_in_one_request(self, store: EntityVectorStore) -> None:
+        """KG-08: every pass in one vector request, each with its own scope."""
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([
+            _entity("by-group", org=org, name="Quarterly planning", connectors=["c9"], groups=["g1"]),
+            _entity("by-connector", org=org, name="Quarterly planning notes", connectors=["c1"]),
+            _entity("unscoped", org=org, name="Quarterly planning review", connectors=[]),
+        ])
+        await _publish_writes(store)
+        group_pass, connector_pass, wide_pass = await store.search_entities_passes(
+            "quarterly planning", org,
+            [
+                EntitySearchPass(frozenset({"g1"}), frozenset()),
+                EntitySearchPass(frozenset(), frozenset({"c1"})),
+                EntitySearchPass(org_wide=True),
+            ],
+        )
+        assert {h["entityId"] for h in group_pass} == {"by-group"}
+        assert {h["entityId"] for h in connector_pass} == {"by-connector"}
+        assert {h["entityId"] for h in wide_pass} == {"by-group", "by-connector", "unscoped"}

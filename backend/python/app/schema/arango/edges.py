@@ -401,6 +401,11 @@ taxonomy_edge_schema = {
             "_to": {"type": "string", "minLength": 1},
             "createdAtTimestamp": {"type": "number"},
             "extractedName": {"type": ["string", "null"]},
+            # The node this edge was moved from by a taxonomy merge or
+            # migration (app.modules.entity_resolution.consolidation).
+            "mergedFrom": {"type": ["string", "null"]},
+            # The legacy node a migration moved this edge from.
+            "migratedFrom": {"type": ["string", "null"]},
         },
         "required": ["createdAtTimestamp"],
         "additionalProperties": False,

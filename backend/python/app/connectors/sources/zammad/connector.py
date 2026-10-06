@@ -1,4 +1,5 @@
 """Zammad Connector Implementation"""
+import asyncio
 import base64
 import re
 from dataclasses import dataclass, field
@@ -110,6 +111,17 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 
 # Constants for batch processing and parsing
 BATCH_SIZE_KB_ANSWERS = 50
+# Not "kb_sync": the search-based sync saved that key even when it read no answers
+# (Zammad 6.0-6.4), so a new key makes every install read its whole knowledge base once.
+KB_SYNC_POINT_KEY = "kb_listing_sync"
+KB_LISTING_ASSET_TYPES = (
+    "KnowledgeBase",
+    "KnowledgeBaseTranslation",
+    "KnowledgeBaseCategory",
+    "KnowledgeBaseCategoryTranslation",
+    "KnowledgeBaseAnswer",
+    "KnowledgeBaseAnswerTranslation",
+)
 ATTACHMENT_ID_PARTS_COUNT = 3
 KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
 TICKET_ID_LISTING_PAGE_SIZE = 50
@@ -1052,8 +1064,12 @@ class ZammadConnector(BaseConnector):
 
         if last_sync_time:
             modified_after = max(modified_after, last_sync_time) if modified_after else last_sync_time
-        if until:
-            modified_before = min(modified_before, until) if modified_before else until
+        # ``until`` is the next window's ``last_sync_time``. Both round down to the same second,
+        # so it is exclusive: otherwise tickets stamped in that second match both windows. It is
+        # compared to the user's inclusive bound by second too, as the query states both.
+        before_bracket = "]"
+        if until and (not modified_before or until // 1000 <= modified_before // 1000):
+            modified_before, before_bracket = until, "}"
 
         def _iso(epoch_ms: int) -> str:
             return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1061,7 +1077,7 @@ class ZammadConnector(BaseConnector):
         if modified_after:
             query_parts.append(f"updated_at:[{_iso(modified_after)} TO *]")
         if modified_before:
-            query_parts.append(f"updated_at:[* TO {_iso(modified_before)}]")
+            query_parts.append(f"updated_at:[* TO {_iso(modified_before)}{before_bracket}")
         if created_after:
             query_parts.append(f"created_at:[{_iso(created_after)} TO *]")
         if created_before:
@@ -1070,7 +1086,8 @@ class ZammadConnector(BaseConnector):
 
     def _window_bounds(self, low: int | None, high: int | None) -> tuple[int, int]:
         lo = low if low is not None else (self._date_filter_bounds(SyncFilterKey.MODIFIED)[0] or 0)
-        hi = high if high is not None else get_epoch_timestamp_in_ms()
+        # An open window ends at the whole second after the clock's, an edge the query can state exactly.
+        hi = high if high is not None else (get_epoch_timestamp_in_ms() // 1000 + 1) * 1000
         return lo, hi
 
     def _split_window(self, low: int | None, high: int | None) -> list[tuple[int | None, int | None]] | None:
@@ -1078,7 +1095,8 @@ class ZammadConnector(BaseConnector):
         lo, hi = self._window_bounds(low, high)
         if hi - lo < 2 * MIN_SPLIT_WINDOW_MS:
             return None
-        mid = (lo + hi) // 2
+        # On a whole second, as the query states it, so "read every ticket before mid" holds to the ms.
+        mid = (lo + hi) // 2 // 1000 * 1000
         return [(low, mid), (mid, high)]
 
     async def _fetch_tickets_for_group_batch(
@@ -1179,8 +1197,14 @@ class ZammadConnector(BaseConnector):
                 if halves is not None:
                     windows[0:0] = halves
                     continue
+                bounds = self._window_bounds(low, high)
+                if high is None:
+                    # The read by id is bounded by the edge a resume will use. Waiting out the second
+                    # means no ticket is stamped below that edge after its ids are read.
+                    await asyncio.sleep(max(0, bounds[1] - get_epoch_timestamp_in_ms()) / 1000)
+                    query = self._build_ticket_search_query(group_id, low, until=bounds[1])
                 async for batch_records in self._read_dense_window(
-                    datasource, query, group_name, self._window_bounds(low, high), read_until,
+                    datasource, query, group_name, bounds, read_until,
                     resume_from.get((low, high), 0), written, failures, limit, batch_size,
                 ):
                     yield batch_records
@@ -2179,7 +2203,7 @@ class ZammadConnector(BaseConnector):
         Returns:
             Last sync timestamp in epoch ms, or None if not set
         """
-        data = await self.kb_sync_point.read_sync_point("kb_sync")
+        data = await self.kb_sync_point.read_sync_point(KB_SYNC_POINT_KEY)
         return data.get("last_sync_time") if data else None
 
     async def _update_kb_sync_checkpoint(self, timestamp: Optional[int] = None) -> None:
@@ -2191,7 +2215,7 @@ class ZammadConnector(BaseConnector):
         """
         sync_time = timestamp if timestamp is not None else get_epoch_timestamp_in_ms()
         await self.kb_sync_point.update_sync_point(
-            "kb_sync",
+            KB_SYNC_POINT_KEY,
             {"last_sync_time": sync_time}
         )
         self.logger.debug(f"💾 Updated KB sync checkpoint: {sync_time}")
@@ -2199,68 +2223,99 @@ class ZammadConnector(BaseConnector):
     # ==================== KNOWLEDGE BASE SYNCING ====================
 
     async def _sync_knowledge_bases(self) -> None:
-        """
-        Sync knowledge bases, categories, and answers from Zammad with incremental support.
-        Uses search API for pagination and incremental sync based on updated_at timestamp.
-        """
-        # Step 1: Get checkpoint for incremental sync
-        last_sync_time = await self._get_kb_sync_checkpoint()
+        """Sync knowledge bases, categories, and the answers changed since the KB sync point.
 
-        # Step 2: Build query
+        The answers come from POST /api/v1/knowledge_bases/init, which lists every
+        knowledge base, category and answer the account can see in one response on
+        Zammad 6.0 and later. /api/v1/search can't list them before 6.5: it ignores
+        ``offset``, and answers ``objects=KnowledgeBaseAnswerTranslation`` with a 500.
+        The sync point moves only once every listed answer has been written.
+        """
+        last_sync_time = await self._get_kb_sync_checkpoint()
+        datasource = await self._get_fresh_datasource()
+        try:
+            listing = await self._read_kb_listing(datasource)
+        except ZammadReadError as e:
+            self.logger.warning(f"⚠️ Knowledge base not synced; its sync point stays where it was: {e}")
+            return
+
         if last_sync_time:
-            # Incremental: only answers updated since last sync
-            dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
-            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            query = f"updated_at:[{iso_format} TO *]"
-            self.logger.info(f"🔄 Incremental KB sync from {iso_format}")
+            since = last_sync_time // 1000 * 1000
+            since_iso = datetime.fromtimestamp(since / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.logger.info(f"🔄 Incremental KB sync from {since_iso}")
         else:
-            # Full sync: all answers
-            query = "*"
+            since = None
             self.logger.info("🔄 Full KB sync")
 
-        # Step 3: Track entities for processing
+        changed_answers = {
+            answer_id: answer_data
+            for answer_id, answer_data in listing.get("KnowledgeBaseAnswer", {}).items()
+            if self._kb_answer_changed_since(answer_data, since)
+        }
         kb_map: Dict[int, RecordGroup] = {}
         category_map: Dict[int, RecordGroup] = {}
         category_permissions_map: Dict[int, Dict[str, List[int]]] = {}
-
-        # Step 4: Process first page to get KB and categories, and initial answers
-        limit = 50
-        datasource = await self._get_fresh_datasource()
-        first_response = await datasource.search_kb_answers(query=query, limit=limit, offset=0)
-        if not first_response.success or not first_response.data:
-            self.logger.info("No KB answers found")
-            return
-
-        first_assets = first_response.data.copy()
-        first_result_count = first_assets.pop("_result_count", 0)
-
-        await self._process_kb_entities_from_first_page(
-            assets=first_assets,
+        await self._process_kb_entities(
+            assets=listing,
             kb_map=kb_map,
             category_map=category_map,
             category_permissions_map=category_permissions_map
         )
 
-        # Step 5: Process answers from first page and continue pagination
-        total_synced, max_updated_at = await self._sync_kb_answers_paginated(
-            query=query,
-            limit=limit,
-            start_offset=0,
-            first_page_assets=first_assets,
-            first_result_count=first_result_count,
+        if not changed_answers:
+            self.logger.info("No KB answers changed since the last sync")
+            return
+
+        total_synced, max_updated_at, failed_updated_at = await self._sync_kb_answers(
+            answers=changed_answers,
+            assets=listing,
             category_map=category_map,
             category_permissions_map=category_permissions_map
         )
 
-        # Step 6: Update checkpoint
-        if max_updated_at > 0:
+        if failed_updated_at:
+            # Every answer older than the oldest failure was written, so the sync point
+            # may move up to that failure but not past it.
+            self.logger.warning(
+                f"⚠️ {len(failed_updated_at)} KB answer(s) could not be synced; the next sync reads them again"
+            )
+            hold_at = None if 0 in failed_updated_at else min(failed_updated_at)
+            if hold_at and (not last_sync_time or hold_at > last_sync_time):
+                await self._update_kb_sync_checkpoint(hold_at)
+        elif max_updated_at > 0:
             await self._update_kb_sync_checkpoint(max_updated_at + 1000)
         elif total_synced > 0:
             await self._update_kb_sync_checkpoint()
 
         self.logger.info(f"✅ KB sync completed: {total_synced} answers processed")
 
-    async def _process_kb_entities_from_first_page(
+    async def _read_kb_listing(self, datasource: ZammadDataSource) -> dict[str, Any]:
+        """Every knowledge base, category and answer Zammad lists, keyed by asset type.
+
+        Raises:
+            ZammadReadError: the listing failed, or holds an entry that is not an object
+        """
+        response = await datasource.init_knowledge_base()
+        if not response.success:
+            raise ZammadReadError(
+                f"the knowledge base listing could not be read: {response.error or response.message}"
+            )
+        listing = response.data or {}
+        for asset_type in KB_LISTING_ASSET_TYPES:
+            entries = listing.get(asset_type, {})
+            if not isinstance(entries, dict) or not all(isinstance(e, dict) for e in entries.values()):
+                raise ZammadReadError(
+                    f"the knowledge base listing holds {asset_type} entries that are not objects"
+                )
+        return listing
+
+    def _kb_answer_changed_since(self, answer_data: dict[str, Any], since: int | None) -> bool:
+        if since is None:
+            return True
+        updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
+        return not updated_at or updated_at >= since
+
+    async def _process_kb_entities(
         self,
         assets: Dict[str, Any],
         kb_map: Dict[int, RecordGroup],
@@ -2268,10 +2323,10 @@ class ZammadConnector(BaseConnector):
         category_permissions_map: Dict[int, Dict[str, List[int]]]
     ) -> None:
         """
-        Process KB and categories from the first page response.
+        Process knowledge bases and categories from the knowledge base listing.
 
         Args:
-            assets: Assets dictionary from search response
+            assets: Assets dictionary from the knowledge base listing
             kb_map: Output dict to store kb_id -> RecordGroup mapping
             category_map: Output dict to store cat_id -> RecordGroup mapping
             category_permissions_map: Output dict to store category permissions
@@ -2467,77 +2522,41 @@ class ZammadConnector(BaseConnector):
                 await self.data_entities_processor.on_new_record_groups(category_record_groups)
                 self.logger.info(f"✅ Synced {len(category_record_groups)} KB categories")
 
-    async def _sync_kb_answers_paginated(
+    async def _sync_kb_answers(
         self,
-        query: str,
-        limit: int,
-        start_offset: int,
-        first_page_assets: Dict[str, Any],
-        first_result_count: int,
+        answers: dict[str, dict[str, Any]],
+        assets: dict[str, Any],
         category_map: Dict[int, RecordGroup],
         category_permissions_map: Dict[int, Dict[str, List[int]]]
-    ) -> Tuple[int, int]:
+    ) -> tuple[int, int, list[int]]:
         """
-        Sync KB answers with pagination.
+        Write KB answers from the knowledge base listing, BATCH_SIZE_KB_ANSWERS at a time.
 
         Args:
-            query: Search query string
-            limit: Page size for pagination
-            start_offset: Starting offset (usually 0)
-            first_page_assets: Assets from first page (already fetched)
-            first_result_count: Result count from first page
+            answers: Answer id -> answer data, for the answers to write
+            assets: The knowledge base listing, for the answers' translations
             category_map: Map of category_id -> RecordGroup
             category_permissions_map: Map of category_id -> permissions dict
 
         Returns:
-            Tuple of (total_synced_count, max_updated_at_timestamp)
+            Tuple of (total_synced_count, max_updated_at_timestamp, the updated_at of
+            each answer that could not be written, 0 where it has none)
         """
-        datasource = await self._get_fresh_datasource()
-        offset = start_offset
         total_synced = 0
         max_updated_at = 0
-        is_first_page = True
+        failed_updated_at: list[int] = []
+        answer_translations = assets.get("KnowledgeBaseAnswerTranslation", {})
+        answer_items = list(answers.items())
 
-        while True:
-            # Use first page data if available, otherwise fetch
-            if is_first_page:
-                is_first_page = False
-                assets = first_page_assets
-                result_count = first_result_count
-            else:
-                response = await datasource.search_kb_answers(
-                    query=query,
-                    limit=limit,
-                    offset=offset
-                )
-
-                if not response.success:
-                    self.logger.warning(f"Failed to search KB answers: {response.message}")
-                    break
-
-                if not response.data:
-                    break
-
-                assets = response.data.copy()
-
-                # Get result count for proper pagination
-                result_count = assets.pop("_result_count", 0)
-
-            # Process Answers
-            answer_assets = assets.get("KnowledgeBaseAnswer", {})
-            answer_translations = assets.get("KnowledgeBaseAnswerTranslation", {})
-
-            if not answer_assets:
-                break
-
+        for batch_start in range(0, len(answer_items), BATCH_SIZE_KB_ANSWERS):
             batch_records: List[Tuple[Record, List[Permission]]] = []
 
-            for answer_id_str, answer_data in answer_assets.items():
+            for answer_id_str, answer_data in answer_items[batch_start:batch_start + BATCH_SIZE_KB_ANSWERS]:
                 answer_id = int(answer_id_str)
+                answer_updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
 
                 try:
                     # Track max updated_at for checkpoint
-                    answer_updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
                     if answer_updated_at and answer_updated_at > max_updated_at:
                         max_updated_at = answer_updated_at
 
@@ -2621,6 +2640,7 @@ class ZammadConnector(BaseConnector):
 
                 except Exception as e:
                     self.logger.warning(f"Failed to process KB answer {answer_id}: {e}", exc_info=True)
+                    failed_updated_at.append(answer_updated_at)
 
             # Save batch
             if batch_records:
@@ -2642,13 +2662,7 @@ class ZammadConnector(BaseConnector):
                 else:
                     self.logger.debug(f"Processed batch: {batch_answers} KB answers")
 
-            # Check pagination using result count (not answer count)
-            if result_count < limit:
-                break
-
-            offset += limit
-
-        return total_synced, max_updated_at
+        return total_synced, max_updated_at, failed_updated_at
 
     def _determine_visibility(self, answer_data: Dict[str, Any]) -> str:
         """

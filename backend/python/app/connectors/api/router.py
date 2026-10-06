@@ -51,6 +51,7 @@ from app.config.constants.arangodb import (
     AppStatus,
     CollectionNames,
     Connectors,
+    DeleteSource,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -62,6 +63,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.config.redaction import REDACTED_PLACEHOLDER
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -103,10 +105,15 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
-from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
+from app.connectors.core.sync.sync_coordinator import get_coordinator
+from app.edition_services import max_connector_workers, sync_executor_enabled
+from app.connectors.core.sync.sync_dispatcher import get_dispatcher
+from app.connectors.core.sync.sync_runner import write_app_status
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
+    build_soft_delete_events,
     build_stored_document_cleanup_events,
 )
 from app.connectors.services.vector_store_rebuild import (
@@ -126,7 +133,10 @@ from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
-from app.services.featureflag.platform_settings import read_platform_feature_flag
+from app.services.featureflag.platform_settings import (
+    is_soft_delete_enabled,
+    read_platform_feature_flag,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
@@ -141,7 +151,13 @@ from app.utils.user_messages import (
 from app.utils.filename_utils import upload_extension
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
-from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from app.utils.oauth_config import (
+    SALESFORCE_LOGIN_URL_ERROR,
+    check_salesforce_login_url_setting,
+    extract_oauth_error_message,
+    get_oauth_config,
+)
+from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -758,6 +774,7 @@ async def get_validated_connector_instance(
 _LOCK_STATUS_MESSAGES: dict[str, str] = {
     AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
     AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
+    AppStatus.QUEUED.value: ("A sync is already queued for this connector and will start shortly."),
 }
 
 
@@ -979,6 +996,62 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
             trimmed_config[section] = _trim_config_values(obj=trimmed_config[section], path=section)
 
     return trimmed_config
+
+
+_OWNER_TOKEN_KEYS = frozenset({OAuthConfigKeys.CREDENTIALS, "oauth"})
+
+# Older Google Workspace connectors keep their service-account key as flat ``auth`` keys,
+# which no schema describes (GoogleClient's legacy path), so its one secret is named here.
+_LEGACY_SERVICE_ACCOUNT_SECRET_KEYS = frozenset({"private_key"})
+
+
+def _schema_marks_secret(field: object) -> bool:
+    # BookStack's ``token_secret`` is a PASSWORD input without ``isSecret``, so either marker counts.
+    return isinstance(field, dict) and bool(field.get("isSecret") or field.get("fieldType") == "PASSWORD")
+
+
+async def _secret_auth_field_names(connector_registry: ConnectorRegistry, connector_type: str) -> frozenset[str]:
+    """Auth fields the connector's registry schemas mark secret, plus its OAuth app's secret fields.
+
+    The OAuth ones matter because ``PUT /config`` stores a ``clientSecret`` sent in ``auth``.
+    """
+    names = set(_get_secret_oauth_field_names_from_registry(connector_type)) | _LEGACY_SERVICE_ACCOUNT_SECRET_KEYS
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    schemas = ((metadata.get(OAuthConfigKeys.CONFIG) or {}).get(OAuthConfigKeys.AUTH) or {}).get("schemas")
+    if isinstance(schemas, dict):
+        for schema in schemas.values():
+            fields = schema.get("fields") if isinstance(schema, dict) else None
+            names.update(field["name"] for field in fields or [] if _schema_marks_secret(field) and field.get("name"))
+    # The OAuth save paths accept the snake_case spelling of these fields too.
+    names.update({name.replace("Secret", "_secret") for name in names})
+    return frozenset(names)
+
+
+def _config_for_response(config: dict[str, Any], secret_auth_fields: frozenset[str]) -> dict[str, Any]:
+    """Copy of a stored connector config that is safe to return.
+
+    The owner's tokens never leave the server, and each stored secret in ``auth`` comes
+    back as ``REDACTED_PLACEHOLDER``, which a save treats as "keep the stored value".
+    """
+    response = {key: value for key, value in config.items() if key not in _OWNER_TOKEN_KEYS}
+    auth = response.get(OAuthConfigKeys.AUTH)
+    if isinstance(auth, dict):
+        response[OAuthConfigKeys.AUTH] = {
+            key: REDACTED_PLACEHOLDER if key in secret_auth_fields and value else value
+            for key, value in auth.items()
+        }
+    return response
+
+
+def _without_masked_secrets(auth: dict[str, Any], secret_auth_fields: frozenset[str]) -> dict[str, Any]:
+    """Drop secrets sent back as the mask, so merging the save keeps what is stored."""
+    return {
+        key: value
+        for key, value in auth.items()
+        if not (key in secret_auth_fields and value == REDACTED_PLACEHOLDER)
+    }
 
 
 def _require_filter_sections_are_objects(filters: object) -> None:
@@ -2266,13 +2339,59 @@ async def delete_record(
                 "synced from a connector, delete the item in the source app or remove the connector.",
             )
 
-        await _schedule_upload_removal(graph_provider, kafka_service, logger, record_id, org_id)
+        soft_delete = await is_soft_delete_enabled(container.config_service())
+        if not soft_delete:
+            # The trash keeps the uploaded file until the purge.
+            await _schedule_upload_removal(graph_provider, kafka_service, logger, record_id, org_id)
 
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
+            soft_delete=soft_delete,
         )
+
+        if result["success"] and result.get("softDeleted"):
+            # In the trash: vectors go now, the record and its files at the purge.
+            failed_ids: list[str] = []
+            for event in build_soft_delete_events(
+                org_id=result.get("orgId") or org_id,
+                connector_id=result.get("connectorId"),
+                virtual_record_ids=result.get("virtualRecordIds"),
+                batch_id=result.get("batchId") or "",
+                delete_source=DeleteSource.USER.value,
+            ):
+                async def publish(event: dict = event) -> None:
+                    if await kafka_service.publish_event("record-events", event) is False:
+                        raise RuntimeError("the message broker did not accept the event")
+
+                try:
+                    await retry_async(
+                        publish,
+                        logger=logger,
+                        description=f"publish softDeleteRecords for record {record_id}",
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"❌ Giving up publishing softDeleteRecords for record {record_id}; "
+                        f"its vectors stay until the purge: {str(e)}"
+                    )
+                    failed_ids.extend(event["payload"]["virtualRecordIds"])
+            record_soft_deleted(DeleteSource.USER.value, len(result.get("softDeletedRecords") or []))
+            if result.get("isKb") and result.get("connectorId"):
+                await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
+            response = {
+                "success": True,
+                "message": f"Record {record_id} moved to the trash",
+                "recordId": record_id,
+                "connector": result.get("connector"),
+                "softDeleted": True,
+                "batchId": result.get("batchId"),
+            }
+            if failed_ids:
+                response["vectorCleanupPending"] = True
+                response["vectorCleanupFailedVirtualRecordIds"] = failed_ids
+            return response
 
         if result["success"]:
             # Publish deletion event. The graph deletion above has already
@@ -2304,9 +2423,13 @@ async def delete_record(
                         "timestamp": timestamp,
                         "payload": payload,
                     }
+                    async def publish(event: dict = event) -> None:
+                        if await kafka_service.publish_event(event_data["topic"], event) is False:
+                            raise RuntimeError("the message broker did not accept the event")
+
                     try:
                         await retry_async(
-                            lambda event=event: kafka_service.publish_event(event_data["topic"], event),
+                            publish,
                             logger=logger,
                             description=f"publish {event_data['eventType']} event for record {record_id}",
                         )
@@ -3815,16 +3938,7 @@ def _apply_confluence_optional_jira_scope(
     scopes: list[str],
 ) -> list[str]:
     """Add or remove read:jira-user based on Confluence Cloud includeJiraScope."""
-    normalized = (connector_type or "").replace(" ", "").upper()
-    if normalized != Connectors.CONFLUENCE.value:
-        return scopes
-    jira_scope = "read:jira-user"
-    enabled = include_jira_scope_enabled(auth_config.get("includeJiraScope"))
-    if enabled:
-        if jira_scope in scopes:
-            return scopes
-        return [*scopes, jira_scope]
-    return [scope for scope in scopes if scope != jira_scope]
+    return apply_confluence_jira_scope(connector_type, auth_config, scopes)
 
 
 # Set by the server: which org a linked OAuth app belongs to (worked out from the app
@@ -3848,6 +3962,15 @@ def _mirror_shared_instance_url(auth: dict[str, Any], shared_oauth_config: dict[
         auth[AuthFieldKeys.INSTANCE_URL] = shared_instance_url
     else:
         auth.pop(AuthFieldKeys.INSTANCE_URL, None)
+
+
+def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Refuse a Salesforce login URL off salesforce.com before it is saved: the token request
+    sends the client secret there from the server."""
+    try:
+        check_salesforce_login_url_setting(connector_type, settings)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=SALESFORCE_LOGIN_URL_ERROR) from e
 
 
 async def _link_to_shared_oauth_app(
@@ -4493,10 +4616,9 @@ async def get_connector_instance_config(
         if not config:
             config = {"auth": {}, "sync": {}, "filters": {}}
 
-        # Remove sensitive data and internal fields
-        config = config.copy()
-        config.pop("credentials", None)
-        config.pop("oauth", None)
+        config = _config_for_response(
+            config, await _secret_auth_field_names(connector_registry, connector_type)
+        )
 
         # Clean auth section in config (remove redundant OAuth fields that aren't needed)
         if OAuthConfigKeys.AUTH in config:
@@ -4547,6 +4669,213 @@ async def get_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("load this connector's settings")
         ) from e
+
+
+@router.post(
+    "/api/v1/connectors/{connector_id}/sync/stop",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+)
+async def stop_connector_sync(
+    connector_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    """Request cancellation of the in-flight sync for a connector.
+
+    Fire-and-forget: cancels the task without awaiting its unwind, because a
+    task stuck in a blocking SDK call cannot be interrupted until it yields and
+    would otherwise hang this request. The task writes IDLE itself when it
+    actually stops.
+
+    When nothing is running, this self-heals a stale SYNCING/FULL_SYNCING
+    status or a stuck isLocked, so a crash never leaves the UI wedged until the
+    next service restart.
+
+    Deliberately not guarded by a not-locked dependency — stop must work during
+    the full-sync lock window and against a stuck lock.
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    instance = await get_validated_connector_instance(connector_id, request)
+
+    # Before any branch below: a request queued behind this run would otherwise
+    # be re-issued the moment it ends, by the finalizer or a later sweep, and
+    # the connector the user just stopped would start again.
+    try:
+        current = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        # Written only when set: main's strict Arango app schema has no such
+        # field, so writing it on every stop broke a rollback for every
+        # connector anyone had stopped. pendingFullSync is deliberately kept:
+        # a filter change sets it, and the sync that applies a connector's new
+        # scope is owed until one runs. The cost is that a stopped full-sync
+        # request runs as a full sync next time.
+        if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
+            await graph_provider.update_node(
+                connector_id,
+                CollectionNames.APPS.value,
+                {ConnectorStateKeys.PENDING_RESYNC: False},
+            )
+    except Exception as e:
+        logger.warning(
+            f"Could not clear pending resync flags for {connector_id} "
+            f"while stopping: {e}"
+        )
+
+    coordinator = get_coordinator()
+    if coordinator is not None and coordinator.is_running_here(connector_id):
+        await coordinator.request_stop(connector_id)
+        return {
+            "success": True,
+            "stopped": True,
+            "status": instance.get("status"),
+            "message": "Stop requested. The sync will halt shortly.",
+        }
+
+    # Running on another process: record the stop and leave the graph alone.
+    # Falling through to the repair block below would mark a live sync IDLE,
+    # after which the start guard reads IDLE and lets a second one begin — a
+    # second, independent route to duplicate records.
+    dispatcher = get_dispatcher()
+    if dispatcher is not None and await dispatcher.request_stop(connector_id):
+        return {
+            "success": True,
+            "stopped": True,
+            "status": instance.get("status"),
+            "message": "Stop requested. The sync will halt shortly.",
+        }
+
+    # Nothing running: idempotent no-op, plus repair of stale stored state.
+    try:
+        app_doc = await graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value
+        )
+    except Exception as e:
+        logger.error(f"Failed to read app doc for {connector_id} during stop: {e}")
+        app_doc = None
+
+    if app_doc and (
+        app_doc.get("status")
+        in (
+            AppStatus.SYNCING.value,
+            AppStatus.FULL_SYNCING.value,
+            AppStatus.QUEUED.value,
+        )
+        or app_doc.get("isLocked")
+    ):
+        # Re-check: reading the doc yielded the loop, so a sync event may have
+        # been consumed meanwhile — repairing now would mark a just-started
+        # sync IDLE. Cancel it instead, as if it had been running all along.
+        if coordinator is not None and coordinator.is_running_here(connector_id):
+            await coordinator.request_stop(connector_id)
+            return {
+                "success": True,
+                "stopped": True,
+                "status": app_doc.get("status"),
+                "message": "Stop requested. The sync will halt shortly.",
+            }
+
+        # Never repair on a guess. Two ways to be wrong here, and the boot sweep
+        # already guards both (connectors_main.reset_stale_sync_state).
+        #
+        # First: no coordinator at all, or one that cannot answer for other
+        # processes, in a deployment where other processes exist. Its view is
+        # then a per-process dict. Repairing writes IDLE over a sync still
+        # running elsewhere, and unlike the case below there is no claim left to
+        # decline the follow-up, so a genuinely concurrent second sync can start.
+        if max_connector_workers() > 1 or sync_executor_enabled():
+            if coordinator is None or not getattr(
+                coordinator, "reports_liveness", False
+            ):
+                logger.warning(
+                    "Not repairing %s: sync state in another process cannot be "
+                    "told from a stale status here", connector_id,
+                )
+                return {
+                    "success": True,
+                    "stopped": False,
+                    "status": app_doc.get("status"),
+                    "message": (
+                        "Could not determine whether a sync is running on "
+                        "another process. Nothing was changed."
+                    ),
+                }
+
+        # Second: a transient error inside request_stop returns False, which is
+        # not the same as "nothing is running". Ask the coordinator directly.
+        if coordinator is not None and getattr(coordinator, "reports_liveness", False):
+            try:
+                if connector_id in await coordinator.peek_many([connector_id]):
+                    # The stop above was not recorded, so nothing will halt this
+                    # sync unless a retry records it.
+                    if dispatcher is not None and await dispatcher.request_stop(connector_id):
+                        return {
+                            "success": True,
+                            "stopped": True,
+                            "status": app_doc.get("status"),
+                            "message": "Stop requested. The sync will halt shortly.",
+                        }
+                    return {
+                        "success": True,
+                        "stopped": False,
+                        "status": app_doc.get("status"),
+                        "message": (
+                            "A sync is running on another process, but the stop "
+                            "could not be recorded. Try again shortly."
+                        ),
+                    }
+            except Exception as e:
+                logger.error(
+                    f"Could not confirm whether {connector_id} is syncing "
+                    f"elsewhere; leaving its status alone: {e}"
+                )
+                return {
+                    "success": True,
+                    "stopped": False,
+                    "status": app_doc.get("status"),
+                    "message": (
+                        "Could not determine whether a sync is running. "
+                        "Nothing was changed; try again shortly."
+                    ),
+                }
+
+        # A doc mid-deletion is not stale sync state. Clearing its lock removes
+        # the guard other routes use to refuse work while deletion runs.
+        if app_doc.get("status") == "DELETING":
+            return {
+                "success": True,
+                "stopped": False,
+                "status": "DELETING",
+                "message": "Connector is being deleted; nothing to stop.",
+            }
+
+        repair_status = AppStatus.IDLE.value
+        repaired = await write_app_status(
+            graph_provider, logger, connector_id, repair_status, is_locked=False
+        )
+        logger.warning(
+            f"Repaired stale sync status for connector {connector_id} via stop request"
+        )
+        # Report what the connector is actually left in. Claiming IDLE after a
+        # failed write, or for a doc deliberately kept DELETING, tells the
+        # caller the connector is usable when it is still wedged.
+        return {
+            "success": True,
+            "stopped": False,
+            "status": repair_status if repaired else app_doc.get("status"),
+            "message": (
+                "No sync was running; stale status repaired."
+                if repaired
+                else "No sync is running, but the stored status could not be repaired."
+            ),
+        }
+
+    return {
+        "success": True,
+        "stopped": False,
+        "status": (app_doc or {}).get("status") or AppStatus.IDLE.value,
+        "message": "No sync is currently running.",
+    }
 
 
 @router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
@@ -4617,7 +4946,10 @@ async def update_connector_instance_auth_config(
         # Merge new auth configuration with existing config
         # Filter out OAuth credential fields - only store reference ID
         new_config = existing_config.copy() if existing_config else {}
-        auth_config_raw = _without_server_set_auth_fields(body.get(OAuthConfigKeys.AUTH, {}))
+        secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
+        auth_config_raw = _without_masked_secrets(
+            _without_server_set_auth_fields(body.get(OAuthConfigKeys.AUTH, {})), secret_auth_fields
+        )
 
         # Auto-create or update OAuth config if OAuth fields are provided and user is admin
         # This happens when admin updates connector auth with OAuth credentials directly
@@ -4879,7 +5211,7 @@ async def update_connector_instance_auth_config(
 
         return {
             "success": True,
-            "config": new_config,
+            "config": _config_for_response(new_config, secret_auth_fields),
             "message": "Authentication configuration saved successfully."
         }
 
@@ -4996,6 +5328,7 @@ async def update_connector_instance_filters_sync_config(
         first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
         sync_filters_changed = old_sync_filters != new_sync_filters
         needs_full_resync = sync_filters_changed or first_time_sync_filters
+        secret_auth_fields = await _secret_auth_field_names(connector_registry, instance.get("type", ""))
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated filters-sync config for instance {connector_id}")
@@ -5032,7 +5365,7 @@ async def update_connector_instance_filters_sync_config(
 
         return {
             "success": True,
-            "config": new_config,
+            "config": _config_for_response(new_config, secret_auth_fields),
             "message": "Filters and sync configuration saved successfully.",
             "syncFiltersChanged": needs_full_resync,
         }
@@ -5091,8 +5424,11 @@ async def update_connector_instance_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
         _require_filter_sections_are_objects(body.get("filters"))
+        secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
         if isinstance(body.get("auth"), dict):
-            body["auth"] = _without_server_set_auth_fields(body["auth"])
+            body["auth"] = _without_masked_secrets(
+                _without_server_set_auth_fields(body["auth"]), secret_auth_fields
+            )
 
         # Prevent saving configuration when connector is active
         # Only allow filter/sync updates when connector is active (these don't require re-initialization)
@@ -5126,9 +5462,10 @@ async def update_connector_instance_config(
         # to edit a sync setting would otherwise de-authenticate a working
         # connector on every save.
         _incoming_auth = body.get("auth")
-        auth_credentials_changed = isinstance(_incoming_auth, dict) and any(
-            (existing_config or {}).get("auth", {}).get(k) != v
-            for k, v in _incoming_auth.items()
+        _stored_auth = (existing_config or {}).get("auth") or {}
+        auth_credentials_changed = isinstance(_incoming_auth, dict) and (
+            any(_stored_auth.get(k) != v for k, v in _incoming_auth.items())
+            or bool(oauth_config_id and oauth_config_id != _stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID))
         )
 
         for section in ["auth", "sync", "filters"]:
@@ -5158,13 +5495,13 @@ async def update_connector_instance_config(
                 connector_registry, instance.get("type", ""), new_config, "saving"
             )
 
-        # Clear credentials and OAuth state only if auth config is being updated
-        # Filters and sync updates don't require re-authentication
-        if auth_updated:
+        # Tokens go only with the credentials that issued them: sending ``auth`` back
+        # unchanged (secrets as the mask) keeps the connector signed in.
+        if auth_credentials_changed:
             new_config[OAuthConfigKeys.CREDENTIALS] = None
             new_config["oauth"] = None
-            if connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
-                new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
+        if auth_updated and connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
+            new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
 
 
         # Prevent auth type changes after connector creation
@@ -5335,7 +5672,7 @@ async def update_connector_instance_config(
 
         return {
             "success": True,
-            "config": new_config,
+            "config": _config_for_response(new_config, secret_auth_fields),
             "message": "Configuration saved successfully."
         }
 
@@ -7105,6 +7442,75 @@ def _tag_instance_name(connector_obj: BaseConnector, name: str | None) -> None:
         connector_obj.instance_name = name
 
 
+async def _evict_cached_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    logger: logging.Logger,
+) -> None:
+    """Drop the in-memory connector so the next enable rebuilds it from scratch."""
+    if not hasattr(container, "connectors_map") or connector_id not in container.connectors_map:
+        return
+    logger.info(f"Removing connector {connector_id} from connectors_map")
+    existing_connector = container.connectors_map.pop(connector_id)
+    try:
+        if hasattr(existing_connector, "cleanup"):
+            await existing_connector.cleanup()
+        logger.info(f"Cleaned up connector instance {connector_id}")
+    except Exception as cleanup_err:
+        logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+
+
+async def _revert_toggle(
+    connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
+    connector_id: str,
+    instance: dict[str, Any],
+    status_field: str,
+    owner_updates: dict[str, Any],
+    *,
+    previous: bool,
+    written_at: int | None,
+    user_id: str,
+    org_id: str,
+    is_admin: bool,
+    logger: logging.Logger,
+) -> bool:
+    """Restore the pre-toggle state unless a newer write has landed since.
+
+    Returns whether the revert was applied. Never raises, so the caller's error
+    propagates.
+    """
+    reverted: dict[str, Any] = {
+        status_field: previous,
+        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        **{key: instance.get(key) for key in owner_updates},
+    }
+    try:
+        # Toggles flip, so a stale revert can undo a newer successful one; only
+        # revert while the document is still the version this request wrote.
+        current = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not current or written_at is None or current.get("updatedAtTimestamp") != written_at:
+            logger.warning(
+                f"Not reverting {status_field} for connector {connector_id}: "
+                "it changed after this toggle was written"
+            )
+            return False
+        ok = await connector_registry.update_connector_instance(
+            connector_id=connector_id,
+            updates=reverted,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+        )
+        if not ok:
+            logger.error(f"Could not revert {status_field} for connector {connector_id}")
+            return False
+        return True
+    except Exception:
+        logger.exception(f"Could not revert {status_field} for connector {connector_id}")
+        return False
+
+
 async def _ensure_connector_initialized(
     container: ConnectorAppContainer,
     connector_id: str,
@@ -7565,18 +7971,33 @@ async def toggle_connector_instance(
                 "timestamp": get_epoch_timestamp_in_ms()
             }
 
-            await producer.send_message(topic="entity-events", message=message)
+
+            try:
+                await producer.send_message(topic="entity-events", message=message)
+            except Exception:
+                # The flip is already committed; without this the connector reads as
+                # enabled with no appEnabled event and no schedule behind it.
+                reverted = await _revert_toggle(
+                    connector_registry,
+                    graph_provider,
+                    connector_id,
+                    instance,
+                    status_field,
+                    owner_updates,
+                    previous=not target_status,
+                    written_at=success.get("updatedAtTimestamp") if isinstance(success, dict) else None,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    logger=logger,
+                )
+                if reverted and target_status:
+                    await _evict_cached_connector(container, connector_id, logger)
+                raise
 
             # When disabling sync, remove connector from map and cleanup so re-enable does full init
-            if not target_status and hasattr(container, "connectors_map") and connector_id in container.connectors_map:
-                logger.info(f"Removing connector {connector_id} from connectors_map after toggle off")
-                existing_connector = container.connectors_map.pop(connector_id)
-                try:
-                    if hasattr(existing_connector, "cleanup"):
-                        await existing_connector.cleanup()
-                    logger.info(f"Cleaned up connector instance {connector_id}")
-                except Exception as cleanup_err:
-                    logger.error(f"Error cleaning up connector {connector_id} after toggle off: {cleanup_err}")
+            if not target_status:
+                await _evict_cached_connector(container, connector_id, logger)
 
         return {
             "success": True,
@@ -7698,7 +8119,17 @@ async def delete_connector_instance(
 
         producer = container.messaging_producer
 
-        # 5. Stop any running sync for this connector
+        # 5. Mark the connector DELETING before any event goes out. This
+        # service's own consumer runs the deletion and can finish before this
+        # request does, so a later write would hit a node that no longer exists;
+        # and a failed write here leaves the connector and its sync untouched.
+        await graph_provider.update_node(
+            connector_id,
+            CollectionNames.APPS.value,
+            {"status": "DELETING", "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+        )
+
+        # 6. Stop any running sync for this connector
         try:
             disable_message = {
                 "eventType": "appDisabled",
@@ -7720,7 +8151,7 @@ async def delete_connector_instance(
                 f"Sync services may continue running. Proceeding with deletion event."
             )
 
-        # 6. Publish the async deletion event — consumed by the sync consumer (before status update so a failed publish cannot leave the connector stuck in DELETING)
+        # 7. Publish the async deletion event — consumed by the sync consumer
         event_type = f"{connector_type.replace(' ', '').lower()}.delete"
         delete_message = {
             "eventType": event_type,
@@ -7736,18 +8167,17 @@ async def delete_connector_instance(
             },
             "timestamp": get_epoch_timestamp_in_ms(),
         }
-        await producer.send_message(topic="sync-events", message=delete_message)
+        try:
+            await producer.send_message(topic="sync-events", message=delete_message, key=connector_id)
+        except Exception:
+            # Nothing will delete it, so it must not stay in DELETING.
+            await graph_provider.update_node(
+                connector_id,
+                CollectionNames.APPS.value,
+                {"status": None, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+            )
+            raise
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
-
-        # 7. Mark connector as DELETING in the graph DB so the UI can reflect it
-        await graph_provider.batch_upsert_nodes(
-            [{
-                "id": connector_id,
-                "status": "DELETING",
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }],
-            CollectionNames.APPS.value
-        )
 
         return JSONResponse(
             status_code=202,
@@ -8355,6 +8785,9 @@ async def _create_or_update_oauth_config(
         import logging
         logger = logging.getLogger(__name__)
 
+    # Raised before the try below, which turns every failure into a None return.
+    _check_salesforce_login_url(connector_type, auth_config)
+
     try:
         # Get OAuth field names from registry (dynamic, no hardcoding)
         oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
@@ -8553,6 +8986,8 @@ async def _validate_admin_oauth_config_before_creation(
     Raises:
         HTTPException: If OAuth name conflicts are detected
     """
+    _check_salesforce_login_url(connector_type, config.get(OAuthConfigKeys.AUTH))
+
     oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
     has_oauth_credentials = any(
         config.get(OAuthConfigKeys.AUTH, {}).get(field_name) or
@@ -8736,6 +9171,7 @@ async def create_oauth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="config is required"
             )
+        _check_salesforce_login_url(connector_type, config)
 
         # Get OAuth config from registry (completely independent)
         # OAuth configs are self-contained and don't depend on connector/toolset registries
@@ -9073,6 +9509,7 @@ async def update_oauth_config(
             existing_cfg = oauth_config.get(OAuthConfigKeys.CONFIG, {}) or {}
             cleaned = strip_redacted_fields(new_config)
             merged = {**existing_cfg, **cleaned}
+            _check_salesforce_login_url(connector_type, merged)
             oauth_config[OAuthConfigKeys.CONFIG] = merged
 
         # Ensure OAuth infrastructure fields are present (if missing, add from registry)

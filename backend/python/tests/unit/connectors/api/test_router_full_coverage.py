@@ -779,7 +779,7 @@ class TestGetConnectorStatsException:
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
 
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
 
         req = MagicMock()
         req.app.container.logger.return_value = MagicMock()

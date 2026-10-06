@@ -10,7 +10,9 @@ function isSyncInProgressStatus(status?: string | null): boolean {
   const normalized = (status ?? CONNECTOR_INSTANCE_STATUS.IDLE).toUpperCase();
   return (
     normalized === CONNECTOR_INSTANCE_STATUS.SYNCING ||
-    normalized === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING
+    normalized === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING ||
+    // Queued too, or the card would never notice the sync actually starting.
+    normalized === CONNECTOR_INSTANCE_STATUS.QUEUED
   );
 }
 

@@ -24,30 +24,21 @@ from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from datetime import timedelta
+from unittest.mock import PropertyMock
 from fastapi import HTTPException
 from app.config.constants.arangodb import (
-    Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
-    SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
     SharePointSubscriptionManager,
-    SiteMetadata,
 )
 from app.models.entities import (
     FileRecord,
-    Record,
     RecordGroup,
     RecordGroupType,
-    RecordType,
     SharePointListItemRecord,
     SharePointListRecord,
     SharePointPageRecord,

@@ -56,6 +56,30 @@ describe('Enterprise Search Routes', () => {
     expect(createRoute).to.exist
   })
 
+  describe('POST /create scope', () => {
+    const runScopeCheck = (oauthScopes: string[]) => {
+      const router = createConversationalRouter(container)
+      const createRoute = router.stack.find(
+        (layer: any) => layer.route?.path === '/create' && layer.route.methods.post,
+      ) as any
+      // authenticate, requireScopes, validate, defaultChatModel, handler
+      const requireScopes = createRoute.route.stack[1].handle
+      const next = sinon.spy()
+      requireScopes({ user: { isOAuth: true, oauthScopes } }, {}, next)
+      return next.firstCall.args[0]
+    }
+
+    it('should admit an OAuth token that has only conversation:chat', () => {
+      expect(runScopeCheck(['conversation:chat'])).to.be.undefined
+    })
+
+    it('should reject an OAuth token that has only conversation:write', () => {
+      const error = runScopeCheck(['conversation:write'])
+      expect(error).to.be.an('error')
+      expect(error.message).to.equal('Insufficient scope. Required: conversation:chat')
+    })
+  })
+
   it('should register internal create route', () => {
     const router = createConversationalRouter(container)
     const routes = router.stack

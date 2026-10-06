@@ -177,6 +177,13 @@ class PermissionsInfo(BaseModel):
     canEdit: bool = Field(..., description="Whether user can edit")
     canDelete: bool = Field(..., description="Whether user can delete")
     canManagePermissions: bool = Field(..., description="Whether user can manage permissions")
+    collectionRole: str | None = Field(
+        None,
+        description=(
+            "The user's own role on the collection this node is in, as restore and the trash list "
+            "check it; null outside a collection. Unlike role, it is the same at every level inside."
+        ),
+    )
 
 class KnowledgeHubNodesResponse(BaseModel):
     """Response model for the Knowledge Hub nodes API"""

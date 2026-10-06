@@ -22,6 +22,7 @@ from app.agents.actions.knowledge_graph.views import (
     _short,
     _trunc,
 )
+from app.models.entities import resolve_weburl
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
@@ -33,7 +34,10 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     list_accessible_entity_records,
 )
-from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+from app.utils.chat_helpers import (
+    get_record_id_shortener_if_enabled,
+    resolve_frontend_url,
+)
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -134,6 +138,7 @@ async def execute_find_records_by_entity(
         next_cursor=page.next_cursor,
         capped=page.capped,
         shortener=shortener,
+        frontend_url=await resolve_frontend_url(state.get("config_service")),
     )
 
 
@@ -161,6 +166,7 @@ def _render_page(
     next_cursor: str | None,
     capped: bool = False,
     shortener: "RecordIdShortener | None",
+    frontend_url: str | None = None,
 ) -> str:
     preposition = "in" if entity_type == RECORD_GROUP_ENTITY_TYPE else "connected to"
     subject = f'{entity_type} "{_trunc(entity_name)}"' if entity_name else f"this {entity_type}"
@@ -179,8 +185,9 @@ def _render_page(
         )
         if modified:
             parts.append(f"modified: {modified}")
-        if record.get("webUrl"):
-            parts.append(f"url={record['webUrl']}")
+        url = None if record.get("hideWeburl") else resolve_weburl(record.get("webUrl"), frontend_url)
+        if url:
+            parts.append(f"url={url}")
         lines.append(" | ".join(parts))
 
     lines.append("")

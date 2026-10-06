@@ -121,6 +121,7 @@ class ResolutionStats:
     in_record_merges: int = 0
     new_nodes: int = 0
     alias_cap_hits: int = 0
+    merge_redirects: int = 0
     latency_ms: int = 0
 
     def as_dict(self) -> dict[str, int]:
@@ -148,15 +149,16 @@ class EntityResolution:
         return self.entries.get((collection, normalize_name(name)))
 
     def decisions_for_log(self) -> list[dict[str, Any]]:
+        """What was decided, by id and count: extracted names are document
+        content and stay out of logs."""
         return [
             {
                 "slot": entity.kind.slot,
-                "extracted": list(entity.extracted_names),
+                "extracted": len(entity.extracted_names),
                 "decision": entity.decision,
                 "key": entity.key,
-                "name": entity.name,
                 "new": entity.is_new,
-                "newAliases": list(entity.new_aliases),
+                "newAliases": len(entity.new_aliases),
             }
             for entity in self.entries.values()
         ]

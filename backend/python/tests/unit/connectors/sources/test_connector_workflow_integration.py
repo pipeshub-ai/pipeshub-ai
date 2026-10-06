@@ -54,6 +54,8 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
+from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
 
 # ---------------------------------------------------------------------------
 # Constants used across tests
@@ -256,20 +258,38 @@ class MockTransactionStore:
 
     # -- records ---
 
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
         for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
-            if doc.get("connectorId") == connector_id and doc.get("externalRecordId") == external_id:
+            if (
+                doc.get("connectorId") == connector_id
+                and doc.get("externalRecordId") == external_id
+                and matches_visibility(doc, visibility)
+            ):
                 return self._doc_to_record(doc)
         return None
 
-    async def get_record_by_key(self, key: str) -> Optional[Dict]:
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[Dict]:
         """The stored document, as GraphTransactionStore.get_record_by_key returns it."""
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
         return dict(doc) if doc else None
 
-    async def batch_upsert_records(self, records: List[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: List[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         for record in records:
             doc = record.to_arango_base_record()
+            if release_trashed_external_ids:
+                for held in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
+                    if (
+                        held["_key"] != doc["_key"]
+                        and held.get("isDeleted") is True
+                        and held.get("connectorId") == doc.get("connectorId")
+                        and held.get("externalRecordId") == doc.get("externalRecordId")
+                    ):
+                        held["trashedExternalRecordId"] = held["externalRecordId"]
+                        held["externalRecordId"] = f"{TRASHED_EXTERNAL_ID_PREFIX}{held['_key']}"
             self._s.upsert_node(CollectionNames.RECORDS.value, doc)
 
     async def batch_upsert_nodes(self, nodes: List[Dict], collection: str) -> bool:
@@ -345,7 +365,7 @@ class MockTransactionStore:
 
     # -- users ---
 
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("email") == email:
                 return User(
@@ -356,6 +376,20 @@ class MockTransactionStore:
                     is_active=doc.get("isActive", True),
                 )
         return None
+
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False
+    ) -> Person | None:
+        for doc in self._s.collections.get(CollectionNames.PEOPLE.value, {}).values():
+            if doc.get("email") == email.lower() and doc.get("orgId") == org_id:
+                return Person.from_arango_person(doc)
+        return None
+
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        existing = await self.get_person_by_email(person.email, person.org_id)
+        if existing:
+            return existing.id
+        return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
         results = []
@@ -440,6 +474,55 @@ class MockTransactionStore:
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return self._s.delete_edges_to(collection, to_id, to_collection)
+
+    async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
+        self._s.delete_edges_to(collection, to_id, to_collection)
+        for edge in edges:
+            self._s.add_edge(collection, edge)
+
+    async def replace_record_permissions(
+        self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
+    ) -> None:
+        await self.replace_edges_to(
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value
+        )
+        if not inherit:
+            inherit_edges = self._s.edges.get(CollectionNames.INHERIT_PERMISSIONS.value, [])
+            self._s.edges[CollectionNames.INHERIT_PERMISSIONS.value] = [
+                e for e in inherit_edges
+                if not (
+                    e.get("_from") == f"{CollectionNames.RECORDS.value}/{record_id}"
+                    and (e.get("_to") or "").startswith(f"{CollectionNames.RECORD_GROUPS.value}/")
+                )
+            ]
+        elif record_group_id:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+
+    async def link_record_to_group(
+        self,
+        record_id: str,
+        record_group_id: str | None,
+        *,
+        inherit: bool | None,
+        leaving_group_id: str | None = None,
+    ) -> None:
+        if leaving_group_id:
+            self._s.delete_edge(
+                CollectionNames.BELONGS_TO.value,
+                record_id, CollectionNames.RECORDS.value,
+                leaving_group_id, CollectionNames.RECORD_GROUPS.value,
+            )
+            await self._set_inheritance(record_id, leaving_group_id, inherit=False)
+        if record_group_id:
+            await self.create_record_group_relation(record_id, record_group_id)
+            if inherit is not None:
+                await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+
+    async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> None:
+        if inherit:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
+        else:
+            await self.delete_inherit_permissions_relation_record_group(record_id, record_group_id)
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
@@ -554,6 +637,7 @@ class MockTransactionStore:
             connector_id=doc.get("connectorId", ""),
             mime_type=doc.get("mimeType", MimeTypes.UNKNOWN.value),
             indexing_status=doc.get("indexingStatus", ProgressStatus.QUEUED.value),
+            **Record.delete_state_from_arango(doc),
         )
 
 
@@ -1565,13 +1649,21 @@ class TestPermissionSyncWorkflow:
         assert len(perm_edges) >= 1
 
     @pytest.mark.asyncio
-    async def test_missing_user_skips_permission(self, processor, graph_store):
-        """If user doesn't exist in graph, permission edge is skipped (not created)."""
+    async def test_an_email_outside_the_workspace_gets_a_person_and_the_permission(
+        self, processor, graph_store
+    ) -> None:
+        """A grant to someone who is not a user is kept, on a Person created for the email.
+
+        This used to assert that the edge was skipped. It only was because the fake
+        store had no Person lookups, and the AttributeError that caused was swallowed.
+        """
         file_rec = make_file_record(external_id="perm-missing-user-001", record_group_ext_id="drive-perms")
         perm = make_permission(email="nonexistent@example.com", perm_type=PermissionType.READ)
         await processor.on_new_records([(file_rec, [perm])])
-        perm_edges = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
-        assert len(perm_edges) == 0
+        (person,) = graph_store.collections[CollectionNames.PEOPLE.value].values()
+        assert person["email"] == "nonexistent@example.com"
+        (edge,) = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
+        assert edge["_from"] == f"{CollectionNames.PEOPLE.value}/{person['_key']}"
 
     @pytest.mark.asyncio
     async def test_missing_group_skips_permission(self, processor, graph_store):
@@ -1766,6 +1858,23 @@ class TestErrorRecoveryWorkflow:
 
 class TestDeletionCascadeWorkflow:
     """Tests record and entity deletion."""
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_record_read_back_carries_its_trash_state(self, graph_store) -> None:
+        """Like the real stores' conversion, so a fake read cannot make the trash look live."""
+        file_rec = make_file_record(external_id="trash-state-001", record_group_ext_id="drive-del")
+        doc = file_rec.to_arango_base_record()
+        doc.update({"isDeleted": True, "deletedAtTimestamp": 1700000000000, "deleteSource": "CONNECTOR",
+                    "deleteBatchId": "batch-1"})
+        graph_store.upsert_node(CollectionNames.RECORDS.value, doc)
+
+        found = await MockTransactionStore(graph_store).get_record_by_external_id(
+            file_rec.connector_id, "trash-state-001", visibility=RecordVisibility.DELETED
+        )
+
+        assert found is not None and found.is_deleted is True
+        assert (found.deleted_at, found.delete_batch_id) == (1700000000000, "batch-1")
+        assert found.delete_source is not None and found.delete_source.value == "CONNECTOR"
 
     @pytest.mark.asyncio
     async def test_delete_record_by_key(self, processor, graph_store):

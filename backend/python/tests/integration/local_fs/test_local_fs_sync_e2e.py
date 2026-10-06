@@ -159,7 +159,7 @@ class _GraphProviderView:
     def __init__(self, store) -> None:
         self._s = store
 
-    async def get_document(self, document_key, collection, transaction=None) -> dict | None:
+    async def get_document(self, document_key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
         return self._s.get_node(collection, document_key)
 
     async def get_documents_paginated(
@@ -258,9 +258,11 @@ class LocalFsTransactionStore(MockTransactionStore):
             docs = docs[:limit]
         return [await self.get_file_record_by_id(d["_key"]) or self._doc_to_record(d) for d in docs]
 
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         """The base document plus a files document, as both graph providers write a FileRecord."""
-        await super().batch_upsert_records(records)
+        await super().batch_upsert_records(records, release_trashed_external_ids=release_trashed_external_ids)
         for record in records:
             if isinstance(record, FileRecord):
                 self._s.upsert_node(CollectionNames.FILES.value, record.to_arango_record())

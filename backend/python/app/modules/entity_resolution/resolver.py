@@ -44,6 +44,7 @@ from app.modules.entity_resolution.normalizer import (
     spelling_key,
 )
 from app.modules.entity_resolution.prompt import build_prompt
+from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
 from app.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
@@ -177,9 +178,78 @@ class EntityResolver:
         winners = await self._tier1(org_id, unresolved, stats)
         decisions = await self._tier2(metadata, unresolved, winners, stats)
         await self._apply_decisions(org_id, resolution, unresolved, winners, decisions)
+        await self._follow_merge_redirects(org_id, resolution, names)
 
         self._record_outcomes(resolution)
         return resolution
+
+    async def _follow_merge_redirects(
+        self, org_id: str, resolution: EntityResolution, names: list[ExtractedName],
+    ) -> None:
+        """Send a new name whose deterministic key is a merged-away node to
+        the node it was merged into.
+
+        Tier 0 skips merged nodes, so their names come back as new, with the
+        merged node's own key; creating "it" would be a no-op and the record
+        would link to the hidden node. One lookup per collection with new
+        names. A failed lookup keeps the names new, as before merges existed.
+        """
+        new_by_collection: dict[str, list[ResolvedEntity]] = {}
+        for entity in resolution.entries.values():
+            if entity.is_new:
+                new_by_collection.setdefault(entity.kind.collection, []).append(entity)
+        by_index = {name.index: name for name in names}
+        for collection, entities in new_by_collection.items():
+            try:
+                targets = await self._redirect_targets(org_id, collection, [e.key for e in entities])
+            except Exception:
+                self.logger.warning(
+                    "entity_resolution: merge redirect lookup failed for org %s collection %s",
+                    org_id, collection, exc_info=True,
+                )
+                continue
+            for entity in entities:
+                winner = targets.get(entity.key)
+                if winner is None:
+                    continue
+                resolution.entries.pop((collection, entity.normalized), None)
+                resolution.stats.new_nodes -= 1
+                resolution.stats.merge_redirects += 1
+                target = self._existing_entity(resolution, entity.kind, winner, decision="redirect")
+                for index, assigned in list(resolution.assignments.items()):
+                    if assigned is entity and index in by_index:
+                        self._attach(resolution, by_index[index], target)
+
+    async def _redirect_targets(
+        self, org_id: str, collection: str, keys: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """``{key: winner node}`` for the ``keys`` that are merged nodes of
+        ``org_id`` whose redirect chain ends at a live node of the org."""
+        fields = ["id", "name", "aliases", "orgId", MERGED_INTO_FIELD]
+        rows = await self.graph_provider.get_nodes_by_field_in(
+            collection, "id", sorted(set(keys)), return_fields=fields, raise_on_error=True,
+        )
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows or []:
+            key = str(row.get("id") or row.get("_key") or "")
+            hop = row.get(MERGED_INTO_FIELD)
+            if not key or not hop or row.get("orgId") != org_id:
+                continue
+            seen = {key}
+            while hop and hop not in seen and len(seen) <= MAX_MERGE_REDIRECT_HOPS:
+                seen.add(hop)
+                (node,) = (
+                    await self.graph_provider.get_nodes_by_field_in(
+                        collection, "id", [hop], return_fields=fields, raise_on_error=True,
+                    )
+                ) or [None]
+                if node is None or node.get("orgId") != org_id:
+                    break
+                if not node.get(MERGED_INTO_FIELD):
+                    out[key] = {**node, "id": hop}
+                    break
+                hop = node.get(MERGED_INTO_FIELD)
+        return out
 
     # ---- collection --------------------------------------------------
 
@@ -273,10 +343,13 @@ class EntityResolver:
                 normalized = row.get("normalizedName")
                 alias_forms = [str(a) for a in (row.get("normalizedAliases") or []) if a]
                 nodes.append((node, str(normalized) if normalized else None, alias_forms))
-            # A node reached by its own name wins over one reached by an alias.
+            # A node reached by its own name wins over one reached by an alias;
+            # among nodes sharing an alias the lowest key wins, whatever order
+            # the provider returned them in.
+            nodes.sort(key=lambda entry: entry[0]["id"])
             for node, normalized, _alias_forms in nodes:
                 if normalized in wanted:
-                    found[(collection, normalized)] = node
+                    found.setdefault((collection, normalized), node)
             for node, _normalized, alias_forms in nodes:
                 for alias in alias_forms:
                     if alias in wanted:
@@ -343,7 +416,8 @@ class EntityResolver:
         """
         try:
             rows = await self.graph_provider.get_nodes_by_field_in(
-                collection, "id", sorted(ids), return_fields=["id", "orgId", "normalizedName"],
+                collection, "id", sorted(ids),
+                return_fields=["id", "orgId", "normalizedName", "mergedInto"],
                 raise_on_error=True,
             )
         except Exception:
@@ -359,6 +433,7 @@ class EntityResolver:
             if (row.get("id") or row.get("_key"))
             and row.get("orgId") == org_id
             and row.get("normalizedName")
+            and not row.get("mergedInto")
         }
         if ids - live:
             metrics.record_fallback("stale_winner", len(ids - live))
@@ -423,12 +498,20 @@ class EntityResolver:
             metrics.record_model_call("failed")
             metrics.record_fallback("model_error", len(unresolved))
             return {}
-        metrics.record_model_call("ok")
         valid_indexes = {n.index for n in unresolved}
         decisions: dict[int, MergeDecision] = {}
         for decision in response.decisions:
             if decision.i in valid_indexes and decision.i not in decisions:
                 decisions[decision.i] = decision
+        if not decisions:
+            # Parsed, but answered nothing it was asked: every name falls back
+            # to new, and the model is rebuilt, exactly as when the call fails.
+            self._llm = None
+            stats.model_failures += 1
+            metrics.record_model_call("empty")
+            metrics.record_fallback("model_empty", len(unresolved))
+            return {}
+        metrics.record_model_call("ok")
         return decisions
 
     async def _get_llm(self) -> BaseChatModel:
@@ -474,7 +557,16 @@ class EntityResolver:
             if decision is None:
                 proposed_new[name.index] = ""
                 continue
-            if decision.same and decision.same_as_item >= 0:
+            if not decision.same:
+                proposed_new[name.index] = decision.canonical_name or ""
+                continue
+            # The offered node is the stronger answer: an item pointer only
+            # groups names that still need a node.
+            winner = winners.get(name.index)
+            if winner is not None and decision.target == winner.entity_id:
+                merged_to_winner[name.index] = winner
+                continue
+            if decision.same_as_item >= 0:
                 other = by_index.get(decision.same_as_item)
                 if other is None or other.index == name.index or other.kind != name.kind:
                     stats.rejected_decisions += 1
@@ -483,16 +575,9 @@ class EntityResolver:
                     continue
                 union(name.index, other.index)
                 continue
-            if decision.same:
-                winner = winners.get(name.index)
-                if winner is not None and decision.target == winner.entity_id:
-                    merged_to_winner[name.index] = winner
-                    continue
-                stats.rejected_decisions += 1
-                metrics.record_fallback("rejected_target")
-                proposed_new[name.index] = ""
-                continue
-            proposed_new[name.index] = decision.canonical_name or ""
+            stats.rejected_decisions += 1
+            metrics.record_fallback("rejected_target")
+            proposed_new[name.index] = ""
 
         # Group members follow their component leader.
         components: dict[int, list[ExtractedName]] = {}
@@ -522,10 +607,9 @@ class EntityResolver:
             head = members[0]
             winner_members = [m for m in members if m.index in merged_to_winner]
             if winner_members:
+                # Each name holds one pointer and a winner member holds none,
+                # so a component reaches at most one winner member.
                 winner = merged_to_winner[winner_members[0].index]
-                if len({merged_to_winner[m.index].entity_id for m in winner_members}) > 1:
-                    stats.rejected_decisions += 1
-                    metrics.record_fallback("conflicting_targets")
                 entity = self._existing_entity(
                     resolution, head.kind,
                     {"id": winner.entity_id, "name": winner.name, "aliases": list(winner.aliases)},

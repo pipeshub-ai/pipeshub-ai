@@ -15,7 +15,12 @@ from app.config.constants.service import config_node_constants
 from app.models.entities import RecordType, TicketRecord
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.chat_helpers import collection_map, create_record_instance_from_dict, get_record
+from app.utils.chat_helpers import (
+    collection_map,
+    create_record_instance_from_dict,
+    get_record,
+    live_record_ids,
+)
 from app.utils.logger import create_logger
 
 logger = create_logger(__name__)
@@ -88,63 +93,57 @@ async def _apply_live_ticket_context_metadata(
 async def _enrich_sql_table_with_fk_relations(
     record: dict[str, Any],
     graph_provider: IGraphDBProvider,
+    org_id: str | None,
 ) -> dict[str, Any]:
-    """
-    Enrich a SQL_TABLE record with FK parent and child record IDs.
-    Args:
-        record: The SQL_TABLE record to enrich
-        graph_provider: Service to query FK relations from GraphDB
-    Returns:
-        The record with fk_parent_record_ids and fk_child_record_ids added
+    """Add the tables a SQL_TABLE record is linked to by a foreign key.
+
+    Returns a copy of ``record`` with ``fk_parent_record_ids`` and
+    ``fk_child_record_ids``: one dict per live related table, with its record
+    id, table name and columns.
     """
     from app.config.constants.arangodb import RecordRelations
-    
+
     record_id = record.get("id") or record.get("record_id")
     if not record_id:
         logger.debug("FK enrichment skipped: no record_id found in record")
         return record
-    
+
     record_name = record.get("record_name") or record.get("recordName") or ""
-    fk_child_ids = []
-    fk_parent_ids = []
-    
+    fk_child_ids: list[dict[str, Any]] = []
+    fk_parent_ids: list[dict[str, Any]] = []
+
     try:
-        # Get child records (tables that reference this table via FK)
-        fk_child_ids = await graph_provider.get_child_record_ids_by_relation_type(
+        fk_child_ids = list(await graph_provider.get_child_record_ids_by_relation_type(
             record_id, RecordRelations.FOREIGN_KEY.value
-        )
-        fk_child_ids = fk_child_ids if isinstance(fk_child_ids, list) else list(fk_child_ids)
-        logger.debug(
-            "FK enrichment for %s (id=%s): found %d child tables: %s",
-            record_name, record_id, len(fk_child_ids), fk_child_ids
-        )
+        ))
     except Exception as e:
         logger.warning("Could not fetch child record IDs for %s: %s", record_id, str(e))
-    
+
     try:
-        # Get parent records (tables this table references via FK)
-        fk_parent_ids = await graph_provider.get_parent_record_ids_by_relation_type(
+        fk_parent_ids = list(await graph_provider.get_parent_record_ids_by_relation_type(
             record_id, RecordRelations.FOREIGN_KEY.value
-        )
-        fk_parent_ids = fk_parent_ids if isinstance(fk_parent_ids, list) else list(fk_parent_ids)
-        logger.debug(
-            "FK enrichment for %s (id=%s): found %d parent tables: %s",
-            record_name, record_id, len(fk_parent_ids), fk_parent_ids
-        )
+        ))
     except Exception as e:
         logger.warning("Could not fetch parent record IDs for %s: %s", record_id, str(e))
-    
-    # Add FK relations to the record (non-destructive - creates a copy)
+
+    # The trash keeps a dropped table's node and FK edges until the purge, so
+    # the edge reads still return it; its name and columns must not reach the agent.
+    live = await live_record_ids(
+        graph_provider, (rel.get("record_id") for rel in (*fk_child_ids, *fk_parent_ids)), org_id
+    )
+    fk_child_ids = [rel for rel in fk_child_ids if rel.get("record_id") in live]
+    fk_parent_ids = [rel for rel in fk_parent_ids if rel.get("record_id") in live]
+
     enriched_record = dict(record)
     enriched_record["fk_parent_record_ids"] = fk_parent_ids
     enriched_record["fk_child_record_ids"] = fk_child_ids
-    
+
     if fk_parent_ids or fk_child_ids:
         logger.info(
             "FK enrichment: enriched SQL_TABLE %s with %d parent and %d child FK relations",
             record_name or record_id, len(fk_parent_ids), len(fk_child_ids)
         )
-    
+
     return enriched_record
 
 
@@ -322,7 +321,7 @@ class _RecordResolver:
         )
         record_type = record.get("record_type") or record.get("recordType")
         if record_type == "SQL_TABLE" and self._graph_provider:
-            return await _enrich_sql_table_with_fk_relations(record, self._graph_provider)
+            return await _enrich_sql_table_with_fk_relations(record, self._graph_provider, self._org_id)
         return record
 
 

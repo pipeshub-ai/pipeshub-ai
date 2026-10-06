@@ -230,3 +230,59 @@ async def test_no_organisation_anywhere_deletes_nothing(service) -> None:
 
     assert (result["success"], result["code"]) == (False, 503)
     service.processor_for_kb.return_value.on_records_deleted_cascade.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", list(DELETES))
+@pytest.mark.parametrize("trash_on", [True, False])
+async def test_with_the_trash_on_the_files_stay_until_the_purge(service, kind, trash_on) -> None:
+    """A restore needs the original uploads, so a soft delete schedules no removal.
+
+    The flag is read once and handed to the cascade, so the two cannot disagree.
+    """
+    _writer(service)
+    cascade = AsyncMock(return_value={"success": True, "successfully_deleted": 1, "total_requested": 1})
+    service.processor_for_kb.return_value.on_records_deleted_cascade = cascade
+
+    with patch(
+        "app.connectors.sources.localKB.handlers.kb_service.is_soft_delete_enabled",
+        AsyncMock(return_value=trash_on),
+    ):
+        result = await DELETES[kind](service)
+
+    assert result["success"] is True
+    assert cascade.await_args.kwargs["soft_delete"] is trash_on
+    removals = [e for e in _published(service) if e["eventType"] == EventTypes.DELETE_STORED_DOCUMENTS.value]
+    assert bool(removals) is not trash_on
+    assert service.graph_provider.get_uploaded_document_ids.await_count == (0 if trash_on else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trash_on", [True, False])
+async def test_a_whole_collection_delete_removes_the_files_with_the_trash_on_too(service, trash_on) -> None:
+    """A collection delete stays a hard delete in v1: nothing of it is kept for a restore."""
+    _owner(service)
+    order = []
+    service.graph_provider.get_uploaded_document_ids = AsyncMock(
+        side_effect=lambda kb_id, **_: order.append("list") or DOC_IDS
+    )
+    service.kafka_service.publish_event = AsyncMock(
+        side_effect=lambda topic, event: order.append(event["eventType"])
+    )
+    service.graph_provider.delete_connector_instance.side_effect = (
+        lambda **_: order.append("delete") or {"success": True, "virtual_record_ids": []}
+    )
+
+    with patch(
+        "app.connectors.sources.localKB.handlers.kb_service.is_soft_delete_enabled",
+        AsyncMock(return_value=trash_on),
+    ):
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+    assert result["success"] is True
+    assert order[:3] == ["list", EventTypes.DELETE_STORED_DOCUMENTS.value, "delete"]
+    service.graph_provider.get_uploaded_document_ids.assert_awaited_once_with("kb1", under_record_ids=None)
+    storage_events = [e for e in _published(service) if e["eventType"] == EventTypes.DELETE_STORED_DOCUMENTS.value]
+    assert [{k: v for k, v in e["payload"].items() if k != "scheduledAt"} for e in storage_events] == [
+        {"orgId": "org1", "connectorId": "kb1", "documentIds": DOC_IDS}
+    ]

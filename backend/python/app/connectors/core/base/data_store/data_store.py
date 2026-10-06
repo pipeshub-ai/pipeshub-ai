@@ -87,12 +87,17 @@ class BaseDataStore(ABC):
     """Base class for all data stores"""
 
     @abstractmethod
-    async def get_record_by_key(self, key: str) -> Optional[dict]:
-        """The stored record document, or None. Not a ``Record``."""
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
+        """The stored record document, not a ``Record``, or None when no record has this key.
+
+        A failed read raises only with ``raise_on_error``.
+        """
         pass
 
     @abstractmethod
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+    ) -> Optional[Record]:
         pass
 
     @abstractmethod
@@ -174,6 +179,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def take_back_kept_record_group(self, group_id: str) -> bool:
+        """Clear a group's kept-for-the-trash mark; False when the group is gone."""
+        pass
+
+    @abstractmethod
     async def find_slack_burst_record_by_ts(
         self,
         connector_id: str,
@@ -196,7 +206,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_email(self, email: str) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
         pass
 
     @abstractmethod
@@ -244,11 +254,13 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_person_by_email(self, email: str, org_id: str) -> Optional[Person]:
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False
+    ) -> Optional[Person]:
         pass
 
     @abstractmethod
-    async def upsert_person_by_email(self, person: Person) -> Optional[str]:
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> Optional[str]:
         pass
 
     @abstractmethod
@@ -284,7 +296,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> dict | None:
+    async def delete_record_by_external_id(
+        self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
+    ) -> dict | None:
         pass
 
     @abstractmethod
@@ -310,7 +324,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         pass
 
     @abstractmethod
@@ -387,7 +403,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_edges_from_node_with_target_name(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node_with_target_name(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         pass
     
     @abstractmethod

@@ -571,6 +571,32 @@ class TestContextLength:
         assert (await _run_llm_check(_llm_config(contextLength=value))).status_code == 200
 
 
+class TestDefaultReasoningEffort:
+    """A model-level default the factory would refuse is caught at save time,
+    with a message the admin can act on, rather than as a provider failure."""
+
+    async def test_an_unknown_default_is_rejected_with_the_choices(self) -> None:
+        config = _llm_config(isReasoning=True)
+        config["configuration"]["defaultReasoningEffort"] = "extreme"
+
+        with patch(f"{MODULE}._check_one_llm", new=AsyncMock()) as probe:
+            response = await _run_llm_check(config)
+
+        assert response.status_code == 400
+        assert _body(response)["message"] == (
+            "This model's default reasoning effort is 'extreme', which isn't a valid "
+            "choice. Set it to low, medium, high or max, or remove it to use the "
+            "platform default."
+        )
+        probe.assert_not_awaited()
+
+    async def test_a_valid_default_passes(self) -> None:
+        config = _llm_config(isReasoning=True)
+        config["configuration"]["defaultReasoningEffort"] = "low"
+
+        assert (await _run_llm_check(config)).status_code == 200
+
+
 class TestStreamingProbe:
     """Every answer reaches the user through `astream`. A model that only
     supports a blocking call still works, but the whole reply lands at once

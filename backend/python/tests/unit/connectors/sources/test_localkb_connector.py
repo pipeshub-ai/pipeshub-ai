@@ -23,8 +23,6 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 )
 from app.models.entities import FileRecord, RecordType
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, OriginTypes
-from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +64,8 @@ def _make_kb_service():
         graph_provider=graph_provider,
         kafka_service=kafka_service,
         processor_for_kb=AsyncMock(return_value=processor),
+        # A delete records its entity cleanup intent here first.
+        config_service=AsyncMock(),
     )
 
 

@@ -353,6 +353,49 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       })
     }
 
+    it('restores a record through the connector service, which checks the role', async () => {
+      const restored = { success: true, message: 'Restored 2 item(s).', batchId: 'b-1', restoredRecords: [{ recordId: RECORD_ID }, { recordId: 'r2' }] }
+      h.backend.on('POST', `/api/v1/kb/record/${RECORD_ID}/restore`, { status: 200, body: restored })
+
+      const r = await call(h, 'POST', `/record/${RECORD_ID}/restore`, { token })
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal(restored)
+      expect(h.backend.calls.map((c) => `${c.method} ${c.path}`)).to.deep.equal([`POST /api/v1/kb/record/${RECORD_ID}/restore`])
+    })
+
+    it('passes on why a restore was refused, in the words the connector service chose', async () => {
+      const reason = "'a.pdf' was in 'Docs', which is also in the trash. Restore 'Docs' first, then restore 'a.pdf'."
+      h.backend.on('POST', `/api/v1/kb/record/${RECORD_ID}/restore`, { status: 409, body: { detail: reason } })
+
+      const r = await call(h, 'POST', `/record/${RECORD_ID}/restore`, { token })
+
+      expect(r.status).to.equal(409)
+      expect(errorMessage(r)).to.equal(reason)
+    })
+
+    it('forwards the ids of a bulk restore and nothing else', async () => {
+      h.backend.on('POST', '/api/v1/kb/records/restore', { status: 200, body: { success: true, restoredCount: 2, failedCount: 0, results: [] } })
+
+      const r = await call(h, 'POST', '/records/restore', { token, json: { recordIds: [RECORD_ID, 'r2'], orgId: ORG_B } })
+
+      expect(r.status).to.equal(200)
+      expect(forwarded('POST', '/api/v1/kb/records/restore')[0]!.body).to.deep.equal({ recordIds: [RECORD_ID, 'r2'] })
+    })
+
+    for (const [what, json] of [
+      ['no ids', { recordIds: [] }],
+      ['more than 100 ids', { recordIds: Array.from({ length: 101 }, (_, i) => `r${i}`) }],
+      ['an empty id', { recordIds: [''] }],
+      ['ids that are not a list', { recordIds: RECORD_ID }],
+    ] as const) {
+      it(`refuses a bulk restore with ${what} before asking the connector service`, async () => {
+        const r = await call(h, 'POST', '/records/restore', { token, json })
+        expect(r.status).to.equal(400)
+        expect(h.backend.calls).to.deep.equal([])
+      })
+    }
+
     it('refuses to delete a knowledge base for a member who may only read it', async () => {
       h.backend.on('DELETE', `/api/v1/kb/${KB_ID}`, { status: 403, body: { detail: 'Only an owner can delete this knowledge base' } })
 
@@ -363,11 +406,65 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
     })
   })
 
+  describe('recently deleted', () => {
+    const TRASH = `/api/v1/kb/${KB_ID}/trash`
+    const page = {
+      success: true,
+      items: [{ id: RECORD_ID, name: 'a.pdf', isFolder: false, parentInTrash: false, itemCount: 1, deletedAtTimestamp: 1790000000000 }],
+      pagination: { page: 2, limit: 10, totalCount: 11, totalPages: 2 },
+      retention: { minAgeMs: 1209600000 },
+    }
+
+    it('asks for the first page of twenty-five when nothing is said', async () => {
+      h.backend.on('GET', TRASH, { status: 200, body: page })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash`, { token })
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal(page)
+      expect(Object.fromEntries(forwarded('GET', TRASH)[0]!.query)).to.deep.equal({ page: '1', limit: '25' })
+    })
+
+    it('passes on the page asked for, and never an org or user the client named', async () => {
+      h.backend.on('GET', TRASH, { status: 200, body: page })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash?page=2&limit=10&orgId=${ORG_B}&userId=${OUTSIDER._id}`, { token })
+
+      expect(r.status).to.equal(200)
+      const sent = forwarded('GET', TRASH)[0]!
+      expect(Object.fromEntries(sent.query)).to.deep.equal({ page: '2', limit: '10' })
+    })
+
+    for (const q of ['page=0', 'page=-1', 'page=abc', 'page=1.5', 'page=9999999999', 'limit=0', 'limit=101', 'page=1&page=2']) {
+      it(`refuses ${q} before asking the connector service`, async () => {
+        const r = await call(h, 'GET', `/${KB_ID}/trash?${q}`, { token })
+        expect(r.status).to.equal(400)
+        expect(h.backend.calls).to.deep.equal([])
+      })
+    }
+
+    for (const [why, status, detail] of [
+      ['a reader', 403, 'You need edit access to this collection to see and restore its deleted items. Ask the collection\'s owner for edit access.'],
+      ['the trash turned off', 403, 'The trash is turned off in this workspace. Ask an admin to turn on "Move Deleted Records to the Trash" in Labs, then try again.'],
+      ['someone outside the collection', 404, 'Knowledge base not found'],
+    ] as const) {
+      it(`passes on the ${status} for ${why} in the connector service's words, with none of the list`, async () => {
+        h.backend.on('GET', TRASH, { status, body: { detail } })
+
+        const r = await call(h, 'GET', `/${KB_ID}/trash`, { token: sessionToken(h, OUTSIDER) })
+
+        expect(r.status).to.equal(status)
+        expect(errorMessage(r)).to.equal(detail)
+        expect(r.body).to.not.have.any.keys('items', 'pagination')
+      })
+    }
+  })
+
   describe('error responses', () => {
     const jsonRoutes = KB_ROUTES.filter((r) => r.forwards && !r.form && !r.pattern.startsWith('/stream'))
 
     it('covers every route that answers in JSON', () => {
-      expect(jsonRoutes).to.have.length(23)
+      expect(jsonRoutes).to.have.length(26)
     })
 
     it("never shows a connector service traceback, address or stack", async () => {

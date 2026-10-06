@@ -1,7 +1,12 @@
 name: Integration Tests
 
+# Runs on pull_request, not pull_request_target. The secret-backed job runs only
+# for branches of this repository, behind the integration-test-dev environment.
+# A fork's pull request gets it-fork, which holds no secrets; a maintainer runs
+# the full suite on a fork commit by dispatching this workflow with the exact
+# commit_hash they reviewed (see integration-tests/README.md).
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - 'main'
@@ -50,7 +55,7 @@ on:
             - permissions
             - storage
       commit_hash:
-        description: 'Commit hash to checkout (defaults to HEAD)'
+        description: 'Full 40-character commit SHA to test (defaults to the dispatched branch). For a fork PR, the SHA you reviewed.'
         required: false
         default: ''
       python_version:
@@ -130,7 +135,6 @@ jobs:
       label: ${{ steps.pick.outputs.label }}
       is_default: ${{ steps.pick.outputs.is_default }}
     steps:
-      # The base branch's copy on pull_request_target, never the PR's.
       - name: Checkout the picker
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -146,7 +150,11 @@ jobs:
   integration-tests:
     name: Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}${{ needs.setup.outputs.is_default == 'false' && format(' · {0}', needs.setup.outputs.message_broker) || '' }})
     needs: setup
-    if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
+    # Secrets only for code from this repository; forks run it-fork below.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       !contains(github.event.pull_request.labels.*.name, 'skip-it'))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 300
 
@@ -157,7 +165,7 @@ jobs:
         # PRs default to neo4j alone; it-arango / it-both / it-parallel (or
         # it-neo4j + it-arango) widen that. Cron and dispatch still get "both".
         # `strategy` can't read the job env block, so derive from inputs/labels here.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request_target' && '["neo4j"]') || '["both"]') }}
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
         # slow connector suites do not all serialize on one worker. Three
         # connector shards (balanced on measured minutes, see
@@ -179,7 +187,7 @@ jobs:
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request_target' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -194,7 +202,7 @@ jobs:
       # storage suite mints its service tokens with it. Test-only; a
       # TEST_SCOPED_JWT_SECRET secret replaces it, except on a pull request,
       # whose checked-out code must never see a real signing secret.
-      SCOPED_JWT_SECRET: ${{ (github.event_name != 'pull_request_target' && secrets.TEST_SCOPED_JWT_SECRET) || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
+      SCOPED_JWT_SECRET: ${{ (github.event_name != 'pull_request' && secrets.TEST_SCOPED_JWT_SECRET) || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
       # A connector suite whose credential is missing skips itself, which on the
@@ -383,11 +391,23 @@ jobs:
       RUN_PLAYWRIGHT: ${{ (matrix.shard == 'core' || matrix.shard == 'dispatch') && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
 
     steps:
+      # A branch name or short SHA could move after review; only a full SHA pins
+      # the commit the maintainer actually read.
+      - name: Check commit_hash is a full SHA
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          COMMIT_HASH: ${{ github.event.inputs.commit_hash }}
+        run: |
+          if [ -n "$COMMIT_HASH" ] && ! printf '%s' "$COMMIT_HASH" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error::commit_hash must be a full 40-character lowercase SHA"
+            exit 1
+          fi
+
+      # Empty means the event's own ref: the PR merge commit, or the branch run.
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}
-          allow-unsafe-pr-checkout: true
+          ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
 
       - name: Set up Node.js
@@ -839,7 +859,7 @@ jobs:
             PASS_RATE=0
           fi
 
-          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
             TRIGGER_LABEL="PR #${PR_NUMBER_IN}"
             AUTHOR="$PR_LOGIN_IN"
             # Slack mrkdwn escape for link labels (& < >). Build a clickable
@@ -939,7 +959,7 @@ jobs:
           echo "TRIGGER_LABEL=$TRIGGER_LABEL" >> "$GITHUB_OUTPUT"
           echo "AUTHOR=$AUTHOR" >> "$GITHUB_OUTPUT"
           echo "BACKENDS_RUN=$BACKENDS_RUN" >> "$GITHUB_OUTPUT"
-          echo "IS_PR=$([ "$EVENT_NAME" = "pull_request_target" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "IS_PR=$([ "$EVENT_NAME" = "pull_request" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           # Use a heredoc so a title containing quotes or other special chars
           # can't break the output file format.
           {
@@ -1192,5 +1212,56 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: reports-${{ matrix.graph_db }}-${{ matrix.shard }}
+          path: integration-tests/reports/
+          if-no-files-found: ignore
+
+  # A fork's pull request: no secrets, no environment, a GitHub-hosted runner.
+  # The full stack needs the self-hosted runner and model credentials, so this
+  # runs the helper unit tests, which use mocks only.
+  it-fork:
+    name: Integration helper tests (fork, no secrets)
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-it')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Set up Python and install dependencies
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      - name: Run helper unit tests
+        working-directory: integration-tests
+        env:
+          PIPESHUB_TEST_ENV: local
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports
+          pytest unit/ -v --tb=short --junitxml=reports/unit-results.xml
+
+      - name: Upload reports artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reports-fork-unit
           path: integration-tests/reports/
           if-no-files-found: ignore

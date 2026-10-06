@@ -482,8 +482,11 @@ def ai_models_configured(
     embedding is also written to org config via the same API call path; indexing
     services load it from Configuration Manager, not from this fixture object.
 
-    On teardown, both models are DELETEd via the providers endpoint so no test
-    residue is left on the backend.
+    An embedding model the org already embeds with (same provider and model) is
+    reused rather than added again, and teardown leaves it. On teardown the
+    models this fixture added are DELETEd via the providers endpoint; PipesHub
+    refuses to delete an embedding model whose vectors are stored, so that one
+    stays for the next session on the stack to reuse.
 
     These models are org-wide singletons, so under ``-n`` they are seeded once
     per run and shared by every worker rather than once per worker session.

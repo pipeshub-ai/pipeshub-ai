@@ -84,6 +84,26 @@ async def test_an_error_or_unknown_body_is_a_failure(status: int, body: object, 
     assert response.error == error
 
 
+async def test_an_empty_list_is_an_empty_page() -> None:
+    ds, _ = _data_source(200, [])
+
+    response = await ds.search_tickets(query="group_id:1", limit=50, offset=50)
+
+    assert response.success and response.data == []
+
+
+@pytest.mark.parametrize("junk", [None, 7, "ticket", ["nested"]])
+async def test_a_page_with_an_entry_that_is_not_a_ticket_is_a_failure(junk: object) -> None:
+    # Dropping the entry would leave a short page, which ends the listing early.
+    tickets = [{"id": i, "group_id": 1, "updated_at": "2024-01-01T00:00:00Z"} for i in range(1, 50)]
+    ds, _ = _data_source(200, [*tickets[:20], junk, *tickets[20:]])
+
+    response = await ds.search_tickets(query="group_id:1", limit=50, offset=0)
+
+    assert not response.success and response.data is None
+    assert response.error == "ticket search returned an entry that is not a ticket object"
+
+
 @pytest.mark.parametrize(("limit", "offset"), [(201, 0), (0, 0), (50, 25), (50, -50)])
 async def test_a_page_zammad_cannot_serve_exactly_is_refused_without_a_request(limit: int, offset: int) -> None:
     ds, execute = _data_source(200, [])

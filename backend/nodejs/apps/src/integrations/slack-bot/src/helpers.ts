@@ -1,10 +1,7 @@
 import axios from "axios";
 import FormData from "form-data";
 import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
-import {
-  type SlackBotConfig,
-  getCurrentMatchedSlackBot,
-} from "./botRegistry";
+import { type SlackBotConfig } from "./botRegistry";
 
 // ---------------------------------------------------------------------------
 // Interfaces & Types
@@ -334,9 +331,10 @@ function isDelimitedTextAttachment(file: SlackFile): boolean {
 }
 
 /**
- * The chat CSV/TSV parser falls back through utf-8, utf-8-sig, latin1, cp1252
- * and iso-8859-1, and latin1 decodes any byte, so a Windows Excel (cp1252) CSV
- * works there. Only NUL bytes, which mean a binary file renamed to .csv, are refused.
+ * The chat CSV/TSV parser reads a byte-order mark, then UTF-8, then falls back to
+ * Windows-1252 (cp1252) with undefined bytes replaced, so it decodes any byte and a
+ * Windows Excel CSV works there. Only NUL bytes, which mean a binary file renamed
+ * to .csv, are refused.
  */
 export function isReadableDelimitedText(binary: Buffer): boolean {
   return !binary.includes(0);
@@ -1905,13 +1903,15 @@ export function buildChatStreamUrl(
 // Bot resolution
 // ---------------------------------------------------------------------------
 
-export async function resolveSlackBotForEvent(
-): Promise<SlackBotConfig | null> {
-  const matchedFromRequestContext = getCurrentMatchedSlackBot();
-  if (matchedFromRequestContext) {
-    return matchedFromRequestContext;
-  }
-  return null;
+/**
+ * The resolver is passed in rather than imported: the EE receiver stores the
+ * matched bot in the EE registry's own AsyncLocalStorage, so reading the OSS
+ * store from an EE handler would always come back empty.
+ */
+export async function resolveSlackBotForEvent<T extends SlackBotConfig>(
+  getMatchedBot: () => T | null,
+): Promise<T | null> {
+  return getMatchedBot();
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import deny_service_tokens
+from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
     LLMProvider,
@@ -29,6 +30,7 @@ from app.utils.aimodels import (
     get_image_generation_model,
     get_stt_model,
     get_tts_model,
+    model_default_reasoning_effort,
     require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -820,17 +822,25 @@ class CollectionSurveyError(Exception):
 
 
 async def survey_managed_collections(retrieval_service, logger) -> tuple[int, int]:
-    """Aggregate (dense dimension, total points) over every managed collection.
+    """Aggregate (dense dimension, total points) over every managed records collection.
 
-    The embedding-model guard must reject a change while *any* managed
+    The embedding-model guard must reject a change while *any* records
     collection still holds data, so the enumeration is read fresh: a cached
     view could miss a collection another service created since this process
     started, and the guard would wave the change through while that collection
     still holds vectors from the outgoing model.
+
+    The entity index is left out: it is a projection of the graph that the
+    indexing service recreates and re-embeds itself for a new model
+    (``entity_index_rebuild``), not content the admin must delete first.
     """
     registry = retrieval_service.collection_registry
     try:
-        managed = await registry.list_managed_collections(fresh=True)
+        managed = [
+            entry
+            for entry in await registry.list_managed_collections(fresh=True)
+            if entry.collection_type == CollectionType.RECORDS.value
+        ]
         existing_vector_size = 0
         points_count = 0
         for entry in managed:
@@ -1141,6 +1151,15 @@ def _validate_context_length(llm_config: dict, model_string: str) -> JSONRespons
     return None
 
 
+def _validate_default_reasoning_effort(llm_config: dict, model_string: str) -> JSONResponse | None:
+    """Reject a model default the LLM factory would refuse, before spending a provider call."""
+    try:
+        model_default_reasoning_effort(llm_config)
+    except ValueError as e:
+        return _config_error(str(e), llm_config, model_string)
+    return None
+
+
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
@@ -1173,6 +1192,9 @@ async def perform_llm_health_check(
         context_error = _validate_context_length(llm_config, model_string)
         if context_error is not None:
             return context_error
+        effort_error = _validate_default_reasoning_effort(llm_config, model_string)
+        if effort_error is not None:
+            return effort_error
 
         # Node registers every name in the list as its own model
         # (`cm_controller.ts`'s model flattening), so every name is checked.
@@ -1859,11 +1881,15 @@ async def perform_stt_health_check(
                         },
                     )
             except Exception as exc:  # pragma: no cover - defensive
+                logger.error("Failed to probe faster-whisper: %s", exc, exc_info=True)
                 return JSONResponse(
                     status_code=500,
                     content={
                         "status": "error",
-                        "message": f"Failed to probe faster-whisper: {exc}",
+                        "message": (
+                            "Couldn't check the local Whisper install. Reinstall the "
+                            "service's dependencies, then try again."
+                        ),
                         "details": {"provider": provider, "model": model_name},
                     },
                 )

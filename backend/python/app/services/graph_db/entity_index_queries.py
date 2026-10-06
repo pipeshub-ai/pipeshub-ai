@@ -18,7 +18,7 @@ from app.config.constants.neo4j import collection_to_label
 
 _APPS = CollectionNames.APPS.value
 _ORGS = CollectionNames.ORGS.value
-_STATUS_DELETING = "DELETING"
+APP_STATUS_DELETING = "DELETING"
 
 ENTITY_INDEX_STATE_FIELD = "entityIndexState"
 ENTITY_INDEX_SWEPT_AT_FIELD = "entityIndexSweptAt"
@@ -31,7 +31,7 @@ class EntityIndexSource:
 
     ``scope_field`` is ``connectorId`` for connector-owned sources and
     ``orgId`` for taxonomy. ``canonical_only`` keeps legacy taxonomy nodes
-    (no ``normalizedName``) out; ``include_global`` admits nodes without an
+    (no ``normalizedName``) and merged-away ones (``mergedInto``) out; ``include_global`` admits nodes without an
     org (departments are seeded globally)."""
 
     collection: str
@@ -47,7 +47,8 @@ class EntityIndexSource:
 
 def _taxonomy(collection: str) -> EntityIndexSource:
     return EntityIndexSource(
-        collection, "orgId", "name", list_fields=("aliases",), canonical_only=True,
+        collection, "orgId", "name", fields=("createdAtTimestamp",), list_fields=("aliases",),
+        canonical_only=True,
     )
 
 
@@ -94,7 +95,7 @@ def _check_candidate_collection(collection: str) -> None:
 
 def build_entity_index_candidate_aql(collection: str, *, with_sweep: bool) -> str:
     _check_candidate_collection(collection)
-    deleting = f'FILTER doc.status != "{_STATUS_DELETING}"' if collection == _APPS else ""
+    deleting = f'FILTER doc.status != "{APP_STATUS_DELETING}"' if collection == _APPS else ""
     due = f"doc.{ENTITY_INDEX_STATE_FIELD} != @marker"
     if with_sweep:
         swept = f"doc.{ENTITY_INDEX_SWEPT_AT_FIELD}"
@@ -112,7 +113,7 @@ def build_entity_index_candidate_cypher(collection: str, *, with_sweep: bool) ->
     _check_candidate_collection(collection)
     label = collection_to_label(collection)
     deleting = (
-        f"AND coalesce(n.status, '') <> '{_STATUS_DELETING}'" if collection == _APPS else ""
+        f"AND coalesce(n.status, '') <> '{APP_STATUS_DELETING}'" if collection == _APPS else ""
     )
     due = f"coalesce(n.{ENTITY_INDEX_STATE_FIELD}, '') <> $marker"
     if with_sweep:
@@ -134,7 +135,7 @@ def build_entity_index_source_page_aql(source: str, *, has_after_key: bool) -> s
         scope = f"({scope} OR n.{spec.scope_field} == null)"
     filters = [f"FILTER {scope}"]
     if spec.canonical_only:
-        filters.append("FILTER n.normalizedName != null")
+        filters.append("FILTER n.normalizedName != null AND n.mergedInto == null")
     if has_after_key:
         filters.append("FILTER n._key > @after_key")
     projection = ", ".join(
@@ -167,7 +168,7 @@ def build_entity_index_source_page_cypher(source: str, *, has_after_key: bool) -
         scope = f"({scope} OR n.{spec.scope_field} IS NULL)"
     predicates = [scope]
     if spec.canonical_only:
-        predicates.append("n.normalizedName IS NOT NULL")
+        predicates.append("n.normalizedName IS NOT NULL AND n.mergedInto IS NULL")
     if has_after_key:
         predicates.append("n.id > $after_key")
     projection = ", ".join(

@@ -134,6 +134,53 @@ class EntityCandidateRows(list):
         self.capped = capped
 
 
+class PermittedEntityRows(EntityCandidateRows):
+    """The permitted rows found in one window of an entity's candidates.
+
+    ``window_size`` is how many candidates the window held (fewer than asked
+    means the candidates ran out). ``examined`` is how many of them were
+    walked: all of them, or up to the last row returned when the limit was
+    reached. The next window starts at ``offset + examined``.
+    """
+
+    def __init__(
+        self,
+        rows: Iterable[dict[str, Any]] = (),
+        *,
+        capped: bool = False,
+        window_size: int = 0,
+        examined: int = 0,
+    ) -> None:
+        super().__init__(rows, capped=capped)
+        self.window_size = window_size
+        self.examined = examined
+
+    @classmethod
+    def from_window(
+        cls,
+        hits: Iterable[dict[str, Any]],
+        *,
+        limit: int,
+        window_size: int,
+        capped: bool,
+    ) -> "PermittedEntityRows":
+        """Build from query hits shaped ``{"pos": int, "row": dict}``, where
+        ``pos`` is the hit's index in the window."""
+        if limit <= 0:
+            return cls(capped=capped, window_size=window_size, examined=0)
+        ordered = sorted(
+            (h for h in hits if h and isinstance(h.get("row"), dict)),
+            key=lambda h: int(h.get("pos") or 0),
+        )[:limit]
+        examined = int(ordered[-1]["pos"]) + 1 if len(ordered) >= limit else window_size
+        return cls(
+            (h["row"] for h in ordered),
+            capped=capped,
+            window_size=window_size,
+            examined=min(examined, window_size),
+        )
+
+
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """
     Collapse a list of ``{agentId, agentName}`` rows into a list of agent names,
@@ -226,6 +273,106 @@ def build_connector_stats_response(
     }
 
 
+# Trash writes go in pages of this many keys, one statement each: the ArangoDB
+# mark (inside one stream transaction) and restores.
+SOFT_DELETE_CHUNK = 1000
+
+# Cleared when a record leaves the trash; ``isDeleted`` is set to false instead.
+TRASH_STATE_FIELDS = (
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "deletedByUserId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+)
+
+# A Recently deleted row for a multi-select delete names this many of its other items.
+TRASH_LIST_OTHER_ROOT_NAMES = 3
+
+# Unique per record and never a source id, so no sync or move can land on it.
+TRASHED_EXTERNAL_ID_PREFIX = "trashed:"
+
+# Stamped on a file in the same write that restores it from the trash. With the
+# file still NOT_STARTED it means the re-index its lost vectors need was never
+# taken up, which a retried restore and the stranded sweep both act on.
+RESTORED_AT_FIELD = "restoredAtTimestamp"
+
+
+def restore_items(
+    restores: list[dict[str, Any]], connector_id: str | None
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """``restore_records`` items as ``{id, set}``, and the ``{id, ext}`` external ids they take back."""
+    items: list[dict[str, Any]] = []
+    reclaims: list[dict[str, str]] = []
+    for item in restores:
+        fields = dict(item.get("set") or {})
+        if external_id := item.get("reclaimExternalRecordId"):
+            fields["externalRecordId"] = external_id
+            reclaims.append({"id": item["id"], "ext": external_id})
+        items.append({"id": item["id"], "set": fields})
+    if reclaims and not connector_id:
+        raise ValueError("restore_records needs connector_id to take an external id back")
+    return items, reclaims
+
+
+def empty_soft_delete_result(batch_id: str) -> dict[str, Any]:
+    return soft_delete_result([], [], [], batch_id)
+
+
+def soft_delete_result(
+    requested: list[str],
+    root_keys: list[str],
+    marked: list[dict[str, Any]],
+    batch_id: str,
+) -> dict[str, Any]:
+    """The ``soft_delete_records`` result, the same on both providers."""
+    roots = set(root_keys)
+    failed = [
+        {"record_id": rid, "reason": "Not found, already deleted, or outside this connector"}
+        for rid in requested
+        if rid not in roots
+    ]
+    vrids = list(dict.fromkeys(m["vrid"] for m in marked if m.get("vrid")))
+    org_ids = {m.get("orgId") for m in marked if m.get("orgId")}
+    return {
+        "success": True,
+        "soft_deleted_records": [
+            {"record_id": m["id"], "name": m.get("name") or "Unknown", "virtual_record_id": m.get("vrid")}
+            for m in marked
+        ],
+        "failed_records": failed,
+        "total_requested": len(requested),
+        "successfully_deleted": len(roots),
+        "failed_count": len(failed),
+        "virtual_record_ids": vrids,
+        "org_id": next(iter(org_ids)) if len(org_ids) == 1 else None,
+        "batch_id": batch_id,
+    }
+
+
+def soft_delete_request_result(record_id: str, record: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Shape a ``soft_delete_records`` result like the hard ``delete_record`` result."""
+    if not result.get("successfully_deleted"):
+        return {"success": False, "code": 404, "reason": f"Record not found: {record_id}"}
+    connector_name = record.get("connectorName")
+    is_kb = record.get("origin") == "UPLOAD" or connector_name == Connectors.KNOWLEDGE_BASE.value
+    return {
+        "success": True,
+        "record_id": record_id,
+        "connector": connector_name,
+        "isKb": is_kb,
+        "connectorId": record.get("connectorId"),
+        "orgId": record.get("orgId"),
+        "softDeleted": True,
+        "batchId": result.get("batch_id"),
+        "softDeletedRecords": result.get("soft_deleted_records", []),
+        "virtualRecordIds": result.get("virtual_record_ids", []),
+        "eventData": None,
+    }
+
+
 _STORAGE_DOCUMENT_ID = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
 
 
@@ -244,3 +391,45 @@ def uploaded_document_id(record: Dict[str, Any], type_doc: Optional[Dict[str, An
     if isinstance(document_id, str) and _STORAGE_DOCUMENT_ID.match(document_id):
         return document_id
     return None
+
+
+def is_storage_document_id(value: object) -> bool:
+    return isinstance(value, str) and _STORAGE_DOCUMENT_ID.match(value) is not None
+
+
+def trash_purge_row(
+    key: str, record: dict[str, Any], type_doc: dict[str, Any] | None, delete_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """What the purge needs about one record in the trash, the same on both stores.
+
+    ``deleteRecordPayload`` is the hard delete's own ``deleteRecord`` payload, so
+    indexing cleans a purged record exactly as it cleans a deleted one.
+    """
+    type_doc = type_doc or {}
+    return {
+        "id": key,
+        "orgId": record.get("orgId"),
+        "connectorId": record.get("connectorId"),
+        "connectorName": record.get("connectorName"),
+        "origin": record.get("origin"),
+        "deletedAtTimestamp": record.get("deletedAtTimestamp"),
+        "virtualRecordId": record.get("virtualRecordId"),
+        "storageDocumentId": record.get("storageDocumentId"),
+        "filePath": type_doc.get("path"),
+        "uploadDocumentId": uploaded_document_id(record, type_doc),
+        "deleteRecordPayload": {
+            **delete_payload,
+            "connectorName": record.get("connectorName"),
+            "origin": record.get("origin"),
+        },
+    }
+
+
+def jira_issue_browse_url_regex(issue_key: str) -> str:
+    """A regex matching a Jira webUrl for exactly ``issue_key``.
+
+    The key must end the URL or be followed by ``/``, ``?`` or ``#``, so ENG-1
+    does not match ENG-12. The leading ``.*`` and trailing ``$`` make it mean
+    the same under Neo4j's whole-string ``=~`` and Arango's substring REGEX_TEST.
+    """
+    return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"

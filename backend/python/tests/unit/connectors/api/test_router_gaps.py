@@ -900,7 +900,7 @@ class TestGetConnectorStatsGaps:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         result = await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
@@ -912,7 +912,7 @@ class TestGetConnectorStatsGaps:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -926,7 +926,7 @@ class TestGetConnectorStatsGaps:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(side_effect=RuntimeError("boom"))
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -1960,23 +1960,18 @@ class TestGetMimeTypeFromRecord:
 
 class TestParseCommaSeparatedStr:
     def test_none_returns_none(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str(None) is None
 
     def test_empty_string_returns_none(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("") is None
 
     def test_single_value(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("pdf") == ["pdf"]
 
     def test_multiple_values(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("pdf, doc , xls") == ["pdf", "doc", "xls"]
 
     def test_empty_items_filtered(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("a,,b, ,c") == ["a", "b", "c"]
 
 
@@ -1987,7 +1982,6 @@ class TestParseCommaSeparatedStr:
 
 class TestSanitizeAppName:
     def test_removes_spaces_and_lowercases(self):
-        from app.connectors.api.router import _sanitize_app_name
         assert _sanitize_app_name("Google Drive") == "googledrive"
         assert _sanitize_app_name("SLACK") == "slack"
         assert _sanitize_app_name("Share Point Online") == "sharepointonline"
@@ -2000,43 +1994,34 @@ class TestSanitizeAppName:
 
 class TestTrimConfigValues:
     def test_trims_string_values(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj="  hello  ") == "hello"
 
     def test_none_returns_none(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=None) is None
 
     def test_preserves_bool(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=True) is True
 
     def test_preserves_int(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=42) == 42
 
     def test_preserves_float(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=3.14) == 3.14
 
     def test_trims_list_elements(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj=["  a  ", " b "])
         assert result == ["a", "b"]
 
     def test_trims_dict_values(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"key": "  val  ", "num": 1})
         assert result == {"key": "val", "num": 1}
 
     def test_skips_sensitive_fields(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"certificate": "  cert  ", "normal": " x "})
         assert result["certificate"] == "  cert  "
         assert result["normal"] == "x"
 
     def test_nested_dict_with_path(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"auth": {"token": "  tok  ", "url": "  http  "}}, path="config")
         assert result["auth"]["token"] == "  tok  "  # token is in skip list
         assert result["auth"]["url"] == "http"
@@ -2169,14 +2154,12 @@ class TestGetConfigPathForInstance:
 class TestValidateConnectorDeletionPermissions:
     def test_team_creator_passes(self):
         """Deletion is admin-or-creator: whoever set it up may remove it."""
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
             "u1", is_admin=False, logger=logging.getLogger("test")
         )
 
     def test_team_non_admin_non_creator_raises(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
@@ -2187,14 +2170,12 @@ class TestValidateConnectorDeletionPermissions:
     def test_personal_admin_passes(self):
         """An administrator can remove a personal connector whose creator is
         gone; reading or altering it stays blocked by _can_access_connector."""
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
             "u1", is_admin=True, logger=logging.getLogger("test")
         )
 
     def test_personal_non_creator_non_admin_raises(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
@@ -2203,14 +2184,12 @@ class TestValidateConnectorDeletionPermissions:
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     def test_personal_creator_passes(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.PERSONAL.value, "createdBy": "u1"},
             "u1", is_admin=False, logger=logging.getLogger("test")
         )
 
     def test_team_admin_passes(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
             "u1", is_admin=True, logger=logging.getLogger("test")
@@ -2253,14 +2232,12 @@ class TestGetUserContext:
 
 class TestValidateAdminOnly:
     def test_non_admin_raises(self):
-        from app.connectors.api.router import _validate_admin_only
         with pytest.raises(HTTPException) as exc_info:
             _validate_admin_only(is_admin=False, action="do stuff")
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
         assert "do stuff" in exc_info.value.detail
 
     def test_admin_passes(self):
-        from app.connectors.api.router import _validate_admin_only
         _validate_admin_only(is_admin=True, action="do stuff")
 
 
@@ -4197,7 +4174,7 @@ class TestGetConnectorStatsGapsCoverage:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         result = await get_connector_stats_endpoint(req, connector_id="c1", graph_provider=gp)
@@ -4209,7 +4186,7 @@ class TestGetConnectorStatsGapsCoverage:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -4223,7 +4200,7 @@ class TestGetConnectorStatsGapsCoverage:
         gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(side_effect=RuntimeError("boom"))
         registry = AsyncMock()
-        registry.can_user_view_connector = AsyncMock(return_value=True)
+        registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
         req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -5257,23 +5234,18 @@ class TestGetMimeTypeFromRecordCoverage:
 
 class TestParseCommaSeparatedStrCoverage:
     def test_none_returns_none(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str(None) is None
 
     def test_empty_string_returns_none(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("") is None
 
     def test_single_value(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("pdf") == ["pdf"]
 
     def test_multiple_values(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("pdf, doc , xls") == ["pdf", "doc", "xls"]
 
     def test_empty_items_filtered(self):
-        from app.connectors.api.router import _parse_comma_separated_str
         assert _parse_comma_separated_str("a,,b, ,c") == ["a", "b", "c"]
 
 
@@ -5284,7 +5256,6 @@ class TestParseCommaSeparatedStrCoverage:
 
 class TestSanitizeAppNameCoverage:
     def test_removes_spaces_and_lowercases(self):
-        from app.connectors.api.router import _sanitize_app_name
         assert _sanitize_app_name("Google Drive") == "googledrive"
         assert _sanitize_app_name("SLACK") == "slack"
         assert _sanitize_app_name("Share Point Online") == "sharepointonline"
@@ -5297,43 +5268,34 @@ class TestSanitizeAppNameCoverage:
 
 class TestTrimConfigValuesCoverage:
     def test_trims_string_values(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj="  hello  ") == "hello"
 
     def test_none_returns_none(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=None) is None
 
     def test_preserves_bool(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=True) is True
 
     def test_preserves_int(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=42) == 42
 
     def test_preserves_float(self):
-        from app.connectors.api.router import _trim_config_values
         assert _trim_config_values(obj=3.14) == 3.14
 
     def test_trims_list_elements(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj=["  a  ", " b "])
         assert result == ["a", "b"]
 
     def test_trims_dict_values(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"key": "  val  ", "num": 1})
         assert result == {"key": "val", "num": 1}
 
     def test_skips_sensitive_fields(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"certificate": "  cert  ", "normal": " x "})
         assert result["certificate"] == "  cert  "
         assert result["normal"] == "x"
 
     def test_nested_dict_with_path(self):
-        from app.connectors.api.router import _trim_config_values
         result = _trim_config_values(obj={"auth": {"token": "  tok  ", "url": "  http  "}}, path="config")
         assert result["auth"]["token"] == "  tok  "  # token is in skip list
         assert result["auth"]["url"] == "http"
@@ -5466,14 +5428,12 @@ class TestGetConfigPathForInstanceCoverage:
 class TestValidateConnectorDeletionPermissionsCoverage:
     def test_team_creator_passes(self):
         """Deletion is admin-or-creator: whoever set it up may remove it."""
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
             "u1", is_admin=False, logger=logging.getLogger("test")
         )
 
     def test_team_non_admin_non_creator_raises(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
@@ -5484,14 +5444,12 @@ class TestValidateConnectorDeletionPermissionsCoverage:
     def test_personal_admin_passes(self):
         """An administrator can remove a personal connector whose creator is
         gone; reading or altering it stays blocked by _can_access_connector."""
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
             "u1", is_admin=True, logger=logging.getLogger("test")
         )
 
     def test_personal_non_creator_non_admin_raises(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         with pytest.raises(HTTPException) as exc_info:
             _validate_connector_deletion_permissions(
                 {"scope": ConnectorScope.PERSONAL.value, "createdBy": "other"},
@@ -5500,14 +5458,12 @@ class TestValidateConnectorDeletionPermissionsCoverage:
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     def test_personal_creator_passes(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.PERSONAL.value, "createdBy": "u1"},
             "u1", is_admin=False, logger=logging.getLogger("test")
         )
 
     def test_team_admin_passes(self):
-        from app.connectors.api.router import _validate_connector_deletion_permissions
         _validate_connector_deletion_permissions(
             {"scope": ConnectorScope.TEAM.value, "createdBy": "u1"},
             "u1", is_admin=True, logger=logging.getLogger("test")
@@ -5550,14 +5506,12 @@ class TestGetUserContextCoverage:
 
 class TestValidateAdminOnlyCoverage:
     def test_non_admin_raises(self):
-        from app.connectors.api.router import _validate_admin_only
         with pytest.raises(HTTPException) as exc_info:
             _validate_admin_only(is_admin=False, action="do stuff")
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
         assert "do stuff" in exc_info.value.detail
 
     def test_admin_passes(self):
-        from app.connectors.api.router import _validate_admin_only
         _validate_admin_only(is_admin=True, action="do stuff")
 
 
@@ -6710,8 +6664,8 @@ class TestGetConnectorStatsPermissions:
         gp.get_connector_stats.assert_called_once_with("org1", "kb1")
 
     @pytest.mark.asyncio
-    async def test_kb_collection_without_permission_returns_403(self):
-        """User without KB permission gets 403."""
+    async def test_kb_collection_without_permission_returns_404(self) -> None:
+        """A user with no role on the collection gets 404, as the KB reads answer."""
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value={
             "type": Connectors.KNOWLEDGE_BASE.value,
@@ -6731,7 +6685,7 @@ class TestGetConnectorStatsPermissions:
         
         with pytest.raises(HTTPException) as exc_info:
             await get_connector_stats_endpoint(req, connector_id="kb1", graph_provider=gp)
-        assert exc_info.value.status_code == 403
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_external_connector_visible_allowed(self):
@@ -6746,7 +6700,7 @@ class TestGetConnectorStatsPermissions:
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"total": 50}})
 
         connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
+        connector_registry.get_connector_instance = AsyncMock(return_value={"_key": "conn1"})
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("test"))
@@ -6757,11 +6711,11 @@ class TestGetConnectorStatsPermissions:
 
         result = await get_connector_stats_endpoint(req, connector_id="conn1", graph_provider=gp)
         assert result["success"] is True
-        connector_registry.can_user_view_connector.assert_awaited_once()
+        connector_registry.get_connector_instance.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_external_connector_not_visible_returns_403(self):
-        """A connector the user cannot view is denied stats access."""
+    async def test_external_connector_not_visible_returns_404(self) -> None:
+        """A connector the user cannot open answers 404, so its existence is not confirmed."""
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value={
             "type": "Slack",
@@ -6771,7 +6725,7 @@ class TestGetConnectorStatsPermissions:
         })
 
         connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=False)
+        connector_registry.get_connector_instance = AsyncMock(return_value=None)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("test"))
@@ -6782,7 +6736,7 @@ class TestGetConnectorStatsPermissions:
 
         with pytest.raises(HTTPException) as exc_info:
             await get_connector_stats_endpoint(req, connector_id="conn1", graph_provider=gp)
-        assert exc_info.value.status_code == 403
+        assert exc_info.value.status_code == 404
         gp.get_connector_stats.assert_not_called()
 
     @pytest.mark.asyncio

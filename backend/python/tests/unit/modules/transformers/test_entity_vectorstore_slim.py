@@ -3,6 +3,7 @@ membership merging, and org-scoped search (KG Clean Rebuild plan, Phase 8).
 """
 from __future__ import annotations
 
+import contextlib
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,6 +12,8 @@ import pytest
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.services.vector_db.models import SearchResult, VectorPoint
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 
 def _entity(
@@ -37,10 +40,10 @@ def _make_store(vector_db_service: MagicMock | None = None) -> EntityVectorStore
         vector_db_service.retrieve_points = AsyncMock(return_value=[])
     store = EntityVectorStore(
         logger=MagicMock(),
-        config_service=MagicMock(),
+        config_service=embedding_config_service(),
         vector_db_service=vector_db_service,
     )
-    store._initialized = True  # skip embedding-model/collection bootstrap
+    skip_bootstrap(store)
     store._dense_embeddings = MagicMock(embed_documents=MagicMock(return_value=[[0.1, 0.2]]))
     store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
     store._sparse_embedder = None
@@ -256,8 +259,10 @@ class TestMembershipMerge:
         never an overwrite, and the next batch still writes."""
         vector_db_service = MagicMock()
         vector_db_service.upsert_points = AsyncMock(return_value=None)
+        # The bad batch fails its first read; the good one reads twice
+        # (before embedding, then under the lock).
         vector_db_service.retrieve_points = AsyncMock(
-            side_effect=[RuntimeError("vector db down"), []]
+            side_effect=[RuntimeError("vector db down"), [], []]
         )
         store = _make_store(vector_db_service)
         entities = [
@@ -328,7 +333,10 @@ class TestConcurrentMergeIsSerialised:
             store.upsert_entities_batch([entity_b]),
         )
 
-        assert trace == ["read", "write", "read", "write"], (
+        # Each writer first reads without the lock (to embed outside it);
+        # the reads that decide the merge happen under the lock and are each
+        # followed by their own write before the other writer reads.
+        assert trace == ["read", "read", "read", "write", "read", "write"], (
             f"read/write interleaved across concurrent upserts: {trace}"
         )
         assert set(state["recordGroupIds"]) == {"group_A", "group_B"}, (
@@ -342,6 +350,7 @@ class TestConcurrentMergeIsSerialised:
         import asyncio
 
         active = {"n": 0, "max": 0}
+        both_writing = asyncio.Event()
 
         vector_db_service = MagicMock()
         vector_db_service.filter_collection = AsyncMock(return_value={"must": []})
@@ -350,7 +359,13 @@ class TestConcurrentMergeIsSerialised:
         async def _upsert_points(collection_name, points) -> None:
             active["n"] += 1
             active["max"] = max(active["max"], active["n"])
-            await asyncio.sleep(0.01)
+            if active["n"] == 2:
+                both_writing.set()
+            # Wait for the other writer rather than sleeping a fixed time: a
+            # loaded runner can finish one write before the other starts. If
+            # the lock serialised them, the second never arrives.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(both_writing.wait(), timeout=2)
             active["n"] -= 1
 
         vector_db_service.upsert_points = AsyncMock(side_effect=_upsert_points)

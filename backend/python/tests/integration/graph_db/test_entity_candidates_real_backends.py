@@ -204,3 +204,13 @@ class TestCappedCandidates:
         rows = await _candidates(provider, org_id, f"{org_id}-missing")
         assert rows == []
         assert rows.capped is False
+
+
+async def test_rows_carry_the_hide_url_flag(backend) -> None:
+    """The listing tool must see ``hideWeburl`` to withhold a hidden link."""
+    provider, org_id, seed = backend
+    topic = await seed(provider, org_id, 2)
+    assert await provider.update_node(f"{org_id}-r2", CollectionNames.RECORDS.value, {"hideWeburl": True})
+    rows = {r["_key"]: r for r in await _candidates(provider, org_id, topic)}
+    assert rows[f"{org_id}-r2"]["hideWeburl"] is True
+    assert not rows[f"{org_id}-r1"].get("hideWeburl")

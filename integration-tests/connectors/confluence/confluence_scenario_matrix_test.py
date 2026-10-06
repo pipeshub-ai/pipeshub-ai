@@ -36,7 +36,6 @@ from connectors.confluence.confluence_v1_test_utils import (
     wait_until_confluence_condition,
 )
 from connectors.scenario_matrix import (
-    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
     Role,
@@ -222,15 +221,5 @@ class TestConfluenceScenarioMatrix(ConnectorScenarioMatrix):
         Action.CHANGE_PERMISSION.value: (
             "the CI site has one Confluence account (CONFLUENCE_TEST_EMAIL); a page "
             "restriction needs a second Confluence user whose email is also a PipesHub user"
-        ),
-    }
-    KNOWN_BUGS = {
-        "filter_change": FILTER_KEEPS_EXCLUDED_ITEM,
-        "incr_delete": (
-            "A page deleted in Confluence is never removed: the connector finds changes "
-            "with a lastModified content search (sources/atlassian/confluence_cloud/"
-            "connector.py, _sync_content), which does not return deleted or trashed "
-            "pages, and nothing in the connector calls on_record_deleted, so the record "
-            "and its vectors stay searchable."
         ),
     }

@@ -223,6 +223,48 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set secretManagement.externalSecrets.remoteRefs.qdrantApiKey="pipeshub/qdrant/api-key"
 ```
 
+## Coding sandbox
+
+`config.sandboxMode` picks where `run_code` executes: `docker` (default),
+`e2b` (off-cluster), or `local` (no isolation, development only, needs
+`config.sandboxAllowLocal=true`). `docker` needs a daemon, and the chart
+refuses to install without one:
+
+- `sandbox.dind.enabled=true` (the `values-eks.yaml` default) adds two sidecars.
+  `dind` is a **privileged** Docker daemon that listens only on a unix socket
+  in the `dind-sock` emptyDir. `docker-proxy` runs `python -m app.docker_proxy_main`
+  from the application image, which is the same policy proxy the Compose
+  stacks use. It listens on `127.0.0.1:<sandbox.dind.port>` (the app's
+  `DOCKER_HOST`) and admits only sandbox-shaped requests: creates from the
+  allowed images (`config.sandboxDockerImage`, or `sandbox.proxy.allowedImages`)
+  with no privileged mode, host mounts, devices or host namespaces, acting
+  only on containers it created. Only `dind` and `docker-proxy` mount
+  `dind-sock`. The application container cannot reach the daemon directly.
+- `config.dockerHost` points at a daemon you run. Put the same proxy in front
+  of it. Never expose a raw dockerd.
+
+Mounting a container-runtime socket into the application container would give
+the app, and any code it runs, root on the node. At render time the chart refuses
+`extraVolumes`/`volumes` and `extraVolumeMounts`/`volumeMounts` that:
+
+- use a `hostPath` of type `Socket`;
+- use a `hostPath` that is a Docker, containerd (including k3s), CRI-O, podman or
+  cri-dockerd socket, or a directory that holds one, such as `/`, `/run` or
+  `/var/run`;
+- name one of those sockets in `mountPath`, `subPath` or `subPathExpr`.
+
+These checks are best-effort, not a security boundary. A runtime socket in an
+unusual place, or one reached through a symlink, is not recognised. Review any
+custom `hostPath`. Where you can, enforce it in the cluster too, for example with
+a Kyverno or Gatekeeper policy that forbids `hostPath` volumes on the application
+pod.
+
+**Image requirement:** the `docker-proxy` sidecar needs an application image
+that contains `app.docker_proxy_main` (the release that added the Compose
+Docker proxy, or later). On an older `image.tag` the sidecar crash-loops and
+`run_code` fails. Upgrade `image.tag`, or set `sandbox.proxy.image` to a newer
+image.
+
 ## High-Value Features
 
 - Secret validation with fail-fast messages

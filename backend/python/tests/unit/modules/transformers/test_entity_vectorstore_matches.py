@@ -16,6 +16,8 @@ from app.services.vector_db.models import (
     VectorCollectionInfo,
     VectorPoint,
 )
+from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.embedding_config import skip_bootstrap
 
 
 def _make_store(vector_db_service=None) -> EntityVectorStore:
@@ -24,8 +26,8 @@ def _make_store(vector_db_service=None) -> EntityVectorStore:
     if not isinstance(vector_db_service.retrieve_points, AsyncMock):
         vector_db_service.retrieve_points = AsyncMock(return_value=[])
     vector_db_service.filter_collection = AsyncMock(side_effect=lambda **kw: kw)
-    store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=vector_db_service)
-    store._initialized = True
+    store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=vector_db_service)
+    skip_bootstrap(store)
     store._model_id, store._embedding_size = "test:model", 2
     store._dense_embeddings = MagicMock(embed_documents=MagicMock(side_effect=lambda texts: [[0.1, 0.2] for _ in texts]))
     store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
@@ -304,13 +306,15 @@ class TestMembershipReadIsByPointId:
 
         await store.upsert_entities_batch([self._entity("a"), self._entity("b")])
 
-        service.retrieve_points.assert_awaited_once()
-        collection, ids = service.retrieve_points.await_args.args
-        assert collection == store.collection_name
-        assert ids == [
+        # One read before embedding, without the locks, and the
+        # authoritative one under them; both by id, never a search.
+        assert service.retrieve_points.await_count == 2
+        expected = [
             EntityVectorStore._point_id("org-1", "topic", "a"),
             EntityVectorStore._point_id("org-1", "topic", "b"),
         ]
+        for call in service.retrieve_points.await_args_list:
+            assert call.args == (store.collection_name, expected)
         service.scroll.assert_not_called()
 
     async def test_a_write_not_yet_searchable_is_still_merged(self) -> None:
@@ -347,7 +351,7 @@ class TestMembershipReadIsByPointId:
 class TestDeletesNeedNoEmbeddings:
     def _store(self, service) -> EntityVectorStore:
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
-        store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=service)
+        store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
         store._init_embeddings = AsyncMock(side_effect=RuntimeError("embedding endpoint down"))
         return store
 
@@ -406,6 +410,7 @@ class TestInitHousekeeping:
         )
         service.create_collection = AsyncMock()
         service.create_index = AsyncMock()
+        service.scroll = AsyncMock(return_value=ScrollResult(points=[]))
         store = _make_store(service)
         store._embedding_size = 2
 
@@ -422,11 +427,10 @@ class TestInitHousekeeping:
         monkeypatch.setattr(module, "get_default_embedding_model", lambda: default)
         service = MagicMock()
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
-        config = MagicMock()
-        config.get_config = AsyncMock(return_value=None)
-        store = EntityVectorStore(logger=MagicMock(), config_service=config, vector_db_service=service)
+        store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
+        store._init_collection = AsyncMock()
 
-        await store._init_embeddings()
+        await store._ensure_initialized()
 
         assert store._dense_embeddings is default
 
@@ -452,7 +456,7 @@ class TestInitialisationBackoff:
         monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
         service = MagicMock()
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
-        store = EntityVectorStore(logger=MagicMock(), config_service=MagicMock(), vector_db_service=service)
+        store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
         store._init_embeddings = AsyncMock(side_effect=RuntimeError("embedding endpoint down"))
         store._init_collection = AsyncMock()
 
@@ -468,3 +472,53 @@ class TestInitialisationBackoff:
 
         assert store._init_embeddings.await_count == 2
         assert store._initialized is True
+
+
+class TestSearchPassesAreOneRequest:
+    """KG-08: every pass of an entity search goes to the vector DB at once."""
+
+    async def test_one_request_per_pass_in_a_single_call(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+        from app.services.vector_db.models import SearchResult
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[
+            [SearchResult(id="p1", score=0.9, payload={"metadata": {"entityId": "a", "entityType": "topic"}})],
+            [SearchResult(id="p2", score=0.8, payload={"metadata": {"entityId": "b", "entityType": "topic"}})],
+        ])
+        store = _make_store(service)
+
+        results = await store.search_entities_passes("q", "org-1", [
+            EntitySearchPass(frozenset({"g1"}), frozenset({"c1"})),
+            EntitySearchPass(frozenset(), frozenset()),  # no scope, not org-wide: skipped
+            EntitySearchPass(org_wide=True),
+        ])
+
+        service.query_nearest_points.assert_awaited_once()
+        requests = service.query_nearest_points.await_args.kwargs["requests"]
+        assert len(requests) == 2
+        assert requests[0].filter["should"] == {"recordGroupIds": ["g1"], "connectorIds": ["c1"]}
+        assert requests[1].filter["should"] == {}
+        assert [[h["entityId"] for h in r] for r in results] == [["a"], [], ["b"]]
+
+    async def test_no_searchable_pass_makes_no_request(self) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock()
+        store = _make_store(service)
+        assert await store.search_entities_passes("q", "org-1", [EntitySearchPass()]) == [[]]
+        service.query_nearest_points.assert_not_awaited()
+
+
+async def test_a_failed_entity_search_logs_no_query_text() -> None:
+    """KG-19: the error line names the failure, not what the user searched."""
+    from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(side_effect=RuntimeError("vector db down"))
+    store = _make_store(service)
+    with pytest.raises(RuntimeError):
+        await store.search_entities_passes("salary of jane doe", "org-1", [EntitySearchPass(org_wide=True)])
+    logged = " ".join(str(a) for c in store.logger.error.call_args_list for a in c.args)
+    assert "vector db down" in logged and "jane" not in logged

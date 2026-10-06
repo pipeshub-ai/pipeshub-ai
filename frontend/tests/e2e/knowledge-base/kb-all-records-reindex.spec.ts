@@ -6,7 +6,8 @@ import { makeKbName, createTestKb, deleteTestKb, uploadFileByApi } from './kb-up
 // FAILED on its first attempt without breaking anything else on the stack.
 const BROKEN_JSON = Buffer.from('{"inventory": [1, 2, ');
 
-async function waitForFailed(apiContext: APIRequestContext, recordId: string, timeoutMs = 180_000): Promise<void> {
+/** Wait for the record to land in FAILED, and return the name it is listed under. */
+async function waitForFailed(apiContext: APIRequestContext, recordId: string, timeoutMs = 180_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   let status = 'unknown';
   while (Date.now() < deadline) {
@@ -14,8 +15,12 @@ async function waitForFailed(apiContext: APIRequestContext, recordId: string, ti
     if (!response.ok()) {
       throw new Error(`reading record ${recordId} failed [${response.status()}]: ${await response.text()}`);
     }
-    status = ((await response.json()) as { record?: { indexingStatus?: string } }).record?.indexingStatus ?? 'unknown';
-    if (status === 'FAILED') return;
+    const record = ((await response.json()) as { record?: { indexingStatus?: string; recordName?: string } }).record;
+    status = record?.indexingStatus ?? 'unknown';
+    if (status === 'FAILED') {
+      if (!record?.recordName) throw new Error(`record ${recordId} has no recordName`);
+      return record.recordName;
+    }
     if (status === 'COMPLETED' || status === 'EMPTY') {
       throw new Error(`record ${recordId} ended ${status}; the broken JSON fixture was expected to fail indexing`);
     }
@@ -29,12 +34,15 @@ test.describe('All Records reindex', () => {
 
   let kb: { id: string; name: string };
   let recordId: string;
+  // An upload is listed without its extension, so the row is found by the
+  // stored name rather than the uploaded file name.
+  let recordName: string;
   const fileName = `broken-${Date.now()}.json`;
 
   test.beforeAll(async ({ apiContext }) => {
     kb = await createTestKb(apiContext, makeKbName('reindex'));
     recordId = await uploadFileByApi(kb.id, { name: fileName, mimeType: 'application/json', buffer: BROKEN_JSON });
-    await waitForFailed(apiContext, recordId);
+    recordName = await waitForFailed(apiContext, recordId);
   });
 
   test.afterAll(async ({ apiContext }) => {
@@ -44,7 +52,7 @@ test.describe('All Records reindex', () => {
   test('Retry indexing on a failed record sends the reindex and confirms it', async ({ page }) => {
     await page.goto(`/knowledge-base?view=all-records&nodeType=app&nodeId=${kb.id}`);
 
-    const row = page.getByRole('row', { name: fileName });
+    const row = page.getByRole('row', { name: recordName, exact: true });
     await expect(row, 'the failed record should be listed in All Records').toBeVisible({ timeout: 30_000 });
     // The trigger's only text is its icon ligature.
     await row.getByRole('button', { name: 'more_horiz' }).click();

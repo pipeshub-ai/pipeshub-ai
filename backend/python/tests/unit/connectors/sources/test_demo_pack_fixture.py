@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 import app.connectors.sources.demo.connector as demo_connector
+from app.connectors.sources.demo.harness.kb_harness import mentions
 
 FIXTURE = Path(demo_connector.__file__).resolve().parent / "fixture" / "acme-corp.yaml"
 
@@ -79,8 +80,8 @@ def test_pack_restricted_facts_come_only_from_restricted_records(fx: dict) -> No
         assert facts, f"{q['id']} needs facts that catch a leak in the answer text"
         inside = " ".join(r["body"] for r in fx["records"] if r["id"] in q["restricted"]).lower()
         outside = " ".join(r["body"] for r in fx["records"] if group_of_record[r["id"]] != group).lower()
-        assert [f for f in facts if f.lower() not in inside] == [], q["id"]
-        assert [f for f in facts if f.lower() in outside] == [], q["id"]
+        assert [f for f in facts if not mentions(inside, f)] == [], q["id"]
+        assert [f for f in facts if mentions(outside, f)] == [], q["id"]
 
 
 def test_every_team_reader_group_is_open_to_the_installer(fx: dict) -> None:
