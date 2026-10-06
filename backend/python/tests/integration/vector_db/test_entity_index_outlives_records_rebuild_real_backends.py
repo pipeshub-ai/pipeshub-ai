@@ -6,16 +6,19 @@ backend, because each step starts from what the one before left:
 
 - "Delete all embeddings" empties the records collection and leaves the
   entity index alone, on a deployment whose manifest lists it too.
-- An entities collection left as an earlier release's cleanup left it
-  (recreated through the records registry: empty, without the entity payload
-  indexes, every document still marked done) is refilled, and its points can
+- The collection's stamp survives entity writes, deletes, a connector cleanup
+  and a sweep, and no listing or search returns it.
+- An entities collection left as an earlier release's cleanup and the reindex
+  after it left it (recreated through the records registry, so without the
+  entity payload indexes; record points written again by indexing; no
+  taxonomy; every document still marked done) is refilled, and its points can
   be filtered by entity type again, which needs those indexes on Redis.
 - An entities collection dropped by hand under the running store is created
   again and refilled.
-- After that nothing more is refilled.
+- After that nothing more is projected.
 
-Counts are served from the last refresh on OpenSearch, so the journey
-publishes writes before each tick.
+Listings are served from the last refresh on OpenSearch, so the journey
+publishes writes before it reads one.
 
   docker run -d --name qdrant-it -p 6343:6333 qdrant/qdrant:v1.15
   cd backend/python && pytest \\
@@ -27,13 +30,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
-from app.modules.indexing import entity_index_rebuild
+from app.models.entities import EntityRecord, EntityType
 from app.modules.indexing.entity_index_rebuild import (
-    REFILL_STATE_KEY,
     EntityIndexRebuilder,
     EntityIndexState,
     entity_index_marker,
@@ -58,10 +60,10 @@ from tests.integration.vector_db.test_entity_vectorstore_real_backends import (
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.unit.modules.indexing.test_entity_index_rebuild import (
     APPS,
+    NOW,
     ORGS,
     RECORDS,
     TOPICS,
-    Clock,
     FakeGraph,
     FakeLock,
     _app,
@@ -97,7 +99,7 @@ class _Deployment:
         self.records = f"{prefix}_{CollectionType.RECORDS.value}"
         self.entities = f"{prefix}_{CollectionType.ENTITIES.value}"
         self.org, self.app = f"org-{uuid.uuid4().hex[:6]}", f"app-{uuid.uuid4().hex[:6]}"
-        self.config, self.clock = embedding_config_service(), Clock()
+        self.config = embedding_config_service()
         self.registry = CollectionRegistry(
             vector_db_service=service,
             strategy=_PrefixedStrategy(prefix),
@@ -138,34 +140,32 @@ class _Deployment:
                 await self.service.client.indices.refresh(index=name)  # type: ignore[attr-defined]
 
     async def rebuild(self) -> list[str]:
-        """The rebuild loop on a fresh leader, an idle interval passing after
-        each idle tick, until two idle ticks in a row."""
+        """The rebuild loop on a fresh leader, until it has nothing left to do."""
         rebuilder = EntityIndexRebuilder(
             logger=logger, graph_provider=self.graph, store=self.store, lock=FakeLock(),
-            config_service=self.config, now_ms=self.clock,
+            now_ms=lambda: NOW,
         )
         outcomes: list[str] = []
         for _ in range(60):
             await self.publish()
             outcomes.append(await rebuilder.tick())
             if outcomes[-1] == "idle":
-                if outcomes[-2:-1] == ["idle"]:
-                    return outcomes
-                self.clock.now += int(entity_index_rebuild.IDLE_INTERVAL_SECONDS * 1000)
-        raise AssertionError(f"never settled: {outcomes}")
+                return outcomes
+        raise AssertionError(f"never went idle: {outcomes}")
 
     async def count(self, collection: str) -> int:
         await self.publish()
         info = await self.service.get_collection_info(collection)
         return info.points_count if info.exists else -1
 
-    async def topics(self) -> list[str]:
+    async def entities_by_type(self) -> dict[str, list[str]]:
+        """Every point a listing of the org returns, whatever its type."""
         await self.publish()
-        refs, _ = await self.store.page_entity_points(self.org, ["topic"])
-        return [ref.entity_id for ref in refs]
-
-    async def refills(self) -> Any:  # noqa: ANN401
-        return await self.config.get_config(REFILL_STATE_KEY, use_cache=False)
+        refs, _ = await self.store.page_entity_points(self.org, [t.value for t in EntityType])
+        found: dict[str, list[str]] = {}
+        for ref in refs:
+            found.setdefault(ref.entity_type, []).append(ref.entity_id)
+        return found
 
     def state(self, collection: str, key: str) -> object:
         return self.graph.docs[collection][key][EntityIndexState.STATE]
@@ -191,6 +191,9 @@ async def deployment(request: pytest.FixtureRequest) -> AsyncIterator[_Deploymen
         await deployment.close()
 
 
+BOTH = {"record": ["r1"], "topic": ["t1"]}
+
+
 async def test_the_entity_index_outlives_the_records_rebuild_and_is_refilled_when_emptied(
     deployment: _Deployment,
 ) -> None:
@@ -200,9 +203,12 @@ async def test_the_entity_index_outlives_the_records_rebuild_and_is_refilled_whe
         id=str(uuid.uuid4()), dense_vector=[0.25] * DIM,
         payload={"page_content": "Q3 plan", "metadata": {"orgId": d.org, "virtualRecordId": "v1"}},
     )])
-    outcomes = await d.rebuild()
-    assert "refill" not in outcomes
-    assert (await d.count(d.records), await d.count(d.entities)) == (1, 2)
+    await d.rebuild()
+    stamp = await d.store.collection_stamp()
+    assert await d.entities_by_type() == BOTH
+    # Two entities and the stamp.
+    assert (await d.count(d.records), await d.count(d.entities)) == (1, 3)
+    assert d.state(ORGS, d.org) == entity_index_marker(FINGERPRINT, stamp)
     # As adoption left the manifest on some deployments in an earlier release.
     await d.registry.manifest_store.record(ManagedCollection(
         name=d.entities, collection_type=CollectionType.ENTITIES.value,
@@ -211,48 +217,66 @@ async def test_the_entity_index_outlives_the_records_rebuild_and_is_refilled_whe
 
     assert await d.registry.recreate_records_collections(DIM) == [d.records]
 
-    assert (await d.count(d.records), await d.count(d.entities)) == (0, 2)
-    assert await d.topics() == ["t1"]
-    assert await d.rebuild() == ["idle", "idle"]
-    assert await d.refills() is None
+    assert (await d.count(d.records), await d.count(d.entities)) == (0, 3)
+    assert await d.entities_by_type() == BOTH
+    assert await d.rebuild() == ["idle"]
+    assert await d.store.collection_stamp() == stamp
 
-    # What the earlier release's cleanup did to a listed entities collection.
+    # The stamp is not an entity: nothing that writes or removes entities touches it.
+    extra = EntityRecord.for_record("r2", "Budget", d.org, "other-app", None)
+    await d.store.upsert_entities_batch([extra], merge_membership=False)
+    await d.publish()
+    await d.store.delete_entities_by_connector(org_id=d.org, connector_id="other-app", record_group_ids=None)
+    await d.store.upsert_entities_batch([extra], merge_membership=False)
+    await d.publish()
+    await d.store.delete_entities(d.org, "record", ["r2"])
+    await d.publish()
+    hits = await d.store.search_entities("Billing", d.org, set(), {d.app})
+    assert sorted(hit["entityId"] for hit in hits) == ["r1", "t1"]
+    assert await d.entities_by_type() == BOTH
+    assert await d.store.collection_stamp() == stamp
+
+    # What the earlier release's cleanup, and the reindex after it, left.
     await d.service.delete_collection(d.entities)
     await d.service.create_collection(collection_name=d.entities, config=d.registry.build_collection_config(DIM))
     await d.registry._ensure_payload_indexes(d.entities)
-    assert await d.count(d.entities) == 0
+    await d.store.upsert_entities_batch(
+        [EntityRecord.for_record("r1", "Q3 plan", d.org, d.app, None)], merge_membership=False,
+    )
+    assert await d.count(d.entities) == 1
 
     outcomes = await d.rebuild()
 
-    assert outcomes[:2] == ["idle", "refill"]
-    assert await d.count(d.entities) == 2
-    assert await d.topics() == ["t1"]
-    assert d.state(APPS, d.app) == entity_index_marker(FINGERPRINT, 1)
-    assert d.state(ORGS, d.org) == entity_index_marker(FINGERPRINT, 1)
-    assert await d.refills() == {"generation": 1, "emptySinceRefill": False}
+    restamped = await d.store.collection_stamp()
+    assert restamped != stamp
+    assert "taxonomy" in outcomes
+    assert await d.entities_by_type() == BOTH
+    assert d.state(APPS, d.app) == entity_index_marker(FINGERPRINT, restamped)
+    assert d.state(ORGS, d.org) == entity_index_marker(FINGERPRINT, restamped)
+    assert await d.rebuild() == ["idle"]
 
     await d.service.delete_collection(d.entities)
     assert await d.count(d.entities) == -1
 
     outcomes = await d.rebuild()
 
-    assert outcomes[:2] == ["idle", "refill"]
-    assert await d.count(d.entities) == 2
-    assert await d.topics() == ["t1"]
-    assert await d.rebuild() == ["idle", "idle"]
-    assert await d.refills() == {"generation": 2, "emptySinceRefill": False}
+    assert "connector" in outcomes and "taxonomy" in outcomes
+    assert await d.entities_by_type() == BOTH
+    assert await d.store.collection_stamp() not in (stamp, restamped)
+    assert await d.rebuild() == ["idle"]
 
 
-async def test_an_index_with_nothing_to_hold_is_refilled_once(deployment: _Deployment) -> None:
-    """Nothing in the graph to project: the collection stays empty after the
-    refill, and must not be refilled again on every later tick."""
+async def test_an_index_with_nothing_to_hold_is_stamped_once(deployment: _Deployment) -> None:
+    """Nothing in the graph to project: the collection holds its stamp and
+    nothing else, and must not read as emptied on every later tick."""
     d = deployment
     d.graph.sources.clear()
 
-    first = await d.rebuild()
-    again = await d.rebuild()
+    await d.rebuild()
+    stamp, updates = await d.store.collection_stamp(), len(d.graph.updates)
+    again = [await d.rebuild() for _ in range(3)]
 
-    assert first.count("refill") == 1
-    assert again == ["idle", "idle"]
-    assert await d.count(d.entities) == 0
-    assert await d.refills() == {"generation": 1, "emptySinceRefill": True}
+    assert again == [["idle"]] * 3
+    assert await d.store.collection_stamp() == stamp
+    assert await d.count(d.entities) == 1
+    assert len(d.graph.updates) == updates

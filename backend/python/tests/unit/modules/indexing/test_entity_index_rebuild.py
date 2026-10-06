@@ -19,12 +19,10 @@ from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityType
 from app.modules.indexing import entity_index_rebuild as mod
 from app.modules.indexing.entity_index_rebuild import (
-    EMPTY_CONFIRM_MS,
     ENTITY_INDEX_TAXONOMY_SOURCES,
     ENTITY_INDEX_VERSION,
     MAX_ATTEMPTS,
     MAX_TICK_ERRORS,
-    REFILL_STATE_KEY,
     TAXONOMY_PAGE_SIZE,
     EntityIndexRebuilder,
     EntityIndexState,
@@ -127,21 +125,16 @@ class FakeStore:
         self.page_calls: list[tuple[str, list[str], str | None, int]] = []
         self.version_reads = 0
         self.recreate_requests: list[bool] = []
-        # What the collection reports holding; a populated index by default.
-        self.count = 1
-        self.count_reads = 0
-        self.ensured = 0
+        self.stamp = ""
+        self.stamp_reads = 0
 
     async def embedding_fingerprint(self, *, recreate: bool = False) -> str:
         self.recreate_requests.append(recreate)
         return self.fingerprint
 
-    async def points_count(self) -> int:
-        self.count_reads += 1
-        return self.count
-
-    async def ensure_collection(self) -> None:
-        self.ensured += 1
+    async def collection_stamp(self) -> str:
+        self.stamp_reads += 1
+        return self.stamp
 
     async def embedding_config_version(self) -> str | None:
         self.version_reads += 1
@@ -206,18 +199,9 @@ class FakeLock:
         return None
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.now = NOW
-
-    def __call__(self) -> int:
-        return self.now
-
-
 def _rebuilder(
     graph: FakeGraph, store: FakeStore, lock: FakeLock | None = None, *,
-    page_size: int = 2, sweep_points_per_tick: int = 100, config_service: object = None,
-    now_ms: Clock | None = None,
+    page_size: int = 2, sweep_points_per_tick: int = 100,
 ) -> EntityIndexRebuilder:
     return EntityIndexRebuilder(
         logger=logging.getLogger("entity-index-test"),
@@ -226,8 +210,7 @@ def _rebuilder(
         lock=lock or FakeLock(),
         page_size=page_size,
         sweep_points_per_tick=sweep_points_per_tick,
-        config_service=config_service,
-        now_ms=now_ms or (lambda: NOW),
+        now_ms=lambda: NOW,
     )
 
 
@@ -261,19 +244,6 @@ async def _run_until_idle(rebuilder: EntityIndexRebuilder, limit: int = 50) -> l
     raise AssertionError(f"never went idle: {outcomes}")
 
 
-async def _run_until_settled(rebuilder: EntityIndexRebuilder, clock: Clock, limit: int = 60) -> list[str]:
-    """Tick as the loop does, an idle interval passing after each idle tick,
-    until two idle ticks in a row: an empty index is refilled on the second."""
-    outcomes: list[str] = []
-    for _ in range(limit):
-        outcome = await rebuilder.tick()
-        outcomes.append(outcome)
-        if outcome == "idle":
-            if outcomes[-2:-1] == ["idle"]:
-                return outcomes
-            clock.now += int(mod.IDLE_INTERVAL_SECONDS * 1000)
-    raise AssertionError(f"never settled: {outcomes}")
-
 
 # ---------------------------------------------------------------------------
 # Marker
@@ -288,14 +258,14 @@ class TestMarker:
     def test_marker_changes_with_the_fingerprint(self) -> None:
         assert entity_index_marker("a:b:3") != entity_index_marker("a:b:4")
 
-    @pytest.mark.parametrize("value", [None, "", "garbage", 7, "v:x", "vr2:x", "v1r:x", "v1:"])
+    @pytest.mark.parametrize("value", [None, "", "garbage", 7, "v:x", "v@s1:x", "v1@:x", "v1:"])
     def test_unreadable_marker_has_no_fingerprint(self, value: object) -> None:
         assert fingerprint_of(value) is None
 
-    def test_a_refill_gives_a_marker_no_document_has_reached(self) -> None:
-        assert entity_index_marker(FP, 0) == MARKER
-        assert entity_index_marker(FP, 2) == f"v{ENTITY_INDEX_VERSION}r2:{FP}"
-        assert fingerprint_of(entity_index_marker(FP, 2)) == FP
+    def test_marker_carries_the_collection_stamp(self) -> None:
+        assert entity_index_marker(FP, "s3fa9c21b7d0") == f"v{ENTITY_INDEX_VERSION}@s3fa9c21b7d0:{FP}"
+        assert entity_index_marker(FP, "s1") != entity_index_marker(FP, "s2")
+        assert fingerprint_of(entity_index_marker(FP, "s3fa9c21b7d0")) == FP
 
 
 # ---------------------------------------------------------------------------
@@ -936,16 +906,19 @@ class TestAModelSwitchReRunsThePasses:
         with embedding_models({"text-embedding-3-small": small}), \
                 patch.object(entity_vectorstore, "get_default_embedding_model", return_value=bge):
             await _run_until_idle(_rebuilder(graph, store))
-            old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4")
-            assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == old
+            first_stamp = db.stamp
+            old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4", first_stamp)
+            assert first_stamp and graph.docs[APPS]["app-1"][EntityIndexState.STATE] == old
 
             await switch_embedding_model(config, embedding_config("openAI", "text-embedding-3-small"))
             outcomes = await _run_until_idle(_rebuilder(graph, store))
 
-        new = entity_index_marker("openAI:text-embedding-3-small:6")
+        # Recreated for the new model, so stamped anew.
+        assert db.stamp and db.stamp != first_stamp
+        new = entity_index_marker("openAI:text-embedding-3-small:6", db.stamp)
         assert "connector" in outcomes
         assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == new
-        (point,) = db.points.values()
+        (point,) = db.entity_points.values()
         assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == "openAI:text-embedding-3-small:6"
         assert point.dense_vector == small.embed_query("Q3 plan")
 
@@ -998,270 +971,204 @@ class TestAModelSwitchReRunsThePasses:
             )
 
         assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == entity_index_marker(
-            "openAI:text-embedding-ada-002:6"
+            "openAI:text-embedding-ada-002:6", db.stamp,
         )
-        (point,) = db.points.values()
+        (point,) = db.entity_points.values()
         assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == "openAI:text-embedding-ada-002:6"
         assert point.dense_vector == ada.embed_query("Q3 plan")
 
 
-class RefillConfig:
-    """The KV store as the refill state uses it."""
-
-    def __init__(self) -> None:
-        self.kv: dict[str, object] = {}
-        self.fail_get = self.fail_set = False
-        self.writes = 0
-
-    async def get_config(
-        self, key: str, default: object = None, use_cache: bool = False, *, raise_on_error: bool = False,
-    ) -> object:
-        assert use_cache is False  # another replica may have written it
-        if self.fail_get:
-            # Like the real one: a failed read is the default unless asked.
-            if raise_on_error:
-                raise RuntimeError("kv down")
-            return default
-        return self.kv.get(key, default)
-
-    async def set_config(self, key: str, value: object) -> bool:
-        if self.fail_set:
-            return False
-        self.writes += 1
-        self.kv[key] = value
-        return True
-
-    async def list_keys_in_directory(self, directory: str) -> list[str]:
-        return []
-
-    @property
-    def generation(self) -> int:
-        state = self.kv.get(REFILL_STATE_KEY)
-        return state["generation"] if isinstance(state, dict) else 0
-
-
-class TestAnEmptiedIndexIsRefilled:
-    """Nothing rebuilt an index emptied from outside ("Delete all embeddings"
-    dropped the entities collection with the records one on some deployments):
-    every document still said done, until the embedding model next changed."""
+class TestTheStampIsPartOfTheMarker:
+    """A document is done only for the collection it was projected into. The
+    store's stamp goes when that collection's points go, so documents done
+    under another stamp, or under none, are due again."""
 
     @staticmethod
-    def _done(graph: FakeGraph) -> None:
-        graph.docs[APPS]["app-1"] = _app(**{EntityIndexState.STATE: MARKER, EntityIndexState.TARGET: MARKER})
-        graph.docs[ORGS]["org-1"] = _done_org(**{EntityIndexState.SWEPT_AT: NOW * 2})
+    def _done(graph: FakeGraph, marker: str) -> None:
+        graph.docs[APPS]["app-1"] = _app(**{EntityIndexState.STATE: marker, EntityIndexState.TARGET: marker})
+        graph.docs[ORGS]["org-1"] = _org(**{
+            EntityIndexState.STATE: marker, EntityIndexState.TARGET: marker, EntityIndexState.SWEPT_AT: NOW,
+        })
         graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan")]
         graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "Billing"}]
         graph.membership[("topic", "t1")] = {"connectorIds": ["app-1"], "recordGroupIds": ["g1"]}
 
-    def _emptied(self) -> tuple[FakeGraph, FakeStore, RefillConfig, Clock, EntityIndexRebuilder]:
-        graph, store, config, clock = FakeGraph(), FakeStore(), RefillConfig(), Clock()
-        self._done(graph)
-        store.count = 0
-        return graph, store, config, clock, _rebuilder(graph, store, config_service=config, now_ms=clock)
+    async def test_documents_done_under_another_stamp_are_projected_again(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, entity_index_marker(FP, "sold"))
+        store.stamp = "snew"
 
-    async def test_every_pass_runs_again_and_the_points_come_back(self) -> None:
-        graph, store, config, clock, rebuilder = self._emptied()
+        outcomes = await _run_until_idle(_rebuilder(graph, store))
 
-        outcomes = await _run_until_settled(rebuilder, clock)
-
-        assert outcomes[:2] == ["idle", "refill"]
-        assert store.ensured == 1
         assert "connector" in outcomes and "taxonomy" in outcomes
         assert {(e.entity_type, e.entity_id) for e in store.written()} == {
             (EntityType.RECORD, "r1"), (EntityType.TOPIC, "t1"),
         }
-        refilled = entity_index_marker(FP, 1)
-        assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == refilled
-        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == refilled
+        assert graph.docs[APPS]["app-1"][EntityIndexState.STATE] == entity_index_marker(FP, "snew")
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(FP, "snew")
 
-    async def test_an_index_that_only_just_read_as_empty_is_not_refilled_yet(self) -> None:
-        """A count lags the writes (OpenSearch publishes them every 30s), so a
-        full index counts 0 on the idle tick straight after its passes."""
-        _, store, config, clock, rebuilder = self._emptied()
+    async def test_documents_done_before_there_were_stamps_are_projected_again(self) -> None:
+        """Every deployment once, on upgrade: it cannot be known whether an
+        earlier cleanup emptied its collection, since indexing has written
+        points to it since."""
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, MARKER)
+        store.stamp = "sfirst"
 
-        assert await rebuilder.tick() == "idle"
-        clock.now += EMPTY_CONFIRM_MS - 1
-        assert await rebuilder.tick() == "idle"
-        store.count = 2
-        clock.now += EMPTY_CONFIRM_MS
-        assert await rebuilder.tick() == "idle"
-        store.count = 0
-        assert await rebuilder.tick() == "idle"
+        outcomes = await _run_until_idle(_rebuilder(graph, store))
 
-        assert config.kv == {} and store.ensured == 0
+        assert "connector" in outcomes and "taxonomy" in outcomes
 
-    async def test_an_empty_reading_from_before_a_pass_does_not_count_after_it(self) -> None:
-        """The pass may have filled the index; the count would not show it yet."""
-        graph, store, config, clock, rebuilder = self._emptied()
-        assert await rebuilder.tick() == "idle"
+    async def test_documents_done_under_the_same_stamp_are_left_alone(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, entity_index_marker(FP, "s1"))
+        store.stamp = "s1"
+        rebuilder = _rebuilder(graph, store)
 
-        graph.docs[APPS]["app-2"] = _app("app-2")
-        clock.now += EMPTY_CONFIRM_MS
-        for _ in range(2):
-            assert await rebuilder.tick() == "connector"
-        assert await rebuilder.tick() == "idle"
+        assert [await rebuilder.tick() for _ in range(5)] == ["idle"] * 5
 
-        assert config.kv == {}
+        assert store.stamp_reads == 5
+        assert store.written() == [] and graph.updates == []
 
-    async def test_a_deployment_with_nothing_to_index_is_refilled_once(self) -> None:
-        """The index stays empty after the refill; a second one would be the
-        first again, for ever."""
-        graph, store, config, clock = FakeGraph(), FakeStore(), RefillConfig(), Clock()
-        graph.docs[APPS]["app-1"] = _app(**{EntityIndexState.STATE: MARKER})
-        graph.docs[ORGS]["org-1"] = _done_org(**{EntityIndexState.SWEPT_AT: NOW * 2})
-        store.count = 0
-        rebuilder = _rebuilder(graph, store, config_service=config, now_ms=clock)
+    async def test_a_pass_under_way_starts_over_under_a_new_stamp(self) -> None:
+        """Its cursor counts rows projected into the collection that is gone."""
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app(**{
+            EntityIndexState.TARGET: entity_index_marker(FP, "sold"),
+            EntityIndexState.PHASE: RECORDS, EntityIndexState.AFTER_KEY: "r1",
+        })
+        graph.sources[(RECORDS, "app-1")] = [_rec("r1"), _rec("r2")]
+        store.stamp = "snew"
 
-        outcomes = []
-        for _ in range(60):
-            outcomes.append(await rebuilder.tick())
-            if outcomes[-1] == "idle":
-                clock.now += EMPTY_CONFIRM_MS
+        await _rebuilder(graph, store).tick()
 
-        assert outcomes.count("refill") == 1
-        assert outcomes[-30:] == ["idle"] * 30
-        assert config.generation == 1 and config.writes == 1
-        assert store.written() == []
+        assert graph.page_calls[0][:3] == (GROUPS, "app-1", None)
 
-    async def test_a_restarted_or_new_leader_does_not_refill_again(self) -> None:
-        """The guard is in the KV store, not in the process that refilled."""
-        graph, store, config, clock, rebuilder = self._emptied()
-        await _run_until_settled(rebuilder, clock)
+    async def test_a_replica_that_is_not_leader_does_not_read_the_stamp(self) -> None:
+        """Reading it writes one when there is none."""
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, MARKER)
 
-        outcomes = await _run_until_settled(_rebuilder(graph, store, config_service=config, now_ms=clock), clock)
+        assert await _rebuilder(graph, store, FakeLock(leader=False)).tick() == "not_leader"
 
-        assert outcomes == ["idle", "idle"] and config.generation == 1
+        assert store.stamp_reads == 0
 
-    async def test_an_index_emptied_again_after_holding_points_is_refilled_again(self) -> None:
-        _, store, config, clock, rebuilder = self._emptied()
-        await _run_until_settled(rebuilder, clock)
+    async def test_a_stamp_that_cannot_be_read_fails_the_tick(self) -> None:
+        """Without it there is no marker to compare the documents against."""
+        graph, store = FakeGraph(), FakeStore()
+        self._done(graph, MARKER)
+        store.collection_stamp = AsyncMock(side_effect=RuntimeError("vector db down"))
 
-        store.count = 2
-        assert await rebuilder.tick() == "idle"
-        assert config.kv[REFILL_STATE_KEY] == {"generation": 1, "emptySinceRefill": False}
-        store.count = 0
-        outcomes = await _run_until_settled(rebuilder, clock)
+        with pytest.raises(RuntimeError, match="vector db down"):
+            await _rebuilder(graph, store).tick()
 
-        assert outcomes[:2] == ["idle", "refill"]
-        assert config.kv[REFILL_STATE_KEY] == {"generation": 2, "emptySinceRefill": True}
-
-    async def test_a_populated_index_is_only_counted(self) -> None:
-        graph, store, config, clock = FakeGraph(), FakeStore(), RefillConfig(), Clock()
-        self._done(graph)
-        rebuilder = _rebuilder(graph, store, config_service=config, now_ms=clock)
-
-        assert await _run_until_settled(rebuilder, clock) == ["idle", "idle"]
-
-        assert store.count_reads == 2 and store.ensured == 0
-        assert config.kv == {} and graph.updates == []
-
-    async def test_an_empty_index_is_not_refilled_while_a_pass_is_still_due(self) -> None:
-        """The pass under way fills it; counting is for when nothing else will."""
-        graph, store, config = FakeGraph(), FakeStore(), RefillConfig()
-        graph.docs[APPS]["app-1"] = _app()
-        graph.sources[(RECORDS, "app-1")] = [_rec("r1")]
-        store.count = 0
-
-        assert await _rebuilder(graph, store, config_service=config).tick() == "connector"
-
-        assert store.count_reads == 0 and config.kv == {}
-
-    async def test_a_replica_that_is_not_leader_counts_nothing(self) -> None:
-        graph, store, config = FakeGraph(), FakeStore(), RefillConfig()
-        self._done(graph)
-        store.count = 0
-
-        assert await _rebuilder(graph, store, FakeLock(leader=False), config_service=config).tick() == "not_leader"
-
-        assert store.count_reads == 0 and config.kv == {}
-
-    async def test_a_refill_that_cannot_be_recorded_does_not_start(self) -> None:
-        """Started without its guard written, it would start again every tick."""
-        graph, store, config, clock, rebuilder = self._emptied()
-        config.fail_set = True
-
-        assert await _run_until_settled(rebuilder, clock) == ["idle", "idle"]
         assert graph.updates == [] and store.written() == []
 
-        config.fail_set = False
-        assert await rebuilder.tick() == "refill"
 
-    async def test_a_count_that_fails_is_tried_again_next_tick(self) -> None:
-        _, store, config, clock, rebuilder = self._emptied()
-        store.points_count = AsyncMock(side_effect=RuntimeError("vector db down"))
+class TestACollectionEmptiedFromOutside:
+    """With the real store. "Delete all embeddings" dropped the entities
+    collection with the records one on some deployments, and nothing rebuilt
+    it: every document still said done, until the embedding model changed."""
 
-        assert await _run_until_settled(rebuilder, clock) == ["idle", "idle"]
-        assert config.kv == {}
-
-        store.points_count = AsyncMock(return_value=0)
-        assert (await _run_until_settled(rebuilder, clock))[:2] == ["idle", "refill"]
-
-    async def test_a_collection_that_cannot_be_set_up_is_not_refilled_yet(self) -> None:
-        _, store, config, clock, rebuilder = self._emptied()
-        store.ensure_collection = AsyncMock(side_effect=RuntimeError("vector db down"))
-
-        assert await _run_until_settled(rebuilder, clock) == ["idle", "idle"]
-
-        assert config.kv == {}
-
-    async def test_an_unreadable_refill_count_fails_the_tick(self) -> None:
-        """Assumed to be 0, it would name a marker the documents left at the
-        last refill, and every pass would run again under it."""
-        graph, store, config = FakeGraph(), FakeStore(), RefillConfig()
-        self._done(graph)
-        config.kv[REFILL_STATE_KEY] = {"generation": 3, "emptySinceRefill": False}
-        config.fail_get = True
-
-        with pytest.raises(RuntimeError, match="kv down"):
-            await _rebuilder(graph, store, config_service=config).tick()
-
-        assert store.recreate_requests == [] and graph.updates == []
-
-    async def test_the_stored_refill_count_is_part_of_the_marker(self) -> None:
-        graph, store, config = FakeGraph(), FakeStore(), RefillConfig()
-        graph.docs[APPS]["app-1"] = _app(**{EntityIndexState.STATE: MARKER})
-        graph.sources[(RECORDS, "app-1")] = [_rec("r1")]
-        config.kv[REFILL_STATE_KEY] = {"generation": 3, "emptySinceRefill": False}
-
-        assert await _rebuilder(graph, store, config_service=config).tick() == "connector"
-
-        assert graph.docs[APPS]["app-1"][EntityIndexState.TARGET] == entity_index_marker(FP, 3)
-
-
-class TestACollectionDroppedUnderTheRunningStore:
-    """With the real store: it sets its collection up when it initialises, so
-    one dropped afterwards stayed missing, and every write and search failed,
-    until the service restarted."""
-
-    async def test_it_is_created_again_and_refilled(self) -> None:
-        from app.modules.transformers import entity_vectorstore
+    @staticmethod
+    def _deployment() -> tuple[Any, Any, FakeGraph, EntityIndexRebuilder]:
         from app.modules.transformers.entity_vectorstore import EntityVectorStore
         from tests.support.embedding_config import config_service
-        from tests.support.entity_vector_db import (
-            FakeEmbeddingModel,
-            FakeEntityVectorDB,
-        )
+        from tests.support.entity_vector_db import FakeEntityVectorDB
 
-        db, config, clock = FakeEntityVectorDB(), config_service(), Clock()
+        db = FakeEntityVectorDB()
         store = EntityVectorStore(
-            logger=logging.getLogger("entity-index-test"), config_service=config,
+            logger=logging.getLogger("entity-index-test"), config_service=config_service(),
             vector_db_service=db, recreate_on_dimension_mismatch=True,
         )
         graph = FakeGraph()
         graph.docs[APPS]["app-1"] = _app()
+        graph.docs[ORGS]["org-1"] = _org()
         graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
-        rebuilder = _rebuilder(graph, store, config_service=config, now_ms=clock)
+        graph.sources[(TOPICS, "org-1")] = [{"_key": "t1", "name": "Billing"}]
+        graph.membership[("topic", "t1")] = {"connectorIds": ["app-1"], "recordGroupIds": []}
+        graph.nodes[TOPICS] = {"t1": {"orgId": "org-1"}}
+        return db, store, graph, _rebuilder(graph, store)
 
-        with patch.object(
+    @staticmethod
+    def _default_model() -> Any:  # noqa: ANN401
+        from app.modules.transformers import entity_vectorstore
+        from tests.support.entity_vector_db import FakeEmbeddingModel
+
+        return patch.object(
             entity_vectorstore, "get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
-        ):
-            await _run_until_settled(rebuilder, clock)
-            before = dict(db.points)
-            assert len(before) == 1
+        )
+
+    @staticmethod
+    def _names(db: Any) -> set[str]:  # noqa: ANN401
+        return {point.payload["metadata"]["name"] for point in db.entity_points.values()}
+
+    async def test_a_collection_dropped_under_the_running_store_is_created_again_and_refilled(self) -> None:
+        with self._default_model():
+            db, _, _, rebuilder = self._deployment()
+            await _run_until_idle(rebuilder)
+            assert self._names(db) == {"Q3 plan", "Billing"}
 
             await db.delete_collection("entities")
-            outcomes = await _run_until_settled(rebuilder, clock)
+            outcomes = await _run_until_idle(rebuilder)
 
-        assert outcomes[:2] == ["idle", "refill"] and "connector" in outcomes
+        assert "connector" in outcomes and "taxonomy" in outcomes
         assert db.dimension == 4
-        assert db.points.keys() == before.keys()
+        assert self._names(db) == {"Q3 plan", "Billing"}
+
+    async def test_taxonomy_comes_back_when_reindexing_has_already_written_record_points(self) -> None:
+        """What a deployment looks like after the old cleanup and the reindex
+        that follows it: the collection recreated, the record points written
+        again by indexing, every app and org still done, and no taxonomy. A
+        count of its points says nothing is missing."""
+        from app.models.entities import EntityRecord
+
+        with self._default_model():
+            db, store, _, rebuilder = self._deployment()
+            await _run_until_idle(rebuilder)
+
+            await db.delete_collection("entities")
+            db.dimension = 4
+            await store.upsert_entities_batch(
+                [EntityRecord.for_record("r1", "Q3 plan", "org-1", "app-1", None)], merge_membership=False,
+            )
+            assert self._names(db) == {"Q3 plan"}
+            outcomes = await _run_until_idle(rebuilder)
+
+        assert "taxonomy" in outcomes
+        assert self._names(db) == {"Q3 plan", "Billing"}
+
+    async def test_a_deployment_from_before_stamps_is_projected_once_more_on_upgrade(self) -> None:
+        from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+
+        fingerprint = f"default:{DEFAULT_EMBEDDING_MODEL}:4"
+        with self._default_model():
+            db, _, graph, rebuilder = self._deployment()
+            await _run_until_idle(rebuilder)
+            legacy = entity_index_marker(fingerprint)
+            db.points = dict(db.entity_points)
+            for collection, key in ((APPS, "app-1"), (ORGS, "org-1")):
+                graph.docs[collection][key][EntityIndexState.STATE] = legacy
+                graph.docs[collection][key][EntityIndexState.TARGET] = legacy
+
+            first = await _run_until_idle(rebuilder)
+            second = await _run_until_idle(rebuilder)
+
+        assert "connector" in first and "taxonomy" in first
+        assert second == ["idle"]
+        assert graph.docs[ORGS]["org-1"][EntityIndexState.STATE] == entity_index_marker(fingerprint, db.stamp)
+
+    async def test_a_deployment_with_nothing_to_index_is_stamped_once(self) -> None:
+        """No point is ever written, and the collection must still not read
+        as emptied on every later tick."""
+        with self._default_model():
+            db, _, graph, rebuilder = self._deployment()
+            graph.sources.clear()
+            await _run_until_idle(rebuilder)
+            stamp, updates = db.stamp, len(graph.updates)
+
+            outcomes = [await rebuilder.tick() for _ in range(30)]
+
+        assert outcomes == ["idle"] * 30
+        assert db.stamp == stamp and db.entity_points == {}
+        assert len(graph.updates) == updates

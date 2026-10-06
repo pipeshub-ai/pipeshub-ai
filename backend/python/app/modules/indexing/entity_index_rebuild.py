@@ -15,9 +15,10 @@ projects what the graph already holds, with no extraction or LLM call:
 A document is done when its ``entityIndexState`` equals the current marker,
 ``v<ENTITY_INDEX_VERSION>:<embedding fingerprint>``, so a model change re-runs
 every pass, and each point records the model that embedded it, so a point
-from another model is re-embedded whenever it is next written. An index found
-empty once every document is done is refilled the same way: the marker also
-carries a refill count (``EntityIndexRebuilder._refill_if_emptied``). Mechanics
+from another model is re-embedded whenever it is next written. The marker
+also carries the collection's stamp (``EntityVectorStore.collection_stamp``),
+so a collection dropped, recreated or emptied from outside is refilled the
+same way. Mechanics
 follow ``vector_membership_backfill``: one Redis leader, one page per tick, a
 resumable cursor on the document, bounded attempts, backoff on failure.
 """
@@ -95,13 +96,6 @@ ENTITY_CLEANUP_STALE_MS = 24 * 60 * 60 * 1000
 SWEEP_POINTS_PER_TICK = 2000
 # One graph lookup per collection per this many points.
 _SWEEP_LOOKUP_BATCH = 500
-# KV record of the refills of an emptied index (``_RefillState``).
-REFILL_STATE_KEY = "/services/entityIndex/refill"
-# How long the index must have read as empty, with no pass run meanwhile,
-# before it is refilled. A count lags the writes: OpenSearch publishes them
-# every 30s, so right after a pass a full index still counts 0. Below
-# IDLE_INTERVAL_SECONDS, so the second idle tick confirms.
-EMPTY_CONFIRM_MS = 45 * 1000
 _BACKOFF_FACTOR = 2
 _MAX_BACKOFF_MULTIPLIER = 16
 
@@ -161,14 +155,13 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str, refills: int = 0) -> str:
-    """``refills`` is ``_RefillState.generation``. Left out at 0, so a
-    deployment that never needed a refill keeps the marker it already has."""
-    refill = f"r{refills}" if refills else ""
-    return f"v{ENTITY_INDEX_VERSION}{refill}:{fingerprint}"
+def entity_index_marker(fingerprint: str, stamp: str = "") -> str:
+    """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
+    under another stamp was projected into a collection that is gone."""
+    return f"v{ENTITY_INDEX_VERSION}{'@' + stamp if stamp else ''}:{fingerprint}"
 
 
-_MARKER = re.compile(r"v\d+(?:r\d+)?:(.+)", re.DOTALL)
+_MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
 
 
 def fingerprint_of(marker: object) -> str | None:
@@ -191,16 +184,6 @@ def _int(value: Any) -> int:  # noqa: ANN401
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
-
-
-@dataclass(frozen=True)
-class _RefillState:
-    """``generation`` counts the times the index was found empty and refilled.
-    ``empty_since_refill`` holds from one of those until the index is next
-    seen holding a point, and rules out another meanwhile."""
-
-    generation: int = 0
-    empty_since_refill: bool = False
 
 
 @dataclass
@@ -272,21 +255,21 @@ class EntityIndexRebuilder:
         self.config_service = config_service
         self.now_ms = now_ms
         self._cleanup_checked_at: int | None = None
-        self._empty_since: int | None = None
 
     async def tick(self) -> str:
         """``not_leader``, ``idle``, ``entity_cleanup``, ``connector``,
-        ``taxonomy``, ``sweep`` or ``refill``."""
+        ``taxonomy`` or ``sweep``."""
         if not await self.lock.try_acquire():
             return "not_leader"
         if await self._reconcile_entity_cleanup():
             return "entity_cleanup"
-        refill = await self._read_refill_state()
         # Holding the leader lock, this is the one place a collection another
         # model wrote is dropped (see EntityVectorStore._ensure_initialized).
-        marker = entity_index_marker(
-            await self.store.embedding_fingerprint(recreate=True), refill.generation,
-        )
+        fingerprint = await self.store.embedding_fingerprint(recreate=True)
+        # Read every tick, after the line above may have recreated the
+        # collection: a collection without its stamp gets a new one, which no
+        # document has reached, so every pass runs again.
+        marker = entity_index_marker(fingerprint, await self.store.collection_stamp())
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
@@ -298,79 +281,12 @@ class EntityIndexRebuilder:
             _ORGS, marker, sweep_before=sweep_before,
         )
         if not org or not (key := _key_of(org)):
-            return "refill" if await self._refill_if_emptied(refill) else "idle"
+            return "idle"
         if org.get(EntityIndexState.STATE) != marker:
             await self._run_page(_Pass(_ORGS, key, org, ENTITY_INDEX_TAXONOMY_SOURCES, marker))
             return "taxonomy"
         await self._sweep_chunk(key, org)
         return "sweep"
-
-    # ------------------------------------------------------------------
-    # An index emptied from outside
-    # ------------------------------------------------------------------
-
-    async def _read_refill_state(self) -> _RefillState:
-        """Read from the store, not the cache, and raised when unreadable: the
-        generation is part of the marker, and a stale or assumed one would
-        re-run every pass under a marker the documents have already left."""
-        if self.config_service is None:
-            return _RefillState()
-        raw = await self.config_service.get_config(
-            REFILL_STATE_KEY, use_cache=False, raise_on_error=True,
-        )
-        if not isinstance(raw, dict):
-            return _RefillState()
-        return _RefillState(_int(raw.get("generation")), raw.get("emptySinceRefill") is True)
-
-    async def _write_refill_state(self, state: _RefillState) -> bool:
-        return bool(await self.config_service.set_config(REFILL_STATE_KEY, {
-            "generation": state.generation, "emptySinceRefill": state.empty_since_refill,
-        }))
-
-    async def _refill_if_emptied(self, refill: _RefillState) -> bool:
-        """Every document is done: if the index holds no point, start a new
-        generation so that every pass runs again. Returns whether it did.
-
-        Nothing else notices an index emptied from outside (dropped by hand,
-        or by "Delete all embeddings" in a release that dropped it with the
-        records collection): the documents still say done. One count per idle
-        tick, and the index must stay empty for ``EMPTY_CONFIRM_MS``.
-        ``empty_since_refill`` is written with the new generation and cleared
-        only once a point is seen, so a deployment with nothing to index is
-        refilled once and then left alone."""
-        if self.config_service is None:
-            return False
-        try:
-            if await self.store.points_count():
-                self._empty_since = None
-                if refill.empty_since_refill:
-                    await self._write_refill_state(_RefillState(refill.generation))
-                return False
-            if refill.empty_since_refill:
-                return False
-            now = self.now_ms()
-            if self._empty_since is None:
-                self._empty_since = now
-            if now - self._empty_since < EMPTY_CONFIRM_MS:
-                return False
-            # Whatever emptied it may have left it without its payload indexes.
-            await self.store.ensure_collection()
-        except Exception:
-            self.logger.warning(
-                "entity_index_rebuild: could not check the index for points; trying again next tick",
-                exc_info=True,
-            )
-            return False
-        generation = refill.generation + 1
-        if not await self._write_refill_state(_RefillState(generation, empty_since_refill=True)):
-            self.logger.warning("entity_index_rebuild: refill not recorded; trying again next tick")
-            return False
-        self._empty_since = None
-        self.logger.info(
-            "entity_index_rebuild: the index holds no points though every pass is done; "
-            "projecting the graph again | refill=%d", generation,
-        )
-        return True
 
     # ------------------------------------------------------------------
     # Deleted connectors' entity cleanup
@@ -447,7 +363,6 @@ class EntityIndexRebuilder:
     # ------------------------------------------------------------------
 
     async def _run_page(self, run: _Pass) -> None:
-        self._empty_since = None
         try:
             await self._pass_page(run)
         except _LostLeadership:

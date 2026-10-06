@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import patch
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+from app.models.entities import EntityRecord
 from app.modules.indexing.entity_index_rebuild import (
     EntityIndexState,
     entity_index_marker,
@@ -49,13 +50,12 @@ from tests.unit.modules.indexing.test_entity_index_rebuild import (
     ORGS,
     RECORDS,
     TOPICS,
-    Clock,
     FakeGraph,
     _app,
     _org,
     _rebuilder,
     _rec,
-    _run_until_settled,
+    _run_until_idle,
 )
 
 LOGGER = logging.getLogger("entity-index-test")
@@ -128,7 +128,7 @@ class _Deployment:
     """Records and entity points written with the default model (dimension 4)."""
 
     def __init__(self) -> None:
-        self.db, self.config, self.clock = FakeVectorDB(), config_service(), Clock()
+        self.db, self.config = FakeVectorDB(), config_service()
         self.registry = _registry(self.db, self.config)
         self.store = _store(self.db, self.config)
         self.graph = _graph()
@@ -139,7 +139,7 @@ class _Deployment:
             "records", [VectorPoint(id="chunk-1", dense_vector=[1.0] * 4, payload={})],
         )
         await self.rebuild()
-        assert len(self.entities.points) == 2
+        assert len(self.entities.entity_points) == 2
         if manifest_lists_entities:
             # As adoption left it on some deployments in an earlier release.
             await self.registry.manifest_store.record(ManagedCollection(
@@ -149,8 +149,7 @@ class _Deployment:
 
     async def rebuild(self) -> list[str]:
         """The rebuild loop, on a fresh leader, until it has nothing left to do."""
-        rebuilder = _rebuilder(self.graph, self.store, config_service=self.config, now_ms=self.clock)
-        return await _run_until_settled(rebuilder, self.clock)
+        return await _run_until_idle(_rebuilder(self.graph, self.store))
 
     @property
     def entities(self) -> _Collection:
@@ -183,7 +182,7 @@ class TestDeleteAllEmbeddings:
             assert d.entities.points == entities_before
             assert d.entities.deletions == 0
             assert ENTITY_INDEXES <= d.entities.indexes
-            assert await d.rebuild() == ["idle", "idle"]
+            assert await d.rebuild() == ["idle"]
 
     async def test_only_the_records_collection_is_emptied(self) -> None:
         await self._cleanup_leaves_the_entity_index(manifest_lists_entities=False)
@@ -196,7 +195,7 @@ class TestEmbeddingModelChange:
     async def test_the_entity_index_moves_to_the_new_model_by_itself(self) -> None:
         """The records rebuild leaves it on the old model; once the new model
         is saved, the entity store recreates it at the new dimension and the
-        rebuild embeds every entity again."""
+        rebuild embeds every entity again, once."""
         small = FakeEmbeddingModel(2.0, 6)
         with _default_model(), embedding_models({"text-embedding-3-small": small}):
             d = await _Deployment().index(manifest_lists_entities=True)
@@ -206,41 +205,49 @@ class TestEmbeddingModelChange:
 
             assert await d.registry.recreate_records_collections(6) == ["records"]
             assert d.records.dimension == 6
-            assert d.entities.dimension == 4 and len(d.entities.points) == 2
+            assert d.entities.dimension == 4 and len(d.entities.entity_points) == 2
 
             await switch_embedding_model(d.config, embedding_config("openAI", "text-embedding-3-small"))
             outcomes = await d.rebuild()
+            assert await d.rebuild() == ["idle"]
 
         fingerprint = "openAI:text-embedding-3-small:6"
-        assert "connector" in outcomes and "taxonomy" in outcomes and "refill" not in outcomes
+        assert outcomes.count("connector") == 2 and outcomes.count("taxonomy") == 7
         assert d.entities.dimension == 6 and d.entities.deletions == 1
-        assert len(d.entities.points) == 2
-        for point in d.entities.points.values():
+        assert len(d.entities.entity_points) == 2
+        for point in d.entities.entity_points.values():
             assert point.payload["metadata"][EMBEDDING_MODEL_FIELD] == fingerprint
             assert len(point.dense_vector) == 6
-        assert d.state(APPS, "app-1") == entity_index_marker(fingerprint)
-        assert d.state(ORGS, "org-1") == entity_index_marker(fingerprint)
+        assert d.state(APPS, "app-1") == entity_index_marker(fingerprint, d.entities.stamp)
+        assert d.state(ORGS, "org-1") == entity_index_marker(fingerprint, d.entities.stamp)
 
 
 class TestADeploymentAlreadyHit:
     async def test_an_index_the_old_cleanup_emptied_is_refilled(self) -> None:
-        """What an earlier release's cleanup left: the entities collection
-        recreated through the records registry, so empty and without the
-        entity payload indexes, with every document still marked done."""
+        """What an earlier release's cleanup and the reindex after it left:
+        the entities collection recreated through the records registry, so
+        without the entity payload indexes; the record points written again
+        by indexing; no taxonomy; every document still marked done."""
         fingerprint = f"default:{DEFAULT_EMBEDDING_MODEL}:4"
         with _default_model():
             d = await _Deployment().index(manifest_lists_entities=True)
-            assert d.state(ORGS, "org-1") == entity_index_marker(fingerprint)
-            expected = set(d.entities.points)
+            before = entity_index_marker(fingerprint, d.entities.stamp)
+            assert d.state(ORGS, "org-1") == before
+            expected = set(d.entities.entity_points)
             await d.db.delete_collection("entities")
             await d.db.create_collection("entities", CollectionConfig(embedding_size=4))
             assert d.entities.indexes == set()
+            await d.store.upsert_entities_batch(
+                [EntityRecord.for_record("r1", "Q3 plan", "org-1", "app-1", None)], merge_membership=False,
+            )
+            assert len(d.entities.entity_points) == 1
 
             outcomes = await d.rebuild()
 
-            assert outcomes[:2] == ["idle", "refill"]
-            assert set(d.entities.points) == expected
+            assert "connector" in outcomes and "taxonomy" in outcomes
+            assert set(d.entities.entity_points) == expected
             assert ENTITY_INDEXES <= d.entities.indexes
-            assert d.state(APPS, "app-1") == entity_index_marker(fingerprint, 1)
-            assert d.state(ORGS, "org-1") == entity_index_marker(fingerprint, 1)
-            assert await d.rebuild() == ["idle", "idle"]
+            after = entity_index_marker(fingerprint, d.entities.stamp)
+            assert after != before
+            assert d.state(APPS, "app-1") == after and d.state(ORGS, "org-1") == after
+            assert await d.rebuild() == ["idle"]

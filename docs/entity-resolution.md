@@ -172,10 +172,10 @@ without extraction or model calls other than embedding:
   points are not swept; single-record delete removes them.
 
 A document is done when its `entityIndexState` equals
-`v<ENTITY_INDEX_VERSION>:<provider>:<model>:<dimension>`, so changing the
-embedding model re-runs every pass. (After a refill of an emptied index the
-version part also carries a refill count, `v1r2:...`; see "An index emptied
-from outside" below.) Each point also records the model that
+`v<ENTITY_INDEX_VERSION>@<stamp>:<provider>:<model>:<dimension>`, so changing
+the embedding model re-runs every pass. (The stamp identifies the collection
+the document was projected into; see "An index emptied from outside" below.)
+Each point also records the model that
 embedded it (`metadata.embeddingModel`). A write re-embeds a point from
 another model, or one written before this field existed, even when its text
 is unchanged. Indexing therefore repairs whatever a pass missed. The first
@@ -244,23 +244,31 @@ store recreates and refills its own collection, as described above.
 
 Nothing else would notice an entities collection that was emptied anyway
 (dropped by hand, or by that earlier cleanup), because every document still
-says done. So on each idle tick, when every pass is done and no sweep is due,
-the leader counts the collection's points:
+says done. Counting its points does not help: indexing writes record points
+back into a recreated collection within minutes, and from then on it only
+looks partly filled. So the collection carries a **stamp**:
 
-- If it has read as empty or missing for 45 seconds, with no pass run in
-  between, the leader creates the collection and its payload indexes again
-  and starts a new refill generation. The wait is there because a count lags
-  the writes: OpenSearch publishes them every 30 seconds.
-- The generation is kept in the key-value store at
-  `/services/entityIndex/refill` and is part of the marker
-  (`v1r<generation>:<fingerprint>`, left out while it is 0). A new one
-  therefore re-runs every pass, as a model change does.
-- The same record holds `emptySinceRefill`. It is set with the new generation
-  and cleared once the index is seen holding a point. While it is set, an
-  empty index is not refilled again, so a deployment with nothing to index is
-  refilled once and then left alone.
-- The marker cannot be computed without that record. While the key-value
-  store cannot be read, the tick fails and is retried with backoff.
+- The stamp is a short random token stored in the collection as a point of
+  its own (`EntityVectorStore.collection_stamp`). It has no org and no entity
+  type, so no search, sweep, listing or delete matches it. It is gone exactly
+  when the collection's points are gone: dropped, recreated or wiped.
+- The rebuild leader reads it on every tick, one read by id, after the step
+  that may recreate the collection for a new model. A collection without a
+  stamp is set up again (created if missing, its payload indexes ensured) and
+  given a new one.
+- The stamp is part of the marker. A document done under another stamp, or
+  under none, was projected into a collection that no longer exists, so its
+  pass runs again. A pass under way starts over.
+- A new stamp is written only when there is none, and it is written before
+  any pass runs under it. A deployment with nothing to index therefore holds
+  just its stamp and stays idle. A read that fails is not a missing stamp:
+  the tick fails and is retried.
+
+Collections from before stamps have none, so every deployment projects its
+graph once more after upgrading. Points whose text, membership and model are
+unchanged are not rewritten or re-embedded. This is what repairs a deployment
+whose entity index an earlier cleanup emptied. A model change costs one run,
+not two: the collection is recreated and stamped in the same tick.
 
 The rebuild runs on one indexing replica at a time (Redis leader
 `entity_index_rebuild:leader`), one page per tick. It resumes from the cursor
