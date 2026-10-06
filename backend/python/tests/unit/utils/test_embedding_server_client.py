@@ -64,6 +64,24 @@ class TestRetriableErrors:
 
         assert "failed (attempt 1/2): TimeoutError;" in caplog.text
 
+    def test_a_retried_timeout_is_named_in_the_sync_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        attempts = []
+
+        def fn() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise TimeoutError()
+            return "ok"
+
+        with patch("app.utils.embedding_retry.retry_delay_seconds", return_value=0), \
+                patch("app.utils.embedding_retry.time.sleep"), \
+                caplog.at_level(logging.WARNING, logger="app.utils.embedding_retry"):
+            assert call_with_retry(
+                fn, max_retries=2, operation="embed_query", service_name="embedding-server"
+            ) == "ok"
+
+        assert "failed (attempt 1/2): TimeoutError;" in caplog.text
+
     def test_503_is_retriable(self):
         response = MagicMock()
         response.status_code = 503
