@@ -155,9 +155,10 @@ class TestEmailFieldPolicy:
         assert email_prop == {"type": "string"}
         assert "format" not in email_prop
 
-    def test_people_schema_email_is_string_without_format(self):
+    def test_people_schema_email_is_optional_string_without_format(self):
+        # A person a source names only by its own user id has no email (sourceKey instead).
         email_prop = documents.people_schema["rule"]["properties"]["email"]
-        assert email_prop == {"type": "string"}
+        assert email_prop == {"type": ["string", "null"]}
         assert "format" not in email_prop
 
     @pytest.mark.parametrize("schema_name,schema", sorted(ALL_DOCUMENT_SCHEMAS.items()))
@@ -192,7 +193,6 @@ class TestRequiredFields:
         ("schema_name", "required_field"),
         [
             ("user_schema", "email"),
-            ("people_schema", "email"),
             ("orgs_schema", "accountType"),
             ("app_schema", "name"),
             ("record_schema", "recordName"),
@@ -202,6 +202,12 @@ class TestRequiredFields:
     def test_required_fields_present(self, schema_name: str, required_field: str):
         rule = ALL_DOCUMENT_SCHEMAS[schema_name]["rule"]
         assert required_field in rule.get("required", [])
+
+    def test_a_person_is_valid_with_an_email_or_with_only_a_source_key(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.people_schema))
+        base = {"orgId": "o", "createdAtTimestamp": 1, "updatedAtTimestamp": 1}
+        assert validator.is_valid({**base, "email": "a@b.com"})
+        assert validator.is_valid({**base, "sourceKey": "conn:acc-1"})
 
     def test_user_schema_disallows_extra_properties(self):
         rule = documents.user_schema["rule"]
