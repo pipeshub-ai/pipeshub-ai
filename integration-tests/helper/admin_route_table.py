@@ -278,8 +278,9 @@ PYTHON_BEHIND_NODE_ADMIN = frozenset({
 
 # Python handlers that ask whether the caller is an admin but let members
 # through for some inputs, so there is no single "member is refused" request.
+# helper/conditional_admin_table.py holds the live cases for each one.
 PYTHON_CONDITIONAL_ADMIN = {
-    # Team-scoped connectors need an admin; a member may manage their own.
+    # Team-scoped connectors need an admin; a personal one is its creator's alone.
     "connectors/api/router.py::create_connector_instance": "team scope needs admin",
     "connectors/api/router.py::delete_connector_instance": "creator or admin",
     "connectors/api/router.py::get_connector_instance": "team connectors need admin",
@@ -299,20 +300,22 @@ PYTHON_CONDITIONAL_ADMIN = {
     # Admin changes what is returned (all instances, unmasked secrets), never refuses.
     "connectors/api/router.py::get_connector_instances": "admin widens the listing",
     "connectors/api/router.py::get_configured_connector_instances": "admin widens the listing",
-    "connectors/api/router.py::get_connector_registry": "admin widens the listing",
+    "connectors/api/router.py::get_connector_registry": "same types for every caller",
     "connectors/api/router.py::get_active_agent_instances": "admin widens the listing",
-    "connectors/api/router.py::get_all_oauth_configs": "secrets are masked for members",
+    "connectors/api/router.py::get_all_oauth_configs": "no caller gets secrets",
     "connectors/api/router.py::list_oauth_configs": "secrets are masked for members",
     "connectors/api/router.py::get_oauth_config_by_id": "secrets are masked for members",
     "api/routes/toolsets.py::get_toolset_instances": "secrets are masked for members",
     "api/routes/toolsets.py::get_toolset_instance": "secrets are masked for members",
     "api/routes/toolsets.py::list_toolset_oauth_configs": "secrets are masked for members",
-    # Record reads: an admin may reach a team connector's records; members need a permission.
-    "connectors/api/router.py::download_file": "record permission or admin",
-    "connectors/api/router.py::stream_record": "record permission or admin",
-    "connectors/api/router.py::stream_record_internal": "record permission or admin",
-    "connectors/api/router.py::get_record_content_internal": "record permission or admin",
-    # Only built-in skills need an admin to switch on or off.
+    # Record reads: the caller's own access to the record decides, admin or not.
+    # The admin flag only reaches the connector loader, which refuses nobody on it.
+    "connectors/api/router.py::download_file": "signed link and record permission",
+    "connectors/api/router.py::stream_record": "record permission, admin or not",
+    "connectors/api/router.py::stream_record_internal": "service token only",
+    "connectors/api/router.py::get_record_content_internal": "service token only",
+    # Only built-in skills need an admin to switch on or off; a member's own
+    # skill is theirs alone.
     "api/routes/skills.py::disable_skill": "built-in skills need admin",
     "api/routes/skills.py::enable_skill": "built-in skills need admin",
     # Only instances that use the shared admin credential need an admin.
