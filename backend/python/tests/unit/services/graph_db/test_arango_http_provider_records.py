@@ -11,10 +11,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-from app.services.graph_db.interface.graph_db_provider import (
-    FolderChangedDuringDelete,
-    MoveDestinationMissing,
-)
+from app.services.graph_db.interface.graph_db_provider import FolderChangedDuringDelete
 
 
 # ---------------------------------------------------------------------------
@@ -1787,9 +1784,12 @@ class TestUpsertRecordUnderParent:
         connected_provider.http_client.execute_aql = AsyncMock()
         connected_provider.batch_upsert_records = AsyncMock()
 
-        with pytest.raises(MoveDestinationMissing):
+        # By name: the interface tests reload that module, and the method raises
+        # whichever class the module holds by then.
+        with pytest.raises(RuntimeError, match="its new parent folder-2 is not in the graph") as raised:
             await connected_provider.upsert_record_under_parent(_make_mock_record("r1"), "folder-2", "tx")
 
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
         connected_provider.http_client.execute_aql.assert_not_awaited()
         connected_provider.batch_upsert_records.assert_not_awaited()
 
