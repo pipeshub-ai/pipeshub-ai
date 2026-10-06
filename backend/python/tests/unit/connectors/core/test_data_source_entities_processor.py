@@ -2003,16 +2003,21 @@ class TestDeletePermissionFromRecord:
         mock_user = MagicMock()
         mock_user.id = "user-1"
         tx_store.get_user_by_email.return_value = mock_user
-        tx_store.delete_edge.return_value = True
+        tx_store.batch_delete_edges.return_value = 1
 
         await proc.delete_permission_from_record("rec-1", "user@test.com")
 
-        tx_store.delete_edge.assert_awaited()
+        # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+        tx_store.batch_delete_edges.assert_awaited_once_with(
+            [{"from_id": "user-1", "from_collection": "users", "to_id": "rec-1", "to_collection": "records"}],
+            collection="permission",
+        )
+        tx_store.delete_edge.assert_not_awaited()
         proc.logger.info.assert_called()
 
     @pytest.mark.asyncio
-    async def test_delete_fails_logs_warning(self):
-        """Logs warning when delete edge returns False."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Swallowed, it left the user with a permission the caller believed removed."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -2020,7 +2025,22 @@ class TestDeletePermissionFromRecord:
         mock_user = MagicMock()
         mock_user.id = "user-1"
         tx_store.get_user_by_email.return_value = mock_user
-        tx_store.delete_edge.return_value = False
+        tx_store.batch_delete_edges.side_effect = RuntimeError("write conflict")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await proc.delete_permission_from_record("rec-1", "user@test.com")
+
+    @pytest.mark.asyncio
+    async def test_delete_fails_logs_warning(self):
+        """Logs a warning when there was no permission edge to delete."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        tx_store.batch_delete_edges.return_value = 0
 
         await proc.delete_permission_from_record("rec-1", "user@test.com")
 

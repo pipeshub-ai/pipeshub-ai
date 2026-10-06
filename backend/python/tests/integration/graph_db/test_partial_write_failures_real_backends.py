@@ -22,7 +22,8 @@ write below is now one statement on Neo4j:
 A failed permission write is also raised now on both stores, where it used to
 be logged and the surrounding write committed without the permissions. On
 ArangoDB the same goes for a failed delete of a record's inherit-permissions or
-belongs-to edge, which was answered with False and the rest committed.
+belongs-to edge, or of a user's permission on a record, which was answered with
+False: the rest committed, or the caller was told the permission was gone.
 
 Each test makes the write fail inside the database, partway through: another
 transaction holds a lock that only the later part of the write needs. Neo4j
@@ -522,6 +523,66 @@ async def test_a_failed_record_permission_rewrite_leaves_no_stale_access(world: 
     assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {carol}
     assert await _links(w, record.id, drive) == {CollectionNames.BELONGS_TO.value}
     assert await _readers(w, record.id, alice, bob, carol) == {carol}
+
+
+async def test_a_record_that_stops_inheriting_does_so_when_its_group_is_not_found(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    drive = _Target("record_group", w)
+    await drive.sync(alice_email)
+    record = _file(w, "memo", drive)
+    await w.processor.on_updated_record_permissions(record, _grants(bob_email))
+    assert await _links(w, record.id, drive) == BELONGS_AND_INHERITS
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    # The source now names a drive the graph does not have, so there is no group
+    # to delete the inherit edge to; the edge to the old drive must still go.
+    private = record.model_copy(
+        update={"inherit_permissions": False, "external_record_group_id": f"ext-unknown-{uuid.uuid4().hex[:8]}"}
+    )
+    await w.processor.on_updated_record_permissions(private, _grants(bob_email))
+
+    assert await _links(w, record.id, drive) == {CollectionNames.BELONGS_TO.value}
+    assert await _readers(w, record.id, alice, bob) == {bob}
+
+
+async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_it_succeeds(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    record = _file(w, "minutes")
+    await _upsert(w, record)
+    await w.processor.add_permission_to_record(record, _grants(alice_email, bob_email))
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    def remove() -> Awaitable[None]:
+        return w.processor.delete_permission_from_record(record.id, bob_email)
+
+    # Bob loses the file at the source, and his edge cannot be deleted.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": bob})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(
+            w, CollectionNames.PERMISSION.value,
+            "FOR e IN permission FILTER e._from == @from AND e._to == @to "
+            "UPDATE e WITH {heldByTest: true} IN permission RETURN 1",
+            {"from": f"users/{bob}", "to": f"records/{record.id}"},
+        )
+        expected = ARANGO_CONFLICT
+    async with hold:
+        # Raised, so the caller knows Bob still has it.
+        assert expected in await _failure(remove)
+
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    await remove()
+    assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
+    assert await _readers(w, record.id, alice, bob) == {alice}
 
 
 async def test_a_failed_permission_write_is_raised(world: _World) -> None:

@@ -2917,7 +2917,7 @@ class TestUpdateAgent:
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True, "shareWithOrg": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
-        services["graph_provider"].delete_edge = AsyncMock()
+        services["graph_provider"].batch_delete_edges = AsyncMock(return_value=1)
 
         request = MagicMock()
         request.body = AsyncMock(return_value=b'{"shareWithOrg":false}')
@@ -2928,7 +2928,13 @@ class TestUpdateAgent:
 
             result = await update_agent(request, "a1")
             assert result.status_code == 200
-            services["graph_provider"].delete_edge.assert_awaited()
+            # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+            services["graph_provider"].batch_delete_edges.assert_awaited_once_with(
+                [{"from_id": "o1", "from_collection": "organizations", "to_id": "a1",
+                  "to_collection": "agentInstances"}],
+                "permission",
+            )
+            services["graph_provider"].delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_update_with_toolsets(self) -> None:

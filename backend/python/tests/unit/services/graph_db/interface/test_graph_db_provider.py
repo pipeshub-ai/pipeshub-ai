@@ -621,9 +621,22 @@ class TestRecordLinkDefaults:
 
         instance.delete_edges_to.assert_awaited_once_with("r1", "records", "permission", "tx")
         instance.batch_create_edges.assert_awaited_once_with(edges, "permission", "tx")
-        # The delete that raises when it fails; delete_edge answers False on ArangoDB.
-        instance.batch_delete_edges.assert_awaited_once_with([self._edge("r1", "g1")], "inheritPermissions", "tx")
+        # Every record group, not only g1: the edge to a group that can no longer be
+        # looked up must go too.
+        instance.delete_edges_between_collections.assert_awaited_once_with(
+            "r1", "records", "inheritPermissions", "recordGroups", "tx"
+        )
         instance.delete_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inheritance_is_turned_off_without_a_group(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.replace_record_permissions("r1", [], None, inherit=False, transaction="tx")
+
+        instance.delete_edges_between_collections.assert_awaited_once_with(
+            "r1", "records", "inheritPermissions", "recordGroups", "tx"
+        )
 
     @pytest.mark.asyncio
     async def test_replace_record_permissions_turning_inheritance_on(self) -> None:
@@ -633,7 +646,7 @@ class TestRecordLinkDefaults:
 
         instance.batch_create_edges.assert_not_awaited()
         instance.create_inherit_permissions_relation_record_group.assert_awaited_once_with("r1", "g1", "tx")
-        instance.batch_delete_edges.assert_not_awaited()
+        instance.delete_edges_between_collections.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_moving_a_record_between_groups(self) -> None:

@@ -472,8 +472,17 @@ class MockTransactionStore:
         await self.replace_edges_to(
             record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value
         )
-        if record_group_id:
-            await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+        if not inherit:
+            inherit_edges = self._s.edges.get(CollectionNames.INHERIT_PERMISSIONS.value, [])
+            self._s.edges[CollectionNames.INHERIT_PERMISSIONS.value] = [
+                e for e in inherit_edges
+                if not (
+                    e.get("_from") == f"{CollectionNames.RECORDS.value}/{record_id}"
+                    and (e.get("_to") or "").startswith(f"{CollectionNames.RECORD_GROUPS.value}/")
+                )
+            ]
+        elif record_group_id:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
 
     async def link_record_to_group(
         self,

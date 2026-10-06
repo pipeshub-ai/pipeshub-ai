@@ -11554,6 +11554,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return 0
 
+    async def _stop_inheriting_from_record_groups(self, record_id: str, transaction: str | None) -> None:
+        # Not delete_edges_between_collections: it answers 0 when the delete fails, and
+        # the transaction would commit the new permissions beside the old inheritance.
+        await self.http_client.execute_aql(
+            """
+            FOR edge IN @@inherit_permissions
+                FILTER edge._from == @record
+                FILTER IS_SAME_COLLECTION(@record_groups, edge._to)
+                REMOVE edge IN @@inherit_permissions
+            """,
+            bind_vars={
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "record": f"{CollectionNames.RECORDS.value}/{record_id}",
+                "record_groups": CollectionNames.RECORD_GROUPS.value,
+            },
+            txn_id=transaction,
+        )
+
     async def delete_nodes_and_edges(
         self,
         keys: list[str],

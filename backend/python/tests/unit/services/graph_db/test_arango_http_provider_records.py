@@ -4367,3 +4367,25 @@ class TestDeleteSingleRecord:
         )
         assert result["success"] is True
         connected_provider.commit_transaction.assert_not_called()
+
+
+class TestStopInheritingFromRecordGroups:
+    @pytest.mark.asyncio
+    async def test_removes_only_edges_to_record_groups(self, connected_provider) -> None:
+        await connected_provider._stop_inheriting_from_record_groups("rec1", "tx")
+
+        connected_provider.http_client.execute_aql.assert_awaited_once()
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "IS_SAME_COLLECTION(@record_groups, edge._to)" in call.args[0]
+        assert call.kwargs["bind_vars"] == {
+            "@inherit_permissions": "inheritPermissions", "record": "records/rec1", "record_groups": "recordGroups",
+        }
+        assert call.kwargs["txn_id"] == "tx"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_is_raised(self, connected_provider) -> None:
+        """Answered with 0, the transaction committed the new permissions beside the old inheritance."""
+        connected_provider.http_client.execute_aql.side_effect = RuntimeError("write conflict")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await connected_provider._stop_inheriting_from_record_groups("rec1", None)

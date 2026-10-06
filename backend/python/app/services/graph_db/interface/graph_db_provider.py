@@ -925,16 +925,30 @@ class IGraphDBProvider(ABC):
     ) -> None:
         """Replace the PERMISSION edges into the record and set whether it inherits from its group.
 
-        *inherit* writes the INHERIT_PERMISSIONS edge to *record_group_id* or removes
-        it; with no group that edge is left alone. Concrete for the same reason as
+        *inherit* true writes the INHERIT_PERMISSIONS edge to *record_group_id*, when
+        there is one. False removes the record's inherit edge to every record group,
+        so one to a group that can no longer be looked up goes too; its inherit edges
+        to a parent record or an app stay. Concrete for the same reason as
         ``replace_edges_to``: on Neo4j a failure between the separate calls left the
         new permissions beside an inherit edge that should have gone.
         """
         await self.replace_edges_to(
             record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction
         )
-        if record_group_id:
-            await self._set_record_group_inheritance(record_id, record_group_id, transaction, inherit=inherit)
+        if not inherit:
+            await self._stop_inheriting_from_record_groups(record_id, transaction)
+        elif record_group_id:
+            await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
+
+    async def _stop_inheriting_from_record_groups(self, record_id: str, transaction: str | None) -> None:
+        """Remove the record's INHERIT_PERMISSIONS edges to record groups. Must raise when it cannot."""
+        await self.delete_edges_between_collections(
+            record_id,
+            CollectionNames.RECORDS.value,
+            CollectionNames.INHERIT_PERMISSIONS.value,
+            CollectionNames.RECORD_GROUPS.value,
+            transaction,
+        )
 
     async def link_record_to_group(
         self,

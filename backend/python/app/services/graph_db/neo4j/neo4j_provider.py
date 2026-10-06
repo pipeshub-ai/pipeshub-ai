@@ -1713,9 +1713,20 @@ class Neo4jProvider(IGraphDBProvider):
         statement, parameters = self._replace_edges_to_cypher(
             record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value
         )
-        if record_group_id:
+        if not inherit:
+            # Every record group, not only the one passed: the record must not keep
+            # inheriting from a group that could not be looked up.
+            parameters["record_id"] = record_id
+            statement += f"""
+            CALL {{
+                MATCH (:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
+                    -[link:{edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value)}]->
+                    (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)})
+                DELETE link
+            }}"""
+        elif record_group_id:
             now = get_epoch_timestamp_in_ms()
-            statement += self._record_group_link_cypher(CollectionNames.INHERIT_PERMISSIONS.value, create=inherit)
+            statement += self._record_group_link_cypher(CollectionNames.INHERIT_PERMISSIONS.value, create=True)
             parameters.update(
                 record_id=record_id,
                 group_id=record_group_id,

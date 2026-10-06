@@ -4436,18 +4436,22 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning(f"User with email {user_email} not found in database")
                 return
 
-            success = await tx_store.delete_edge(
-                from_id=user.id,
-                from_collection=CollectionNames.USERS.value,
-                to_id=record_id,
-                to_collection=CollectionNames.RECORDS.value,
-                collection=CollectionNames.PERMISSION.value
+            # Not delete_edge: ArangoDB's answers False when the delete fails, which
+            # read here as "nothing to delete" and left the user with the permission.
+            deleted = await tx_store.batch_delete_edges(
+                [{
+                    "from_id": user.id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                }],
+                collection=CollectionNames.PERMISSION.value,
             )
 
-            if success:
+            if deleted:
                 self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
             else:
-                self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
+                self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
 
     async def get_app_creator_user(self, connector_id: str) -> User | None:
         """

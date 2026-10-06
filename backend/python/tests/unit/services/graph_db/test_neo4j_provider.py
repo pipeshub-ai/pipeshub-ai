@@ -5696,11 +5696,11 @@ class TestRecordLinksAreOneStatement:
         call = neo4j_provider.client.execute_query.await_args
         query, parameters = call.args[0], call.kwargs["parameters"]
         assert query.index("DELETE old") < query.index("MERGE (from)-[r:PERMISSION]->(to)")
-        assert query.index("MERGE (from)-[r:PERMISSION]->(to)") < query.index(
-            "(:Record {id: $record_id})-[link:INHERIT_PERMISSIONS]->(:RecordGroup {id: $group_id})"
-        )
-        assert "DELETE link" in query
-        assert (parameters["to_id"], parameters["record_id"], parameters["group_id"]) == ("r1", "r1", "g1")
+        assert query.index("MERGE (from)-[r:PERMISSION]->(to)") < query.index("-[link:INHERIT_PERMISSIONS]->")
+        # Every record group, not only g1.
+        assert "(:RecordGroup)\n                DELETE link" in query
+        assert "$group_id" not in query
+        assert (parameters["to_id"], parameters["record_id"]) == ("r1", "r1")
         assert parameters["edges_0"] == [{"from_key": "u1", "to_key": "r1", "props": {"role": "READER"}}]
         assert call.kwargs["txn_id"] == "tx"
 
@@ -5712,6 +5712,26 @@ class TestRecordLinksAreOneStatement:
 
         neo4j_provider.client.execute_query.assert_awaited_once()
         assert "INHERIT_PERMISSIONS" not in neo4j_provider.client.execute_query.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_replace_record_permissions_stops_inheriting_without_a_group(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        await neo4j_provider.replace_record_permissions("r1", [], None, inherit=False)
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "-[link:INHERIT_PERMISSIONS]->" in query
+        assert "DELETE link" in query
+
+    @pytest.mark.asyncio
+    async def test_replace_record_permissions_starts_inheriting(self, neo4j_provider: Neo4jProvider) -> None:
+        await neo4j_provider.replace_record_permissions("r1", [], "g1", inherit=True)
+
+        call = neo4j_provider.client.execute_query.await_args
+        assert "MERGE (record)-[link:INHERIT_PERMISSIONS]->(record_group)" in call.args[0]
+        assert "DELETE link" not in call.args[0]
+        assert call.kwargs["parameters"]["group_id"] == "g1"
 
     @pytest.mark.asyncio
     async def test_moving_a_record_between_groups(self, neo4j_provider: Neo4jProvider) -> None:
