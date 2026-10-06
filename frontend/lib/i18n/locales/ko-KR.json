@@ -1450,7 +1450,7 @@
         "shareToolResults": "이 메시지의 도구 결과 공유"
       },
       "access": {
-        "button": "접근 권한",
+        "button": "볼 수 있는 사람",
         "buttonLabel": "이 채팅에 접근할 수 있는 사람",
         "title": "이 채팅 접근 권한",
         "subjectLabel": "접근 권한 확인 대상",
@@ -1525,6 +1525,9 @@
           "row": "{{name}} · {{role}}"
         },
         "removeSelection": "{{name}} 제거"
+      },
+      "header": {
+        "peopleCanSee_other": "{{count}}명이 이 채팅을 볼 수 있음"
       },
       "accessLostBannerEmpty": "이 채팅은 사용할 수 없습니다. 삭제되었거나 접근 권한이 제거되었을 수 있습니다.",
       "draft": {

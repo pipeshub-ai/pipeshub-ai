@@ -1052,6 +1052,12 @@ function ChatContent() {
   const [sharedMembers, setSharedMembers] = useState<SharedAvatarMember[]>([]);
 
   const collabEnabledForShare = conversationAccess.collabEnabled;
+  const headerPeopleCount = useChatStore((s) => {
+    const convId = s.activeSlotId ? s.slots[s.activeSlotId]?.convId : null;
+    if (!convId) return undefined;
+    const row = [...s.conversations, ...s.sharedConversations].find((c) => c.id === convId);
+    return row?.collaboratorCount !== undefined ? row.collaboratorCount + 1 : undefined;
+  });
   const chatShareAdapter = useMemo(() => {
     if (!conversationId) return null;
     const agentOptions = historyAndShareAgentId ? { agentId: historyAndShareAgentId } : undefined;
@@ -1378,9 +1384,10 @@ function ChatContent() {
 
       {/* Access + Share header group. Access shows for anyone with a known server view (flag on). */}
       {(showConversationShare || showAccessButton || showDraftShare) && (
-        <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
-          <Flex align="center" gap="4">
+        <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20, maxWidth: 'calc(100% - 32px)' }}>
+          <Flex align="center" gap={{ initial: '2', sm: '4' }} wrap="nowrap">
             {showAccessButton && conversationId && (
+              <Box className="ph-collab-access-slot" style={{ flexShrink: 0 }}>
               <AccessPanel
                 conversationRef={
                   historyAndShareAgentId
@@ -1396,9 +1403,14 @@ function ChatContent() {
                   store.bumpConversationsVersion();
                 }}
               />
+              </Box>
             )}
             {showConversationShare && (
-              <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+              <ShareHeaderGroup
+                members={sharedMembers}
+                onShareClick={handleShareClick}
+                peopleCount={showAccessButton ? headerPeopleCount : undefined}
+              />
             )}
             {showDraftShare && (
               <ShareHeaderGroup members={draftMembers} onShareClick={() => setIsDraftShareOpen(true)} />

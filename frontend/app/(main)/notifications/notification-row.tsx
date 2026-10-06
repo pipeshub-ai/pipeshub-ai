@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useLayoutEffect, useCallback, type CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { Link } from '@/lib/navigation';
 import { Flex, Text, Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
 import { useFeatureFlagsStore, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
-import { collabSessionId, describeCollabNotification } from './collab-notifications';
+import { collabChatTitle, collabSessionId, describeCollabNotification } from './collab-notifications';
 
 export type NotificationRowAction =
   | 'markRead'
@@ -82,6 +82,25 @@ function severityIcon(severity: NotificationSeverity): string {
   }
 }
 
+function typeIcon(type: string, severity: NotificationSeverity): string {
+  switch (type) {
+    case 'chat.shared':
+      return 'share';
+    case 'chat.mentioned':
+      return 'alternate_email';
+    case 'chat.activity':
+      return 'forum';
+    case 'chat.deleted':
+      return 'delete';
+    case 'chat.accessChanged':
+      return 'lock_open';
+    case 'chat.ownershipTransferred':
+      return 'swap_horiz';
+    default:
+      return type.startsWith('agent') ? 'smart_toy' : severityIcon(severity);
+  }
+}
+
 function severityColor(severity: NotificationSeverity): string {
   switch (severity) {
     case 'info':
@@ -120,7 +139,7 @@ function NotificationTitle({
 
   if (href) {
     return (
-      <Text size="2" weight="medium" asChild>
+      <Text size="2" asChild>
         <Link
           href={href}
           data-ph-notification-row-title-link=""
@@ -137,7 +156,7 @@ function NotificationTitle({
   }
 
   return (
-    <Text size="2" weight="medium" style={{ ...style, ...titleWrapStyle }}>
+    <Text size="2" style={{ ...style, ...titleWrapStyle }}>
       {title}
     </Text>
   );
@@ -242,15 +261,6 @@ export function NotificationRow({
 }) {
   const { i18n, t } = useTranslation();
   const collabEnabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [isTruncated, setIsTruncated] = useState(false);
-  // Hidden unclamped clone used solely for measuring the natural text height.
-  // scrollHeight on a -webkit-line-clamp element is unreliable in some browsers
-  // (it can return the clamped height instead of the full content height), so we
-  // measure on a separate, unconstrained div instead.
-  const messageContainerRef = useRef<HTMLDivElement>(null);
-  const measureRef = useRef<HTMLDivElement>(null);
-
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
   const collabText = collabEnabled ? describeCollabNotification(n, t) : null;
@@ -258,36 +268,19 @@ export function NotificationRow({
   const message = collabText?.message ?? n.message ?? '';
   // A deleted chat has nothing to open.
   const href = n.type === 'chat.deleted' && collabEnabled ? null : notificationHref(n.redirectLink ?? '');
+  const isCollabType = collabText != null;
   const canMute = collabEnabled && onToggleMute != null && collabSessionId(n) != null;
 
   const isRead = n.status === 'read' || n.status === 'archived';
-  const readOpacity = isRead ? 0.65 : 1;
-  const titleStyle = { color: 'var(--slate-12)' };
+  const isUnread = !isRead;
+  const chatTitle = collabEnabled ? collabChatTitle(n) : undefined;
+  const isDeleted = n.type === 'chat.deleted';
+  const iconTint = isDeleted ? 'var(--red-11)' : isUnread ? 'var(--accent-11)' : 'var(--slate-10)';
+  const titleStyle = {
+    color: isUnread ? 'var(--slate-12)' : 'var(--slate-11)',
+    fontWeight: isUnread ? 600 : 400,
+  };
   const isBusy = pendingAction != null;
-
-  const measureMessageTruncation = useCallback(() => {
-    const el = measureRef.current;
-    if (!el) return;
-    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 16;
-    const truncated = el.scrollHeight > lineHeight * 2 + 1;
-    setIsTruncated(truncated);
-    if (!truncated) {
-      setIsExpanded(false);
-    }
-  }, []);
-
-  useLayoutEffect(() => {
-    setIsExpanded(false);
-  }, [message]);
-
-  useLayoutEffect(() => {
-    measureMessageTruncation();
-    const container = messageContainerRef.current;
-    if (!container) return;
-    const ro = new ResizeObserver(measureMessageTruncation);
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [measureMessageTruncation, message]);
 
   return (
     <Box
@@ -299,8 +292,25 @@ export function NotificationRow({
         boxSizing: 'border-box',
         borderBottom: '1px solid var(--olive-4)',
         padding: 'var(--space-3) var(--space-4)',
+        minHeight: 56,
+        position: 'relative',
       }}
     >
+      {isUnread ? (
+        <Box
+          data-ph-notification-unread-dot=""
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: 6,
+            top: 'calc(var(--space-3) + 11px)',
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            backgroundColor: 'var(--accent-9)',
+          }}
+        />
+      ) : null}
       <Flex align="start" gap="2">
         <Box
           style={{
@@ -310,21 +320,20 @@ export function NotificationRow({
             width: 28,
             height: 28,
             borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--olive-3)',
+            backgroundColor: isUnread ? 'var(--accent-a3)' : 'var(--olive-3)',
             flexShrink: 0,
-            opacity: readOpacity,
           }}
         >
           <MaterialIcon
-            name={severityIcon(severity)}
+            name={typeIcon(n.type, severity)}
             size={16}
-            color={severityColor(severity)}
+            color={collabEnabled && isCollabType ? iconTint : severityColor(severity)}
           />
         </Box>
 
         <Flex align="start" justify="between" gap="2" style={{ flex: 1, minWidth: 0 }}>
           <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-            <Box style={{ opacity: readOpacity }}>
+            <Box>
               <NotificationTitle
                 title={title}
                 href={href}
@@ -335,34 +344,31 @@ export function NotificationRow({
                 }}
               />
             </Box>
-            <Box ref={messageContainerRef} style={{ position: 'relative', minWidth: 0, width: '100%' }}>
-              {/* Invisible unclamped clone — used only to measure full text height */}
-              <div
-                ref={measureRef}
-                aria-hidden="true"
+            {chatTitle ? (
+              <Text
+                data-ph-notification-chat-title=""
+                size="1"
+                title={chatTitle}
                 style={{
-                  visibility: 'hidden',
-                  pointerEvents: 'none',
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  fontSize: 'var(--font-size-1)',
-                  lineHeight: 'var(--line-height-1)',
-                  letterSpacing: 'var(--letter-spacing-1)',
-                  whiteSpace: 'normal',
-                  overflow: 'visible',
+                  color: 'var(--slate-12)',
+                  fontWeight: 500,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {message}
-              </div>
+                {chatTitle}
+              </Text>
+            ) : null}
+            {message ? (
               <div
+                title={message}
                 style={{
-                  display: isExpanded ? 'block' : '-webkit-box',
-                  WebkitLineClamp: isExpanded ? undefined : 2,
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
                   WebkitBoxOrient: 'vertical',
                   overflow: 'hidden',
-                  paddingRight: (isTruncated && !isExpanded) ? '58px' : '0',
+                  overflowWrap: 'anywhere',
                   fontSize: 'var(--font-size-1)',
                   lineHeight: 'var(--line-height-1)',
                   letterSpacing: 'var(--letter-spacing-1)',
@@ -371,50 +377,7 @@ export function NotificationRow({
               >
                 {message}
               </div>
-              {isTruncated && !isExpanded && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setIsExpanded(true)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') setIsExpanded(true);
-                  }}
-                  style={{
-                    position: 'absolute',
-                    bottom: 0,
-                    right: 0,
-                    cursor: 'pointer',
-                    color: 'var(--accent-11)',
-                    fontSize: 'var(--font-size-1)',
-                    lineHeight: 'var(--line-height-1)',
-                    userSelect: 'none',
-                  }}
-                >
-                  show more
-                </span>
-              )}
-            </Box>
-            {isExpanded && isTruncated && (
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={() => setIsExpanded(false)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') setIsExpanded(false);
-                }}
-                style={{
-                  display: 'inline-block',
-                  marginTop: '2px',
-                  cursor: 'pointer',
-                  color: 'var(--accent-11)',
-                  fontSize: 'var(--font-size-1)',
-                  lineHeight: 'var(--line-height-1)',
-                  userSelect: 'none',
-                }}
-              >
-                show less
-              </span>
-            )}
+            ) : null}
           </Flex>
 
           <Box data-ph-notification-row-meta="">

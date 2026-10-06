@@ -467,23 +467,19 @@ export function NotificationsPanel() {
         [data-ph-notifications-header-actions] > *:hover {
           z-index: 1;
         }
-        [data-ph-notification-row][data-read="true"] {
-          background-color: var(--gray-a2);
-        }
-        html.dark [data-ph-notification-row][data-read="true"] {
-          background-color: transparent;
-        }
-        html.dark [data-ph-notification-row][data-read="false"] {
-          background-color: var(--gray-a2);
+        [data-ph-notification-row][data-read="false"] {
+          background-color: var(--accent-a2);
         }
         [data-ph-notification-row]:hover {
           background-color: var(--olive-3);
         }
-        html.dark [data-ph-notification-row][data-read="true"]:hover {
-          background-color: var(--gray-a3);
+        html.dark [data-ph-notification-row]:hover {
+          background-color: var(--gray-a4);
         }
-        html.dark [data-ph-notification-row][data-read="false"]:hover {
-          background-color: var(--gray-a6);
+        @media (max-width: 640px) {
+          [data-ph-notification-row] {
+            min-height: 64px;
+          }
         }
         [data-ph-notification-row-meta] {
           position: relative;
@@ -676,13 +672,15 @@ export function NotificationsPanel() {
           )}
 
           {loading && displayNotifications.length === 0 ? (
-            <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
+            <Flex align="center" justify="center" gap="2" style={{ paddingTop: 'var(--space-8)' }} role="status">
+              <Spinner size={16} />
               <Text size="2" color="gray">
                 {t('notifications.loading')}
               </Text>
             </Flex>
           ) : displayNotifications.length === 0 && (hasMore || isLoadingMore) ? (
-            <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
+            <Flex align="center" justify="center" gap="2" style={{ paddingTop: 'var(--space-8)' }} role="status">
+              <Spinner size={16} />
               <Text size="2" color="gray">
                 {t('notifications.loading')}
               </Text>

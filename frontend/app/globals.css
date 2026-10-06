@@ -1384,3 +1384,9 @@ th code {
     background: transparent !important;
   }
 }
+
+/* Collab chat header: the Access trigger shrinks to its icon on narrow screens so the header never wraps. */
+@media (max-width: 640px) {
+  .ph-collab-access-slot .rt-Button .rt-Text { display: none; }
+  .ph-collab-access-slot .rt-Button { min-width: 28px; min-height: 28px; justify-content: center; }
+}

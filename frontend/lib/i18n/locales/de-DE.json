@@ -1370,7 +1370,7 @@
         "shareToolResults": "Tool-Ergebnisse dieser Nachricht teilen"
       },
       "access": {
-        "button": "Zugriff",
+        "button": "Wer kann das sehen",
         "buttonLabel": "Wer auf diesen Chat zugreifen kann",
         "title": "Zugriff auf diesen Chat",
         "subjectLabel": "Zugriff prüfen für",
@@ -1445,6 +1445,10 @@
           "row": "{{name}} · {{role}}"
         },
         "removeSelection": "{{name}} entfernen"
+      },
+      "header": {
+        "peopleCanSee_one": "{{count}} Person kann diesen Chat sehen",
+        "peopleCanSee_other": "{{count}} Personen können diesen Chat sehen"
       },
       "accessLostBannerEmpty": "Dieser Chat ist für Sie nicht verfügbar. Er wurde möglicherweise gelöscht oder Ihr Zugriff wurde entfernt.",
       "draft": {

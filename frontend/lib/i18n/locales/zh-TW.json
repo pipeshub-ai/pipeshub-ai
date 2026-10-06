@@ -1450,7 +1450,7 @@
         "shareToolResults": "共用此訊息的工具結果"
       },
       "access": {
-        "button": "存取權限",
+        "button": "誰能看到",
         "buttonLabel": "誰可以存取此對話",
         "title": "此對話的存取權限",
         "subjectLabel": "檢視存取權限的對象",
@@ -1525,6 +1525,9 @@
           "row": "{{name}} · {{role}}"
         },
         "removeSelection": "移除 {{name}}"
+      },
+      "header": {
+        "peopleCanSee_other": "{{count}} 人可以查看此對話"
       },
       "accessLostBannerEmpty": "您無法使用此對話。它可能已被刪除，或您的存取權已被移除。",
       "draft": {

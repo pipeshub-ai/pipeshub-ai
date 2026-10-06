@@ -1370,7 +1370,7 @@
         "shareToolResults": "इस संदेश के टूल परिणाम साझा करें"
       },
       "access": {
-        "button": "पहुँच",
+        "button": "इसे कौन देख सकता है",
         "buttonLabel": "इस चैट तक किसकी पहुँच है",
         "title": "इस चैट की पहुँच",
         "subjectLabel": "इनकी पहुँच जाँचें",
@@ -1445,6 +1445,10 @@
           "row": "{{name}} · {{role}}"
         },
         "removeSelection": "{{name}} को हटाएँ"
+      },
+      "header": {
+        "peopleCanSee_one": "{{count}} व्यक्ति इस चैट को देख सकता है",
+        "peopleCanSee_other": "{{count}} लोग इस चैट को देख सकते हैं"
       },
       "accessLostBannerEmpty": "यह चैट आपके लिए उपलब्ध नहीं है। हो सकता है इसे हटा दिया गया हो या आपकी पहुँच हटा दी गई हो।",
       "draft": {

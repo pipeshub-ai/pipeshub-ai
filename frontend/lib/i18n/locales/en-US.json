@@ -1455,7 +1455,7 @@
         "shareToolResults": "Share tool results from this message"
       },
       "access": {
-        "button": "Access",
+        "button": "Who can see this",
         "buttonLabel": "Who can access this chat",
         "title": "Access to this chat",
         "subjectLabel": "Check access for",
@@ -1530,6 +1530,10 @@
           "row": "{{name}} · {{role}}"
         },
         "removeSelection": "Remove {{name}}"
+      },
+      "header": {
+        "peopleCanSee_one": "{{count}} person can see this chat",
+        "peopleCanSee_other": "{{count}} people can see this chat"
       },
       "accessLostBannerEmpty": "This chat isn't available to you. It may have been deleted or your access removed.",
       "draft": {

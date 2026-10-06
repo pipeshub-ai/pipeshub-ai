@@ -1388,7 +1388,7 @@
         "shareToolResults": "Compartir los resultados de las herramientas de este mensaje"
       },
       "access": {
-        "button": "Acceso",
+        "button": "Quién puede verlo",
         "buttonLabel": "Quién puede acceder a este chat",
         "title": "Acceso a este chat",
         "subjectLabel": "Comprobar el acceso de",
@@ -1463,6 +1463,10 @@
           "row": "{{name}} · {{role}}"
         },
         "removeSelection": "Quitar a {{name}}"
+      },
+      "header": {
+        "peopleCanSee_one": "{{count}} persona puede ver este chat",
+        "peopleCanSee_other": "{{count}} personas pueden ver este chat"
       },
       "accessLostBannerEmpty": "Este chat no está disponible para ti. Puede que se haya eliminado o que se haya revocado tu acceso.",
       "draft": {

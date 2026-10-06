@@ -1450,7 +1450,7 @@
         "shareToolResults": "共享此消息的工具结果"
       },
       "access": {
-        "button": "访问权限",
+        "button": "谁能看到",
         "buttonLabel": "谁可以访问此聊天",
         "title": "此聊天的访问权限",
         "subjectLabel": "查看访问权限的对象",
@@ -1525,6 +1525,9 @@
           "row": "{{name}} · {{role}}"
         },
         "removeSelection": "移除 {{name}}"
+      },
+      "header": {
+        "peopleCanSee_other": "{{count}} 人可以查看此聊天"
       },
       "accessLostBannerEmpty": "此聊天对您不可用。它可能已被删除，或您的访问权限已被移除。",
       "draft": {

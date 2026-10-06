@@ -46,6 +46,14 @@ function contextOf(n: NotificationListItem): { chat?: string; actor?: string } {
   return { chat: clean(displayTitle(ctx?.chatTitle)), actor: clean(ctx?.actorName) };
 }
 
+/** Chat title for a collaboration row: resolved context first, then a title carried in the payload. */
+export function collabChatTitle(n: NotificationListItem): string | undefined {
+  if (!isCollabNotificationType(n.type)) return undefined;
+  const fromPayload = payloadOf(n).chatTitle;
+  const raw = typeof fromPayload === 'string' ? displayTitle(fromPayload) : undefined;
+  return contextOf(n).chat ?? (raw && raw.trim() ? raw.trim() : undefined);
+}
+
 /** Picks the most specific i18n key for the context fields present, e.g. `bodyNamed` / `bodyNamedChat` / `bodyNamedActor`. */
 function namedKey(base: string, { chat, actor }: { chat?: string; actor?: string }, allowActor = true): string {
   if (chat && actor && allowActor) return `${base}Named`;
