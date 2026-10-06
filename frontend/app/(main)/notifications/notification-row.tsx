@@ -24,6 +24,14 @@ function notificationHref(redirectLink: string): string | null {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
+/** The conversation an in-app chat link such as `/chat/?conversationId=…` opens, or null. */
+export function chatConversationIdFromHref(href: string): string | null {
+  if (!href.startsWith('/')) return null;
+  const url = new URL(href, 'http://app.invalid');
+  if (url.pathname.replace(/\/+$/, '') !== '/chat') return null;
+  return url.searchParams.get('conversationId') || null;
+}
+
 function formatRelativeTime(
   iso: string | undefined,
   lang: string,
@@ -193,8 +201,11 @@ export function NotificationRow({
   dismissLabel,
   compactTime = false,
   pendingAction = null,
+  onOpenLink,
 }: {
   notification: NotificationListItem;
+  /** Called before an in-app link navigates, including to the page already open. */
+  onOpenLink?: (href: string) => void;
   onMarkRead: (n: NotificationListItem) => void;
   onMarkUnread: (n: NotificationListItem) => void;
   onArchive: (n: NotificationListItem) => void;
@@ -295,6 +306,7 @@ export function NotificationRow({
                 style={titleStyle}
                 onNavigate={() => {
                   if (!isRead) onMarkRead(n);
+                  if (href && href.startsWith('/')) onOpenLink?.(href);
                 }}
               />
             </Box>

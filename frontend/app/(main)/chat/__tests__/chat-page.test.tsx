@@ -340,6 +340,27 @@ describe('Chat page — opening a conversation', () => {
     expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
   });
 
+  it('loads the open conversation again when it is invalidated, as a notification about it does', async () => {
+    fetchConversation.mockResolvedValueOnce(conversationDetail());
+    renderPage('conversationId=conv-1');
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+
+    fetchConversation.mockResolvedValueOnce(
+      conversationDetail({
+        messages: [
+          apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
+          apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
+          apiMessage({ _id: 'u2', messageType: 'user_query', content: 'And sick days?' }),
+          apiMessage({ _id: 'b2', messageType: 'bot_response', content: 'Ten paid sick days.' }),
+        ],
+      }),
+    );
+    await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+
+    expect(await screen.findByText('Ten paid sick days.')).toBeTruthy();
+    expect(fetchConversation).toHaveBeenCalledTimes(2);
+  });
+
   it('restores the collections the last question was scoped to', async () => {
     fetchConversation.mockResolvedValue(
       conversationDetail({

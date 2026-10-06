@@ -15,7 +15,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
 import { useNotificationStore, getVisibleNotifications } from './store';
-import { NotificationRow, type NotificationRowAction } from './notification-row';
+import { NotificationRow, chatConversationIdFromHref, type NotificationRowAction } from './notification-row';
+import { useChatStore } from '@/chat/store';
 import {
   NotificationFilterMenu,
   NOTIFICATIONS_PANEL_TOOLTIP_CLASS,
@@ -303,6 +304,15 @@ export function NotificationsPanel() {
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [isPanelOpen, closePanel]);
+
+  // A link to the page already open changes no route, so neither the route-change close
+  // above nor the chat page's own loading runs: close here, and refetch the conversation
+  // whether it is open now or cached from earlier, since the notification says it changed.
+  const onOpenLink = (href: string) => {
+    closePanel();
+    const conversationId = chatConversationIdFromHref(href);
+    if (conversationId) useChatStore.getState().invalidateConversation(conversationId);
+  };
 
   const onMarkRead = async (n: NotificationListItem) => {
     if (n.status === 'read' || !n._id || !beginRowAction(n._id, 'markRead')) return;
@@ -661,6 +671,7 @@ export function NotificationsPanel() {
                 <NotificationRow
                   key={n._id}
                   notification={n}
+                  onOpenLink={onOpenLink}
                   compactTime={layoutPanelWidth < PANEL_COMPACT_TIME_WIDTH}
                   pendingAction={pendingActions.get(n._id) ?? null}
                   onMarkRead={(item) => void onMarkRead(item)}

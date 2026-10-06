@@ -507,6 +507,11 @@ interface ChatState {
    * slots) keeps running — use this for New Chat / parallel conversations.
    */
   clearActiveSlot: () => void;
+  /**
+   * Make every cached slot of this conversation load its history again the next time it
+   * is shown, now if it is open. A slot that is still streaming keeps its live state.
+   */
+  invalidateConversation: (convId: string) => void;
 
   // ── Sidebar actions ──
   setConversations: (conversations: Conversation[]) => void;
@@ -938,6 +943,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
           },
         },
       };
+    });
+  },
+
+  invalidateConversation: (convId) => {
+    set((state) => {
+      let changed = false;
+      const slots = { ...state.slots };
+      for (const [slotId, slot] of Object.entries(state.slots)) {
+        if (slot.convId !== convId || !slot.isInitialized) continue;
+        if (slot.isTemp || slot.isStreaming || slot.stopping) continue;
+        slots[slotId] = { ...slot, isInitialized: false };
+        changed = true;
+      }
+      return changed ? { slots } : state;
     });
   },
 
