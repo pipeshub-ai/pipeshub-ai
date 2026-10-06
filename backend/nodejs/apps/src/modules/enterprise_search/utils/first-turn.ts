@@ -12,6 +12,7 @@ import {
   IChatAttachmentRef,
   IChatSession,
 } from '../types/conversation.interfaces';
+import { MentionRef } from '../services/collaboration/mentions/mention.types';
 import { ChatTarget } from './ai-chat-payload';
 import { AppendedTurn, FollowUpBody } from './follow-up-turn';
 import { openConversation } from './non-streaming-chat';
@@ -30,6 +31,10 @@ export interface FirstTurnInput {
   body: FollowUpBody;
   attachments?: IChatAttachmentRef[];
   link: ResolvedProjectLink;
+  /** The agent a mention handed this turn to, when it is not the chat's own. */
+  guestAgentKey?: string;
+  /** The validated mentions of the first message; stored with it, with the flags on. */
+  mentions?: readonly MentionRef[];
 }
 
 const sessionFields = (
@@ -120,6 +125,8 @@ export async function createFirstTurn(
         filesShared: body.filesShared,
         shareToolResults: body.shareToolResults,
         runId: fresh.activeRun.runId,
+        ...(input.mentions &&
+          input.mentions.length > 0 && { mentions: [...input.mentions] }),
       }),
     },
   );
@@ -162,6 +169,10 @@ export async function createFirstTurn(
       lease: fresh?.bind(String(conversation._id)),
       requestedBy: authorUserId,
       inReplyTo: userRow._id,
+      ...(fresh &&
+        input.guestAgentKey !== undefined && {
+          respondingAgentKey: input.guestAgentKey,
+        }),
     },
   };
 }

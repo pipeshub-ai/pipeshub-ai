@@ -10,6 +10,7 @@
  *    into ThreadMessageLike[] (used when initializing a slot).
  */
 
+import { draftShareBody } from './draft-share-store';
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
@@ -991,6 +992,11 @@ export function buildExternalStoreConfig(
       }
       if (msgMentions) {
         request.mentions = msgMentions;
+      }
+      // Only a brand-new default chat can be created already shared; the draft stays until the server accepts it.
+      if (!request.conversationId && !request.agentId) {
+        const share = draftShareBody();
+        if (share) request.share = share;
       }
 
       // Fire-and-forget â€” streaming.ts handles all state updates.

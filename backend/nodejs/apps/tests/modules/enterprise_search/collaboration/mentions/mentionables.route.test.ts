@@ -92,10 +92,32 @@ describe('GET .../mentionables (PH10-11)', () => {
     const agentProfiles = {
       describe: async (_who: unknown, key: string) => (key === 'agent-1' ? { name: 'Offer drafter', handle: 'offer-drafter' } : undefined),
     }
-    const open = (agentBuilder = true) => startFixture({ collaboration: { mentions: true, agentBuilder, agents, agentProfiles } })
+    const agentList = [{ agentKey: 'agent-1', name: 'Offer drafter', handle: 'offer-drafter', isServiceAccount: false }]
+    const open = (agentBuilder = true) => startFixture({ collaboration: { mentions: true, agentBuilder, agents, agentProfiles, agentList } })
 
-    it('AB-11: a non-agent chat offers no agent, since the validator would refuse every one', async () => {
+    it('M2: a default chat offers the agents the caller can run, since the validator accepts any of them', async () => {
       f = await open()
+      expect(labels((await list('chat', 'A')).body)).to.deep.equal(['assistant:PipesHub', 'agent:Offer drafter'])
+    })
+
+    it('M2: an agent chat also offers other agents the caller can run, its own first', async () => {
+      const two = [...agentList, { agentKey: 'agent-2', name: 'Alpha', handle: 'alpha', isServiceAccount: false }]
+      f = await startFixture({
+        collaboration: { mentions: true, agentBuilder: true, agents: { ...agents, canExecute: async () => true }, agentProfiles, agentList: two },
+      })
+      expect(labels((await list('agent', 'A')).body)).to.deep.equal(['assistant:PipesHub', 'agent:Offer drafter', 'agent:Alpha'])
+    })
+
+    it('M2: offers at most 20 agents', async () => {
+      const many = Array.from({ length: 30 }, (_, i) => ({ agentKey: `a${i}`, name: `Agent ${i}`, handle: `agent-${i}`, isServiceAccount: false }))
+      f = await startFixture({
+        collaboration: { mentions: true, agentBuilder: true, agents: { ...agents, canExecute: async () => true }, agentProfiles, agentList: many },
+      })
+      expect((await list('chat', 'A', '?limit=20')).body.items.filter((i: any) => i.type === 'agent').length).to.be.at.most(20)
+    })
+
+    it('M2: an agent list that is down leaves the rest of the picker intact', async () => {
+      f = await startFixture({ collaboration: { mentions: true, agentBuilder: true, agents, agentProfiles, agentList: 'unavailable' } })
       expect(labels((await list('chat', 'A')).body)).to.deep.equal(['assistant:PipesHub'])
     })
 
@@ -123,7 +145,7 @@ describe('GET .../mentionables (PH10-11)', () => {
 
     it('a service-account agent is not offered in a shared chat', async () => {
       f = await startFixture({
-        collaboration: { mentions: true, agentBuilder: true, agents: { ...agents, isServiceAccount: async () => true }, agentProfiles },
+        collaboration: { mentions: true, agentBuilder: true, agents: { ...agents, isServiceAccount: async () => true }, agentProfiles, agentList },
       })
       await share('agent', [user('B', 'write')])
       expect(labels((await list('agent', 'A')).body)).to.deep.equal(['assistant:PipesHub', 'user:Bob'])
@@ -131,7 +153,7 @@ describe('GET .../mentionables (PH10-11)', () => {
 
     it('a directory that is down leaves the rest of the picker intact', async () => {
       f = await startFixture({
-        collaboration: { mentions: true, agentBuilder: true, agents: { canExecute: async () => 'unavailable' as const, isServiceAccount: async () => false }, agentProfiles },
+        collaboration: { mentions: true, agentBuilder: true, agents: { canExecute: async () => 'unavailable' as const, isServiceAccount: async () => false }, agentProfiles, agentList },
       })
       expect(labels((await list('agent', 'A')).body)).to.deep.equal(['assistant:PipesHub'])
     })

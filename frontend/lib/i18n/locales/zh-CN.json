@@ -721,9 +721,13 @@
       "groupAssistant": "助手",
       "groupAgent": "智能体",
       "groupPeople": "此聊天中的人员",
+      "groupOthers": "组织中的其他人",
       "groupTeams": "团队",
       "kindAgent": "智能体",
       "kindTeam": "团队",
+      "notInChat": "不在此聊天中",
+      "oneAgentHint": "一条消息只能提及一个智能体。",
+      "addPeople": "添加人员到此聊天…",
       "listLabel": "提及建议",
       "loading": "正在搜索…",
       "empty": "无匹配项",
@@ -750,6 +754,7 @@
         "noteOnly": "只提及同事即可留下备注，不会向 AI 提问",
         "assistantAnywhere": "@assistant 随处可用",
         "agentAccess": "智能体会使用您的权限回答",
+        "agentAnywhere": "在任何聊天中都可以提及您有权使用的智能体",
         "gotIt": "知道了",
         "coachmarkLabel": "提示",
         "firstSharedSend_other": "您的消息和回答对 {{count}} 人可见",
@@ -770,8 +775,7 @@
         "shared": "向 PipesHub 提问，或输入 @ 提及同事或智能体"
       },
       "you": "您",
-      "mentionsYou": "提及了您",
-      "agentNotInChat": "此智能体暂时无法在此聊天中回答。请打开它的专属聊天来使用。"
+      "mentionsYou": "提及了您"
     },
     "recordActions": {
       "preview": "预览",
@@ -1367,7 +1371,8 @@
         "MENTION_SA_AGENT_SHARED": "此智能体以服务账号运行，无法在共享聊天中提及。",
         "MENTION_DIRECTORY_UNAVAILABLE": "暂时无法检查您提及的智能体，请稍后重试。",
         "MESSAGE_IS_NOTE": "此消息未发送给 AI：在此聊天中，只有提及 @assistant 时 AI 才会回答。如需向 AI 提问，请提及 @assistant。",
-        "MESSAGE_NOT_NOTE": "备注不能向 AI 提问。请移除 @assistant 提及，以备注形式发布。"
+        "MESSAGE_NOT_NOTE": "备注不能向 AI 提问。请移除 @assistant 提及，以备注形式发布。",
+        "TOO_MANY_AGENT_MENTIONS": "一条消息只能提及一个智能体。请删除多余的提及后重新发送。"
       },
       "share": {
         "title": "共享聊天",
@@ -1401,7 +1406,9 @@
         "transferred": "所有权已转移",
         "transferredDescription": "{{name}} 现在是拥有者",
         "rateLimited": "更改过于频繁，请在 {{retryAfter}} 秒后重试。",
-        "limitReached": "此聊天最多可添加 {{max}} 个人员和团队。"
+        "limitReached": "此聊天最多可添加 {{max}} 个人员和团队。",
+        "draftNotice": "目前尚未共享任何内容。您在此添加的人员将在您发送第一条消息时获得访问权限。",
+        "draftAdd": "添加"
       },
       "sidebar": {
         "roleRead": "可查看",
@@ -1423,7 +1430,9 @@
         "sentBy": "发送者：{{name}}",
         "askedByAnswered": "提问者：{{name}} · 使用 {{name}} 的权限回答",
         "askedByYouAnswered": "由您提问 · 使用您的权限回答",
-        "waitingFor": "正在等待 {{name}} 回答"
+        "waitingFor": "正在等待 {{name}} 回答",
+        "respondingAgent": "智能体",
+        "respondingAgentAria": "由 {{name}} 回答"
       },
       "consent": {
         "audience_other": "{{count}} 人可见 · 拥有者可添加更多人 · 您添加的文件将被共享",
@@ -1507,7 +1516,13 @@
         },
         "removeSelection": "移除 {{name}}"
       },
-      "accessLostBannerEmpty": "此聊天对您不可用。它可能已被删除，或您的访问权限已被移除。"
+      "accessLostBannerEmpty": "此聊天对您不可用。它可能已被删除，或您的访问权限已被移除。",
+      "draft": {
+        "willShare": "将共享给",
+        "edit": "更改此聊天的共享对象",
+        "remove": "移除 {{name}}",
+        "entry": "{{name}}（{{level}}）"
+      }
     },
     "agentDraft": {
       "label": "智能体草稿",

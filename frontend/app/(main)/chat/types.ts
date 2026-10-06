@@ -3,6 +3,7 @@ import type { CitationMaps } from './components/message-area/response-tabs/citat
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import type { AccessView, ActiveRunDto, ApiAccess, MessageAuthor } from './collaboration-types';
 import type { MentionRef } from './components/composer/composer-input.types';
+import type { DraftShareBody } from './draft-share-store';
 import { ACCEPTED_MIME_TYPES, SUPPORTED_FILE_TYPES } from './utils/attachment-file-types';
 
 // Chat types following project conventions
@@ -817,6 +818,13 @@ export interface QueuedSend {
   queuedAt: number;
 }
 
+/** The agent that answered a turn as a guest. Only `key` when the viewer cannot read the agent. */
+export interface RespondingAgent {
+  key: string;
+  name?: string;
+  handle?: string;
+}
+
 export interface ConversationMessage {
   _id: string;
   messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error' | 'note';
@@ -852,6 +860,8 @@ export interface ConversationMessage {
   requestedBy?: MessageAuthor | null;
   /** Client-generated id that reconciles an optimistic row with the stored one. */
   clientMessageId?: string;
+  /** Set on a bot message a guest agent answered (a mentioned agent other than the chat's own). */
+  respondingAgent?: RespondingAgent;
   /** The sender chose to share the files on this turn with the other participants. */
   filesShared?: boolean;
 }
@@ -953,6 +963,8 @@ export interface StreamChatRequest {
   attachments?: AttachmentRef[];
   /** @mentions picked in the composer; the server validates each against the sender's rights. */
   mentions?: MentionRef[];
+  /** First message of a new chat only: people and teams to share it with, applied when the chat is created. */
+  share?: DraftShareBody;
   /**
    * Only sent when the user has explicitly picked a non-default effort for a
    * reasoning-capable model. Omitted → backend uses the model's own default.

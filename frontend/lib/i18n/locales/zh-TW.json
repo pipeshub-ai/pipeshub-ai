@@ -721,9 +721,13 @@
       "groupAssistant": "助理",
       "groupAgent": "代理",
       "groupPeople": "此對話中的人員",
+      "groupOthers": "組織中的其他人員",
       "groupTeams": "團隊",
       "kindAgent": "代理",
       "kindTeam": "團隊",
+      "notInChat": "不在此對話中",
+      "oneAgentHint": "一則訊息只能提及一個代理。",
+      "addPeople": "將人員加入此對話…",
       "listLabel": "提及建議",
       "loading": "搜尋中…",
       "empty": "沒有符合的項目",
@@ -750,6 +754,7 @@
         "noteOnly": "只提及同事即可留下備註，不會詢問 AI",
         "assistantAnywhere": "@assistant 隨處都能使用",
         "agentAccess": "代理會使用您的權限回答",
+        "agentAnywhere": "在任何對話中都可以提及您有權使用的代理",
         "gotIt": "知道了",
         "coachmarkLabel": "提示",
         "firstSharedSend_other": "您的訊息和回答會顯示給 {{count}} 人",
@@ -770,8 +775,7 @@
         "shared": "向 PipesHub 提問，或輸入 @ 提及同事或代理"
       },
       "you": "您",
-      "mentionsYou": "提及了您",
-      "agentNotInChat": "此代理目前還無法在此對話中回答。請開啟它的專屬對話來使用。"
+      "mentionsYou": "提及了您"
     },
     "recordActions": {
       "preview": "預覽",
@@ -1367,7 +1371,8 @@
         "MENTION_SA_AGENT_SHARED": "此代理以服務帳戶執行，無法在共用對話中提及。",
         "MENTION_DIRECTORY_UNAVAILABLE": "目前無法檢查您提及的代理，請稍後再試。",
         "MESSAGE_IS_NOTE": "此訊息未傳送給 AI：在此對話中，只有提及 @assistant 時 AI 才會回答。若要向 AI 提問，請提及 @assistant。",
-        "MESSAGE_NOT_NOTE": "備註無法向 AI 提問。請移除 @assistant 提及，以備註形式發佈。"
+        "MESSAGE_NOT_NOTE": "備註無法向 AI 提問。請移除 @assistant 提及，以備註形式發佈。",
+        "TOO_MANY_AGENT_MENTIONS": "一則訊息只能提及一個代理。請移除多餘的提及後重新傳送。"
       },
       "share": {
         "title": "分享對話",
@@ -1401,7 +1406,9 @@
         "transferred": "擁有權已轉移",
         "transferredDescription": "{{name}} 現在是擁有者",
         "rateLimited": "變更過於頻繁，請在 {{retryAfter}} 秒後再試。",
-        "limitReached": "此對話最多可新增 {{max}} 個人員和團隊。"
+        "limitReached": "此對話最多可新增 {{max}} 個人員和團隊。",
+        "draftNotice": "目前尚未分享任何內容。您在此新增的人員會在您傳送第一則訊息時取得存取權。",
+        "draftAdd": "新增"
       },
       "sidebar": {
         "roleRead": "可檢視",
@@ -1423,7 +1430,9 @@
         "sentBy": "傳送者：{{name}}",
         "askedByAnswered": "提問者：{{name}} · 使用 {{name}} 的權限回答",
         "askedByYouAnswered": "由您提問 · 使用您的權限回答",
-        "waitingFor": "正在等待 {{name}} 回答"
+        "waitingFor": "正在等待 {{name}} 回答",
+        "respondingAgent": "代理",
+        "respondingAgentAria": "由 {{name}} 回答"
       },
       "consent": {
         "audience_other": "{{count}} 人可見 · 擁有者可新增更多人 · 您新增的檔案將會共用",
@@ -1507,7 +1516,13 @@
         },
         "removeSelection": "移除 {{name}}"
       },
-      "accessLostBannerEmpty": "您無法使用此對話。它可能已被刪除，或您的存取權已被移除。"
+      "accessLostBannerEmpty": "您無法使用此對話。它可能已被刪除，或您的存取權已被移除。",
+      "draft": {
+        "willShare": "將分享給",
+        "edit": "變更此對話的分享對象",
+        "remove": "移除 {{name}}",
+        "entry": "{{name}}（{{level}}）"
+      }
     },
     "agentDraft": {
       "label": "代理草稿",

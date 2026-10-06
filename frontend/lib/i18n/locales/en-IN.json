@@ -634,11 +634,15 @@
       "unknownUser": "Unknown user",
       "unknownTeam": "Unknown team",
       "groupAssistant": "Assistant",
-      "groupAgent": "Agent",
+      "groupAgent": "Agents",
       "groupPeople": "People in this chat",
+      "groupOthers": "Others in your organization",
       "groupTeams": "Teams",
       "kindAgent": "agent",
       "kindTeam": "team",
+      "notInChat": "Not in this chat",
+      "oneAgentHint": "A message can mention only one agent.",
+      "addPeople": "Add people to this chat…",
       "listLabel": "Mention suggestions",
       "loading": "Searching…",
       "empty": "No matches",
@@ -665,6 +669,7 @@
         "noteOnly": "Mention only a teammate to leave a note without asking the AI",
         "assistantAnywhere": "@assistant works anywhere",
         "agentAccess": "Agents answer with your access",
+        "agentAnywhere": "Mention any agent you can use, in any chat",
         "gotIt": "Got it",
         "coachmarkLabel": "Tip",
         "firstSharedSend_one": "Your message and the answer are visible to {{count}} person",
@@ -686,8 +691,7 @@
         "shared": "Ask PipesHub, or type @ to mention a teammate or agent"
       },
       "you": "you",
-      "mentionsYou": "mentions you",
-      "agentNotInChat": "This agent can't answer in this chat yet. Open its own chat to use it."
+      "mentionsYou": "mentions you"
     },
     "recordActions": {
       "preview": "Preview",
@@ -1286,7 +1290,8 @@
         "MENTION_SA_AGENT_SHARED": "This agent runs on a service account and can't be mentioned in a shared chat.",
         "MENTION_DIRECTORY_UNAVAILABLE": "Couldn't check the agents you mentioned right now. Try again in a moment.",
         "MESSAGE_IS_NOTE": "This message wasn't sent to the AI: in this chat it only answers when someone mentions @assistant. Mention @assistant to ask it something.",
-        "MESSAGE_NOT_NOTE": "A note can't ask the AI. Remove the @assistant mention to post it as a note."
+        "MESSAGE_NOT_NOTE": "A note can't ask the AI. Remove the @assistant mention to post it as a note.",
+        "TOO_MANY_AGENT_MENTIONS": "A message can mention only one agent. Remove the extra mentions and send again."
       },
       "share": {
         "title": "Share chat",
@@ -1320,7 +1325,9 @@
         "transferred": "Ownership transferred",
         "transferredDescription": "{{name}} is now the owner",
         "rateLimited": "Too many changes. Try again in {{retryAfter}} seconds.",
-        "limitReached": "This chat can have at most {{max}} people and teams."
+        "limitReached": "This chat can have at most {{max}} people and teams.",
+        "draftNotice": "Nothing is shared yet. People you add here get access when you send your first message.",
+        "draftAdd": "Add"
       },
       "sidebar": {
         "roleRead": "Can view",
@@ -1342,7 +1349,9 @@
         "sentBy": "Sent by {{name}}",
         "askedByAnswered": "Asked by {{name}} · answered using {{name}}'s access",
         "askedByYouAnswered": "Asked by you · answered using your access",
-        "waitingFor": "Waiting for {{name}} to answer"
+        "waitingFor": "Waiting for {{name}} to answer",
+        "respondingAgent": "Agent",
+        "respondingAgentAria": "Answered by {{name}}"
       },
       "consent": {
         "audience_one": "Visible to {{count}} person · the owner can add more · files you add are shared",
@@ -1427,7 +1436,13 @@
         },
         "removeSelection": "Remove {{name}}"
       },
-      "accessLostBannerEmpty": "This chat isn't available to you. It may have been deleted or your access removed."
+      "accessLostBannerEmpty": "This chat isn't available to you. It may have been deleted or your access removed.",
+      "draft": {
+        "willShare": "Will be shared with",
+        "edit": "Change who this chat will be shared with",
+        "remove": "Remove {{name}}",
+        "entry": "{{name}} ({{level}})"
+      }
     },
     "agentDraft": {
       "label": "Agent draft",

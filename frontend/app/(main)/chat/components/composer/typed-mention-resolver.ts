@@ -13,12 +13,20 @@ export interface ResolverCandidate {
   label: string;
 }
 
+/** An agent a typed `@handle` may name; only an exact handle converts, never a name or a prefix. */
+export interface ResolverAgent {
+  ref: MentionRef;
+  handle: string;
+}
+
 export interface ResolveInput {
   /** Wire text: picked mentions are already `<@type:id>` tokens; typed ones are still `@word`. */
   text: string;
   mentions: readonly MentionRef[];
   /** People and teams of the chat that a typed `@name` may mean. */
   candidates: readonly ResolverCandidate[];
+  /** Agents the caller can run, for typed `@handle`. */
+  agents?: readonly ResolverAgent[];
   /** Picks from the chooser, by lowercased typed text. */
   choices?: Readonly<Record<string, MentionRef>>;
 }
@@ -79,10 +87,61 @@ function match(rest: string, word: string, candidates: readonly ResolverCandidat
   return null;
 }
 
+/** `[start, end)` of inline code spans and fenced blocks; an unmatched backtick run is plain text. */
+export function codeSpanRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let i = text.indexOf('`');
+  while (i !== -1) {
+    let n = 1;
+    while (text[i + n] === '`') n++;
+    let close = -1;
+    for (let j = text.indexOf('`', i + n); j !== -1; j = text.indexOf('`', j)) {
+      let m = 1;
+      while (text[j + m] === '`') m++;
+      if (m === n) {
+        close = j;
+        break;
+      }
+      j += m;
+    }
+    if (close !== -1) {
+      ranges.push([i, close + n]);
+      i = text.indexOf('`', close + n);
+    } else if (n >= 3 && (i === 0 || text[i - 1] === '\n')) {
+      ranges.push([i, text.length]);
+      break;
+    } else {
+      i = text.indexOf('`', i + n);
+    }
+  }
+  return ranges;
+}
+
+const inRanges = (ranges: Array<[number, number]>, at: number): boolean => ranges.some(([a, b]) => at >= a && at < b);
+
+/** The distinct lowercased `@word`s outside code that no alias or known person, team or agent explains: worth asking the server about. */
+export function typedHandleWords(text: string, known: (word: string) => boolean): string[] {
+  const code = codeSpanRanges(text);
+  const found = new Set<string>();
+  for (let at = text.indexOf('@'); at !== -1; at = text.indexOf('@', at + 1)) {
+    if (inRanges(code, at) || (at > 0 && isBeforeBlocker(text[at - 1]))) continue;
+    const rest = text.slice(at + 1);
+    const word = WORD.exec(rest)?.[0] ?? '';
+    const afterWord = rest.slice(word.length);
+    if (!word || afterWord.startsWith('@') || DOTTED_WORD.test(afterWord)) continue;
+    const lower = norm(word);
+    if (ASSISTANT_ALIASES.includes(lower) || INERT_ALIASES.includes(lower) || known(lower)) continue;
+    found.add(lower);
+  }
+  return [...found];
+}
+
 /** Where typed reserved assistant aliases (`@assistant`, `@ai`, ...) sit in already-sent text; display only. */
 export function findAssistantAliases(text: string): Array<{ start: number; end: number }> {
   const found: Array<{ start: number; end: number }> = [];
+  const code = codeSpanRanges(text);
   for (let at = text.indexOf('@'); at !== -1; at = text.indexOf('@', at + 1)) {
+    if (inRanges(code, at)) continue;
     if (at > 0 && isBeforeBlocker(text[at - 1])) continue;
     const rest = text.slice(at + 1);
     const word = WORD.exec(rest)?.[0] ?? '';
@@ -97,7 +156,7 @@ export function findAssistantAliases(text: string): Array<{ start: number; end: 
 
 /**
  * Resolves what the user typed before it is sent: a reserved alias always addresses the assistant; an exact,
- * unique person or team becomes an id token; an ambiguous name asks first (nothing is sent); anything else
+ * unique person or team, or an exact agent handle, becomes an id token (never inside code); an ambiguous name asks first (nothing is sent); anything else
  * stays text. `@everyone`, `@here` and `@all` are reserved and do nothing yet.
  */
 export function resolveTypedMentions(input: ResolveInput): ResolveResult {
@@ -109,10 +168,12 @@ export function resolveTypedMentions(input: ResolveInput): ResolveResult {
     mentions.push(ref);
   };
   const { text } = input;
+  const code = codeSpanRanges(text);
   let out = '';
   let last = 0;
 
   for (let at = text.indexOf('@'); at !== -1; at = text.indexOf('@', at + 1)) {
+    if (inRanges(code, at)) continue;
     if (at > 0 && isBeforeBlocker(text[at - 1])) continue;
     const rest = text.slice(at + 1);
     const word = WORD.exec(rest)?.[0] ?? '';
@@ -126,6 +187,15 @@ export function resolveTypedMentions(input: ResolveInput): ResolveResult {
       continue;
     }
     if (INERT_ALIASES.includes(lowerWord)) continue;
+
+    const agent = bare ? input.agents?.find((a) => norm(a.handle) === lowerWord) : undefined;
+    if (agent) {
+      add(agent.ref);
+      out += text.slice(last, at) + toToken(agent.ref);
+      last = at + 1 + word.length;
+      at = last - 1;
+      continue;
+    }
 
     const found = match(rest, word, input.candidates);
     if (!found) continue;

@@ -53,6 +53,7 @@ import {
 import { MongoNotificationArchiver } from '../services/collaboration/notify/notification-archiver';
 import { NotificationOutboxWriter } from '../services/collaboration/notify/notification-outbox.writer';
 import { RecipientResolver } from '../services/collaboration/notify/recipient-resolver';
+import { INewChatSharing } from '../services/collaboration/conversation-collaboration.service';
 import { bindCollaboration } from './collaboration.bindings';
 import {
   ChatNotificationContext,
@@ -60,6 +61,8 @@ import {
 } from '../services/collaboration/notify/chat-notification-context';
 import {
   HttpAgentDirectory,
+  useAgentProfiles,
+  useAgentCacheInvalidator,
 } from '../services/collaboration/mentions/agent.directory';
 import { MentionTurnGate } from '../services/collaboration/mentions/mention-turn-gate';
 import { MentionValidator } from '../services/collaboration/mentions/mention.validator';
@@ -137,12 +140,20 @@ export class EnterpriseSearchAgentContainer {
         users: new MongoUserDirectory(),
         teams,
         agents: agentDirectory,
+        flags,
       });
       const readiness = new HttpAgentReadinessAdapter(
         () => container.get<AppConfig>('AppConfig').aiBackend,
         tokens,
         this.logger,
       );
+      const mentionGate = new MentionTurnGate({
+        flags,
+        validator: mentionValidator,
+        readiness,
+      });
+      useAgentProfiles(agentDirectory);
+      useAgentCacheInvalidator(agentDirectory);
       const authz = new AuthorizationService({
         chats,
         projects,
@@ -189,10 +200,7 @@ export class EnterpriseSearchAgentContainer {
             teams,
             leases,
             readiness,
-            mentions: new MentionTurnGate({
-              flags,
-              validator: mentionValidator,
-            }),
+            mentions: mentionGate,
           }),
         );
       container
@@ -204,7 +212,24 @@ export class EnterpriseSearchAgentContainer {
         .toConstantValue(feed);
       container
         .bind<ConversationTurnDeps>(COLLAB_TYPES.ConversationTurnDeps)
-        .toConstantValue({ feed, users: new MongoUserDirectory(), leases });
+        .toConstantValue({
+          feed,
+          users: new MongoUserDirectory(),
+          leases,
+          mentions: mentionGate,
+          agents: agentDirectory,
+          // Resolved per call: the collaboration service is bound further down.
+          sharing: {
+            validate: (...args) =>
+              container
+                .get<INewChatSharing>(COLLAB_TYPES.NewChatSharing)
+                .validate(...args),
+            apply: (...args) =>
+              container
+                .get<INewChatSharing>(COLLAB_TYPES.NewChatSharing)
+                .apply(...args),
+          },
+        });
       container
         .bind<IAgentReadinessPort>(COLLAB_TYPES.AgentReadinessPort)
         .toConstantValue(readiness);

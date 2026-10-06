@@ -14,7 +14,8 @@ import { realGuards } from './guarded-chat'
 import { invokeRoute, RouteOutcome } from './route-invoker'
 import { turnDeps } from './turn-deps'
 import { COLLAB_FLAG_KEYS } from '../../../../src/modules/configuration_manager/constants/constants'
-import { IAgentDirectory } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/agent.directory'
+import { INewChatSharing } from '../../../../src/modules/enterprise_search/services/collaboration/conversation-collaboration.service'
+import { IAgentDirectory, IAgentProfiles } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/agent.directory'
 import { MentionTurnGate } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/mention-turn-gate'
 import { MentionValidator } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/mention.validator'
 
@@ -29,12 +30,18 @@ export interface TurnMentionOptions {
   /** The mentions flag; default on. */
   enabled?: boolean
   agents?: IAgentDirectory
+  /** The agent builder flag: with it, any agent the sender may run is mentionable (guest turns, M2). Default off. */
+  guestAgents?: boolean
+  /** Names and handles of guest agents for the history and the read side. */
+  profiles?: IAgentProfiles
 }
 
 export interface TurnWorldOptions {
   collab?: boolean
   /** Wires the mention gate into the guards and the notes routes into the routers (PH-10.4). Absent: not wired, as before. */
   mentions?: TurnMentionOptions
+  /** Shares a chat as it is created (first-send `share`). */
+  sharing?: INewChatSharing
   /** Heartbeat period of the lease manager; the default is the production 30 s. */
   heartbeatMs?: number
   deps?: Partial<ConversationTurnDeps>
@@ -103,7 +110,9 @@ export function turnWorld(over: Record<string, unknown> = {}, options: TurnWorld
   const mentionGate = options.mentions
     ? new MentionTurnGate({
         flags: { isEnabled: async (key: string) => key === COLLAB_FLAG_KEYS.chatMentions && mentionFlag.on },
+        readiness: readiness as never,
         validator: new MentionValidator({
+          flags: { isEnabled: async (key: string) => key === COLLAB_FLAG_KEYS.chatAgentBuilder && options.mentions?.guestAgents === true },
           users: {
             displayNames: async () => new Map(),
             findByIds: async (org, ids) =>
@@ -130,7 +139,7 @@ export function turnWorld(over: Record<string, unknown> = {}, options: TurnWorld
     ownerDirectoryDown: options.ownerDirectoryDown,
     assertAtLeast: options.assertAtLeast,
   })
-  const deps = turnDeps({ leases: leases as never, ...options.deps })
+  const deps = turnDeps({ leases: leases as never, mentions: mentionGate, agents: options.mentions?.profiles, sharing: options.sharing, ...options.deps })
 
   const handlerFor = (kind: Kind, mode: Mode) => {
     if (mode === 'stream') {

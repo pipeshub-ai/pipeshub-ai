@@ -3,7 +3,9 @@ import { fetchShareUsersPaginated } from '@/app/components/share/utils';
 import type {
   ShareAdapter,
   ShareMode,
+  ShareConfirmSpec,
   ShareRole,
+  ShareSelection,
   SharedMember,
   ShareSubmission,
 } from '@/app/components/share/types';
@@ -50,6 +52,28 @@ export function formatShareError(error: unknown): string {
     return t('chat.collab.share.limitReached', { max: details.max });
   }
   return conversationErrorMessage(i18next.t.bind(i18next), error);
+}
+
+/** Org-wide and large-team grants ask first; the same rule applies when the grant is only drafted. */
+export function requiresShareConfirm(selections: ShareSelection[]): ShareConfirmSpec | null {
+  const teams = selections.filter((s) => s.type === 'team');
+  if (teams.some((s) => s.id.startsWith(ORG_WIDE_PREFIX))) {
+    return {
+      title: t('chat.collab.share.orgWideTitle'),
+      message: t('chat.collab.share.orgWideMessage'),
+      confirmLabel: t('chat.collab.share.orgWideConfirm'),
+      orgWide: true,
+    };
+  }
+  const large = teams.find((s) => (s.memberCount ?? 0) > LARGE_TEAM_MEMBER_COUNT);
+  if (large) {
+    return {
+      title: t('chat.collab.share.largeTeamTitle'),
+      message: t('chat.collab.share.largeTeamMessage', { name: large.name, members: large.memberCount }),
+      confirmLabel: t('chat.collab.share.largeTeamConfirm'),
+    };
+  }
+  return null;
 }
 
 /**
@@ -199,26 +223,7 @@ export function createCollabChatShareAdapter(
       remember(await CollaborationApi.patchSettings(ref, { [id]: value }));
     },
 
-    requiresConfirm(submission, selections) {
-      const teams = selections.filter((s) => s.type === 'team');
-      if (teams.some((s) => s.id.startsWith(ORG_WIDE_PREFIX))) {
-        return {
-          title: t('chat.collab.share.orgWideTitle'),
-          message: t('chat.collab.share.orgWideMessage'),
-          confirmLabel: t('chat.collab.share.orgWideConfirm'),
-          orgWide: true,
-        };
-      }
-      const large = teams.find((s) => (s.memberCount ?? 0) > LARGE_TEAM_MEMBER_COUNT);
-      if (large) {
-        return {
-          title: t('chat.collab.share.largeTeamTitle'),
-          message: t('chat.collab.share.largeTeamMessage', { name: large.name, members: large.memberCount }),
-          confirmLabel: t('chat.collab.share.largeTeamConfirm'),
-        };
-      }
-      return null;
-    },
+    requiresConfirm: (_submission, selections) => requiresShareConfirm(selections),
 
     formatError: formatShareError,
 

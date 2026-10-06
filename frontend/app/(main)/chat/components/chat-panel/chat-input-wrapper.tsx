@@ -23,12 +23,14 @@ import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useCollabMessageContext } from '@/chat/hooks/use-collab-message-context';
 import { AudienceNotice } from './audience-notice';
 import { NonParticipantPrompt, type NonParticipant } from './non-participant-prompt';
-import { useFeatureFlagsStore, selectChatMentionsEnabled } from '@/lib/store/feature-flags-store';
+import { useFeatureFlagsStore, selectChatMentionsEnabled, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
 import { CollaborationApi } from '@/chat/collaboration-api';
 import type { CollaboratorAccessLevel } from '@/chat/collaboration-types';
 import { classifyResponder } from '@/chat/mentions/classify';
 import { MentionsApi } from '@/chat/mentions/api';
 import { useChatParticipants } from '@/chat/mentions/use-chat-participants';
+import { useAddPeopleStore } from '@/chat/mentions/add-people-store';
+import { DraftShareLine } from '../collaboration/draft-share-line';
 import { useParticipantsStore, labelOfMention } from '@/chat/mentions/participants-store';
 import { newClientMessageId } from '@/chat/utils/collab-send-fields';
 import { refreshFeedForSlot } from '@/chat/utils/collab-send';
@@ -54,6 +56,7 @@ export function ChatInputWrapper() {
   const { collabActive } = useCollabMessageContext();
   const { t } = useTranslation();
   const mentionsEnabled = useFeatureFlagsStore(selectChatMentionsEnabled);
+  const collabFlag = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
   const participants = useChatParticipants(mentionsEnabled);
   const [outsiders, setOutsiders] = useState<NonParticipant[]>([]);
   const [adding, setAdding] = useState(false);
@@ -377,6 +380,10 @@ export function ChatInputWrapper() {
       agentId={effectiveAgentId}
     />,
   );
+  const draftLine =
+    collabFlag && !participants.convId && !isAgentChat ? (
+      <DraftShareLine onEdit={() => useAddPeopleStore.getState().request('')} />
+    ) : null;
   const prompt =
     mentionsEnabled && outsiders.length > 0 ? (
       <NonParticipantPrompt
@@ -400,6 +407,7 @@ export function ChatInputWrapper() {
           onShareToolResultsChange={setShareToolResults}
         />
       ) : null}
+      {draftLine}
       {input}
     </>
   );

@@ -1,4 +1,5 @@
 import { useChatStore } from '../store';
+import { useParticipantsStore } from '../mentions/participants-store';
 import type { ActiveRunDto, FeedPage } from '../collaboration-types';
 import type { ChatSlot, ConversationMessage, PendingAskUserQuestion } from '../types';
 import { feedToThread } from './feed-rows';
@@ -38,6 +39,8 @@ function pendingCardAfterFeed(
 export function applyFeedPage(slotId: string, page: FeedPage): boolean {
   const slot: ChatSlot | undefined = useChatStore.getState().slots[slotId];
   if (!slot) return false;
+  // Someone changed who is in the chat (possibly from another tab): the picker must not keep the old list.
+  if (slot.convId) useParticipantsStore.getState().noteAclVersion(slot.convId, page.aclVersion);
   if (slot.rev !== null && page.rev < slot.rev) return false;
 
   const { messages: rows, unansweredAskUserQuestion } = feedToThread(page.messages, page.rev);

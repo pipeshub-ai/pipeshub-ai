@@ -36,12 +36,12 @@ describe('ComposerTips', () => {
     first.unmount();
 
     const seen: (string | null)[] = [];
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       const m = mount();
       seen.push(tip());
       m.unmount();
     }
-    expect(new Set(seen)).toEqual(new Set(['noteOnly', 'assistantAnywhere', 'agentAccess']));
+    expect(new Set(seen)).toEqual(new Set(['noteOnly', 'assistantAnywhere', 'agentAnywhere', 'agentAccess']));
     expect(api.markTipSeen).toHaveBeenCalledTimes(1);
   });
 
@@ -79,6 +79,7 @@ describe('ComposerTips', () => {
         'Mention only a teammate to leave a note without asking the AI',
         '@assistant works anywhere',
         'Agents answer with your access',
+        'Mention any agent you can use, in any chat',
       ]).toContain(screen.getByTestId('composer-tip').textContent),
     );
   });

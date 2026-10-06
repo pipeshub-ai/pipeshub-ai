@@ -170,7 +170,8 @@ test('mentions: the list stays on screen while filtering, and a mouse pick inser
   await composer(a.page).click();
   await a.page.keyboard.type('ping @Wri');
   const list = a.page.getByRole('listbox', { name: 'Mention suggestions' });
-  await expect(list.getByRole('option')).toHaveCount(1);
+  // The match and the closing "Add people to this chat…" row.
+  await expect(list.getByRole('option')).toHaveCount(2);
   // The composer card has a backdrop-filter; a fixed-position anchor inside it once opened the list off-screen.
   await expect(list).toBeInViewport({ ratio: 1 });
   await list.getByRole('option').filter({ hasText: 'User Writer' }).click();

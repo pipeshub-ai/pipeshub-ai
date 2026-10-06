@@ -13,6 +13,8 @@
  *   silently — no React component subscribes to those fields.
  */
 
+import { useDraftShareStore } from './draft-share-store';
+import { stampGuestAgent } from './utils/guest-agent';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
@@ -914,6 +916,7 @@ export async function streamMessageForSlot(
 
         // Build finalized messages from API response
         const { messages: finalMessages, unansweredAskUserQuestion } = loadHistoricalMessages(data.conversation.messages);
+        stampGuestAgent(finalMessages, request, newConvId || slot.convId || 'new');
 
         // SSE placeholder assistant id → persisted Mongo message id after complete.
         const slotBeforeComplete = useChatStore.getState().slots[slotId];
@@ -1107,6 +1110,7 @@ export async function streamMessageForSlot(
         }
 
         if (collabSend && (newConvId || slot.convId)) clearDraft(newConvId || slot.convId!);
+        if (request.share) useDraftShareStore.getState().clear();
         debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
       },
 

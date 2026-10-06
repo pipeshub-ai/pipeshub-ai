@@ -22,7 +22,7 @@ const people: Record<string, { org: Types.ObjectId; kind?: 'human' | 'service'; 
 
 const identity = { userId: OWNER!, orgId: String(ORG), authHeaders: {}, requestKey: {} }
 
-function build(session: Record<string, unknown> = {}, over: { teamMembers?: Record<string, string[]>; agents?: Record<string, unknown> } = {}) {
+function build(session: Record<string, unknown> = {}, over: { teamMembers?: Record<string, string[]>; agents?: Record<string, unknown>; guest?: boolean } = {}) {
   const agents = {
     canExecute: sinon.stub().resolves(true),
     isServiceAccount: sinon.stub().resolves(false),
@@ -43,6 +43,7 @@ function build(session: Record<string, unknown> = {}, over: { teamMembers?: Reco
     },
     teams: { callerTeamIds: async () => ({ status: 'ok', teamIds: [] }), teamsVersion: async () => 0, exists: async () => true, memberUserIds },
     agents: agents as never,
+    flags: { isEnabled: async () => over.guest === true },
   })
   const base = {
     _id: new Types.ObjectId(),
@@ -180,6 +181,41 @@ describe('mention validator (MN-05, MN-06, PH10-11)', () => {
       expect(e).to.include({ statusCode: 503, code: MENTION_ERROR_CODES.DIRECTORY_UNAVAILABLE })
       const sa = await reject(build(agentChat, { agents: { isServiceAccount: sinon.stub().resolves('unavailable') } }).run([{ type: 'agent', id: 'agent-1' }]))
       expect(sa.statusCode).to.equal(503)
+    })
+
+    describe('guest agents (agent builder flag on)', () => {
+      it('accepts any agent the sender may run, in a default chat and in another agent’s chat, and still the own agent', async () => {
+        for (const session of [{}, agentChat]) {
+          const w = build(session, { guest: true })
+          expect(await w.run([{ type: 'agent', id: 'agent-2' }])).to.deep.equal([{ type: 'agent', id: 'agent-2' }])
+        }
+        expect(await build(agentChat, { guest: true }).run([{ type: 'agent', id: 'agent-1' }])).to.have.length(1)
+      })
+
+      it('an agent the sender cannot run is still 403 agent_not_allowed', async () => {
+        const w = build({}, { guest: true, agents: { canExecute: sinon.stub().resolves(false) } })
+        expect((await reject(w.run([{ type: 'agent', id: 'agent-2' }]))).publicDetails).to.include({ reason: 'agent_not_allowed' })
+      })
+
+      it('a service-account agent is refused in a shared chat and allowed in a solo one', async () => {
+        const sa = { isServiceAccount: sinon.stub().resolves(true) }
+        const shared = await reject(build({}, { guest: true, agents: sa }).run([{ type: 'agent', id: 'agent-2' }]))
+        expect(shared).to.include({ statusCode: 403, code: MENTION_ERROR_CODES.SA_AGENT_SHARED })
+        expect(await build({ sharedWith: [] }, { guest: true, agents: sa }).run([{ type: 'agent', id: 'agent-2' }])).to.have.length(1)
+      })
+
+      it('two agents in one message are 422 TOO_MANY_AGENT_MENTIONS before any agent is looked up', async () => {
+        const w = build({}, { guest: true })
+        const e = await reject(w.run([{ type: 'agent', id: 'agent-2' }, { type: 'agent', id: 'agent-3' }]))
+        expect(e).to.include({ statusCode: 422, code: MENTION_ERROR_CODES.TOO_MANY_AGENT_MENTIONS })
+        expect(e.publicDetails).to.deep.equal({ max: 1 })
+        expect(w.agents.canExecute.called).to.equal(false)
+      })
+
+      it('the same agent twice is one mention; an agent with the assistant is fine', async () => {
+        const w = build({}, { guest: true })
+        expect(await w.run([{ type: 'agent', id: 'agent-2' }, { type: 'agent', id: 'agent-2' }, { type: 'assistant', id: 'self' }])).to.have.length(2)
+      })
     })
 
     it('an alias-only message never consults the agent directory', async () => {

@@ -38,6 +38,15 @@ const mentionablesQuery = z.object({
     .default(MENTIONABLES_LIMIT_MAX),
 });
 
+/** `include=<id>,<id>`: the draft collaborators of a chat that does not exist yet. */
+const includeUsers = z
+  .string()
+  .default('')
+  .transform((v) => v.split(',').filter((id) => id !== ''))
+  .pipe(z.array(objectId('user ID')).max(50));
+
+const orgMentionablesQuery = mentionablesQuery.extend({ include: includeUsers });
+
 const conversationId = objectId('conversation ID');
 const agentKey = z.string().min(1, { message: 'Agent key is required' });
 
@@ -51,4 +60,10 @@ const build = (
 export const mentionSchemas = {
   chat: build(z.object({ conversationId })),
   agent: build(z.object({ agentKey, conversationId })),
+};
+
+/** The picker before the chat exists: no conversation id, only the agent for an agent chat. */
+export const orgMentionableSchemas = {
+  chat: z.object({ query: orgMentionablesQuery }),
+  agent: z.object({ params: z.object({ agentKey }), query: orgMentionablesQuery }),
 };

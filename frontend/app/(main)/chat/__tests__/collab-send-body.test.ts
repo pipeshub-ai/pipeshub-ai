@@ -114,3 +114,48 @@ describe('the send body without collaboration', () => {
     for (const key of FIELDS) expect(body).not.toHaveProperty(key);
   });
 });
+
+describe('draft collaborators on the send body (M2)', () => {
+  async function sendFromNewChat(opts: { agentId?: string; conversationId?: string } = {}) {
+    const { useDraftShareStore } = await import('../draft-share-store');
+    useDraftShareStore.getState().clear();
+    useDraftShareStore.getState().add(
+      [{ type: 'user', id: 'u-dana', name: 'Dana', level: 'write' }, { type: 'team', id: 't-design', name: 'Design', level: 'read' }],
+      { message: 'welcome' },
+    );
+    useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true } });
+    useChatStore.getState().setDefaultModelForCtx(opts.agentId ? ctxKeyFromAgent(opts.agentId) : ASSISTANT_CTX, MODEL);
+    const slotId = useChatStore.getState().createSlot(opts.conversationId ?? null);
+    useChatStore.setState({ activeSlotId: slotId });
+    if (opts.agentId) useChatStore.getState().updateSlot(slotId, { threadAgentId: opts.agentId });
+    return send(slotId);
+  }
+
+  it('the first message of a new chat carries share, shaped as the collaborators PUT body, one level per principal', async () => {
+    const body = await sendFromNewChat();
+    expect(body.share).toEqual({
+      collaborators: [
+        { principalType: 'user', principalId: 'u-dana', accessLevel: 'write' },
+        { principalType: 'team', principalId: 't-design', accessLevel: 'read' },
+      ],
+      note: 'welcome',
+    });
+  });
+
+  it('is never sent on a follow-up in an existing chat, nor to an agent chat', async () => {
+    streamMessageForSlot.mockReset();
+    expect(await sendFromNewChat({ conversationId: 'conv-9' })).not.toHaveProperty('share');
+    streamMessageForSlot.mockReset();
+    expect(await sendFromNewChat({ agentId: 'agent-1' })).not.toHaveProperty('share');
+  });
+
+  it('nothing picked, nothing sent', async () => {
+    const { useDraftShareStore } = await import('../draft-share-store');
+    useDraftShareStore.getState().clear();
+    useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true } });
+    useChatStore.getState().setDefaultModelForCtx(ASSISTANT_CTX, MODEL);
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.setState({ activeSlotId: slotId });
+    expect(await send(slotId)).not.toHaveProperty('share');
+  });
+});

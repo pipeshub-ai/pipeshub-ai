@@ -2,8 +2,9 @@
 
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Popover, Text } from '@radix-ui/themes';
+import { Avatar, Box, Popover, Text } from '@radix-ui/themes';
 import { Popover as PopoverPrimitive } from 'radix-ui';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ComposerTips } from './composer-tips';
 import type { Mentionable, MentionGroup } from './use-mentionables';
 
@@ -33,6 +34,8 @@ const scrollIntoViewIfNeeded = (el: HTMLDivElement | null): void => {
   el?.scrollIntoView?.({ block: 'nearest' });
 };
 
+const ellipsis: React.CSSProperties = { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+
 export const mentionOptionId = (listboxId: string, index: number) => `${listboxId}-opt-${index}`;
 
 /** Radix Popover anchored to the caret rectangle the suggestion plugin reports. Focus never leaves the editor. */
@@ -51,9 +54,11 @@ export function MentionPopover({
   const { t } = useTranslation();
   const groupLabel: Record<MentionGroup, string> = {
     assistant: t('chat.mentions.groupAssistant', { defaultValue: 'Assistant' }),
-    agent: t('chat.mentions.groupAgent', { defaultValue: 'Agent' }),
+    agent: t('chat.mentions.groupAgent', { defaultValue: 'Agents' }),
     people: t('chat.mentions.groupPeople', { defaultValue: 'People in this chat' }),
+    others: t('chat.mentions.groupOthers', { defaultValue: 'Others in your organization' }),
     teams: t('chat.mentions.groupTeams', { defaultValue: 'Teams' }),
+    action: '',
   };
   const kindSuffix = (item: Mentionable): string | null =>
     item.group === 'agent'
@@ -61,6 +66,13 @@ export function MentionPopover({
       : item.group === 'teams'
         ? t('chat.mentions.kindTeam', { defaultValue: 'team' })
         : null;
+
+  const notInChat = t('chat.mentions.notInChat', { defaultValue: 'Not in this chat' });
+  const addPeopleLabel = t('chat.mentions.addPeople', { defaultValue: 'Add people to this chat…' });
+  const optionLabel = (item: Mentionable): string | undefined =>
+    item.action ? addPeopleLabel : item.group === 'people' || item.group === 'others'
+      ? [item.label, item.email, item.inChat === false ? notInChat : null].filter(Boolean).join(', ')
+      : undefined;
 
   const anchorRef = useMemo(
     () => ({
@@ -81,9 +93,10 @@ export function MentionPopover({
 
   const rows: React.ReactNode[] = [];
   let lastGroup: MentionGroup | null = null;
-  // A heading over a lone assistant or agent row only repeats the row's own name.
-  const needsHeading = (group: MentionGroup) =>
-    !(group === 'assistant' || group === 'agent') || items.filter((i) => i.group === group).length > 1;
+  // A heading over a lone assistant row only repeats the row's own name; agents always get theirs.
+  const needsHeading = (group: MentionGroup) => group !== 'action' && (group !== 'assistant' || items.filter((i) => i.group === group).length > 1);
+  const noMatches = items.length > 0 && items.every((i) => i.action);
+  const hasDisabledAgent = items.some((i) => i.disabled);
   items.forEach((item, index) => {
     if (item.group !== lastGroup) {
       lastGroup = item.group;
@@ -101,28 +114,97 @@ export function MentionPopover({
     const selected = index === activeIndex;
     rows.push(
       <div
-        key={`${item.ref.type}:${item.ref.id}`}
+        key={item.action ?? `${item.ref.type}:${item.ref.id}`}
         id={mentionOptionId(listboxId, index)}
         role="option"
         aria-selected={selected}
+        aria-disabled={item.disabled || undefined}
+        aria-label={optionLabel(item)}
         ref={selected ? scrollIntoViewIfNeeded : undefined}
-        data-mention-option={`${item.ref.type}:${item.ref.id}`}
+        data-mention-option={item.action ?? `${item.ref.type}:${item.ref.id}`}
         onMouseDown={(e) => e.preventDefault()}
         onMouseMove={() => selected || onActiveChange(index)}
-        onClick={() => onSelect(item)}
+        onClick={() => (item.disabled ? undefined : onSelect(item))}
         style={{
+          display: item.group === 'agent' || item.group === 'people' || item.group === 'others' || item.action ? 'flex' : undefined,
+          ...(item.action ? { borderTop: '1px solid var(--slate-5)', borderRadius: 0, marginTop: 4, paddingTop: 8 } : {}),
+          alignItems: 'center',
+          gap: 8,
+          opacity: item.disabled ? 0.5 : 1,
           padding: '6px 8px',
           borderRadius: 'var(--radius-2)',
-          cursor: 'pointer',
+          cursor: item.disabled ? 'not-allowed' : 'pointer',
           backgroundColor: selected ? 'var(--accent-a4)' : 'transparent',
           fontSize: 'var(--font-size-2)',
         }}
       >
-        <span>{item.label}</span>
-        {suffix ? <span style={{ color: 'var(--slate-11)' }}>{` · ${suffix}`}</span> : null}
+        {item.action ? (
+          <>
+            <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+              <MaterialIcon name="person_add" size={16} color="var(--slate-11)" />
+            </span>
+            <span style={ellipsis}>{addPeopleLabel}</span>
+          </>
+        ) : null}
+        {item.group === 'agent' ? (
+          <span data-testid="mention-agent-avatar" style={{ display: 'inline-flex', flexShrink: 0 }}>
+            <Avatar size="1" radius="full" variant="soft" color="jade" fallback={Array.from(item.label.trim())[0]?.toUpperCase() ?? '?'} />
+          </span>
+        ) : null}
+        {item.action ? null : item.group === 'people' || item.group === 'others' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              <span data-testid="mention-label" style={ellipsis}>
+                {item.label}
+              </span>
+              {item.inChat === false ? (
+                <span
+                  data-testid="mention-not-in-chat"
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 'var(--font-size-1)',
+                    color: 'var(--slate-11)',
+                    border: '1px solid var(--slate-7)',
+                    borderRadius: 'var(--radius-2)',
+                    padding: '0 6px',
+                    lineHeight: '18px',
+                  }}
+                >
+                  {notInChat}
+                </span>
+              ) : null}
+            </div>
+            {item.email ? (
+              <span data-testid="mention-email" style={{ ...ellipsis, color: 'var(--slate-11)', fontSize: 'var(--font-size-1)' }}>
+                {item.email}
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <span data-testid="mention-label" style={item.group === 'agent' ? ellipsis : undefined}>
+              {item.label}
+            </span>
+            {suffix ? (
+              <span data-testid="mention-suffix" style={{ color: 'var(--slate-11)', ...(item.group === 'agent' ? { flexShrink: 0 } : {}) }}>
+                {item.group === 'agent' ? suffix : ` · ${suffix}`}
+              </span>
+            ) : null}
+          </>
+        )}
       </div>,
     );
   });
+
+  const emptyStatus = (
+    <Box px="2" py="2" role="status">
+      <Text size="1" color="gray">
+        {loading
+          ? t('chat.mentions.loading', { defaultValue: 'Searching…' })
+          : t('chat.mentions.empty', { defaultValue: 'No matches' })}
+      </Text>
+    </Box>
+  );
 
   return (
     <Popover.Root open={open} onOpenChange={(next) => next || onDismiss()}>
@@ -152,26 +234,25 @@ export function MentionPopover({
         // Focus stays in the editor, so Radix's outside-focus dismissal would fire at once; the editor's blur and Escape dismiss instead.
         onInteractOutside={(e) => e.preventDefault()}
       >
-        {items.length > 0 ? (
+        {items.length === 0 ? (
+          emptyStatus
+        ) : (
           // Only the list scrolls, so the footer tip under it stays in view.
           <div
             id={listboxId}
             role="listbox"
             aria-label={t('chat.mentions.listLabel', { defaultValue: 'Mention suggestions' })}
-            aria-activedescendant={mentionOptionId(listboxId, activeIndex)}
+            aria-activedescendant={activeIndex >= 0 ? mentionOptionId(listboxId, activeIndex) : undefined}
             style={{ overflowY: 'auto', minHeight: 0, flex: '1 1 auto' }}
           >
+            {noMatches ? emptyStatus : null}
             {rows}
           </div>
-        ) : null}
-        {items.length === 0 ? (
-          <Box px="2" py="2" role="status">
-            <Text size="1" color="gray">
-              {loading
-                ? t('chat.mentions.loading', { defaultValue: 'Searching…' })
-                : t('chat.mentions.empty', { defaultValue: 'No matches' })}
-            </Text>
-          </Box>
+        )}
+        {hasDisabledAgent ? (
+          <Text as="div" size="1" role="note" data-testid="mention-one-agent-hint" style={{ color: 'var(--slate-11)', padding: '6px 8px 2px' }}>
+            {t('chat.mentions.oneAgentHint')}
+          </Text>
         ) : null}
         <ComposerTips />
       </Popover.Content>

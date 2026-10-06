@@ -55,7 +55,7 @@ Email goes only to people added directly (not to teams or the whole organization
 
 ### Notes and mentions
 
-Needs `ENABLE_CHAT_MENTIONS`. Type `@` in the composer to mention the assistant, people in the chat, teams the chat is shared with, or (in an agent's own chat) that agent.
+Needs `ENABLE_CHAT_MENTIONS`. Type `@` in the composer to mention the assistant, people (anyone in your organization, matched by first, middle or last name or email; people who are not in the chat are marked "Not in this chat"), teams the chat is shared with, or an agent you can use, in any chat. An exact `@handle` you type by hand works too (not inside code). A message can mention one agent. The last row, "Add people to this chat…", opens the share drawer with what you typed (owners and editors who may invite).
 
 - A message that mentions **only people or teams** is a **note**: the AI does not answer, nobody's turn is blocked, and the people mentioned get a notification. A note cannot carry attachments.
 - Mention `@assistant` (also `@pipeshub`, `@ai`, `@agent`, `@bot`) to ask the AI something. `@assistant help` shows what the assistant can access for you.
@@ -65,7 +65,8 @@ Needs `ENABLE_CHAT_MENTIONS`. Type `@` in the composer to mention the assistant,
   - **always**: the AI answers every message.
 - You can mention up to 10 people, teams or agents in a message. The server checks every mention again: a person must be an active member of your organization, a team must be one the chat is shared with. Someone who is not yet on the chat can be added from the prompt if you are allowed to invite.
 - `@everyone`, `@here` and `@all` are reserved and do nothing yet.
-- Agents other than the chat's own cannot yet answer inside someone else's chat, so the `@` list offers an agent only in that agent's own chat. To use another agent, open its own chat.
+- A mentioned agent answers that turn with the sender's access; the answer shows the agent's name and avatar ("Agent" if the viewer cannot read it). Service-account agents are not offered in shared chats.
+- A new chat can be shared before the first message: use Share on the new-chat page. The people you pick appear above the composer ("Will be shared with…") and are added when the first message is sent.
 
 ### Outbound links and addresses
 
@@ -88,7 +89,7 @@ Needs `ENABLE_CHAT_AGENT_BUILDER`. Ask the default assistant to build an agent: 
 - **Knowledge.** Sources the assistant proposes from what you can already search. They are ticked only when the request came from you. If the draft was shaped by a document or by something another person wrote, the card says "Suggested from document content" and ticks nothing.
 - **Tools.** None are ticked. Each one you tick must already be set up and signed in for you; tools that are not appear disabled.
 
-Click **Create**. The agent is **private**: only you can use it. It cannot be a service account, and it cannot be shared from the card; share it afterwards from the agent's settings if you want to. Afterwards open its chat from the card or the confirmation. Mentioning your agent inside another chat is not available yet ("Mention here" is hidden until agents can answer in a shared chat); open the agent's own chat instead. Clicking Create again on the same draft (after a reload, say) returns the agent you already made instead of a second one. The handle stays reserved even if you later delete the agent.
+Click **Create**. The agent is **private**: only you can use it. It cannot be a service account, and it cannot be shared from the card; share it afterwards from the agent's settings if you want to. Afterwards open its chat from the card or the confirmation. Type `@` followed by its handle in any chat to use it there. Clicking Create again on the same draft (after a reload, say) returns the agent you already made instead of a second one. The handle stays reserved even if you later delete the agent.
 
 What gets checked when you click Create:
 

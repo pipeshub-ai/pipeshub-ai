@@ -84,6 +84,8 @@ export interface AiChatTurnContext {
   collaboration?: CollaborationPayload;
   /** Roster refs of who the question mentions; never sent without `collaboration`. */
   mentions?: WireMention[];
+  /** A guest agent answers this turn: the caller's assistant-side `tools` and capabilities are not its settings and are not forwarded. */
+  guestAgent?: boolean;
 }
 
 export interface AiChatRequest {
@@ -145,11 +147,15 @@ export const buildAiChatRequest = (
   let path: string;
   if (target.kind === 'agent') {
     path = `/api/v1/agent/${encodeURIComponent(target.agentKey)}/chat`;
-    payload.chatMode = body.chatMode || 'quick';
+    payload.chatMode = context.guestAgent
+      ? parseChatMode(body.chatMode as string | undefined).chatMode
+      : body.chatMode || 'quick';
     if (context.isNewConversation) payload.quickMode = body.quickMode || false;
-    assignToolsToPayload(payload, body.tools);
-    assignCallerContextToAiPayload(payload, body);
-    assignAgentCapabilitiesToPayload(payload, body);
+    if (!context.guestAgent) {
+      assignToolsToPayload(payload, body.tools);
+      assignCallerContextToAiPayload(payload, body);
+      assignAgentCapabilitiesToPayload(payload, body);
+    }
   } else {
     const { chatMode, agentMode } = parseChatMode(
       body.chatMode as string | undefined,

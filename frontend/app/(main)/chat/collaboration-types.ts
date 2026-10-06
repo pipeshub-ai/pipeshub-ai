@@ -112,6 +112,8 @@ export interface FeedPage {
   activeRun: ActiveRunDto | null;
   /** Milliseconds since the epoch. */
   lastActivityAt: number;
+  /** Changes whenever who may access the chat changes. Older servers omit it. */
+  aclVersion?: number;
 }
 
 export const FEED_NOT_MODIFIED = 'not-modified' as const;
@@ -189,6 +191,7 @@ export const CONVERSATION_ERROR_CODES = [
   'MENTION_DIRECTORY_UNAVAILABLE',
   'MESSAGE_IS_NOTE',
   'MESSAGE_NOT_NOTE',
+  'TOO_MANY_AGENT_MENTIONS',
 ] as const;
 
 export type ConversationErrorCode = (typeof CONVERSATION_ERROR_CODES)[number];

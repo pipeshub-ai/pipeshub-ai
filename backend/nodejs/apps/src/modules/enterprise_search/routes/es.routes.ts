@@ -139,8 +139,9 @@ import {
   collaborationLimiters,
   legacyShareScope,
   mountCollaborationRoutes,
+  sharingLimiter,
 } from './collaboration.routes';
-import { mountMentionRoutes } from './mentions.routes';
+import { mountMentionRoutes, mountNewChatMentionables } from './mentions.routes';
 import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
 import { Logger } from '../../../libs/services/logger.service';
 import { AgentDraftRefResolver } from '../services/collaboration/agent-draft/agent-draft-ref.service';
@@ -169,6 +170,8 @@ export function createConversationalRouter(container: Container): Router {
     COLLAB_TYPES.CollaborationService,
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  mountNewChatMentionables(router, container, 'chat');
+  const shareLimit = sharingLimiter(container);
   let appConfig = container.get<AppConfig>('AppConfig');
   const defaultChatModel = fillDefaultChatModel(
     container.isBound('KeyValueStoreService')
@@ -199,6 +202,7 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     defaultChatModel,
+    shareLimit,
     guards.caller(),
     createConversation(appConfig, turnDeps),
   );
@@ -219,6 +223,7 @@ export function createConversationalRouter(container: Container): Router {
     hydrateScopedUser(appConfig),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     defaultChatModel,
+    shareLimit,
     guards.caller(),
     createConversation(appConfig, turnDeps),
   );
@@ -270,6 +275,7 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(enterpriseSearchStreamCreateSchema),
     defaultChatModel,
+    shareLimit,
     guards.caller(),
     streamChat(appConfig, turnDeps),
   );
@@ -280,6 +286,7 @@ export function createConversationalRouter(container: Container): Router {
     hydrateScopedUser(appConfig),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     defaultChatModel,
+    shareLimit,
     guards.caller(),
     streamChatInternal(appConfig, turnDeps),
   );
@@ -717,6 +724,8 @@ export function createAgentConversationalRouter(container: Container): Router {
   const guards = requireConversationGuards(container);
   const turnDeps = requireTurnDeps(container);
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  mountNewChatMentionables(router, container, 'agent');
+  const shareLimit = sharingLimiter(container);
   let appConfig = container.get<AppConfig>('AppConfig');
   const keyValueStoreService = container.isBound('KeyValueStoreService')
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
@@ -753,6 +762,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(listAllAgentsArchivedConversationsGroupedQuerySchema),
+    shareLimit,
     guards.caller(),
     listAllAgentsArchivedConversationsGrouped(appConfig),
   );
@@ -762,6 +772,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(agentCreateConversationSchema),
+    shareLimit,
     guards.caller(),
     createAgentConversation(appConfig, turnDeps),
   );
@@ -771,6 +782,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(agentStreamCreateSchema),
+    shareLimit,
     guards.caller(),
     streamAgentConversation(appConfig, turnDeps),
   );
@@ -816,6 +828,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     hydrateScopedUser(appConfig, keyValueStoreService),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(agentInternalStreamCreateSchema),
+    shareLimit,
     guards.caller(),
     streamAgentConversationInternal(appConfig, turnDeps, keyValueStoreService),
   );

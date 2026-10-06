@@ -1,5 +1,6 @@
 import { toWireMentions } from '../services/collaboration/turn/mention-refs';
-import { rosterFor } from '../utils/follow-up-turn';
+import { guestAgentRefs, rosterFor } from '../utils/follow-up-turn';
+import { turnGuestAgentOf } from '../services/collaboration/mentions/turn-mentions';
 import {
   buildMessageSortOptions,
   deleteAgentConversation,
@@ -81,6 +82,11 @@ import {
   sharedWithUserId,
 } from '../utils/utils';
 import { conversationEventProducers } from '../services/collaboration/notify/conversation-event-producers';
+import {
+  agentProfiles,
+  invalidateAgentCaches,
+} from '../services/collaboration/mentions/agent.directory';
+import { withRespondingAgents } from '../services/collaboration/mentions/responding-agent';
 import { withCollabMessageFields } from '../services/collaboration/feed/message-author';
 import {
   IUserDirectory,
@@ -877,13 +883,18 @@ export const getConversationById =
       orgId,
     );
 
-    const conversationResponse = await withCollabMessageFields(
+    const withFields = await withCollabMessageFields(
       baseResponse,
       messages,
       users,
       orgId,
       grant.session.userId.toString(),
       collabEnabledFor(req),
+    );
+    const conversationResponse = await withRespondingAgents(
+      withFields,
+      callerIdentityOf(req),
+      agentProfiles(),
     );
 
     // Build filters metadata using existing helper
@@ -1404,6 +1415,8 @@ async function regenerateAnswersInternal(
   const { conversationId, messageId, agentKey } = req.params;
   const userId = req.user?.userId;
   const orgId = req.user?.orgId;
+  // The guest agent that wrote the answer being regenerated, checked again by the guard.
+  const regenGuest = turnGuestAgentOf(req);
 
   let existingConversation: IChatSessionDocument | null = null;
   let run: TurnRun | undefined;
@@ -1633,6 +1646,7 @@ async function regenerateAnswersInternal(
       lease: gate.lease,
       requestedBy: new mongoose.Types.ObjectId(String(userId)),
       inReplyTo: userQuery._id,
+      ...(regenGuest !== undefined && { respondingAgentKey: regenGuest }),
     };
     run = turnRun;
     if (upstreamAbort.isClientDisconnected()) {
@@ -1656,6 +1670,11 @@ async function regenerateAnswersInternal(
     const previousConversations = formatPreviousConversations(
       regenHistory,
       regenRoster?.authors,
+      await guestAgentRefs(
+        regenHistory,
+        callerIdentityOf(req),
+        deps.agents ?? agentProfiles(),
+      ),
     );
     const regenMentions = regenRoster
       ? toWireMentions(userQuery.mentions, regenRoster.authors.refs)
@@ -1686,7 +1705,7 @@ async function regenerateAnswersInternal(
       ...(regenRoster && regenMentions.length > 0 ? { mentions: regenMentions } : {}),
       ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
     };
-    if (agentKey || regenIsAgentMode) {
+    if (regenGuest === undefined && (agentKey || regenIsAgentMode)) {
       assignToolsToPayload(aiPayload, req.body.tools);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
     }
@@ -1703,7 +1722,9 @@ async function regenerateAnswersInternal(
       void ProjectService.touchActivity(existingConversation.projectId.toString());
     }
 
-    const regenEndpoint = regenIsAgentMode
+    const regenEndpoint = regenGuest !== undefined
+      ? `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(regenGuest)}/chat/stream`
+      : regenIsAgentMode
       ? `${appConfig.aiBackend}/api/v1/agent/agentIdPlaceholder/chat/stream`
       : config.buildAIEndpoint(appConfig, agentKey);
 
@@ -3646,6 +3667,10 @@ export const createAgent =
           handleBackendError(aiResponse, 'Create Agent');
       }
       const agent = aiResponse.data;
+      invalidateAgentCaches(
+        callerIdentityOf(req),
+        (agent as { agent?: { _key?: string } } | undefined)?.agent?._key,
+      );
       if (draftRef !== undefined) {
         logger.info('agent.audit', {
           action: 'create',
@@ -3929,6 +3954,7 @@ export const updateAgent =
           handleBackendError(aiResponse, 'Update Agent');
       }
       const agent = aiResponse.data;
+      invalidateAgentCaches(callerIdentityOf(req), agentKey);
       res.status(HTTP_STATUS.OK).json(agent);
     } catch (error: any) {
       logger.error('Error updating agent', {
@@ -3972,6 +3998,7 @@ export const deleteAgent =
         throw handleBackendError(aiResponse, 'Delete Agent');
       }
       const agent = aiResponse.data;
+      invalidateAgentCaches(callerIdentityOf(req), agentKey);
       res.status(HTTP_STATUS.OK).json(agent);
     } catch (error: any) {
       logger.error('Error deleting agent', {
@@ -4297,13 +4324,18 @@ export const getAgentConversationById = async (
       accessViewOf(req),
     );
 
-    const conversationResponse = await withCollabMessageFields(
+    const withFields = await withCollabMessageFields(
       baseResponse,
       messages,
       defaultUsers,
       orgId,
       conversationGrantOf(req).session.userId.toString(),
       collabEnabledFor(req),
+    );
+    const conversationResponse = await withRespondingAgents(
+      withFields,
+      callerIdentityOf(req),
+      agentProfiles(),
     );
 
     // Build filters metadata using existing helper

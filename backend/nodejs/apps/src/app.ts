@@ -537,7 +537,7 @@ export class Application {
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
-        exposedHeaders: ['x-session-token', 'content-disposition'],
+        exposedHeaders: ['x-session-token', 'content-disposition', 'x-acl-version'],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
         allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
       }),

@@ -4,6 +4,7 @@ export const MENTION_ERROR_CODES = {
   NOT_ALLOWED: 'MENTION_NOT_ALLOWED',
   SA_AGENT_SHARED: 'MENTION_SA_AGENT_SHARED',
   DIRECTORY_UNAVAILABLE: 'MENTION_DIRECTORY_UNAVAILABLE',
+  TOO_MANY_AGENT_MENTIONS: 'TOO_MANY_AGENT_MENTIONS',
   MESSAGE_IS_NOTE: 'MESSAGE_IS_NOTE',
   MESSAGE_NOT_NOTE: 'MESSAGE_NOT_NOTE',
 } as const;
@@ -38,6 +39,17 @@ export class MentionSaAgentSharedError extends DomainHttpError {
       'This agent runs with its creator’s access and cannot be used in a shared chat',
       403,
       { mentionIndex },
+    );
+  }
+}
+
+export class TooManyAgentMentionsError extends DomainHttpError {
+  constructor(max: number) {
+    super(
+      MENTION_ERROR_CODES.TOO_MANY_AGENT_MENTIONS,
+      'Mention one agent per message',
+      422,
+      { max },
     );
   }
 }

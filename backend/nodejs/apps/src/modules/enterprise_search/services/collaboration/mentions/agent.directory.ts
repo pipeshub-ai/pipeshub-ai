@@ -6,6 +6,8 @@ import { IClock, systemClock } from '../../../../../libs/types/clock';
 import { TtlCache } from '../../../../../libs/utils/ttl-cache';
 
 export const AGENT_DIRECTORY_TTL_MS = 60_000;
+/** Short, so an agent made or shared elsewhere (the builder page calls Python directly) shows in the picker soon. */
+export const AGENT_LIST_TTL_MS = 10_000;
 export const AGENT_DIRECTORY_TIMEOUT_MS = 3_000;
 const MAX_ENTRIES = 5_000;
 
@@ -45,7 +47,33 @@ export interface IAgentProfiles {
   ): Promise<AgentProfile | undefined>;
 }
 
+export interface ListedAgent extends AgentProfile {
+  readonly agentKey: string;
+  readonly isServiceAccount: boolean;
+}
+
+export interface IAgentListing {
+  /** Agents the caller may execute (the query service's own list, which applies `check_agent_permission`); `'unavailable'` when it cannot say. Never throws. */
+  listExecutable(
+    identity: CallerIdentity,
+  ): Promise<readonly ListedAgent[] | 'unavailable'>;
+}
+
+const LIST_PAGE_SIZE = 100;
+const LIST_MAX_PAGES = 3;
+
 const defaultLogger = Logger.getInstance({ service: 'AgentDirectory' });
+
+interface AgentListShape {
+  agents?: Array<{
+    _key?: unknown;
+    id?: unknown;
+    name?: unknown;
+    handle?: unknown;
+    isServiceAccount?: unknown;
+  }>;
+  pagination?: { hasNext?: unknown };
+}
 
 interface AgentResponseShape {
   agent?: { isServiceAccount?: unknown; name?: unknown; handle?: unknown };
@@ -56,8 +84,10 @@ interface AgentResponseShape {
  * (404 without it). A 403 is a missing token scope, not a verdict, so it reads as unavailable.
  * Answers are cached per caller for 60 s.
  */
-export class HttpAgentDirectory implements IAgentDirectory, IAgentProfiles {
+export class HttpAgentDirectory implements IAgentDirectory, IAgentProfiles, IAgentListing
+{
   private readonly cache: TtlCache<AgentAccess>;
+  private readonly lists: TtlCache<readonly ListedAgent[]>;
 
   constructor(
     private readonly aiBackendUrl: () => string,
@@ -65,6 +95,84 @@ export class HttpAgentDirectory implements IAgentDirectory, IAgentProfiles {
     clock: IClock = systemClock,
   ) {
     this.cache = new TtlCache(AGENT_DIRECTORY_TTL_MS, MAX_ENTRIES, clock);
+    this.lists = new TtlCache(AGENT_LIST_TTL_MS, MAX_ENTRIES, clock);
+  }
+
+  /**
+   * After Node creates, updates or deletes an agent: the caller's list is dropped, and so is every
+   * cached answer about that key (a cached "not found" must not outlive a create of it).
+   */
+  invalidate(identity: CallerIdentity, agentKey?: string): void {
+    this.lists.delete(`${identity.orgId}:${identity.userId}`);
+    if (agentKey !== undefined) {
+      this.cache.deleteWhere(
+        (k) =>
+          k.startsWith(`${identity.orgId}:`) && k.endsWith(`:${agentKey}`),
+      );
+    }
+  }
+
+  async listExecutable(
+    identity: CallerIdentity,
+  ): Promise<readonly ListedAgent[] | 'unavailable'> {
+    const key = `${identity.orgId}:${identity.userId}`;
+    const hit = this.lists.get(key);
+    if (hit) return hit;
+    const listed = await this.fetchList(identity);
+    if (listed === 'unavailable') return listed;
+    this.lists.set(key, listed);
+    for (const a of listed) {
+      this.cache.set(`${key}:${a.agentKey}`, {
+        status: 'allowed',
+        isServiceAccount: a.isServiceAccount,
+        name: a.name,
+        ...(a.handle !== undefined && { handle: a.handle }),
+      });
+    }
+    return listed;
+  }
+
+  private async fetchList(
+    identity: CallerIdentity,
+  ): Promise<readonly ListedAgent[] | 'unavailable'> {
+    const out: ListedAgent[] = [];
+    try {
+      for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+        const response = await new AIServiceCommand<AgentListShape>({
+          uri: `${this.aiBackendUrl()}/api/v1/agent/?page=${String(page)}&limit=${String(LIST_PAGE_SIZE)}`,
+          method: HttpMethod.GET,
+          headers: {
+            Authorization: identity.authHeaders.authorization ?? '',
+            'Content-Type': 'application/json',
+          },
+          timeoutMs: AGENT_DIRECTORY_TIMEOUT_MS,
+          maxAttempts: 1,
+        }).execute();
+        if (response.statusCode !== 200) {
+          this.logger.warn('Agent list returned an unusable answer', {
+            statusCode: response.statusCode,
+          });
+          return 'unavailable';
+        }
+        for (const a of response.data?.agents ?? []) {
+          const raw = a._key ?? a.id;
+          if (typeof raw !== 'string' || typeof a.name !== 'string') continue;
+          out.push({
+            agentKey: raw,
+            name: a.name,
+            isServiceAccount: a.isServiceAccount === true,
+            ...(typeof a.handle === 'string' && { handle: a.handle }),
+          });
+        }
+        if (response.data?.pagination?.hasNext !== true) break;
+      }
+      return out;
+    } catch (error) {
+      this.logger.warn('Agent list failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 'unavailable';
+    }
   }
 
   async canExecute(
@@ -149,3 +257,30 @@ export class HttpAgentDirectory implements IAgentDirectory, IAgentProfiles {
     }
   }
 }
+
+export interface IAgentCacheInvalidator {
+  invalidate(identity: CallerIdentity, agentKey?: string): void;
+}
+
+let invalidator: IAgentCacheInvalidator | undefined;
+
+export function useAgentCacheInvalidator(
+  next: IAgentCacheInvalidator | undefined,
+): void {
+  invalidator = next;
+}
+
+/** Called by the routes that proxy agent create, update and delete. */
+export const invalidateAgentCaches = (
+  identity: CallerIdentity,
+  agentKey?: string,
+): void => invalidator?.invalidate(identity, agentKey);
+
+let profiles: IAgentProfiles | undefined;
+
+/** Wired once at startup; the conversation detail handlers read it, as they read the event producers. */
+export function useAgentProfiles(next: IAgentProfiles | undefined): void {
+  profiles = next;
+}
+
+export const agentProfiles = (): IAgentProfiles | undefined => profiles;

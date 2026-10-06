@@ -54,6 +54,10 @@ import {
 } from '../domain/types';
 import { IRunLeaseManager, LeaseHandle } from '../leases/lease.types';
 import { IMentionTurnGate } from '../mentions/mention-turn-gate';
+import {
+  setTurnGuestAgent,
+  turnGuestAgentOf,
+} from '../mentions/turn-mentions';
 import { IAgentReadinessPort } from '../readiness/agent-readiness.port';
 import { TurnLifecycle } from '../turn/turn-lifecycle';
 import {
@@ -70,6 +74,7 @@ import { assertResumeAllowed, ResumeBody } from './resume-binding';
 import {
   assertNotChangedSince,
   assertNotDuplicate,
+  TurnScope,
 } from './turn-preconditions';
 
 export type GuardKind = ConversationRef['kind'];
@@ -304,6 +309,24 @@ export class ConversationGuards {
     );
   }
 
+  /** The guest agent that wrote a row (the card a resume answers, or the answer being regenerated), if any. */
+  private async answeredBy(
+    scope: TurnScope,
+    cardId: string | undefined,
+  ): Promise<string | undefined> {
+    if (cardId === undefined || !Types.ObjectId.isValid(cardId)) {
+      return undefined;
+    }
+    const row = await ChatSessionMessage.findOne({
+      _id: cardId,
+      sessionId: scope.sessionId,
+      orgId: scope.orgId,
+    })
+      .select('respondingAgentKey')
+      .lean<{ respondingAgentKey?: string }>();
+    return row?.respondingAgentKey;
+  }
+
   private async acquireTurnLease(
     req: AuthenticatedUserRequest,
     kind: GuardKind,
@@ -330,11 +353,18 @@ export class ConversationGuards {
       baseSeq?: number;
       clientMessageId?: string;
     };
-    if (op !== 'regenerate') {
+    if (op === 'regenerate') {
+      const guest = await this.answeredBy(scope, req.params.messageId);
+      if (guest !== undefined) {
+        await this.deps.mentions?.admitRegenerate(req, grant, guest);
+      }
+    } else {
       const card = await assertResumeAllowed(scope, session, body);
       if (card !== undefined) {
         // A text answer is forwarded as the resume it is, once bound to its card.
         (req.body as ResumeBody).resume = { toolCallMessageId: card };
+        const asker = await this.answeredBy(scope, card);
+        if (asker !== undefined) setTurnGuestAgent(req, asker);
       }
       if (body.baseSeq !== undefined) {
         await assertNotChangedSince(scope, body.baseSeq);
@@ -353,7 +383,9 @@ export class ConversationGuards {
     const toolSelection = Array.isArray(
       (req.body as { tools?: unknown }).tools,
     );
+    // A guest turn was checked by the mention gate, as the sender; the chat's own agent is not answering it.
     if (
+      turnGuestAgentOf(req) === undefined &&
       agentKey !== undefined &&
       req.user?.isServiceAccount !== true &&
       !toolSelection

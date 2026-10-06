@@ -6,6 +6,7 @@ import {
 import { OBJECT_ID_REGEX, objectId } from '../../../libs/validators/zod-primitives';
 import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
 import { mentionsFieldSchema } from './mention.validators';
+import { putBody } from './collaboration.validators';
 
 export { REASONING_EFFORT_VALUES };
 
@@ -231,6 +232,10 @@ const enterpriseSearchCreateBodySchema = z.object({
     // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
     projectId: objectId('project ID').optional(),
     projectVisibility: z.enum(['private', 'project']).optional(),
+    // Ids only; checked against the new chat as if shared with `share`, and ignored with the flag off.
+    mentions: mentionsFieldSchema.optional(),
+    // Draft collaborators, applied when the chat is created: the collaborators PUT body, as the owner.
+    share: putBody.optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
 });

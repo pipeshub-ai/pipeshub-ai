@@ -1693,7 +1693,8 @@ components:
         | `INVALID_PRINCIPAL` | 400 | A person or team cannot be added (`details.principalIds`). |
         | `RATE_LIMITED` | 429 | Too many requests (`details.retryAfter`). Sent by the collaboration routes. |
         | `ORG_WIDE_CONFIRMATION_REQUIRED` | 400 | Sharing with the whole organization needs confirmation. |
-        | `MENTION_NOT_ALLOWED` | 400 or 403 | A mention is refused (`details.mentionIndex`, `details.reason`). A person who is not in the organization or not active, and a team that is not on the conversation, are 400; an agent the sender cannot run, or one that is not this conversation's agent, is 403. Nothing is stored. |
+        | `MENTION_NOT_ALLOWED` | 400 or 403 | A mention is refused (`details.mentionIndex`, `details.reason`). A person who is not in the organization or not active, and a team that is not on the conversation, are 400; an agent the sender cannot run (with `ENABLE_CHAT_AGENT_BUILDER` off, any but this conversation's own agent) is 403. Nothing is stored. |
+        | `TOO_MANY_AGENT_MENTIONS` | 422 | A message mentions more than one agent (`details.max`). Nothing is stored. |
         | `MENTION_SA_AGENT_SHARED` | 403 | The mentioned agent runs with its creator's access and cannot be used in a shared conversation (`details.mentionIndex`). |
         | `MENTION_DIRECTORY_UNAVAILABLE` | 503 | The mentions could not be checked; retry shortly. A message that mentions only the assistant is not affected. |
         | `MESSAGE_IS_NOTE` | 422 | The message asks nobody: the conversation's `respondMode` would not run the AI for it. Post it to `.../notes`. |
@@ -1840,6 +1841,12 @@ components:
         handle:
           type: string
           description: An `agent`'s `@handle`, without the `@`.
+        inChat:
+          type: boolean
+          description: A `user` only. Whether the person is on the conversation; an organisation colleague who is not can still be mentioned and the sender is offered to add them.
+        email:
+          type: string
+          description: A `user` only.
 
     MentionablesResponse:
       type: object
@@ -2053,6 +2060,19 @@ components:
         - messageType
         - content
       properties:
+        respondingAgent:
+          type: object
+          additionalProperties: false
+          description: On a `bot_response` answered by a guest agent (an agent mentioned in a chat that is not its own). `name` and `handle` are resolved at read time and absent when the caller cannot read the agent.
+          required:
+            - key
+          properties:
+            key:
+              type: string
+            name:
+              type: string
+            handle:
+              type: string
         _id:
           type: string
           format: objectId
@@ -2093,7 +2113,14 @@ components:
         - hasMore
         - activeRun
         - lastActivityAt
+        - aclVersion
       properties:
+        aclVersion:
+          type: integer
+          description: >-
+            The chat's sharing version. It moves on every sharing change, which does not move `rev`;
+            also sent as the `X-Acl-Version` header on every answer, `304` included. When it changes,
+            refetch the collaborators.
         messages:
           type: array
           maxItems: 100
@@ -7596,6 +7623,18 @@ components:
             `private` keeps it visible to the owner only; `project` exposes
             it to every project member. Defaults from the project's
             `chatSharing` setting when omitted.
+        mentions:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/MentionRef'
+          description: |
+            Ids only. With `ENABLE_CHAT_MENTIONS` on they are checked against the chat about to be created (the sender plus any
+            `share` collaborators): an agent other than the chat's own answers this first turn (guest agent, one per message,
+            `TOO_MANY_AGENT_MENTIONS` otherwise); a colleague who is not a participant is reported as `nonParticipants` in the
+            first `conversation_created` frame. Ignored with the flag off.
+        share:
+          $ref: '#/components/schemas/PutCollaboratorsRequest'
         modelKey:
           type: string
           description: |
@@ -7833,6 +7872,18 @@ components:
             Execution mode. Scoped agent conversations support only `quick`.
             Required on the `/stream` route; optional on the non-streaming
             route.
+        mentions:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/MentionRef'
+          description: |
+            Ids only. With `ENABLE_CHAT_MENTIONS` on they are checked against the chat about to be created (the sender plus any
+            `share` collaborators): an agent other than the chat's own answers this first turn (guest agent, one per message,
+            `TOO_MANY_AGENT_MENTIONS` otherwise); a colleague who is not a participant is reported as `nonParticipants` in the
+            first `conversation_created` frame. Ignored with the flag off.
+        share:
+          $ref: '#/components/schemas/PutCollaboratorsRequest'
         modelKey:
           type: string
           minLength: 1
@@ -31590,6 +31641,7 @@ paths:
             The model provider's content filter blocked the request, or (`ENABLE_CHAT_MENTIONS` on)
             `MESSAGE_IS_NOTE`: the message asks nobody, so nothing was stored and no lease was taken; post it to
             `.../notes` instead.
+            `TOO_MANY_AGENT_MENTIONS`: the message mentions more than one agent; mention one.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -32770,18 +32822,131 @@ paths:
         '503':
           $ref: '#/components/responses/CollaborationTeamUnavailable'
 
+  /conversations/mentionables:
+    get:
+      tags:
+        - Conversations
+      summary: List what can be mentioned before a conversation exists
+      description: |
+        The composer's `@` list for a chat that has not been created yet. The caller is its would-be owner, so a
+        typed `q` searches the organisation's people (`inChat: false`); `include` lists draft collaborators, who are
+        marked `inChat: true` and make the chat shared (service-account agents drop out). Same item shape, caps and
+        matching as `GET /conversations/{conversationId}/mentionables`. Never lists the caller, a disabled or service
+        user, or another organisation's people.
+
+        Needs `ENABLE_COLLABORATIVE_CHATS` and `ENABLE_CHAT_MENTIONS` (404 otherwise) and the
+        `conversation:read` OAuth scope. Rate limited per user with the collaboration reads.
+      operationId: listMentionablesNewChat
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+        - name: include
+          in: query
+          required: false
+          description: Comma-separated user ids of the draft collaborators (at most 50).
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 20
+      responses:
+        '200':
+          description: The mentionable people, agents and the assistant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MentionablesResponse'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          description: Collaborative chats or mentions is off.
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+
+  /agents/{agentKey}/conversations/mentionables:
+    get:
+      tags:
+        - Agents
+      summary: List what can be mentioned before an agent conversation exists
+      description: |
+        As `GET /conversations/mentionables`, for a new conversation with this agent; the agent is listed first.
+      operationId: listMentionablesNewAgentChat
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          description: Agent key
+          schema:
+            type: string
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+        - name: include
+          in: query
+          required: false
+          description: Comma-separated user ids of the draft collaborators (at most 50).
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 20
+      responses:
+        '200':
+          description: The mentionable people, agents and the assistant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MentionablesResponse'
+        '400':
+          $ref: '#/components/responses/CollaborationBadRequest'
+        '401':
+          description: Unauthorized
+        '403':
+          $ref: '#/components/responses/ConversationForbiddenScope'
+        '404':
+          description: Collaborative chats or mentions is off.
+        '429':
+          $ref: '#/components/responses/CollaborationRateLimited'
+
   /conversations/{conversationId}/mentionables:
     get:
       tags:
         - Conversations
       summary: List what can be mentioned in a conversation
       description: |
-        The assistant (`PipesHub`), the other people on the conversation and the teams it is shared with, for
-        the composer's `@` list. With `ENABLE_CHAT_AGENT_BUILDER` on, a conversation that has no agent of its own
-        also lists the caller's **own** agents (`type: agent`, with their `handle`); other people's agents never
-        appear, whoever shared them. Everything comes from this conversation's own participants, so nobody
-        outside it appears. Who else is on it is listed only for the owner and an editor allowed to invite;
-        anyone else gets the assistant and the owner. `q` matches the start of any word of the name. At most 20 items.
+        The assistant (`PipesHub`), the agents the caller can run (with `ENABLE_CHAT_AGENT_BUILDER` on; any chat,
+        not only the agent's own; service-account agents only in a chat nobody else is in; at most 20), the people
+        on the conversation and the teams it is shared with, for the composer's `@` list. For the owner and an editor
+        allowed to invite, a typed `q` also finds organisation colleagues who are not on the conversation
+        (`inChat: false`). `q` is split on spaces and every part must start a first, middle or last name, a word of the full
+        name or the email. Anyone else gets the assistant, their agents and the owner. In-chat people come first. At most 20 items.
 
         Needs `ENABLE_COLLABORATIVE_CHATS` and `ENABLE_CHAT_MENTIONS` (404 otherwise) and the
         `conversation:read` OAuth scope.
@@ -33049,7 +33214,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/FeedResponse'
         '304':
-          description: Nothing changed since `rev`. Empty body.
+          description: Nothing changed since `rev`. Empty body; `X-Acl-Version` still says whether sharing changed.
+          headers:
+            X-Acl-Version:
+              schema:
+                type: integer
+              description: The chat's current sharing version.
         '400':
           $ref: '#/components/responses/CollaborationBadRequest'
         '401':
@@ -36619,6 +36789,7 @@ paths:
             The model provider's content filter blocked the request, or (`ENABLE_CHAT_MENTIONS` on)
             `MESSAGE_IS_NOTE`: the message asks nobody, so nothing was stored and no lease was taken; post it to
             `.../notes` instead.
+            `TOO_MANY_AGENT_MENTIONS`: the message mentions more than one agent; mention one.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'

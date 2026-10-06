@@ -48,8 +48,10 @@ describe('MentionPopover', () => {
       ],
     });
     const [plain, own] = screen.getAllByRole('option');
-    expect(plain.textContent).toBe('Helpdesk · agent');
-    expect(own.textContent).toBe('Offer drafter · @offer-drafter');
+    const text = (o: HTMLElement) => [...o.querySelectorAll('[data-testid="mention-label"],[data-testid="mention-suffix"]')].map((n) => n.textContent).join(' ');
+    expect(text(plain)).toBe('Helpdesk agent');
+    expect(text(own)).toBe('Offer drafter @offer-drafter');
+    expect(own.querySelector('[data-testid="mention-agent-avatar"]')).toBeTruthy();
   });
 
   it('scrolls the keyboard-active option into view, and only the list scrolls so the footer tip stays visible', () => {
@@ -74,7 +76,8 @@ describe('MentionPopover', () => {
     const listbox = screen.getByRole('listbox', { name: 'Mention suggestions' });
     expect(listbox.getAttribute('aria-activedescendant')).toBe('lb-opt-2');
     const options = within(listbox).getAllByRole('option');
-    expect(options.map((o) => o.textContent)).toEqual(['Assistant', 'Assistant · agent', 'Bob', 'Sales · team']);
+    const labelOf = (o: HTMLElement) => o.querySelector('[data-testid="mention-label"]')?.textContent ?? o.textContent;
+    expect(options.map(labelOf)).toEqual(['Assistant', 'Assistant', 'Bob', 'Sales']);
     expect(options.map((o) => o.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true', 'false']);
     expect(screen.getByText('People in this chat')).toBeTruthy();
   });

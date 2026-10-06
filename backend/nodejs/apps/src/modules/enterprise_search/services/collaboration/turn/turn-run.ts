@@ -13,6 +13,8 @@ export interface TurnRun {
   readonly requestedBy?: Types.ObjectId;
   /** The `user_query` row this turn answers. */
   readonly inReplyTo?: Types.ObjectId;
+  /** Set when a guest agent answers this turn; stamped on every row the turn writes. */
+  readonly respondingAgentKey?: string;
 }
 
 /** Stamps a row a turn produces (`bot_response`, `error`, `tool_call`) with who asked, what it answers and which run wrote it. */
@@ -24,6 +26,9 @@ export const stampTurnRow = (message: IMessage, run?: TurnRun): IMessage =>
         ...(run.requestedBy && { requestedBy: run.requestedBy }),
         ...(run.inReplyTo && { inReplyTo: run.inReplyTo }),
         ...(run.lease && { runId: run.lease.runId }),
+        ...(run.respondingAgentKey && {
+          respondingAgentKey: run.respondingAgentKey,
+        }),
       };
 
 /** Runs a turn write fenced on the lease, or plainly on `dbSession` when the turn holds none. */

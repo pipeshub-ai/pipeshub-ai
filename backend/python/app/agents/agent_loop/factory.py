@@ -1444,7 +1444,11 @@ def _convert_conversation_turn(
         messages.append(AssistantMessage(content=[], tool_calls=tool_calls))
         messages.extend(tool_messages)
     if content:
-        messages.append(AssistantMessage(content=_scrub_legacy_system_note(content)))
+        answer = _scrub_legacy_system_note(content)
+        agent_ref = turn.get("agentRef")
+        if agent_ref:
+            answer = f"[{agent_ref}]: {answer}"
+        messages.append(AssistantMessage(content=answer))
     return messages
 
 

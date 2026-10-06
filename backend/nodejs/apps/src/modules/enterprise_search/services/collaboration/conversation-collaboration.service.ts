@@ -14,6 +14,8 @@ import {
 } from './domain/errors';
 import {
   AccessLevel,
+  AccessView,
+  Caller,
   ConversationSettings,
   GrantedRole,
   Principal,
@@ -90,6 +92,23 @@ export interface IConversationCollaborationService {
   ): Promise<LegacyShareResult>;
 }
 
+/** Sharing a chat at the moment it is created: the sender is its owner, so no share permission is checked. */
+export interface INewChatSharing {
+  /** Everything `upsert` would refuse, before any chat exists: org-wide policy, principals. Throws the same errors. */
+  validate(
+    caller: Caller,
+    identity: CallerIdentity,
+    input: UpsertInput,
+  ): Promise<void>;
+  /** Shares the chat just created; audit rows and notifications are written after the chat and its rows exist. */
+  apply(
+    caller: Caller,
+    identity: CallerIdentity,
+    chat: Parameters<IScopedChatLoader['loadScoped']>[1],
+    input: UpsertInput,
+  ): Promise<void>;
+}
+
 export interface CollaborationServiceDeps {
   repo: ICollaboratorRepository;
   effects: MutationEffects;
@@ -108,8 +127,18 @@ const userPrincipal = (userId: string): Principal => ({
   userId,
 });
 
+const OWNER_VIEW: AccessView = {
+  role: 'owner',
+  isOwner: true,
+  accessLevel: 'owner',
+  canSend: true,
+  canManage: true,
+  canInvite: true,
+  isCollaborative: false,
+};
+
 export class ConversationCollaborationService
-  implements IConversationCollaborationService
+  implements IConversationCollaborationService, INewChatSharing
 {
   private readonly writer: CollaboratorWriter;
 
@@ -297,6 +326,53 @@ export class ConversationCollaborationService
       userIds.map(userPrincipal),
     );
     return legacyResult(session, 'read');
+  }
+
+  async validate(
+    caller: Caller,
+    identity: CallerIdentity,
+    input: UpsertInput,
+  ): Promise<void> {
+    if (!(await this.collabEnabled())) {
+      throw new ConversationNotFoundError();
+    }
+    assertOrgWideAllowed(input.collaborators, {
+      orgId: caller.orgId,
+      confirmOrgWide: input.confirmOrgWide === true,
+      writeAllowed: await this.deps.flags.isEnabled(
+        COLLAB_FLAG_KEYS.orgWideChatWrite,
+      ),
+    });
+    const ops = planUpsert({
+      requested: input.collaborators,
+      existing: [],
+      isOwner: true,
+    });
+    const checked = await this.deps.principals.validate(
+      identity,
+      ops.flatMap((o) => (o.kind === 'add' ? [o.principal] : [])),
+      { ownerId: caller.userId },
+    );
+    if (checked.invalid.length > 0) {
+      throw new InvalidPrincipalError(checked.invalid);
+    }
+  }
+
+  async apply(
+    caller: Caller,
+    identity: CallerIdentity,
+    chat: Parameters<IScopedChatLoader['loadScoped']>[1],
+    input: UpsertInput,
+  ): Promise<void> {
+    const loaded = await this.deps.chats.loadScoped(caller.orgId, chat);
+    if (!loaded) {
+      throw new ConversationNotFoundError();
+    }
+    await this.applyUpsert(
+      { session: loaded.session, role: 'owner', via: [], caller, view: OWNER_VIEW },
+      identity,
+      input,
+    );
   }
 
   /** Validate everything first (all-or-nothing), then write, audit and emit in one unit. Returns the session as stored afterwards. */

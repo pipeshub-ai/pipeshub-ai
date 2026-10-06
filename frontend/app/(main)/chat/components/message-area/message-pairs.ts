@@ -1,4 +1,4 @@
-import type { AgentDraftPayload, AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
+import type { AgentDraftPayload, AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart, RespondingAgent } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import type { MessageAuthor } from '../../collaboration-types';
@@ -39,6 +39,8 @@ export interface MessagePair {
   author?: MessageAuthor | null;
   /** Who the answer was run for (collaborative chats); `null` is a former member. */
   requestedBy?: MessageAuthor | null;
+  /** The guest agent that answered this turn. */
+  respondingAgent?: RespondingAgent;
   /** Set for a note: `question` holds its text, there is no answer, and nobody asked the AI. */
   note?: boolean;
 }
@@ -67,6 +69,7 @@ type AssistantCustom = {
   agentDraftMessageId?: string;
   status?: 'stopped';
   requestedBy?: MessageAuthor | null;
+  respondingAgent?: RespondingAgent;
 };
 
 type UserCustom = {
@@ -238,6 +241,7 @@ export function buildMessagePairs(
         status: metadata?.status,
         ...(userMsgCustom?.author !== undefined ? { author: userMsgCustom.author } : {}),
         ...(metadata?.requestedBy !== undefined ? { requestedBy: metadata.requestedBy } : {}),
+        ...(metadata?.respondingAgent ? { respondingAgent: metadata.respondingAgent } : {}),
       });
     }
   }

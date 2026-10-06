@@ -7,6 +7,8 @@ import '@/lib/__tests__/test-i18n';
 
 const api = vi.hoisted(() => ({ getCollaborators: vi.fn() }));
 vi.mock('@/chat/collaboration-api', () => ({ CollaborationApi: { getCollaborators: api.getCollaborators } }));
+const mentionsApi = vi.hoisted(() => ({ listAgents: vi.fn(), search: vi.fn() }));
+vi.mock('@/chat/mentions/api', () => ({ MentionsApi: mentionsApi }));
 
 import { TiptapComposerInput, type TiptapComposerInputProps } from '../tiptap-composer-input';
 import { rememberMentionLabels } from '../use-mentionables';
@@ -14,6 +16,7 @@ import type { ComposerInputHandle } from '../composer-input.types';
 import { useChatStore } from '@/chat/store';
 import { useUserStore } from '@/lib/store/user-store';
 import { useParticipantsStore } from '@/chat/mentions/participants-store';
+import { useAddPeopleStore } from '@/chat/mentions/add-people-store';
 
 const initialChatState = useChatStore.getState();
 
@@ -36,6 +39,11 @@ beforeEach(() => {
   useChatStore.getState().updateSlot(slotId, { convId: 'conv-1' });
   useUserStore.setState({ profile: { userId: 'me' } as never });
   api.getCollaborators.mockReset();
+  mentionsApi.listAgents.mockReset();
+  mentionsApi.listAgents.mockResolvedValue([]);
+  mentionsApi.search.mockReset();
+  mentionsApi.search.mockResolvedValue({ agents: [], people: [] });
+  useAddPeopleStore.setState({ query: null, closedTick: 0 });
   useParticipantsStore.getState().reset();
   api.getCollaborators.mockResolvedValue({
     owner: { userId: 'owner-1', displayName: 'Olive Owner' },
@@ -281,33 +289,34 @@ describe('TiptapComposerInput: paste', () => {
 
 describe('TiptapComposerInput: @ popover', () => {
   const options = () => within(screen.getByRole('listbox')).getAllByRole('option');
+  const textOf = (o: HTMLElement) => o.getAttribute('aria-label') ?? o.textContent;
   const selected = () => options().findIndex((o) => o.getAttribute('aria-selected') === 'true');
 
   it('opens on @, lists the assistant, people and teams, never the user themself or a former member', async () => {
     await mount();
     await typeAt('@');
     await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy());
-    await waitFor(() => expect(options().length).toBe(4));
-    expect(options().map((o) => o.textContent)).toEqual(['Assistant', 'Olive Owner', 'Bob Builder', 'Sales · team']);
+    await waitFor(() => expect(options().length).toBe(5));
+    expect(options().map(textOf)).toEqual(['Assistant', 'Olive Owner', 'Bob Builder', 'Sales · team', 'Add people to this chat…']);
   });
 
   it('filters by what is typed after the @ (debounced)', async () => {
     await mount();
     await typeAt('@bob');
-    await waitFor(() => expect(options().map((o) => o.textContent)).toEqual(['Bob Builder']));
+    await waitFor(() => expect(options().map(textOf)).toEqual(['Bob Builder', 'Add people to this chat…']));
   });
 
   it('MN-18: arrows move the selection (wrapping), and the active option is exposed on the textbox and the listbox', async () => {
     await mount();
     await typeAt('@');
-    await waitFor(() => expect(options().length).toBe(4));
+    await waitFor(() => expect(options().length).toBe(5));
     expect(selected()).toBe(0);
     fireEvent.keyDown(box(), { key: 'ArrowDown' });
     await waitFor(() => expect(selected()).toBe(1));
     fireEvent.keyDown(box(), { key: 'ArrowUp' });
     fireEvent.keyDown(box(), { key: 'ArrowUp' });
-    await waitFor(() => expect(selected()).toBe(3));
-    const active = options()[3].id;
+    await waitFor(() => expect(selected()).toBe(4));
+    const active = options()[4].id;
     expect(screen.getByRole('listbox').getAttribute('aria-activedescendant')).toBe(active);
     expect(box().getAttribute('aria-activedescendant')).toBe(active);
     expect(box().getAttribute('aria-controls')).toBe(screen.getByRole('listbox').id);
@@ -318,7 +327,7 @@ describe('TiptapComposerInput: @ popover', () => {
     const onKeyDown = vi.fn();
     const { ref } = await mount({ onKeyDown });
     await typeAt('hi @bob');
-    await waitFor(() => expect(options().length).toBe(1));
+    await waitFor(() => expect(options().length).toBe(2));
     fireEvent.keyDown(box(), { key: 'Enter' });
     await waitFor(() => expect(valueOut()).toBe('hi <@user:u-bob> '));
     expect(onKeyDown).not.toHaveBeenCalled();
@@ -329,7 +338,7 @@ describe('TiptapComposerInput: @ popover', () => {
   it('MN-18: Tab picks too', async () => {
     await mount();
     await typeAt('@');
-    await waitFor(() => expect(options().length).toBe(4));
+    await waitFor(() => expect(options().length).toBe(5));
     fireEvent.keyDown(box(), { key: 'ArrowDown' });
     await waitFor(() => expect(selected()).toBe(1));
     fireEvent.keyDown(box(), { key: 'Tab' });
@@ -340,7 +349,7 @@ describe('TiptapComposerInput: @ popover', () => {
     const onKeyDown = vi.fn();
     await mount({ onKeyDown });
     await typeAt('@');
-    await waitFor(() => expect(options().length).toBe(4));
+    await waitFor(() => expect(options().length).toBe(5));
     fireEvent.keyDown(box(), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
     expect(onKeyDown).not.toHaveBeenCalled();
@@ -352,7 +361,7 @@ describe('TiptapComposerInput: @ popover', () => {
   it('a click on an option picks it', async () => {
     await mount();
     await typeAt('@');
-    await waitFor(() => expect(options().length).toBe(4));
+    await waitFor(() => expect(options().length).toBe(5));
     fireEvent.click(options()[3]);
     await waitFor(() => expect(valueOut()).toBe('<@team:t-sales> '));
   });
@@ -367,23 +376,23 @@ describe('TiptapComposerInput: @ popover', () => {
     });
     await mount();
     await typeAt('@');
-    await waitFor(() => expect(options().map((o) => o.textContent)).toEqual(['Assistant', 'Olive Owner', 'Cara']));
+    await waitFor(() => expect(options().map(textOf)).toEqual(['Assistant', 'Olive Owner', 'Cara']));
   });
 
   it('still offers the assistant when the participant lookup fails', async () => {
     api.getCollaborators.mockRejectedValue(new Error('boom'));
     await mount();
     await typeAt('@');
-    await waitFor(() => expect(options().map((o) => o.textContent)).toEqual(['Assistant']));
+    await waitFor(() => expect(options().map(textOf)).toEqual(['Assistant']));
   });
 
-  it('MN-17: the chat’s own agent named "Assistant" is a separate "Assistant · agent" row that inserts an agent token', async () => {
+  it('MN-17: the chat’s own agent named "Assistant" is a separate "Assistant agent" row that inserts an agent token', async () => {
     const slotId = useChatStore.getState().activeSlotId!;
     useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-key-1' });
     useChatStore.setState({ agentContextDisplayName: 'Assistant' });
     await mount();
     await typeAt('@ass');
-    await waitFor(() => expect(options().map((o) => o.textContent)).toEqual(['Assistant', 'Assistant · agent']));
+    await waitFor(() => expect(options().map((o) => o.querySelector('[data-testid="mention-label"]')?.textContent).filter(Boolean)).toEqual(['Assistant', 'Assistant']));
     fireEvent.click(options()[1]);
     await waitFor(() => expect(valueOut()).toBe('<@agent:agent-key-1> '));
   });
@@ -413,5 +422,119 @@ describe('TiptapComposerInput: prefill', () => {
     await waitFor(() => expect(box().textContent).toContain('a <@user:u-bob> b'));
     expect(screen.queryByTestId('mention-chip')).toBeNull();
     expect(valueOut()).toBe('a <\\@user:u-bob> b');
+  });
+});
+
+describe('TiptapComposerInput: names, agents and the Add people row (M2)', () => {
+  const options = () => within(screen.getByRole('listbox')).getAllByRole('option');
+  const nameOf = (o: HTMLElement) => o.querySelector('[data-testid="mention-label"]')?.textContent ?? o.getAttribute('aria-label');
+  const selected = () => options().findIndex((o) => o.getAttribute('aria-selected') === 'true');
+  const OUTSIDER = { id: 'u-jo', label: 'John Michael Smith', email: 'jms@acme.test', inChat: false };
+
+  it('a multi-word name keeps the popover open and reaches the server unchanged', async () => {
+    mentionsApi.search.mockResolvedValue({ agents: [], people: [OUTSIDER] });
+    await mount();
+    await typeAt('@jo mi sm');
+    await waitFor(() => expect(options().map(nameOf)).toContain('John Michael Smith'));
+    expect(mentionsApi.search).toHaveBeenCalledWith({ kind: 'chat', id: 'conv-1' }, 'jo mi sm');
+    const row = options().find((o) => nameOf(o) === 'John Michael Smith')!;
+    expect(row.getAttribute('aria-label')).toBe('John Michael Smith, jms@acme.test, Not in this chat');
+    expect(within(row).getByTestId('mention-email').textContent).toBe('jms@acme.test');
+    expect(within(row).getByTestId('mention-not-in-chat').textContent).toBe('Not in this chat');
+  });
+
+  it('closes again once the words stop matching anyone, so a sentence after @ is just text', async () => {
+    await mount();
+    await typeAt('@assistant thanks a lot');
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+  });
+
+  it('picking someone from outside the chat remembers their name for the add-people prompt', async () => {
+    mentionsApi.search.mockResolvedValue({ agents: [], people: [OUTSIDER] });
+    await mount();
+    await typeAt('@john');
+    await waitFor(() => expect(options().map(nameOf)).toContain('John Michael Smith'));
+    fireEvent.click(options().find((o) => nameOf(o) === 'John Michael Smith')!);
+    await waitFor(() => expect(valueOut()).toBe('<@user:u-jo> '));
+    expect(useParticipantsStore.getState().labels['user:u-jo']).toBe('John Michael Smith');
+  });
+
+  it('lists agents under an Agents heading with an avatar and the handle', async () => {
+    mentionsApi.listAgents.mockResolvedValue([{ id: 'ag-1', label: 'Joke Buddy', handle: 'joke-buddy' }]);
+    await mount();
+    await typeAt('@');
+    await waitFor(() => expect(useParticipantsStore.getState().agentsByConv['conv-1']).toBeTruthy());
+    await typeAt('joke');
+    await waitFor(() => expect(screen.getByText('Agents')).toBeTruthy());
+    await waitFor(() => expect(options().map(nameOf)).toContain('Joke Buddy'));
+    const row = options().find((o) => nameOf(o) === 'Joke Buddy')!;
+    expect(within(row).getByTestId('mention-agent-avatar').textContent).toBe('J');
+    expect(row.textContent).toContain('@joke-buddy');
+  });
+
+  it('a second agent is disabled once one is in the composer, with a hint, and cannot be picked', async () => {
+    mentionsApi.listAgents.mockResolvedValue([
+      { id: 'ag-1', label: 'Alpha', handle: 'alpha' },
+      { id: 'ag-2', label: 'Beta', handle: 'beta' },
+    ]);
+    const { ref } = await mount();
+    await typeAt('@');
+    await waitFor(() => expect(useParticipantsStore.getState().agentsByConv['conv-1']).toHaveLength(2));
+    await typeAt('alp');
+    await waitFor(() => expect(options().length).toBeGreaterThan(0));
+    fireEvent.click(options().find((o) => nameOf(o) === 'Alpha')!);
+    await waitFor(() => expect(valueOut()).toBe('<@agent:ag-1> '));
+    await typeAt('@');
+    await waitFor(() => expect(screen.getByTestId('mention-one-agent-hint').textContent).toBe('A message can mention only one agent.'));
+    const beta = options().find((o) => nameOf(o) === 'Beta')!;
+    expect(beta.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(beta);
+    expect(ref.current?.getValue().mentions.map((m) => m.id)).toEqual(['ag-1']);
+  });
+
+  describe('Add people row', () => {
+    it('is last, announced as an option, and Enter on it removes the @query, keeps the draft and asks for the drawer', async () => {
+      await mount();
+      await typeAt('hello ');
+      await typeAt('@bob');
+      await waitFor(() => expect(options().map((o) => o.getAttribute('aria-label') ?? o.textContent)).toContain('Add people to this chat…'));
+      expect(selected()).toBe(0);
+      fireEvent.keyDown(box(), { key: 'ArrowUp' });
+      await waitFor(() => expect(selected()).toBe(options().length - 1));
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      await waitFor(() => expect(useAddPeopleStore.getState().query).toBe('bob'));
+      expect(valueOut()).toBe('hello ');
+      expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
+    it('a click works too, and the row stays visible, under a No matches line, when nobody matches', async () => {
+      await mount();
+      await typeAt('@zzz');
+      await waitFor(() => expect(screen.getByText('No matches')).toBeTruthy());
+      const row = options().at(-1)!;
+      expect(row.getAttribute('aria-label')).toBe('Add people to this chat…');
+      expect(row.getAttribute('aria-selected')).toBe('false');
+      fireEvent.click(row);
+      await waitFor(() => expect(useAddPeopleStore.getState().query).toBe('zzz'));
+    });
+
+    it('with nothing else matching, Enter is not taken from the composer unless the user moved onto the row', async () => {
+      const onKeyDown = vi.fn();
+      await mount({ onKeyDown });
+      await typeAt('@zzz');
+      await waitFor(() => expect(screen.getByText('No matches')).toBeTruthy());
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      expect(useAddPeopleStore.getState().query).toBeNull();
+      expect(onKeyDown).toHaveBeenCalled();
+    });
+
+    it('is not offered to someone who cannot invite', async () => {
+      api.getCollaborators.mockResolvedValue({ owner: { userId: 'owner-1', displayName: 'Olive Owner' }, collaboratorCount: 4, myAccess: 'write' });
+      await mount();
+      await typeAt('@');
+      await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy());
+      await waitFor(() => expect(api.getCollaborators).toHaveBeenCalled());
+      expect(options().map((o) => o.getAttribute('aria-label') ?? o.textContent)).not.toContain('Add people to this chat…');
+    });
   });
 });

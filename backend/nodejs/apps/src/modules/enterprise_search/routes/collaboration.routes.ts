@@ -64,6 +64,18 @@ export function collaborationLimiters(
   return pair;
 }
 
+/** A first send that carries a `share` spends the same budget as a sharing change; one without is untouched. */
+export function sharingLimiter(container: Container): RequestHandler {
+  const { mutate } = collaborationLimiters(container);
+  return (req, res, next): void => {
+    if ((req.body as { share?: unknown } | undefined)?.share !== undefined) {
+      mutate(req, res, next);
+      return;
+    }
+    next();
+  };
+}
+
 /**
  * Legacy `/share` and `/unshare` honour `accessLevel` with the flag on, so they then need the same
  * `conversation:share` scope as the collaborators routes (F-15); flag off keeps PH-01's `conversation:write`.

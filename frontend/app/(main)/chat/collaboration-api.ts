@@ -15,6 +15,7 @@ import type {
   CollaboratorPrincipalType,
 } from './collaboration-types';
 import { FEED_NOT_MODIFIED } from './collaboration-types';
+import { emitAclVersion, emitCollaboratorsChanged } from './collaboration-events';
 
 /** `/api/v1/conversations/:id` or `/api/v1/agents/:key/conversations/:id`. */
 export function conversationApiPath(ref: ConversationRef): string {
@@ -84,6 +85,7 @@ export const CollaborationApi = {
       body,
       { suppressErrorToast: true },
     );
+    emitCollaboratorsChanged(ref);
     return data;
   },
 
@@ -96,6 +98,7 @@ export const CollaborationApi = {
       `${conversationApiPath(ref)}/collaborators/${encodeURIComponent(principalId)}`,
       { params: { principalType }, suppressErrorToast: true },
     );
+    emitCollaboratorsChanged(ref);
     return data;
   },
 
@@ -108,6 +111,7 @@ export const CollaborationApi = {
       settings,
       { suppressErrorToast: true },
     );
+    emitCollaboratorsChanged(ref);
     return data;
   },
 
@@ -120,11 +124,13 @@ export const CollaborationApi = {
       { newOwnerUserId },
       { suppressErrorToast: true },
     );
+    emitCollaboratorsChanged(ref);
     return data;
   },
 
   async leave(ref: ConversationRef): Promise<void> {
     await apiClient.post(`${conversationApiPath(ref)}/leave`);
+    emitCollaboratorsChanged(ref);
   },
 
   /** Per-person once shared. Chats use PATCH, agent chats use POST. */
@@ -153,6 +159,9 @@ export const CollaborationApi = {
       validateStatus: (s) => s === 200 || s === 304,
       suppressErrorToast: true,
     });
+    // The sharing version rides on every answer, a 304 included, since sharing changes do not move `rev`.
+    const header = Number((response.headers as Record<string, unknown> | undefined)?.['x-acl-version']);
+    if (Number.isFinite(header)) emitAclVersion(ref, header);
     return response.status === 304 ? FEED_NOT_MODIFIED : response.data;
   },
 

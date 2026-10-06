@@ -16,6 +16,14 @@ import { IProjectDocument } from '../../projects/types/project.interfaces';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { filterOwnedAttachments } from '../utils/attachment-validation';
 import { IChatSessionDocument } from '../types/conversation.interfaces';
+import {
+  applyFirstSendShare,
+  FirstSendShareBody,
+  validateFirstSendShare,
+} from '../utils/first-send-share';
+import { UpsertInput } from '../services/collaboration/conversation-collaboration.service';
+import { turnGuestAgentOf, turnMentionsOf } from '../services/collaboration/mentions/turn-mentions';
+import { responderFor } from '../services/collaboration/turn/turn-responder';
 import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
 import { readAclVersion } from '../../authz/cache/acl-version';
 import {
@@ -90,6 +98,7 @@ const nonStreamingTurn =
     // `unstarted` until the user's message is stored, so a request that fails earlier leaves the session idle.
     let outcome: TurnOutcome = 'unstarted';
     let gate: TurnGate | undefined;
+    let share: UpsertInput | undefined;
     try {
       const body = req.body as Record<string, unknown>;
       const query = body.query;
@@ -113,6 +122,25 @@ const nonStreamingTurn =
 
       const target = targetOf(req);
       const collab = collabEnabledFor(req);
+      if (mode === 'create') {
+        const draft = (body as FollowUpBody).share as
+          | FirstSendShareBody
+          | undefined;
+        share = await validateFirstSendShare(
+          deps,
+          req as AuthenticatedUserRequest,
+          collab,
+          draft,
+        );
+        if (collab) {
+          await deps.mentions?.admitFirstSend(
+            req as AuthenticatedUserRequest,
+            target,
+            share,
+          );
+        }
+      }
+      const responder = responderFor(target, turnGuestAgentOf(req));
       // A lost lease needs no action here: the answer's fenced write is the one that must fail.
       const onLost = (): void => {
         logger.warn('Run lost its lease during a non-streaming turn', {
@@ -158,7 +186,15 @@ const nonStreamingTurn =
           body: body as FollowUpBody,
           attachments: validatedAttachments,
           link,
+          guestAgentKey: responder.respondingAgentKey,
+        mentions: turnMentionsOf(req),
         });
+        await applyFirstSendShare(
+          deps,
+          req as AuthenticatedUserRequest,
+          turn.conversation,
+          share,
+        );
         gate = turn.run.lease
           ? holdLease(turn.run.lease, onLost)
           : unleasedGate();
@@ -200,7 +236,7 @@ const nonStreamingTurn =
         conversation,
         aiBackend: appConfig.aiBackend,
         request: buildAiChatRequest(
-          target,
+          responder.target,
           aiRequestBody(body as FollowUpBody, validatedAttachments, run),
           {
             conversationId,
@@ -210,6 +246,7 @@ const nonStreamingTurn =
             project,
             collaboration,
             mentions,
+            guestAgent: responder.kind === 'guest_agent',
           },
         ),
         headers: req.headers as Record<string, string>,

@@ -112,7 +112,10 @@ vi.mock('../share-adapter', () => ({
   },
 }));
 vi.mock('@/app/components/share', () => ({
-  ShareSidebar: ({ open }: { open: boolean }) => (open ? <div role="dialog" aria-label="Share conversation" /> : null),
+  ShareSidebar: ({ open, draft, initialSearch }: { open: boolean; draft?: boolean; initialSearch?: string }) =>
+    open ? (
+      <div role="dialog" aria-label="Share conversation" data-draft={draft ? 'true' : 'false'} data-initial-search={initialSearch ?? ''} />
+    ) : null,
   ShareHeaderGroup: ({ members, onShareClick }: { members: { name: string }[]; onShareClick: () => void }) => (
     <div>
       {members.map((m) => <span key={m.name}>{m.name}</span>)}
@@ -266,6 +269,54 @@ beforeEach(() => {
 });
 
 // ── Tests ──────────────────────────────────────────────────────────
+
+describe('Chat page — new chat, sharing before the chat exists (M2)', () => {
+  it('shows an enabled Share on a new chat and opens the drawer in draft mode', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true } } as never);
+    renderPage();
+
+    const share = screen.getByRole('button', { name: 'Share' }) as HTMLButtonElement;
+    expect(share.disabled).toBe(false);
+    fireEvent.click(share);
+    const drawer = await screen.findByRole('dialog', { name: 'Share conversation' });
+    expect(drawer.getAttribute('data-draft')).toBe('true');
+    expect(createChatShareAdapter).not.toHaveBeenCalled();
+  });
+
+  it('the Add people row asks for the same drawer with the typed query, and closing returns focus to the composer', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true } } as never);
+    renderPage();
+    const { useAddPeopleStore } = await import('@/chat/mentions/add-people-store');
+
+    act(() => useAddPeopleStore.getState().request('dan'));
+    const drawer = await screen.findByRole('dialog', { name: 'Share conversation' });
+    expect(drawer.getAttribute('data-initial-search')).toBe('dan');
+    expect(drawer.getAttribute('data-draft')).toBe('true');
+
+    act(() => useAddPeopleStore.getState().finish());
+    expect(useAddPeopleStore.getState().query).toBeNull();
+    expect(useAddPeopleStore.getState().closedTick).toBeGreaterThan(0);
+  });
+
+  it('has no Share on a new chat while collaborative chats are off, and none on an agent chat', () => {
+    renderPage();
+    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    cleanup();
+    useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true } } as never);
+    renderPage('agentId=agent-7');
+    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+  });
+
+  it('forgets the draft when the page goes away', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true } } as never);
+    const { useDraftShareStore } = await import('@/chat/draft-share-store');
+    useDraftShareStore.getState().add([{ type: 'user', id: 'u1', name: 'Dana', level: 'read' }]);
+    const view = renderPage();
+    expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy();
+    view.unmount();
+    expect(useDraftShareStore.getState().principals).toEqual([]);
+  });
+});
 
 describe('Chat page — new chat', () => {
   it('greets the user by name and offers the composer', () => {

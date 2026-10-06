@@ -21,7 +21,7 @@ const collaboratorSchema = principalSchema.and(
   z.object({ accessLevel: z.enum(['read', 'write']) }),
 );
 
-const putBody = z.object({
+export const putBody = z.object({
   collaborators: z
     .array(collaboratorSchema)
     .min(1)

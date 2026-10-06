@@ -173,7 +173,8 @@ export interface ShareAdapter {
   teamRolesEditable?: boolean;
 
   getSharedMembers: () => Promise<SharedMember[]>;
-  share: (submission: ShareSubmission) => Promise<void>;
+  /** `selections` carries the names and emails of what was picked, for adapters that only store the choice. */
+  share: (submission: ShareSubmission, selections?: ShareSelection[]) => Promise<void>;
   updateRole?: (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => Promise<void>;
   removeMember: (memberId: string, memberType: 'user' | 'team') => Promise<void>;
 

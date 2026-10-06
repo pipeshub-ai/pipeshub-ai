@@ -20,6 +20,7 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { AuthorChip } from '../collaboration/author-chip';
 import { AnsweredAsLabel } from '../collaboration/answered-as-label';
+import { AgentAnswerHeader } from '../collaboration/agent-answer-header';
 import { useCollabMessageContext } from '../../hooks/use-collab-message-context';
 import { askCardReadOnlyFor, askerOf, attributionVisible, regenerateAllowed } from '../../utils/collab-attribution';
 import type { MessageAuthor } from '../../collaboration-types';
@@ -28,7 +29,7 @@ import { useChatStore } from '../../store';
 import { selectChatAgentBuilderEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AgentDraftPayload, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
+import type { AgentDraftPayload, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart, RespondingAgent } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
@@ -148,6 +149,8 @@ interface ChatResponseProps {
   author?: MessageAuthor | null;
   /** Who the answer was run for; shown only in collaborative chats. `null` is a former member. */
   requestedBy?: MessageAuthor | null;
+  /** The guest agent that answered this turn; shown in place of the assistant. */
+  respondingAgent?: RespondingAgent;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -183,6 +186,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   unanswered = false,
   author,
   requestedBy,
+  respondingAgent,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -954,6 +958,8 @@ export const ChatResponse = React.memo(function ChatResponse({
           })}
         </Flex>
       )}
+
+      {!unanswered && respondingAgent && <AgentAnswerHeader agent={respondingAgent} />}
 
       {/* Tabs */}
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card

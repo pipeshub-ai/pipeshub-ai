@@ -28,6 +28,17 @@ export interface PostNoteResponse {
   nonParticipants: string[];
 }
 
+/** Where a mention list is asked: an existing chat, or the new chat that has no id yet (its draft collaborators count as in the chat). */
+export type MentionScope = ConversationRef | { kind: 'new'; include?: readonly string[] };
+
+const mentionablesUrl = (scope: MentionScope): string =>
+  scope.kind === 'new' ? '/api/v1/conversations/mentionables' : `${conversationApiPath(scope)}/mentionables`;
+
+const includeParam = (scope: MentionScope) =>
+  scope.kind === 'new' && scope.include?.length ? { include: scope.include.join(',') } : {};
+
+export const scopeKey = (scope: MentionScope): string => (scope.kind === 'new' ? 'new' : `${scope.kind}:${scope.id}`);
+
 export interface MentionableAgent {
   id: string;
   label: string;
@@ -35,19 +46,44 @@ export interface MentionableAgent {
 }
 
 interface MentionablesDto {
-  items: Array<{ type: string; id: string; label: string; handle?: string }>;
+  items: Array<{ type: string; id: string; label: string; handle?: string; email?: string; inChat?: boolean }>;
 }
 
+export interface MentionSearchResult {
+  agents: MentionableAgent[];
+  /** Organization members matching the query by first, middle or last name or email; `inChat` is false for outsiders. */
+  people: Array<{ id: string; label: string; email?: string; inChat: boolean }>;
+}
+
+const toAgent = (i: MentionablesDto['items'][number]): MentionableAgent => ({
+  id: i.id,
+  label: i.label,
+  ...(i.handle ? { handle: i.handle } : {}),
+});
+
 export const MentionsApi = {
-  /** The caller's own agents the server offers in this chat; empty when it offers none. */
-  async listAgents(ref: ConversationRef): Promise<MentionableAgent[]> {
-    const { data } = await apiClient.get<MentionablesDto>(`${conversationApiPath(ref)}/mentionables`, {
-      params: { limit: 20 },
+  /** Agents the caller can run that the server offers in this chat (narrowed to `q` when given); empty when it offers none. */
+  async listAgents(ref: MentionScope, q?: string): Promise<MentionableAgent[]> {
+    const { data } = await apiClient.get<MentionablesDto>(mentionablesUrl(ref), {
+      params: { limit: 20, ...(q ? { q } : {}), ...includeParam(ref) },
       suppressErrorToast: true,
     });
-    return (data?.items ?? [])
-      .filter((i) => i.type === 'agent')
-      .map((i) => ({ id: i.id, label: i.label, ...(i.handle ? { handle: i.handle } : {}) }));
+    return (data?.items ?? []).filter((i) => i.type === 'agent').map(toAgent);
+  },
+
+  /** What the server offers for a typed query: the query goes through unchanged, spaces included. */
+  async search(ref: MentionScope, q: string): Promise<MentionSearchResult> {
+    const { data } = await apiClient.get<MentionablesDto>(mentionablesUrl(ref), {
+      params: { limit: 20, q, ...includeParam(ref) },
+      suppressErrorToast: true,
+    });
+    const items = data?.items ?? [];
+    return {
+      agents: items.filter((i) => i.type === 'agent').map(toAgent),
+      people: items
+        .filter((i) => i.type === 'user' && i.label?.trim())
+        .map((i) => ({ id: i.id, label: i.label, ...(i.email ? { email: i.email } : {}), inChat: i.inChat !== false })),
+    };
   },
 
   /** A note asks nobody: no run, no lease, so it is allowed while someone else's run streams. */

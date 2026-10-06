@@ -5,6 +5,11 @@ export interface DirectoryUser {
   userId: string;
   displayName: string;
   email?: string;
+  /** The name parts a picker matches typed text against. */
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  fullName?: string;
   kind: UserKind;
   isDisabled: boolean;
 }
@@ -25,6 +30,71 @@ export interface IUserDirectory {
     orgId: string,
     userIds: readonly string[],
   ): Promise<readonly DirectoryUser[]>;
+  /**
+   * Active human members of the org whose first, middle or last name, any word of the full name, or
+   * email starts with every whitespace-separated token of `q`. Never another org's, disabled, deleted
+   * or service users.
+   */
+  searchOrgMembers(
+    orgId: string,
+    q: string,
+    limit: number,
+  ): Promise<readonly DirectoryUser[]>;
+}
+
+export const USER_SEARCH_MAX_TOKENS = 5;
+export const USER_SEARCH_MAX_TOKEN_LENGTH = 64;
+
+/** The query's tokens, lowercased, capped in number and length. */
+export function searchTokens(q: string): string[] {
+  return q
+    .toLowerCase()
+    .split(/\s+/u)
+    .filter((t) => t !== '')
+    .slice(0, USER_SEARCH_MAX_TOKENS)
+    .map((t) => t.slice(0, USER_SEARCH_MAX_TOKEN_LENGTH));
+}
+
+const escapeRegex = (text: string): string =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+interface NameFields {
+  fullName?: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  email?: string;
+}
+
+/** Same rule as `searchOrgMembers`, for people already at hand: every token prefixes some name part, full-name word or the email. */
+export function matchesSearchTokens(
+  user: NameFields,
+  tokens: readonly string[],
+): boolean {
+  const prefixes = [
+    user.firstName,
+    user.middleName,
+    user.lastName,
+    user.email,
+    ...(user.fullName ?? '').split(/\s+/u),
+  ].map((v) => (v ?? '').toLowerCase());
+  return tokens.every((t) => prefixes.some((p) => p !== '' && p.startsWith(t)));
+}
+
+/** Anchored, escaped regexes only: typed text is never a pattern. */
+function searchFilter(tokens: readonly string[]): Record<string, unknown>[] {
+  return tokens.map((t) => {
+    const word = new RegExp(`^${escapeRegex(t)}`, 'i');
+    return {
+      $or: [
+        { firstName: word },
+        { middleName: word },
+        { lastName: word },
+        { email: word },
+        { fullName: new RegExp(`(^|\\s)${escapeRegex(t)}`, 'i') },
+      ],
+    };
+  });
 }
 
 export function displayNameOf(
@@ -51,6 +121,30 @@ function validUniqueIds(userIds: readonly string[]): string[] {
     mongoose.Types.ObjectId.isValid(id),
   );
 }
+
+const DIRECTORY_FIELDS =
+  'fullName firstName middleName lastName email kind isDisabled';
+
+const toDirectoryUser = (user: {
+  _id: { toString(): string };
+  fullName?: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  email?: string;
+  kind?: UserKind;
+  isDisabled?: boolean;
+}): DirectoryUser => ({
+  userId: user._id.toString(),
+  displayName: displayNameOf(user),
+  ...(user.email ? { email: user.email } : {}),
+  ...(user.firstName ? { firstName: user.firstName } : {}),
+  ...(user.middleName ? { middleName: user.middleName } : {}),
+  ...(user.lastName ? { lastName: user.lastName } : {}),
+  ...(user.fullName ? { fullName: user.fullName } : {}),
+  kind: user.kind ?? 'human',
+  isDisabled: user.isDisabled === true,
+});
 
 export class MongoUserDirectory implements IUserDirectory {
   async displayNames(
@@ -93,16 +187,34 @@ export class MongoUserDirectory implements IUserDirectory {
       isDeleted: false,
       _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
     })
-      .select('fullName firstName lastName email kind isDisabled')
+      .select(DIRECTORY_FIELDS)
       .lean()
       .exec();
 
-    return users.map((user) => ({
-      userId: user._id.toString(),
-      displayName: displayNameOf(user),
-      ...(user.email ? { email: user.email } : {}),
-      kind: user.kind ?? 'human',
-      isDisabled: user.isDisabled === true,
-    }));
+    return users.map(toDirectoryUser);
+  }
+
+  async searchOrgMembers(
+    orgId: string,
+    q: string,
+    limit: number,
+  ): Promise<readonly DirectoryUser[]> {
+    const tokens = searchTokens(q);
+    if (tokens.length === 0 || limit <= 0 || !mongoose.Types.ObjectId.isValid(orgId)) {
+      return [];
+    }
+    const users = await Users.find({
+      orgId: new mongoose.Types.ObjectId(orgId),
+      isDeleted: false,
+      isDisabled: { $ne: true },
+      kind: { $in: ['human', null] },
+      $and: searchFilter(tokens),
+    })
+      .select(DIRECTORY_FIELDS)
+      .sort({ fullName: 1, _id: 1 })
+      .limit(limit)
+      .lean()
+      .exec();
+    return users.map(toDirectoryUser);
   }
 }

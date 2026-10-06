@@ -29,6 +29,25 @@ export class MentionsController {
       );
   });
 
+  /** The picker for a chat that is not created yet; the caller is its would-be owner. */
+  listForNewChat: RequestHandler = this.handle(async (req, res) => {
+    const { q, limit, include } = req.query as unknown as {
+      q: string;
+      limit: number;
+      include: string[];
+    };
+    res.status(200).json(
+      await this.mentionables.listForNewChat(callerIdentityOf(req), {
+        q,
+        limit,
+        include,
+        ...(req.params.agentKey !== undefined && {
+          agentKey: req.params.agentKey,
+        }),
+      }),
+    );
+  });
+
   postNote = (kind: SessionKind): RequestHandler =>
     this.handle(async (req, res) => {
       const outcome = await this.notes.post(

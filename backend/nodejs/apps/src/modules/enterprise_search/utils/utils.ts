@@ -925,6 +925,8 @@ const withTurnAskToolResults = (
 export const formatPreviousConversations = (
   messages: IMessage[],
   participants?: AuthorRefs,
+  /** Guest-agent key -> its `agent:<handle>` ref, for the answers it wrote. */
+  guestRefs?: ReadonlyMap<string, string>,
 ) => {
   const result: Array<Record<string, unknown>> = [];
   for (let i = 0; i < messages.length; i++) {
@@ -957,10 +959,15 @@ export const formatPreviousConversations = (
       participants && msg.messageType === 'note'
         ? toWireMentions(msg.mentions, participants.refs)
         : [];
+    const agentRef =
+      msg.messageType === 'bot_response' && msg.respondingAgentKey
+        ? guestRefs?.get(msg.respondingAgentKey)
+        : undefined;
     result.push({
       content: msg.content,
       role: msg.messageType,
       ...(authorRef !== undefined && { authorRef }),
+      ...(agentRef !== undefined && { agentRef }),
       ...(mentions.length > 0 && { mentions }),
       ...(msg.attachments &&
         msg.attachments.length > 0 && {

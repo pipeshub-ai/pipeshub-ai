@@ -6,11 +6,15 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import {
   MongoUserDirectory,
   displayNameOf,
+  matchesSearchTokens,
+  searchTokens,
 } from '../../../../src/modules/user_management/services/user-directory.service'
 
 function stubFind(rows: Array<Record<string, unknown>>) {
   const chain = {
     select: sinon.stub().returnsThis(),
+    sort: sinon.stub().returnsThis(),
+    limit: sinon.stub().returnsThis(),
     lean: sinon.stub().returnsThis(),
     exec: sinon.stub().resolves(rows),
   }
@@ -88,14 +92,68 @@ describe('MongoUserDirectory', () => {
 
     expect(find.calledOnce).to.equal(true)
     expect(users).to.deep.equal([
-      { userId: svc.toString(), displayName: 'Bot', kind: 'service', isDisabled: true },
-      { userId: human.toString(), displayName: 'Lin', email: 'l@x.y', kind: 'human', isDisabled: false },
+      { userId: svc.toString(), displayName: 'Bot', fullName: 'Bot', kind: 'service', isDisabled: true },
+      { userId: human.toString(), displayName: 'Lin', email: 'l@x.y', firstName: 'Lin', kind: 'human', isDisabled: false },
     ])
   })
 
   it('findByIds returns nothing without querying when no id is valid', async () => {
     const { find } = stubFind([])
     expect(await new MongoUserDirectory().findByIds(org, [])).to.deep.equal([])
+    expect(find.called).to.equal(false)
+  })
+})
+
+describe('user search tokens', () => {
+  it('splits on whitespace, lowercases, and caps the number and length of tokens', () => {
+    expect(searchTokens('  Jo   SM ')).to.deep.equal(['jo', 'sm'])
+    expect(searchTokens('')).to.deep.equal([])
+    expect(searchTokens('a b c d e f g')).to.have.length(5)
+    expect(searchTokens('x'.repeat(500))[0]).to.have.length(64)
+  })
+
+  const john = { fullName: 'John Michael Smith', firstName: 'John', middleName: 'Michael', lastName: 'Smith', email: 'js@acme.test' }
+  it('every token must prefix a first, middle or last name, a word of the full name or the email', () => {
+    for (const q of ['john', 'mich', 'smi', 'js@', 'jo sm', 'mich john', 'michael smith']) expect(matchesSearchTokens(john, searchTokens(q)), q).to.equal(true)
+    for (const q of ['ohn', 'smith2', 'jo zz', 'acme']) expect(matchesSearchTokens(john, searchTokens(q)), q).to.equal(false)
+  })
+
+  it('a word of the full name matches when no name part is stored', () => {
+    expect(matchesSearchTokens({ fullName: 'Mary Jane Watson' }, ['jane'])).to.equal(true)
+  })
+})
+
+describe('MongoUserDirectory.searchOrgMembers', () => {
+  afterEach(() => sinon.restore())
+  const org = new mongoose.Types.ObjectId().toString()
+
+  it('queries only active humans of the org, one anchored escaped regex group per token, with a cap', async () => {
+    const id = new mongoose.Types.ObjectId()
+    const { find, chain } = stubFind([{ _id: id, firstName: 'John', lastName: 'Smith', email: 'j@x.y' }])
+
+    const out = await new MongoUserDirectory().searchOrgMembers(org, 'jo sm.*', 7)
+
+    const [filter] = find.firstCall.args as [Record<string, any>]
+    expect(filter.orgId.toString()).to.equal(org)
+    expect(filter.isDeleted).to.equal(false)
+    expect(filter.isDisabled).to.deep.equal({ $ne: true })
+    expect(filter.kind).to.deep.equal({ $in: ['human', null] })
+    expect(filter.$and).to.have.length(2)
+    const second = filter.$and[1].$or as Array<Record<string, RegExp>>
+    const regexes = second.map((c) => Object.values(c)[0] as RegExp)
+    expect(regexes.map((r) => r.source)).to.deep.equal(['^sm\\.\\*', '^sm\\.\\*', '^sm\\.\\*', '^sm\\.\\*', '(^|\\s)sm\\.\\*'])
+    expect(regexes.every((r) => r.flags === 'i')).to.equal(true)
+    expect(chain.select.firstCall.args[0]).to.equal('fullName firstName middleName lastName email kind isDisabled')
+    expect(chain.limit.calledOnceWithExactly(7)).to.equal(true)
+    expect(out).to.deep.equal([{ userId: id.toString(), displayName: 'John Smith', email: 'j@x.y', firstName: 'John', lastName: 'Smith', kind: 'human', isDisabled: false }])
+  })
+
+  it('does not query for an empty query, a zero limit or a bad org id', async () => {
+    const { find } = stubFind([])
+    const dir = new MongoUserDirectory()
+    expect(await dir.searchOrgMembers(org, '   ', 5)).to.deep.equal([])
+    expect(await dir.searchOrgMembers(org, 'jo', 0)).to.deep.equal([])
+    expect(await dir.searchOrgMembers('nope', 'jo', 5)).to.deep.equal([])
     expect(find.called).to.equal(false)
   })
 })

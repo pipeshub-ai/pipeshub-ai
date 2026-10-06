@@ -19,6 +19,12 @@ import {
   TurnRun,
   turnWrite,
 } from '../services/collaboration/turn/turn-run';
+import { CallerIdentity } from '../../../libs/types/caller-identity';
+import { IAgentProfiles } from '../services/collaboration/mentions/agent.directory';
+import {
+  RespondingAgentView,
+  respondingAgentViews,
+} from '../services/collaboration/mentions/responding-agent';
 import { AGUIEventType, aguiErrorCodeFromPayload, frameAGUI } from './agui';
 import {
   CHAT_ERROR_MESSAGES,
@@ -70,6 +76,8 @@ export interface ConversationCreatedFrame {
   title?: string;
   projectId?: string;
   runId?: string;
+  /** Colleagues the message mentions who are not in the chat (follow-ups only). */
+  nonParticipants?: readonly string[];
 }
 
 /** The `conversation_created` frame that links the stream to its conversation (and, with a lease, its run). */
@@ -77,8 +85,15 @@ export const writeConversationCreated = (
   res: Response,
   value: ConversationCreatedFrame,
 ): void => {
+  const { nonParticipants, ...rest } = value;
   res.write(
-    frameAGUI(AGUIEventType.CUSTOM, { name: 'conversation_created', value }),
+    frameAGUI(AGUIEventType.CUSTOM, {
+      name: 'conversation_created',
+      value: {
+        ...rest,
+        ...(nonParticipants && nonParticipants.length > 0 && { nonParticipants }),
+      },
+    }),
   );
   flushResponse(res);
 };
@@ -88,9 +103,14 @@ export const openTurnSse = (
   res: Response,
   conversationId: string,
   runId?: string,
+  nonParticipants: readonly string[] = [],
 ): void => {
   writeSseHead(res, runId);
-  writeConversationCreated(res, { conversationId, ...(runId && { runId }) });
+  writeConversationCreated(res, {
+    conversationId,
+    ...(runId && { runId }),
+    ...(nonParticipants.length > 0 && { nonParticipants }),
+  });
 };
 
 const runErrorFrame = (message: string, code: string): string =>
@@ -115,6 +135,9 @@ export interface TurnStreamOptions {
   modelInfo: IAIModel;
   agent: boolean;
   upstreamAbort: UpstreamAbortHandle;
+  /** Names the guest agent on the final frame, as the feed and the detail do. */
+  identity?: CallerIdentity;
+  profiles?: IAgentProfiles;
 }
 
 interface Finish {
@@ -378,6 +401,14 @@ export class TurnStreamPump {
         String(this.o.orgId),
         { modelInfo: this.o.modelInfo, run, agent: this.o.agent },
       )) as Frame;
+      const guest = await this.guestAgentView();
+      if (guest && Array.isArray(saved.messages)) {
+        saved.messages = (saved.messages as Frame[]).map((m) =>
+          m.messageType === 'bot_response' && m.respondingAgentKey === guest.key
+            ? { ...m, respondingAgent: guest }
+            : m,
+        );
+      }
       // Python omits `citations` on some agent answers despite the type.
       const recordsUsed = Array.isArray(this.completeData.citations)
         ? this.completeData.citations.length
@@ -387,6 +418,7 @@ export class TurnStreamPump {
         frame: frameAGUI(AGUIEventType.RUN_FINISHED, {
           result: {
             conversation: saved,
+            ...(guest && { respondingAgent: guest }),
             recordsUsed,
             meta: {
               requestId,
@@ -407,6 +439,17 @@ export class TurnStreamPump {
       outcome: 'failed',
       frame: runErrorFrame(CHAT_ERROR_MESSAGES.interrupted, 'no_response'),
     };
+  }
+
+  private async guestAgentView(): Promise<RespondingAgentView | undefined> {
+    const key = this.o.run.respondingAgentKey;
+    if (!key) return undefined;
+    const views = await respondingAgentViews(
+      [{ messageType: 'bot_response', respondingAgentKey: key }],
+      this.o.identity,
+      this.o.profiles,
+    );
+    return views.get(key);
   }
 
   private async finishAfterError(error: unknown): Promise<Finish> {

@@ -21,7 +21,8 @@ import {
 import { IReadStateRepository } from '../../../../src/modules/enterprise_search/services/collaboration/persistence/read-state.repository'
 import { MongoConversationMessageFeed } from '../../../../src/modules/enterprise_search/services/collaboration/persistence/message-feed'
 import { IAgentReadinessPort } from '../../../../src/modules/enterprise_search/services/collaboration/readiness/agent-readiness.port'
-import { IAgentDirectory, IAgentProfiles } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/agent.directory'
+import { matchesSearchTokens, searchTokens } from '../../../../src/modules/user_management/services/user-directory.service'
+import { IAgentDirectory, IAgentProfiles, ListedAgent } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/agent.directory'
 import { MentionValidator } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/mention.validator'
 import { Principal } from '../../../../src/modules/enterprise_search/services/collaboration/domain/types'
 import { COLLAB_FLAG_KEYS } from '../../../../src/modules/configuration_manager/constants/constants'
@@ -34,6 +35,11 @@ export interface WorldUser {
   orgId?: Types.ObjectId
   kind?: 'human' | 'service'
   isDisabled?: boolean
+  firstName?: string
+  middleName?: string
+  lastName?: string
+  fullName?: string
+  email?: string
 }
 
 export interface WorldTeam {
@@ -60,12 +66,26 @@ export interface CollaborationWorldOptions {
   /** The agent builder flag and the agent names behind the @ picker; its access checks are `agents`. */
   agentBuilder?: boolean
   agentProfiles?: IAgentProfiles
+  /** What the agent list returns for the caller (`GET /agent/`); the picker still asks `agents` about each. */
+  agentList?: ListedAgent[] | 'unavailable'
   /** Project ids a user may open, by user. */
   projectAccess?: (userId: string, projectId: string) => boolean
   readiness?: IAgentReadinessPort
 }
 
 const oid = (id: unknown): string => String(id)
+
+const toDirectoryUser = (id: string, u: WorldUser) => ({
+  userId: id,
+  displayName: u.displayName,
+  ...(u.email !== undefined && { email: u.email }),
+  ...(u.firstName !== undefined && { firstName: u.firstName }),
+  ...(u.middleName !== undefined && { middleName: u.middleName }),
+  ...(u.lastName !== undefined && { lastName: u.lastName }),
+  ...(u.fullName !== undefined && { fullName: u.fullName }),
+  kind: u.kind ?? ('human' as const),
+  isDisabled: u.isDisabled === true,
+})
 
 /** The repository's contract applied to the in-memory store, for suites that cannot run `$expr` pipeline updates. */
 export class InMemoryCollaboratorRepository implements ICollaboratorRepository {
@@ -235,9 +255,15 @@ export function bindCollaborationWorld(container: Container, options: Collaborat
     findByIds: async (org: string, ids: readonly string[]) =>
       ids.flatMap((id) =>
         users[id] && String(users[id]!.orgId ?? options.orgId) === org
-          ? [{ userId: id, displayName: users[id]!.displayName, kind: users[id]!.kind ?? 'human', isDisabled: users[id]!.isDisabled === true }]
+          ? [toDirectoryUser(id, users[id]!)]
           : [],
       ),
+    searchOrgMembers: async (org: string, q: string, limit: number) =>
+      Object.entries(users)
+        .filter(([, u]) => String(u.orgId ?? options.orgId) === org && (u.kind ?? 'human') === 'human' && u.isDisabled !== true)
+        .filter(([, u]) => matchesSearchTokens({ fullName: u.fullName ?? u.displayName, firstName: u.firstName, middleName: u.middleName, lastName: u.lastName, email: u.email }, searchTokens(q)))
+        .slice(0, limit)
+        .map(([id, u]) => toDirectoryUser(id, u)),
   }
   const directoryTeams = {
     callerTeamIds: async (identity: { userId: string }) => ({ status: 'ok' as const, teamIds: options.teamsOf?.(identity.userId) ?? [] }),
@@ -248,13 +274,19 @@ export function bindCollaborationWorld(container: Container, options: Collaborat
   }
   const agentAccess = options.agents ?? { canExecute: async () => false, isServiceAccount: async () => false }
   const mentionValidator = new MentionValidator({
+    flags,
     users: directoryUsers,
     teams: directoryTeams,
     agents: agentAccess,
   })
   bindCollaboration(container, {
     mentionValidator,
-    agentDirectory: options.agentProfiles && { canExecute: (i, k) => agentAccess.canExecute(i, k), isServiceAccount: (i, k) => agentAccess.isServiceAccount(i, k), describe: options.agentProfiles.describe },
+    agentDirectory: options.agentProfiles && {
+      canExecute: (i, k) => agentAccess.canExecute(i, k),
+      isServiceAccount: (i, k) => agentAccess.isServiceAccount(i, k),
+      describe: options.agentProfiles.describe,
+      listExecutable: async () => options.agentList ?? 'unavailable',
+    },
     appConfig: { iamBackend: 'http://iam.test', connectorBackend: 'http://connectors.test' } as never,
     keyValueStore: {} as never,
     flags,
@@ -303,6 +335,6 @@ export function bindCollaborationStubs(container: Container): void {
     getFeed: noop,
     getReadiness: noop,
   })
-  container.bind(COLLAB_TYPES.MentionsController).toConstantValue({ list: noop, postNote: () => noop })
+  container.bind(COLLAB_TYPES.MentionsController).toConstantValue({ list: noop, listForNewChat: noop, postNote: () => noop })
   container.bind(COLLAB_TYPES.AuditWriter).toConstantValue({ record: async () => undefined })
 }

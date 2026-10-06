@@ -477,3 +477,76 @@ describe('finishing a collaborative turn', () => {
     expect(rowsOf(slotId)).toEqual([['user', 'first question'], ['assistant', 'first answer']]);
   });
 });
+
+describe('the first send of a new chat that has draft collaborators (M2)', () => {
+  let draftStore: typeof import('../draft-share-store').useDraftShareStore;
+  let draftBody: typeof import('../draft-share-store').draftShareBody;
+  const SHARE = { collaborators: [{ principalType: 'user' as const, principalId: 'u-dana', accessLevel: 'write' as const }], note: 'hi team' };
+
+  beforeEach(async () => {
+    ({ useDraftShareStore: draftStore, draftShareBody: draftBody } = await import('../draft-share-store'));
+    draftStore.getState().clear();
+    draftStore.getState().add([{ type: 'user', id: 'u-dana', name: 'Dana', level: 'write' }], { message: 'hi team' });
+  });
+
+  function newChatSlot() {
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.setState({ activeSlotId: slotId });
+    return slotId;
+  }
+
+  it('puts share in the body of the stream that creates the chat, and clears the draft once it completes', async () => {
+    const slotId = newChatSlot();
+    fetchMock.mockResolvedValueOnce(finished(base));
+    await streamMessageForSlot(slotId, 'first words', request({ share: draftBody() }));
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/conversations/stream');
+    expect(sentBody().share).toEqual(SHARE);
+    expect(draftStore.getState().principals).toEqual([]);
+  });
+
+  it('on a refusal of the share keeps the draft, puts the text back and shows the server reason', async () => {
+    const slotId = newChatSlot();
+    fetchMock.mockResolvedValueOnce(jsonResponse(422, { error: { code: 'INVALID_PRINCIPAL', message: 'nope' } }));
+    await streamMessageForSlot(slotId, 'first words', request({ share: draftBody() }));
+    expect(draftStore.getState().principals.map((p) => p.id)).toEqual(['u-dana']);
+    expect(draftStore.getState().message).toBe('hi team');
+    expect(slot(slotId).composerRestore).toBe('first words');
+    expect(slot(slotId).isStreaming).toBe(false);
+    expect(useToastStore.getState().toasts.map((t) => t.title)).toContain("One of the people or teams can't be added.");
+  });
+});
+
+describe('the guest agent that answered, on the stream that created the answer (M2)', () => {
+  const answer = (extra: Partial<ConversationMessage> = {}) => [
+    ...base,
+    stored({ _id: 'u2', content: 'joke please', seq: 2 }),
+    stored({ _id: 'a2', messageType: 'bot_response', content: 'a joke', seq: 3, ...extra }),
+  ];
+  const lastCustom = (id: string) => slot(id).messages.at(-1)?.metadata?.custom as Record<string, unknown>;
+
+  it('stamps the mentioned agent from what the picker knew when the final frame does not name it', async () => {
+    const slotId = openSlot();
+    const { useParticipantsStore } = await import('../mentions/participants-store');
+    useParticipantsStore.getState().mergeAgents('conv-1', [{ id: 'ag-1', label: 'Joke Buddy', handle: 'joke-buddy' }]);
+    fetchMock.mockResolvedValueOnce(finished(answer()));
+    await streamMessageForSlot(slotId, 'joke please', request({ mentions: [{ type: 'agent', id: 'ag-1' }] }));
+    expect(lastCustom(slotId).respondingAgent).toEqual({ key: 'ag-1', name: 'Joke Buddy', handle: 'joke-buddy' });
+  });
+
+  it('keeps what the server sent, and adds nothing without an agent mention or for the chat’s own agent', async () => {
+    const slotId = openSlot();
+    fetchMock.mockResolvedValueOnce(finished(answer({ respondingAgent: { key: 'ag-9', name: 'Server Name' } })));
+    await streamMessageForSlot(slotId, 'x', request({ mentions: [{ type: 'agent', id: 'ag-1' }] }));
+    expect(lastCustom(slotId).respondingAgent).toEqual({ key: 'ag-9', name: 'Server Name' });
+
+    const second = openSlot();
+    fetchMock.mockResolvedValueOnce(finished(answer()));
+    await streamMessageForSlot(second, 'x', request({ mentions: [{ type: 'user', id: 'u1' }] }));
+    expect(lastCustom(second)).not.toHaveProperty('respondingAgent');
+
+    const third = openSlot();
+    fetchMock.mockResolvedValueOnce(finished(answer()));
+    await streamMessageForSlot(third, 'x', request({ agentId: 'ag-1', mentions: [{ type: 'agent', id: 'ag-1' }] }));
+    expect(lastCustom(third)).not.toHaveProperty('respondingAgent');
+  });
+});

@@ -6,11 +6,14 @@ import { toCollaborator } from '../domain/collaborator.mapper';
 import { orgWideTeamId } from '../principals/principal-resolver';
 import { TEAM_EXPANSION_MAX_MEMBERS } from '../notify/recipient-resolver';
 import { IAgentDirectory } from './agent.directory';
-import { agentMentionVerdict } from './agent-mention-scope';
+import { AGENT_MENTIONS_MAX, agentMentionVerdict } from './agent-mention-scope';
+import { COLLAB_FLAG_KEYS } from '../../../../configuration_manager/constants/constants';
+import { IFeatureFlags } from '../../../../configuration_manager/services/platform-feature-flags.service';
 import {
   MentionDirectoryUnavailableError,
   MentionNotAllowedError,
   MentionSaAgentSharedError,
+  TooManyAgentMentionsError,
 } from './mention.errors';
 import {
   ASSISTANT_MENTION_ID,
@@ -22,6 +25,8 @@ export interface MentionValidatorDeps {
   users: IUserDirectory;
   teams: ITeamDirectory;
   agents: IAgentDirectory;
+  /** With the agent builder flag on, any agent the sender may run is mentionable (guest turns); absent or off, only the chat's own agent. */
+  flags?: IFeatureFlags;
 }
 
 export interface MentionValidationContext {
@@ -79,10 +84,14 @@ export class MentionValidator implements IMentionValidator {
   ): Promise<ValidatedMentions> {
     const unique = dedupeMentions(mentions);
     const people = participantsOf(ctx.session);
+    if (unique.filter((m) => m.type === 'agent').length > AGENT_MENTIONS_MAX) {
+      throw new TooManyAgentMentionsError(AGENT_MENTIONS_MAX);
+    }
+    const guestAgents = await this.guestAgentsEnabled();
     const userIds: string[] = [];
     for (const [index, m] of unique.entries()) {
       if (m.type === 'user') userIds.push(m.id);
-      else await this.checkOne(m, index, ctx, people);
+      else await this.checkOne(m, index, ctx, people, guestAgents);
     }
     const nonParticipants =
       userIds.length > 0 ? await this.checkUsers(unique, ctx, people) : [];
@@ -94,6 +103,7 @@ export class MentionValidator implements IMentionValidator {
     index: number,
     ctx: MentionValidationContext,
     people: Participants,
+    guestAgents: boolean,
   ): Promise<void> {
     if (m.type === 'assistant') {
       if (m.id !== ASSISTANT_MENTION_ID) {
@@ -107,20 +117,27 @@ export class MentionValidator implements IMentionValidator {
       }
       return;
     }
-    await this.checkAgent(m, index, ctx);
+    await this.checkAgent(m, index, ctx, guestAgents);
   }
 
-  /** Only an agent in `agentMentionScope` is mentionable, and only by someone who may run it. */
+  private async guestAgentsEnabled(): Promise<boolean> {
+    const { flags } = this.deps;
+    return flags ? flags.isEnabled(COLLAB_FLAG_KEYS.chatAgentBuilder) : false;
+  }
+
+  /** Only an agent in scope is mentionable, and only by someone who may run it. */
   private async checkAgent(
     m: MentionRef,
     index: number,
     ctx: MentionValidationContext,
+    guestAgents: boolean,
   ): Promise<void> {
     const verdict = await agentMentionVerdict(
       ctx.session,
       ctx.identity,
       this.deps.agents,
       m.id,
+      guestAgents,
     );
     if (verdict === 'not_in_scope')
       throw new MentionNotAllowedError(index, 'agent_not_in_chat', 403);

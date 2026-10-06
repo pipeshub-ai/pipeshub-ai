@@ -280,6 +280,16 @@ describe('MN-11 / MN-12: someone mentioned who is not in the chat', () => {
     expect(screen.queryByRole('button', { name: 'Can continue' })).toBeNull();
   });
 
+  it('names the outsider by what the picker showed (an organization search result), never an empty label', async () => {
+    openSlot();
+    sendArgs.value = ['@assistant tell <@user:u-dan>', undefined, [ASSISTANT, DAN]];
+    await mount();
+    // What picking a "Not in this chat" row stores (see rememberMentionLabels in the composer).
+    useParticipantsStore.getState().remember([{ ref: DAN, label: 'Dana Outsider' }]);
+    press();
+    await waitFor(() => expect(screen.getByText('Add Dana Outsider to this chat?')).toBeTruthy());
+  });
+
   it('a stream message that mentions an outsider gets the same offer when the full list is known', async () => {
     openSlot();
     sendArgs.value = ['@assistant tell <@user:u-dan>', undefined, [ASSISTANT, DAN]];

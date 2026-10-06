@@ -48,7 +48,15 @@ import {
   toWireMentions,
   WireMention,
 } from '../services/collaboration/turn/mention-refs';
-import { turnMentionsOf } from '../services/collaboration/mentions/turn-mentions';
+import {
+  turnGuestAgentOf,
+  turnMentionsOf,
+} from '../services/collaboration/mentions/turn-mentions';
+import {
+  agentProfiles,
+  IAgentProfiles,
+} from '../services/collaboration/mentions/agent.directory';
+import { respondingAgentViews } from '../services/collaboration/mentions/responding-agent';
 import { ChatTarget } from './ai-chat-payload';
 import { loadProjectForSession } from './project-context';
 import {
@@ -162,6 +170,7 @@ export async function appendFollowUpQuery(
 
   const authorUserId = objectIdOf(input.userId);
   const mentions = turnMentionsOf(req);
+  const guestAgentKey = turnGuestAgentOf(req);
   const userMessage = buildUserQueryMessage(
     body.query,
     body.appliedFilters,
@@ -249,6 +258,8 @@ export async function appendFollowUpQuery(
       lease,
       requestedBy: authorUserId,
       inReplyTo: userRow._id,
+      ...(lease &&
+        guestAgentKey !== undefined && { respondingAgentKey: guestAgentKey }),
     },
   };
 }
@@ -283,6 +294,26 @@ export interface FollowUpContext {
   mentions?: WireMention[];
 }
 
+const GUEST_REF_FALLBACK = 'agent:other';
+const HANDLE_SLUG = /^[a-z0-9-]{2,40}$/;
+
+/** How each guest agent in the history is named to the model: `agent:<handle>`, never its key or display name. */
+export async function guestAgentRefs(
+  history: readonly IMessage[],
+  identity: ReturnType<typeof callerIdentityOf>,
+  profiles: IAgentProfiles | undefined,
+): Promise<ReadonlyMap<string, string>> {
+  const views = await respondingAgentViews(history, identity, profiles);
+  return new Map(
+    [...views].map(([key, view]) => [
+      key,
+      view.handle && HANDLE_SLUG.test(view.handle)
+        ? `agent:${view.handle}`
+        : GUEST_REF_FALLBACK,
+    ]),
+  );
+}
+
 /** What the AI backend is told about the turn: the rows before the user's message, and the caller's project scope. */
 export async function followUpContext(
   req: AuthenticatedUserRequest,
@@ -311,10 +342,16 @@ export async function followUpContext(
   const mentions = roster
     ? toWireMentions(userRow.mentions, roster.authors.refs)
     : [];
+  const guestRefs = await guestAgentRefs(
+    history,
+    callerIdentityOf(req),
+    deps.agents ?? agentProfiles(),
+  );
   return {
     previousConversations: formatPreviousConversations(
       history,
       roster?.authors,
+      guestRefs,
     ),
     project,
     ...(roster && { collaboration: roster.collaboration }),

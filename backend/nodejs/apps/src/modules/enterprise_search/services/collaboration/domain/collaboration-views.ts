@@ -72,6 +72,8 @@ export interface FeedResponse {
   hasMore: boolean;
   activeRun: FeedActiveRun | null;
   lastActivityAt: number;
+  /** The chat's sharing version, bumped on every sharing change; when it moves, refetch collaborators. Also sent as `X-Acl-Version` on every answer, 304 included. */
+  aclVersion: number;
 }
 
 /** The 51 section 9 codes that can block a send, plus the agent being gone. */

@@ -17,6 +17,7 @@ export const COLLAB_TYPES = {
   ConversationEventProducers: Symbol.for('collab.ConversationEventProducers'),
   CollaborationService: Symbol.for('collab.CollaborationService'),
   FeedService: Symbol.for('collab.FeedService'),
+  NewChatSharing: Symbol.for('collab.NewChatSharing'),
   ReadinessService: Symbol.for('collab.ReadinessService'),
   CollaboratorsController: Symbol.for('collab.CollaboratorsController'),
   MentionsController: Symbol.for('collab.MentionsController'),

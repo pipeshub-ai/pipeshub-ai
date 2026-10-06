@@ -255,8 +255,8 @@ def test_j13_handle_check_is_proxied_as_the_caller(stack, api, fake, roster, bui
     assert api.get(f"{AGENTS}/handle-availability", writer).status_code == 400
 
 
-def test_j13_the_picker_offers_no_agent_in_a_plain_chat_not_even_to_its_creator(stack, api, fake, roster, builder_on) -> None:  # noqa: ANN001
-    """RR #16a: the picker offers exactly what the mention validator accepts; in M1 that is the chat's own agent, so a plain chat offers none."""
+def test_j13_the_picker_offers_an_agent_in_any_chat_to_whoever_can_run_it(stack, api, fake, roster, builder_on) -> None:  # noqa: ANN001
+    """RR #16a, M2: the picker offers exactly what the mention validator accepts, the agents the sender can run in any chat (a guest turn)."""
     owner, writer = roster.owner, roster.write_recipient
     chat = shared_chat(stack, roster)
     mine = {"_key": "agent-owned-by-a", "name": "Offer drafter", "handle": "offer-drafter", "createdBy": owner.user_id}
@@ -266,10 +266,10 @@ def test_j13_the_picker_offers_no_agent_in_a_plain_chat_not_even_to_its_creator(
         def items(who):  # noqa: ANN001, ANN202
             resp = api.get(f"{chats.CONVERSATIONS}/{chat}/mentionables", who)
             assert resp.status_code == 200, resp.text[:300]
-            return resp.json()["items"]
+            return [i for i in resp.json()["items"] if i["type"] == "agent"]
 
-        for who in (owner, writer):
-            assert all(i["type"] != "agent" for i in items(who)), who.name
+        assert [i["id"] for i in items(owner)] == ["agent-owned-by-a"]
+        assert items(writer) == [], "an agent that is not in the caller's own list is not offered"
     finally:
         fake.default("agent_list", None)
 

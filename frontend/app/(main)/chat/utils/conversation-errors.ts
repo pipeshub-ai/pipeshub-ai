@@ -45,6 +45,7 @@ const ERROR_ACTIONS: Record<ConversationErrorCode, { action: ConversationErrorAc
   MENTION_DIRECTORY_UNAVAILABLE: { action: 'inline', retryable: true },
   MESSAGE_IS_NOTE: { action: 'inline' },
   MESSAGE_NOT_NOTE: { action: 'inline' },
+  TOO_MANY_AGENT_MENTIONS: { action: 'toast' },
 };
 
 export function conversationErrorKey(code: ConversationErrorCode): string {

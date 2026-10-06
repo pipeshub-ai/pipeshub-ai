@@ -24,7 +24,8 @@ export function prepareCollabSend(
   slot: Pick<ChatSlot, 'messages' | 'access'>,
   request: StreamChatRequest,
 ): { clientMessageId: string } | null {
-  if (!collabSendEnabled() || slot.access?.isCollaborative !== true) return null;
+  // The first message of a new chat that is created already shared is a collaborative send too: it needs the id and the rejection handling.
+  if (!collabSendEnabled() || (slot.access?.isCollaborative !== true && !request.share)) return null;
   request.clientMessageId ??= newClientMessageId();
   const base = maxSeq(slot.messages);
   if (request.baseSeq === undefined && base >= 0) request.baseSeq = base;

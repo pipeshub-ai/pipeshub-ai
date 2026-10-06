@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveTypedMentions, type ResolverCandidate } from '../typed-mention-resolver';
+import { codeSpanRanges, resolveTypedMentions, typedHandleWords, type ResolverCandidate } from '../typed-mention-resolver';
 import type { MentionRef } from '../composer-input.types';
 
 const user = (id: string, label: string): ResolverCandidate => ({ ref: { type: 'user', id }, label });
@@ -136,24 +136,76 @@ describe('resolveTypedMentions', () => {
   });
 });
 
-describe('own agents (PH-11.4)', () => {
+describe('typed agent handles (M2)', () => {
   const ref: MentionRef = { type: 'agent', id: 'agent-9' };
-  const agent: ResolverCandidate[] = [
-    { ref, label: 'Offer drafter' },
-    { ref, label: 'offer-drafter' },
-  ];
+  const agents = [{ ref, handle: 'joke-buddy' }];
+  const runWith = (text: string, list = agents) => resolveTypedMentions({ text, mentions: [], candidates: [BOB], agents: list });
 
-  it('a typed @handle becomes the agent token', () => {
-    const out = run('ask @offer-drafter to draft', agent);
-    expect(out).toEqual({ status: 'ok', text: 'ask <@agent:agent-9> to draft', mentions: [ref] });
+  it('an exact @handle becomes the agent token, case-insensitively', () => {
+    expect(runWith('ask @joke-buddy for one')).toEqual({ status: 'ok', text: 'ask <@agent:agent-9> for one', mentions: [ref] });
+    expect(runWith('@Joke-Buddy!')).toMatchObject({ status: 'ok', text: '<@agent:agent-9>!', mentions: [ref] });
   });
 
-  it('the display name resolves too, and name and handle are not ambiguous with each other', () => {
-    expect(run('@Offer drafter please', agent)).toMatchObject({ status: 'ok', mentions: [ref] });
+  it('the same agent twice is one mention', () => {
+    expect(runWith('@joke-buddy and @joke-buddy')).toMatchObject({ mentions: [ref] });
   });
 
-  it('without agent candidates the same text stays plain', () => {
-    expect(run('ask @offer-drafter', [BOB])).toEqual({ status: 'ok', text: 'ask @offer-drafter', mentions: [] });
+  it('a reserved alias still addresses the assistant', () => {
+    expect(runWith('@ai @joke-buddy', [{ ref, handle: 'ai' }])).toMatchObject({ mentions: [ASSISTANT] });
+  });
+
+  it.each([
+    ['a prefix', '@joke'],
+    ['a longer handle', '@joke-buddy-2'],
+    ['the display name', '@Joke Buddy'],
+    ['an email', 'me@joke-buddy.com'],
+    ['a dotted continuation', '@joke-buddy.com'],
+    ['inline code', 'run `@joke-buddy` now'],
+    ['a double-backtick span', 'run ``a `@joke-buddy` b`` now'],
+    ['a fenced block', 'see\n```\n@joke-buddy\n```\ndone'],
+    ['an unterminated fence', '```\n@joke-buddy'],
+    ['an escaped or tokenised mention', '<@joke-buddy> \\@joke-buddy'],
+  ])('never converts %s', (_name, text) => {
+    const out = runWith(text);
+    expect(out.status === 'ok' && out.mentions.filter((m) => m.type === 'agent')).toEqual([]);
+    expect(out.status === 'ok' && out.text).not.toContain('<@agent:');
+  });
+
+  it('still converts after a closed code span, and when a lone backtick is plain text', () => {
+    expect(runWith('`x` @joke-buddy')).toMatchObject({ mentions: [ref] });
+    expect(runWith('it`s @joke-buddy')).toMatchObject({ mentions: [ref] });
+  });
+
+  it('property: text that holds no exact @handle outside code comes back unchanged with no agent mention', () => {
+    let seed = 7;
+    const rnd = () => {
+      seed = (seed * 1664525 + 1013904223) % 4294967296;
+      return seed / 4294967296;
+    };
+    const pieces = ['@', 'joke', '-', 'buddy', 'joke-', '-buddy', ' ', '\n', '`', '``', '```', 'x', '.', ',', '@jok', 'e', '2', 'me@', '<', '>', '\\'];
+    for (let n = 0; n < 400; n += 1) {
+      const text = Array.from({ length: 1 + Math.floor(rnd() * 12) }, () => pieces[Math.floor(rnd() * pieces.length)]).join('');
+      const out = runWith(text);
+      expect(out.status).toBe('ok');
+      if (out.status !== 'ok') continue;
+      const holdsHandle = /(^|[\s(\[{"'])@joke-buddy(?![\w@-]|\.\w)/i.test(text);
+      if (!holdsHandle) {
+        expect(out.text, text).toBe(text);
+        expect(out.mentions.filter((m) => m.type === 'agent'), text).toEqual([]);
+      }
+    }
+  });
+
+  it('codeSpanRanges: matched runs, unmatched runs and fences', () => {
+    expect(codeSpanRanges('a `b` c')).toEqual([[2, 5]]);
+    expect(codeSpanRanges('a ``b ` c`` d')).toEqual([[2, 11]]);
+    expect(codeSpanRanges('a ` b')).toEqual([]);
+    expect(codeSpanRanges('x\n```\ny')).toEqual([[2, 7]]);
+  });
+
+  it('typedHandleWords lists unexplained handle-like words once, outside code', () => {
+    const none = () => false;
+    expect(typedHandleWords('hi @joke-buddy and @Joke-Buddy, `@code`, @ai, @assistant', none)).toEqual(['joke-buddy']);
+    expect(typedHandleWords('@joke-buddy', (w) => w === 'joke-buddy')).toEqual([]);
   });
 });
-

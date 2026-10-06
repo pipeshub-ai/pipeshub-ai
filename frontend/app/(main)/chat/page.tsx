@@ -40,6 +40,9 @@ import { Flex, Box, Text, Avatar, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
+import { useAddPeopleStore } from '@/chat/mentions/add-people-store';
+import { useDraftShareStore } from '@/chat/draft-share-store';
+import { createDraftShareAdapter } from '@/chat/draft-share-adapter';
 import { AccessPanel } from '@/chat/components/collaboration/access-panel';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createChatShareAdapter } from './share-adapter';
@@ -1051,6 +1054,40 @@ function ChatContent() {
     }
   }, [showConversationShare, isShareSidebarOpen]);
 
+  // A new default chat can be shared before it exists: the choice waits in the draft store for the first message.
+  const [isDraftShareOpen, setIsDraftShareOpen] = useState(false);
+  const draftPrincipals = useDraftShareStore((s) => s.principals);
+  const showDraftShare = !conversationId && !historyAndShareAgentId && !agentId && conversationAccess.collabEnabled;
+  const draftShareAdapter = useMemo(() => (showDraftShare ? createDraftShareAdapter() : null), [showDraftShare]);
+  const draftMembers = useMemo<SharedAvatarMember[]>(
+    () => draftPrincipals.map((p) => ({ id: p.id, name: p.name, type: p.type })),
+    [draftPrincipals],
+  );
+  useEffect(() => {
+    if (!showDraftShare) setIsDraftShareOpen(false);
+  }, [showDraftShare]);
+  // The draft belongs to the chat it was made for: it ends with the page, or when a chat is opened.
+  useEffect(() => {
+    if (conversationId) useDraftShareStore.getState().clear();
+  }, [conversationId]);
+  useEffect(() => () => useDraftShareStore.getState().clear(), []);
+
+  const addPeopleQuery = useAddPeopleStore((s) => s.query);
+  useEffect(() => {
+    if (addPeopleQuery === null) return;
+    if (showConversationShare) setIsShareSidebarOpen(true);
+    else if (showDraftShare) setIsDraftShareOpen(true);
+    else useAddPeopleStore.getState().finish();
+  }, [addPeopleQuery, showConversationShare, showDraftShare]);
+  const handleShareOpenChange = useCallback((open: boolean) => {
+    setIsShareSidebarOpen(open);
+    if (!open) useAddPeopleStore.getState().finish();
+  }, []);
+  const handleDraftShareOpenChange = useCallback((open: boolean) => {
+    setIsDraftShareOpen(open);
+    if (!open) useAddPeopleStore.getState().finish();
+  }, []);
+
   const handleShareClick = useCallback(() => {
     if (!chatShareAdapter) return;
     setIsShareSidebarOpen(true);
@@ -1317,7 +1354,7 @@ function ChatContent() {
       )}
 
       {/* Access + Share header group. Access shows for anyone with a known server view (flag on). */}
-      {(showConversationShare || showAccessButton) && (
+      {(showConversationShare || showAccessButton || showDraftShare) && (
         <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
           <Flex align="center" gap="4">
             {showAccessButton && conversationId && (
@@ -1339,6 +1376,9 @@ function ChatContent() {
             )}
             {showConversationShare && (
               <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+            )}
+            {showDraftShare && (
+              <ShareHeaderGroup members={draftMembers} onShareClick={() => setIsDraftShareOpen(true)} />
             )}
           </Flex>
         </Box>
@@ -1655,7 +1695,8 @@ function ChatContent() {
       {showConversationShare && chatShareAdapter && (
         <ShareSidebar
           open={isShareSidebarOpen}
-          onOpenChange={setIsShareSidebarOpen}
+          onOpenChange={handleShareOpenChange}
+          initialSearch={addPeopleQuery ?? undefined}
           adapter={chatShareAdapter}
           onShareSuccess={() => {
             chatShareAdapter.getSharedMembers().then((members) => {
@@ -1676,6 +1717,16 @@ function ChatContent() {
               );
             });
           }}
+        />
+      )}
+
+      {showDraftShare && draftShareAdapter && (
+        <ShareSidebar
+          draft
+          open={isDraftShareOpen}
+          onOpenChange={handleDraftShareOpenChange}
+          initialSearch={addPeopleQuery ?? undefined}
+          adapter={draftShareAdapter}
         />
       )}
 

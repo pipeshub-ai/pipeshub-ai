@@ -721,9 +721,13 @@
       "groupAssistant": "어시스턴트",
       "groupAgent": "에이전트",
       "groupPeople": "이 채팅의 참여자",
+      "groupOthers": "조직의 다른 구성원",
       "groupTeams": "팀",
       "kindAgent": "에이전트",
       "kindTeam": "팀",
+      "notInChat": "이 채팅에 없음",
+      "oneAgentHint": "메시지 하나에는 에이전트를 한 명만 멘션할 수 있습니다.",
+      "addPeople": "이 채팅에 사람 추가…",
       "listLabel": "멘션 추천",
       "loading": "검색 중…",
       "empty": "일치하는 항목 없음",
@@ -750,6 +754,7 @@
         "noteOnly": "팀원만 멘션하면 AI에게 묻지 않고 메모를 남길 수 있습니다",
         "assistantAnywhere": "@assistant는 어디서나 사용할 수 있습니다",
         "agentAccess": "에이전트는 내 접근 권한으로 답변합니다",
+        "agentAnywhere": "사용할 수 있는 에이전트는 어떤 채팅에서든 멘션할 수 있습니다",
         "gotIt": "확인",
         "coachmarkLabel": "팁",
         "firstSharedSend_other": "내 메시지와 답변이 {{count}}명에게 표시됩니다",
@@ -770,8 +775,7 @@
         "shared": "PipesHub에 질문하거나 @를 입력해 팀원이나 에이전트를 멘션하세요"
       },
       "you": "나",
-      "mentionsYou": "나를 멘션함",
-      "agentNotInChat": "이 에이전트는 아직 이 채팅에서 답변할 수 없습니다. 에이전트 전용 채팅을 열어 사용하세요."
+      "mentionsYou": "나를 멘션함"
     },
     "recordActions": {
       "preview": "미리보기",
@@ -1367,7 +1371,8 @@
         "MENTION_SA_AGENT_SHARED": "이 에이전트는 서비스 계정으로 실행되어 공유 채팅에서 멘션할 수 없습니다.",
         "MENTION_DIRECTORY_UNAVAILABLE": "지금은 멘션한 에이전트를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.",
         "MESSAGE_IS_NOTE": "이 메시지는 AI에게 전송되지 않았습니다. 이 채팅에서는 누군가 @assistant를 멘션할 때만 AI가 답합니다. AI에게 질문하려면 @assistant를 멘션하세요.",
-        "MESSAGE_NOT_NOTE": "메모로는 AI에게 질문할 수 없습니다. 메모로 게시하려면 @assistant 멘션을 제거하세요."
+        "MESSAGE_NOT_NOTE": "메모로는 AI에게 질문할 수 없습니다. 메모로 게시하려면 @assistant 멘션을 제거하세요.",
+        "TOO_MANY_AGENT_MENTIONS": "메시지 하나에는 에이전트를 한 명만 멘션할 수 있습니다. 나머지 멘션을 삭제한 후 다시 보내세요."
       },
       "share": {
         "title": "채팅 공유",
@@ -1401,7 +1406,9 @@
         "transferred": "소유권이 이전되었습니다",
         "transferredDescription": "{{name}}님이 이제 소유자입니다",
         "rateLimited": "변경이 너무 많습니다. {{retryAfter}}초 후에 다시 시도해 주세요.",
-        "limitReached": "이 채팅에 추가할 수 있는 사람과 팀은 최대 {{max}}개입니다."
+        "limitReached": "이 채팅에 추가할 수 있는 사람과 팀은 최대 {{max}}개입니다.",
+        "draftNotice": "아직 아무것도 공유되지 않았습니다. 여기에 추가한 사람은 첫 메시지를 보내면 접근 권한을 받습니다.",
+        "draftAdd": "추가"
       },
       "sidebar": {
         "roleRead": "보기 가능",
@@ -1423,7 +1430,9 @@
         "sentBy": "{{name}}님이 보냄",
         "askedByAnswered": "{{name}}님이 질문 · {{name}}님의 권한으로 답변",
         "askedByYouAnswered": "내가 질문 · 내 권한으로 답변",
-        "waitingFor": "{{name}}님의 답변을 기다리는 중"
+        "waitingFor": "{{name}}님의 답변을 기다리는 중",
+        "respondingAgent": "에이전트",
+        "respondingAgentAria": "{{name}}의 답변"
       },
       "consent": {
         "audience_other": "{{count}}명에게 표시됨 · 소유자가 더 추가할 수 있음 · 추가한 파일은 공유됨",
@@ -1507,7 +1516,13 @@
         },
         "removeSelection": "{{name}} 제거"
       },
-      "accessLostBannerEmpty": "이 채팅은 사용할 수 없습니다. 삭제되었거나 접근 권한이 제거되었을 수 있습니다."
+      "accessLostBannerEmpty": "이 채팅은 사용할 수 없습니다. 삭제되었거나 접근 권한이 제거되었을 수 있습니다.",
+      "draft": {
+        "willShare": "공유 대상",
+        "edit": "이 채팅을 공유할 대상 변경",
+        "remove": "{{name}} 제거",
+        "entry": "{{name}}({{level}})"
+      }
     },
     "agentDraft": {
       "label": "에이전트 초안",

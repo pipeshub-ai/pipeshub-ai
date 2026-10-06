@@ -49,13 +49,14 @@ import { PastedTextChip } from '@/chat/components/pasted-text-chip';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
 import { ComposerField } from './composer/composer-field';
 import { MentionChooser } from './composer/mention-chooser';
-import { resolveTypedMentions, type ResolverCandidate } from './composer/typed-mention-resolver';
-import { useChatParticipants } from '@/chat/mentions/use-chat-participants';
+import { resolveTypedMentions, typedHandleWords, type ResolverCandidate } from './composer/typed-mention-resolver';
+import { resolverAgentsOf, useChatParticipants } from '@/chat/mentions/use-chat-participants';
+import { useParticipantsStore } from '@/chat/mentions/participants-store';
+import { useAddPeopleStore } from '@/chat/mentions/add-people-store';
 import { useFeatureFlagsStore, selectChatMentionsEnabled } from '@/lib/store/feature-flags-store';
 import type { MentionRef } from './composer/composer-input.types';
 import type { ComposerInputHandle } from './composer/composer-input.types';
 import { onComposerMentionRequest } from '@/chat/utils/composer-commands';
-import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { useQueuedSendComposer } from '@/chat/hooks/use-queued-send-composer';
 import {
   isLargePaste,
@@ -180,6 +181,8 @@ function SpeechInputButton({
     </Tooltip>
   );
 }
+
+const MAX_HANDLE_LOOKUPS = 3;
 
 export function ChatInput({
   onSend,
@@ -743,6 +746,28 @@ export function ChatInput({
     }
   }, [activeMessageAction, regenModelOverride, activeSlotId, t]);
 
+  // The share drawer opened from the @ list closed: back to typing, draft untouched. The people it added arrive
+  // through the cache invalidation the share calls trigger, so the list is already fresh.
+  const addPeopleClosedTick = useAddPeopleStore((st) => st.closedTick);
+  const seenClosedTick = useRef(addPeopleClosedTick);
+  useEffect(() => {
+    if (seenClosedTick.current === addPeopleClosedTick) return;
+    seenClosedTick.current = addPeopleClosedTick;
+    composerRef.current?.focus();
+  }, [addPeopleClosedTick]);
+
+  const handlesFetchedFor = useRef<string | null>(null);
+  const handlesPending = useRef(false);
+  const submitRef = useRef<((e: React.FormEvent) => void) | null>(null);
+  const freshAgents = () => {
+    const key = participants.convId ?? (participants.searchRef?.kind === 'new' ? 'new' : null);
+    return key ? resolverAgentsOf(useParticipantsStore.getState().agentsByConv[key] ?? []) : participants.agents;
+  };
+  const unknownHandleWords = (text: string) => {
+    const handles = new Set(freshAgents().map((a) => a.handle.toLowerCase()));
+    return typedHandleWords(text, (word) => handles.has(word) || participants.candidates.some((c) => c.label.toLowerCase().split(/\s+/).some((w) => w.startsWith(word))));
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -880,33 +905,41 @@ export function ChatInput({
       let outText = message;
       let mentions = composerRef.current?.getValue().mentions ?? [];
       if (mentionsEnabled) {
+        // A typed `@handle` may name an agent beyond the one page the picker cached: ask the server first, then send.
+        if (handlesPending.current) return;
+        if (participants.searchRef && handlesFetchedFor.current !== message) {
+          const pending = unknownHandleWords(message);
+          if (pending.length > 0) {
+            handlesFetchedFor.current = message;
+            handlesPending.current = true;
+            const ref = participants.searchRef;
+            const store = useParticipantsStore.getState();
+            void Promise.all(pending.slice(0, MAX_HANDLE_LOOKUPS).map((w) => store.loadAgentsMatching(ref, w))).then(() => {
+              handlesPending.current = false;
+              submitRef.current?.(e);
+            });
+            return;
+          }
+        }
         const resolved = resolveTypedMentions({
           text: message,
           mentions,
           candidates: participants.candidates,
+          agents: freshAgents(),
           choices: chosenRef.current,
         });
         if (resolved.status === 'ambiguous') {
           setChooser({ typed: resolved.typed, candidates: resolved.candidates });
           return;
         }
-        // The server only answers an agent mention for the chat's own agent (guest turns come later): say so before sending.
-        const elsewhere = resolved.mentions.find((m) => m.type === 'agent' && m.id !== participants.agentId);
-        if (elsewhere) {
-          const toastId = toast.warning(t('chat.mentions.agentNotInChat'), {
-            action: {
-              label: t('chat.agentDraft.openAgentChat'),
-              onClick: () => {
-                toast.dismiss(toastId);
-                openFreshAgentChat(elsewhere.id, router);
-              },
-            },
-          });
+        if (resolved.mentions.filter((m) => m.type === 'agent').length > 1) {
+          toast.error(t('chat.collab.errors.TOO_MANY_AGENT_MENTIONS'));
           return;
         }
         outText = resolved.text;
         mentions = resolved.mentions;
         chosenRef.current = {};
+        handlesFetchedFor.current = null;
       }
       // A third argument only when there are mentions, so a caller (and a flag-off send) sees today's two-argument call.
       if (mentions.length > 0) onSend(outText, refs.length > 0 ? refs : undefined, mentions);
@@ -917,6 +950,10 @@ export function ChatInput({
       composerRef.current?.clear();
     }
   };
+
+  useEffect(() => {
+    submitRef.current = handleSubmit;
+  });
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Escape cancels whichever action mode is active (edit or regenerate)

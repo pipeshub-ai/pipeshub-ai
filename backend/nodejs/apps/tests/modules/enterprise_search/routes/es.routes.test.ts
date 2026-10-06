@@ -669,8 +669,8 @@ describe('Enterprise Search Routes', () => {
         .filter((layer: any) => layer.route)
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
 
-      // authenticate, requireScopes, validate, guard, handler; a follow-up also runs runLease() after its guard
-      for (const [path, length] of [['/:agentKey/conversations', 5], ['/:agentKey/conversations/:conversationId/messages', 6]] as const) {
+      // authenticate, requireScopes, validate, (first sends: the share limiter), guard, handler; a follow-up also runs runLease() after its guard
+      for (const [path, length] of [['/:agentKey/conversations', 6], ['/:agentKey/conversations/:conversationId/messages', 6]] as const) {
         const nonStreaming = routes.find((r: any) => r.path === path && r.methods.post)
         const streaming = routes.find((r: any) => r.path === `${path}/stream` && r.methods.post)
         expect(nonStreaming?.stack.length, path).to.equal(length)

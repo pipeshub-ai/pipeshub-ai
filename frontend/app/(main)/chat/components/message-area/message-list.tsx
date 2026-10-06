@@ -1102,6 +1102,7 @@ export function MessageList() {
                   unanswered={pair.unanswered}
                   author={pair.author}
                   requestedBy={pair.requestedBy}
+                  respondingAgent={pair.respondingAgent}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

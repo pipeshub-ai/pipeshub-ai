@@ -8,12 +8,45 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { COLLAB_FLAG_KEYS } from '../../configuration_manager/constants/constants';
 import { IFeatureFlags } from '../../configuration_manager/services/platform-feature-flags.service';
 import { MentionsController } from '../controller/mentions.controller';
+import { collaborationLimiters } from './collaboration.routes';
 import { COLLAB_TYPES } from '../services/collaboration/collab.types';
 import {
   ConversationGuards,
   GuardKind,
 } from '../services/collaboration/http/conversation-guards';
-import { mentionSchemas } from '../validators/mention.validators';
+import { orgMentionableSchemas, mentionSchemas } from '../validators/mention.validators';
+
+/**
+ * `GET /mentionables` (chat) or `GET /:agentKey/conversations/mentionables` (agent): the picker
+ * before the chat exists. Mounted first on its router so `/:conversationId` does not claim it.
+ */
+export function mountNewChatMentionables(
+  router: Router,
+  container: Container,
+  kind: GuardKind,
+): void {
+  const flags = container.get<IFeatureFlags>(COLLAB_TYPES.FeatureFlags);
+  const controller = container.get<MentionsController>(
+    COLLAB_TYPES.MentionsController,
+  );
+  const auth = container.get<AuthMiddleware>('AuthMiddleware');
+  const { feed } = collaborationLimiters(container);
+  router.get(
+    kind === 'chat' ? '/mentionables' : '/:agentKey/conversations/mentionables',
+    requireFlag(flags, COLLAB_FLAG_KEYS.collaborativeChats),
+    requireFlag(flags, COLLAB_FLAG_KEYS.chatMentions),
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- bound in the AuthMiddleware constructor
+    auth.authenticate,
+    requireScopes(
+      kind === 'chat'
+        ? OAuthScopeNames.CONVERSATION_READ
+        : OAuthScopeNames.AGENT_EXECUTE,
+    ),
+    feed,
+    ValidationMiddleware.validate(orgMentionableSchemas[kind]),
+    controller.listForNewChat,
+  );
+}
 
 /**
  * Mounts the mentionables and notes routes on the chat router or the agent router. Both answer 404

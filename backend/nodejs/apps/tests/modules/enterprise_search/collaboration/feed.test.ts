@@ -5,6 +5,7 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend'
 import { Fixture, PEOPLE, asUser, id, startFixture } from '../helpers/collab-fixture'
+import { useAgentProfiles } from '../../../../src/modules/enterprise_search/services/collaboration/mentions/agent.directory'
 
 describe('conversation feed', () => {
   let f: Fixture
@@ -169,5 +170,85 @@ describe('conversation feed', () => {
     await seed()
     const out = await feed('B', '?afterSeq=abc')
     expect(out.status).to.equal(400)
+  })
+
+  describe('aclVersion', () => {
+    it('is in the 200 body and in the X-Acl-Version header, and on the 304 too', async () => {
+      await seed({ messages: 2 })
+      chat().set('aclVersion', 5)
+      const ok = await feed('B', '?afterSeq=0&rev=3')
+      expect(ok.status).to.equal(200)
+      expect(ok.body.aclVersion).to.equal(5)
+      expect(ok.headers.get('x-acl-version')).to.equal('5')
+      const notModified = await feed('B', '?afterSeq=0&rev=7')
+      expect(notModified.status).to.equal(304)
+      expect(notModified.headers.get('x-acl-version')).to.equal('5')
+    })
+
+    it('a chat that never changed its sharing reads as 0', async () => {
+      await seed({ messages: 1 })
+      expect((await feed('B', '?rev=7')).headers.get('x-acl-version')).to.equal('0')
+    })
+
+    it('a sharing change moves the header on the next poll even though rev did not move, so it cannot hide behind a 304', async () => {
+      await seed({ messages: 1 })
+      const before = await feed('B', '?rev=7')
+      expect(before.status).to.equal(304)
+      chat().set('aclVersion', (chat().get('aclVersion') ?? 0) + 1)
+      const after = await feed('B', '?rev=7')
+      expect(after.status).to.equal(304)
+      expect(Number(after.headers.get('x-acl-version'))).to.equal(Number(before.headers.get('x-acl-version')) + 1)
+    })
+
+    it('adds no read: the 304 poll still makes the guard’s read and the rev read, and no message query', async () => {
+      await seed({ messages: 2 })
+      const findOne = ChatSession.findOne as unknown as sinon.SinonStub
+      const messageFind = ChatSessionMessage.find as unknown as sinon.SinonStub
+      findOne.resetHistory()
+      messageFind.resetHistory()
+      await feed('B', '?afterSeq=0&rev=7')
+      expect(findOne.callCount).to.equal(2)
+      expect(messageFind.called).to.equal(false)
+    })
+  })
+
+  describe('respondingAgent (M2)', () => {
+    const profiles = { describe: async (_who: unknown, key: string) => (key === 'guest-9' ? { name: 'Joke Buddy', handle: 'joke-buddy' } : undefined) }
+    const open = async () => {
+      f = await startFixture({ collaboration: { agentProfiles: profiles as never } })
+      chat().set('sharedWith', [{ principalType: 'user', userId: PEOPLE.B, accessLevel: 'write' }])
+      chat().set('isShared', true)
+      f.store.addMessage(chat(), { messageType: 'user_query', content: 'q', authorUserId: PEOPLE.A })
+      f.store.addMessage(chat(), { messageType: 'bot_response', content: 'knock knock', requestedBy: PEOPLE.A, respondingAgentKey: 'guest-9' })
+      f.store.addMessage(chat(), { messageType: 'bot_response', content: 'secret', requestedBy: PEOPLE.A, respondingAgentKey: 'private-agent' })
+      f.store.addMessage(chat(), { messageType: 'bot_response', content: 'plain', requestedBy: PEOPLE.A })
+    }
+    afterEach(() => useAgentProfiles(undefined))
+
+    it('the feed names a guest agent’s answer by key, name and handle', async () => {
+      await open()
+      const rows = (await feed('B', '?afterSeq=0')).body.messages
+      expect(rows[1].respondingAgent).to.deep.equal({ key: 'guest-9', name: 'Joke Buddy', handle: 'joke-buddy' })
+      expect(rows[1].respondingAgentKey).to.equal('guest-9')
+    })
+
+    it('an agent the caller cannot read is just its key, and nothing else carries the field', async () => {
+      await open()
+      const rows = (await feed('B', '?afterSeq=0')).body.messages
+      expect(rows[2].respondingAgent).to.deep.equal({ key: 'private-agent' })
+      expect(rows[0].respondingAgent).to.equal(undefined)
+      expect(rows[3].respondingAgent).to.equal(undefined)
+    })
+
+    it('the conversation detail returns it too', async () => {
+      await open()
+      useAgentProfiles(profiles as never)
+      const out = await f.http.call('GET', f.path('chat'), asUser('B'))
+      expect(out.status, JSON.stringify(out.body)).to.equal(200)
+      const guest = out.body.conversation.messages.find((m: any) => m.content === 'knock knock')
+      expect(guest.respondingAgent).to.deep.equal({ key: 'guest-9', name: 'Joke Buddy', handle: 'joke-buddy' })
+      expect(out.body.conversation.messages.find((m: any) => m.content === 'secret').respondingAgent).to.deep.equal({ key: 'private-agent' })
+      expect(out.body.conversation.messages.find((m: any) => m.content === 'plain').respondingAgent).to.equal(undefined)
+    })
   })
 })

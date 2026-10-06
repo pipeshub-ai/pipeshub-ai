@@ -30,6 +30,10 @@ import {
   FollowUpBody,
   turnCallerOf,
 } from '../utils/follow-up-turn';
+import { callerIdentityOf } from '../../../libs/types/caller-identity';
+import { agentProfiles } from '../services/collaboration/mentions/agent.directory';
+import { turnGuestAgentOf, turnNonParticipantsOf } from '../services/collaboration/mentions/turn-mentions';
+import { responderFor } from '../services/collaboration/turn/turn-responder';
 import { attachUpstreamAbort } from '../utils/stream-lifecycle';
 import { openTurnSse, TurnStreamPump } from '../utils/turn-stream';
 import { extractModelInfo } from '../utils/utils';
@@ -61,6 +65,8 @@ export const followUpStream = (
       kind === 'agent'
         ? { kind: 'agent', agentKey: agentKey as string }
         : { kind: 'assistant' };
+
+    const responder = responderFor(target, turnGuestAgentOf(req));
 
     // The heartbeat and the client's close can fire before the pump exists, so they reach it through this holder.
     const live: { pump?: TurnStreamPump; lost: boolean } = { lost: false };
@@ -104,7 +110,12 @@ export const followUpStream = (
       if (live.lost) throw new LeaseLostError(gate.lease?.runId ?? '');
       // With a lease every 4xx so far was JSON; from here on failures are SSE frames.
       if (gate.lease)
-        openTurnSse(res, conversationId as string, gate.lease.runId);
+        openTurnSse(
+          res,
+          conversationId as string,
+          gate.lease.runId,
+          turnNonParticipantsOf(req),
+        );
 
       const pump = new TurnStreamPump({
         res,
@@ -117,6 +128,8 @@ export const followUpStream = (
         modelInfo: extractModelInfo(body),
         agent: kind === 'agent',
         upstreamAbort,
+        identity: callerIdentityOf(req as AuthenticatedUserRequest),
+        profiles: deps.agents ?? agentProfiles(),
       });
       live.pump = pump;
       if (upstreamAbort.isClientDisconnected()) {
@@ -136,7 +149,7 @@ export const followUpStream = (
         deps,
       );
       const aiRequest = buildAiChatRequest(
-        target,
+        responder.target,
         aiRequestBody(body, attachments, turn.run),
         {
           conversationId,
@@ -146,6 +159,7 @@ export const followUpStream = (
           project: context.project,
           collaboration: context.collaboration,
           mentions: context.mentions,
+          guestAgent: responder.kind === 'guest_agent',
         },
       );
       if (turn.conversation.projectId) {
@@ -167,8 +181,12 @@ export const followUpStream = (
       try {
         stream = await startAIStream(
           aiCommandOptions,
-          kind === 'agent' ? 'Add Message Agent Stream' : 'Add Message Stream',
-          kind === 'agent' ? { requestId, agentKey } : { requestId },
+          responder.target.kind === 'agent'
+            ? 'Add Message Agent Stream'
+            : 'Add Message Stream',
+          responder.target.kind === 'agent'
+            ? { requestId, agentKey: responder.target.agentKey }
+            : { requestId },
           upstreamAbort.signal,
         );
       } catch (streamOpenError) {

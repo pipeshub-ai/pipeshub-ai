@@ -192,6 +192,7 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     authorUserId: { type: Schema.Types.ObjectId }, // user_query
     requestedBy: { type: Schema.Types.ObjectId }, // bot_response | error | tool_call
     inReplyTo: { type: Schema.Types.ObjectId },
+    respondingAgentKey: { type: String }, // guest-agent turns: bot_response | error | tool_call
     clientMessageId: { type: String, maxlength: CLIENT_MESSAGE_ID_MAX_LENGTH },
     filesShared: { type: Boolean },
     shareToolResults: { type: Boolean },

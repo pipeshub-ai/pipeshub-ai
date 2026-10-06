@@ -90,6 +90,7 @@ const CHAT_OTHER: Record<string, Mark | null> = {
   'POST /stream': CALLER,
   'POST /internal/stream': CALLER,
   'GET /': list('chat'),
+  'GET /mentionables': null, // the picker before the chat exists: no conversation to guard
   'GET /show/archives': list('chat'),
   'GET /show/archives/search': list('chat'),
   // Attachments: the Python service checks the owner (allowlisted, PH-04 §3).
@@ -105,6 +106,7 @@ const AGENT_OTHER: Record<string, Mark | null> = {
   [`POST ${AGENT}/internal/stream`]: CALLER,
   [`GET ${AGENT}`]: list('agent'),
   [`GET ${AGENT}/show/archives`]: list('agent'),
+  [`GET ${AGENT}/mentionables`]: null,
   [`POST ${AGENT}/attachments/upload`]: null,
   [`POST ${AGENT}/internal/attachments/upload`]: null,
   [`DELETE ${AGENT}/attachments/:recordId`]: null,

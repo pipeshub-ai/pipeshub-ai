@@ -1,7 +1,7 @@
 import { ProjectService } from '../../projects/services/project.service';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.command';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import { BadRequestError, NotFoundError } from '../../../libs/errors/http.errors';
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
@@ -40,6 +40,19 @@ import {
   turnCallerOf,
 } from '../utils/follow-up-turn';
 import { resolveProjectLink } from '../utils/project-context';
+import { callerIdentityOf } from '../../../libs/types/caller-identity';
+import { agentProfiles } from '../services/collaboration/mentions/agent.directory';
+import {
+  turnGuestAgentOf,
+  turnMentionsOf,
+  turnNonParticipantsOf,
+} from '../services/collaboration/mentions/turn-mentions';
+import { responderFor } from '../services/collaboration/turn/turn-responder';
+import {
+  applyFirstSendShare,
+  FirstSendShareBody,
+  validateFirstSendShare,
+} from '../utils/first-send-share';
 import { attachUpstreamAbort } from '../utils/stream-lifecycle';
 import {
   TurnStreamPump,
@@ -75,6 +88,8 @@ export const firstSendStream = (
     const { agentKey } = req.params;
     const { userId, orgId } = turnCallerOf(req);
     const collab = collabEnabledFor(req);
+    // Before any SSE header, so it answers as the collaborators routes do with the flag off.
+    if (body.share !== undefined && !collab) throw new NotFoundError('Not found');
     const target: ChatTarget =
       kind === 'agent'
         ? { kind: 'agent', agentKey: agentKey as string }
@@ -97,6 +112,20 @@ export const firstSendStream = (
         userId,
         body.clientMessageId,
       );
+      const share = await validateFirstSendShare(
+        deps,
+        req as AuthenticatedUserRequest,
+        collab,
+        body.share as FirstSendShareBody | undefined,
+      );
+      if (collab) {
+        await deps.mentions?.admitFirstSend(
+          req as AuthenticatedUserRequest,
+          target,
+          share,
+        );
+      }
+      const responder = responderFor(target, turnGuestAgentOf(req));
 
       const attachments = await filterOwnedAttachments(
         appConfig,
@@ -122,8 +151,16 @@ export const firstSendStream = (
         body,
         attachments,
         link,
+        guestAgentKey: responder.respondingAgentKey,
+        mentions: turnMentionsOf(req),
       });
       const { conversation, run } = turn;
+      await applyFirstSendShare(
+        deps,
+        req as AuthenticatedUserRequest,
+        conversation,
+        share,
+      );
       gate = run.lease
         ? holdLease(run.lease, () => {
             live.lost = true;
@@ -145,6 +182,7 @@ export const firstSendStream = (
         title: conversation.title || undefined,
         projectId: link.projectId,
         runId: run.lease?.runId,
+        nonParticipants: turnNonParticipantsOf(req),
       });
       timer.mark('conversation_created');
 
@@ -159,6 +197,8 @@ export const firstSendStream = (
         modelInfo: extractModelInfo(body),
         agent: kind === 'agent',
         upstreamAbort,
+        identity: callerIdentityOf(req as AuthenticatedUserRequest),
+        profiles: deps.agents ?? agentProfiles(),
       });
       live.pump = pump;
       if (live.lost) {
@@ -171,7 +211,7 @@ export const firstSendStream = (
       }
 
       const aiRequest = buildAiChatRequest(
-        target,
+        responder.target,
         aiRequestBody(body, attachments, run),
         {
           conversationId,
@@ -180,6 +220,7 @@ export const firstSendStream = (
           isNewConversation: true,
           aclVersion: readAclVersion(conversation),
           project: link.project,
+          guestAgent: responder.kind === 'guest_agent',
         },
       );
       if (link.projectId) {
@@ -199,8 +240,12 @@ export const firstSendStream = (
       try {
         stream = await startAIStream(
           aiCommandOptions,
-          kind === 'agent' ? 'Agent Chat Stream' : 'Chat Stream',
-          kind === 'agent' ? { requestId, agentKey } : { requestId },
+          responder.target.kind === 'agent'
+            ? 'Agent Chat Stream'
+            : 'Chat Stream',
+          responder.target.kind === 'agent'
+            ? { requestId, agentKey: responder.target.agentKey }
+            : { requestId },
           upstreamAbort.signal,
         );
       } catch (streamOpenError) {
@@ -216,7 +261,7 @@ export const firstSendStream = (
         throw streamOpenError;
       }
       timer.mark('ai_stream_open');
-      if (kind === 'assistant') {
+      if (responder.kind === 'assistant') {
         stream.once('data', () => {
           timer.mark('ai_first_byte');
           timer.emit('chat stream (node)', {

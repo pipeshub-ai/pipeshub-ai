@@ -15,6 +15,8 @@ import { IConversationFeedService } from '../services/collaboration/feed/convers
 import { conversationGrantOf } from '../services/collaboration/http/conversation-context';
 import { IConversationReadinessService } from '../services/collaboration/readiness/conversation-readiness.service';
 
+export const ACL_VERSION_HEADER = 'X-Acl-Version';
+
 type Handler = (
   req: AuthenticatedUserRequest,
   res: Response,
@@ -123,10 +125,18 @@ export class CollaboratorsController {
       afterSeq: number;
       rev?: number;
     };
-    const outcome = await this.feed.read(conversationGrantOf(req), {
-      afterSeq,
-      rev,
-    });
+    const outcome = await this.feed.read(
+      conversationGrantOf(req),
+      { afterSeq, rev },
+      callerIdentityOf(req),
+    );
+    // On the 304 too: a sharing change does not move `rev`, and must not hide behind it.
+    res.setHeader(
+      ACL_VERSION_HEADER,
+      String(
+        outcome.status === 'ok' ? outcome.body.aclVersion : outcome.aclVersion,
+      ),
+    );
     if (outcome.status === 'not_modified') {
       recordFeedPoll('304');
       res.status(304).end();

@@ -18,7 +18,7 @@ import {
 import { IUserDirectory } from '../../user_management/services/user-directory.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { CollaboratorsController } from '../controller/collaborators.controller';
-import { IAgentDirectory, IAgentProfiles } from '../services/collaboration/mentions/agent.directory';
+import { IAgentDirectory, IAgentListing, IAgentProfiles } from '../services/collaboration/mentions/agent.directory';
 import { isReplicaSet } from '../../../libs/utils/replica-set';
 import { MentionsController } from '../controller/mentions.controller';
 import { MentionablesService } from '../services/collaboration/mentions/mentionables.service';
@@ -28,6 +28,7 @@ import { COLLAB_TYPES } from '../services/collaboration/collab.types';
 import {
   ConversationCollaborationService,
   IConversationCollaborationService,
+  INewChatSharing,
 } from '../services/collaboration/conversation-collaboration.service';
 import {
   ConversationFeedService,
@@ -84,7 +85,7 @@ export interface CollaborationBindingDeps {
   /** Shared with the guards' mention gate, so both see one agent-directory cache. */
   mentionValidator: IMentionValidator;
   /** Offers the agents the validator would accept in the @ picker (agent builder flag). */
-  agentDirectory?: IAgentDirectory & IAgentProfiles;
+  agentDirectory?: IAgentDirectory & IAgentProfiles & IAgentListing;
 }
 
 /** Binds the collaboration service, its collaborators and the controller. */
@@ -143,9 +144,19 @@ export function bindCollaboration(
     .bind<IConversationCollaborationService>(COLLAB_TYPES.CollaborationService)
     .toConstantValue(service);
   container
+    .bind<INewChatSharing>(COLLAB_TYPES.NewChatSharing)
+    .toConstantValue(service);
+  container
     .bind<IConversationFeedService>(COLLAB_TYPES.FeedService)
     .toConstantValue(
-      new ConversationFeedService(deps.messages, deps.users, deps.readState),
+      new ConversationFeedService(
+        deps.messages,
+        deps.users,
+        deps.readState,
+        undefined,
+        undefined,
+        deps.agentDirectory,
+      ),
     );
   container
     .bind<IConversationReadinessService>(COLLAB_TYPES.ReadinessService)

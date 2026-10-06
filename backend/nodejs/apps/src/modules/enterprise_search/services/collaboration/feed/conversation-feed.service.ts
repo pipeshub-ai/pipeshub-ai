@@ -14,6 +14,14 @@ import {
   IConversationMessageFeed,
 } from '../persistence/message-feed';
 import { IReadStateRepository } from '../persistence/read-state.repository';
+import { CallerIdentity } from '../../../../../libs/types/caller-identity';
+import { IAgentProfiles } from '../mentions/agent.directory';
+import {
+  RespondingAgentView,
+  respondingAgentOf,
+  respondingAgentViews,
+} from '../mentions/responding-agent';
+import { readAclVersion } from '../../../../authz/cache/acl-version';
 import { redactAgentDraft } from './draft-redaction';
 import { authorIdsNeeded, authorViewOf } from './message-author';
 
@@ -24,13 +32,14 @@ const READ_STATE_CACHE_MAX = 10_000;
 const defaultLogger = Logger.getInstance({ service: 'ConversationFeed' });
 
 export type FeedOutcome =
-  | { status: 'not_modified' }
+  | { status: 'not_modified'; aclVersion: number }
   | { status: 'ok'; body: FeedResponse };
 
 export interface IConversationFeedService {
   read(
     grant: ConversationAccessGrant,
     query: { afterSeq: number; rev?: number },
+    identity?: CallerIdentity,
   ): Promise<FeedOutcome>;
 }
 
@@ -54,6 +63,7 @@ export class ConversationFeedService implements IConversationFeedService {
     private readonly readState: IReadStateRepository,
     clock: IClock = systemClock,
     private readonly logger: Pick<Logger, 'warn'> = defaultLogger,
+    private readonly agents?: IAgentProfiles,
   ) {
     this.lastMarked = new TtlCache(
       READ_STATE_INTERVAL_MS,
@@ -66,6 +76,7 @@ export class ConversationFeedService implements IConversationFeedService {
   async read(
     grant: ConversationAccessGrant,
     query: { afterSeq: number; rev?: number },
+    identity?: CallerIdentity,
   ): Promise<FeedOutcome> {
     const { caller, session } = grant;
     const sessionId = session._id.toString();
@@ -73,8 +84,9 @@ export class ConversationFeedService implements IConversationFeedService {
     if (rev === null) {
       throw new ConversationNotFoundError();
     }
+    const aclVersion = readAclVersion(session);
     if (query.rev !== undefined && query.rev === rev) {
-      return { status: 'not_modified' };
+      return { status: 'not_modified', aclVersion };
     }
     const [head, rows] = await Promise.all([
       this.messages.readHead(sessionId, caller.orgId),
@@ -90,9 +102,10 @@ export class ConversationFeedService implements IConversationFeedService {
       this.namesNeeded(page, head, ownerId),
     );
     const last = page[page.length - 1];
+    const guests = await respondingAgentViews(page, identity, this.agents);
     const body: FeedResponse = {
       messages: page.map((m) =>
-        toFeedMessage(m, caller.userId, ownerId, names),
+        toFeedMessage(m, caller.userId, ownerId, names, guests),
       ),
       // The revision read before the rows: a change made while they were read shows up as a newer rev on the next poll, never as a lost one.
       rev,
@@ -100,6 +113,7 @@ export class ConversationFeedService implements IConversationFeedService {
       hasMore: rows.length > FEED_PAGE_SIZE,
       activeRun: toActiveRun(head, names, grant.role !== 'read'),
       lastActivityAt: head.lastActivityAt,
+      aclVersion,
     };
     if (last) {
       await this.markRead(caller.orgId, caller.userId, sessionId, last.seq);
@@ -149,6 +163,7 @@ function toFeedMessage(
   callerId: string,
   ownerId: string,
   names: ReadonlyMap<string, string>,
+  guests: ReadonlyMap<string, RespondingAgentView>,
 ): FeedMessage {
   const row: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(message)) {
@@ -173,6 +188,7 @@ function toFeedMessage(
         citationData: c.citationId,
       })),
       ...(author !== undefined && { author }),
+      ...respondingAgentOf(message, guests),
     },
     callerId,
   );

@@ -32,8 +32,8 @@ export interface Person {
 }
 
 /** Browser contexts for roster users in one viewport and theme (the theme is the stored preference the app reads). */
-export function makeCast(browser: Browser, combo: Combo) {
-  const { roster } = stackState();
+export function makeCast(browser: Browser, combo: Combo, rosterOverride?: Partial<Record<RosterKey, Actor>>) {
+  const roster = { ...stackState().roster, ...rosterOverride };
   const opened: { close: () => Promise<void> }[] = [];
   const cache = new Map<RosterKey, Person>();
   const open = async (key: RosterKey): Promise<Person> => {

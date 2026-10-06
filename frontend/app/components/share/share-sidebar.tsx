@@ -51,6 +51,10 @@ interface ShareSidebarProps {
   onShareSuccess?: () => void;
   /** Optional content rendered above the members list (e.g. org-wide toggle). */
   headerContent?: React.ReactNode;
+  /** Typed into the people search each time the sidebar opens. */
+  initialSearch?: string;
+  /** The chat does not exist yet: "Add" stores the choice, and the first message applies it. */
+  draft?: boolean;
 }
 
 export function ShareSidebar({
@@ -59,6 +63,8 @@ export function ShareSidebar({
   adapter,
   onShareSuccess,
   headerContent,
+  initialSearch,
+  draft = false,
 }: ShareSidebarProps) {
   const isMobile = useIsMobile();
   const { t } = useTranslation();
@@ -145,6 +151,11 @@ export function ShareSidebar({
     // paginated.reset is stable; omit from deps to avoid reset loops on every render
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (open && initialSearch) updateSearchQuery(initialSearch);
+    // Only the moment of opening matters; later typing in the field must not be overwritten.
+  }, [open, initialSearch]);
 
   const applyAdapterExtras = useCallback(async () => {
     const nextMode = adapter.getMode?.() ?? 'manage';
@@ -306,11 +317,12 @@ export function ShareSidebar({
       setIsSubmitting(true);
       setInlineError(null);
       try {
-        await adapter.share(submission);
+        await adapter.share(submission, selectedItems);
         await refreshMembers();
 
         const names = selectedItems.map((s) => s.name).join(', ');
-        toast.success(t('shareSidebar.accessShared'), { description: t('shareSidebar.sharedWith', { names }) });
+        // A draft is only stored on this device; the chat shows its own "will be shared with" line.
+        if (!draft) toast.success(t('shareSidebar.accessShared'), { description: t('shareSidebar.sharedWith', { names }) });
 
         setSelectedItems([]);
         setNote('');
@@ -323,7 +335,7 @@ export function ShareSidebar({
         setIsSubmitting(false);
       }
     },
-    [selectedItems, adapter, refreshMembers, onShareSuccess, updateSearchQuery, reportError, t]
+    [selectedItems, adapter, draft, refreshMembers, onShareSuccess, updateSearchQuery, reportError, t]
   );
 
   const maxPerSubmit = adapter.maxPerSubmit;
@@ -983,7 +995,7 @@ export function ShareSidebar({
                 loadingLabel={t('shareSidebar.sharing')}
                 style={selectedItems.length > 0 && overLimitBy === 0 && !isSubmitting && !selectedItems.some((s) => s.isInvalid) ? { backgroundColor: 'var(--emerald-10)' } : undefined}
               >
-                {t('action.share')}
+                {draft ? t('chat.collab.share.draftAdd') : t('action.share')}
               </LoadingButton>
               )}
             </Flex>

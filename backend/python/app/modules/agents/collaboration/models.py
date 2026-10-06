@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.modules.agents.collaboration.mentions import MentionRef
 
 PARTICIPANT_REF: Final = r"^participant_[1-9][0-9]{0,2}$"
+AGENT_REF: Final = r"^agent:[a-z0-9-]{1,40}$"
 
 
 class Participant(BaseModel):
@@ -42,6 +43,8 @@ class PreviousConversationTurn(BaseModel):
     role: str
     content: Any = None
     authorRef: str | None = Field(default=None, pattern=PARTICIPANT_REF)
+    # A bot_response a guest agent wrote (an agent mentioned in a chat that is not its own); never a display name.
+    agentRef: str | None = Field(default=None, pattern=AGENT_REF)
     mentions: list[MentionRef] | None = None
 
 

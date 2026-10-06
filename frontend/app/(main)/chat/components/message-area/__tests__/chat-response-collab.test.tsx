@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 
@@ -250,5 +250,42 @@ describe('the ask_user_question card (F-1, CL-17)', () => {
     fireEvent.click(options()[0]);
     fireEvent.click(screen.getByRole('button', { name: /submit/i }));
     expect(streamMessageForSlot.mock.calls[0][2]).not.toHaveProperty('resume');
+  });
+});
+
+describe('the guest agent that answered (M2)', () => {
+  it('shows the agent avatar and name, with the @handle in the tooltip, and keeps the asked-by line', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    setup();
+    row({ respondingAgent: { key: 'ag-1', name: 'Joke Buddy', handle: 'joke-buddy' } });
+
+    const header = screen.getByTestId('agent-answer-header');
+    expect(header.getAttribute('aria-label')).toBe('Answered by Joke Buddy');
+    expect(screen.getByTestId('agent-answer-name').textContent).toBe('Joke Buddy');
+    await waitFor(() => expect(screen.getByTestId('agent-answer-avatar').textContent).toBe('J'));
+    expect(screen.getByTestId('answered-as-label').textContent).toBe("Asked by Bob · answered using Bob's access");
+
+    fireEvent.focus(header);
+    fireEvent.pointerMove(header);
+    await waitFor(() => expect(screen.getAllByText('@joke-buddy').length).toBeGreaterThan(0));
+    vi.unstubAllGlobals();
+  });
+
+  it('shows the generic "Agent" when the viewer cannot read the agent (only its key arrives)', () => {
+    setup();
+    row({ respondingAgent: { key: 'ag-secret' } });
+
+    expect(screen.getByTestId('agent-answer-name').textContent).toBe('Agent');
+    expect(screen.getByTestId('agent-answer-header').getAttribute('aria-label')).toBe('Answered by Agent');
+    expect(screen.queryByText(/ag-secret/)).toBeNull();
+  });
+
+  it('adds nothing when no agent answered, and not on an unanswered question', () => {
+    setup();
+    row();
+    expect(screen.queryByTestId('agent-answer-header')).toBeNull();
+    cleanup();
+    row({ respondingAgent: { key: 'ag-1', name: 'Joke Buddy' }, unanswered: true });
+    expect(screen.queryByTestId('agent-answer-header')).toBeNull();
   });
 });

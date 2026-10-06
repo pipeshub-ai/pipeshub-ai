@@ -99,7 +99,7 @@ describe('useMentionables', () => {
     expect(api.getCollaborators).not.toHaveBeenCalled();
     expect(result.current.items).toEqual([]);
     rerender({ enabled: true, query: '' });
-    await waitFor(() => expect(result.current.items.length).toBe(4));
+    await waitFor(() => expect(result.current.items.length).toBe(5));
     rerender({ enabled: true, query: 'b' });
     expect(api.getCollaborators).toHaveBeenCalledTimes(1);
     expect(api.getCollaborators.mock.calls[0][0]).toEqual({ kind: 'chat', id: 'c1' });
@@ -109,17 +109,17 @@ describe('useMentionables', () => {
     const { result, rerender } = renderHook((p: { query: string }) => useMentionables({ enabled: true, query: p.query, assistantLabel: 'Assistant' }), {
       initialProps: { query: '' },
     });
-    await waitFor(() => expect(result.current.items.length).toBe(4));
+    await waitFor(() => expect(result.current.items.length).toBe(5));
     vi.useFakeTimers();
     rerender({ query: 'bob' });
     act(() => {
       vi.advanceTimersByTime(149);
     });
-    expect(result.current.items.length).toBe(4);
+    expect(result.current.items.length).toBe(5);
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(result.current.items.map((i) => i.label)).toEqual(['Bob Builder']);
+    expect(result.current.items.filter((i) => !i.action).map((i) => i.label)).toEqual(['Bob Builder']);
   });
 
   it('shares one fetch with the send path: the popover reuses the participants the chat already loaded', async () => {
@@ -128,7 +128,7 @@ describe('useMentionables', () => {
     });
     expect(api.getCollaborators).toHaveBeenCalledTimes(1);
     const { result } = renderHook(() => useMentionables({ query: '', enabled: true, assistantLabel: 'Assistant' }));
-    await waitFor(() => expect(result.current.items.length).toBe(4));
+    await waitFor(() => expect(result.current.items.length).toBe(5));
     expect(result.current.loading).toBe(false);
     expect(api.getCollaborators).toHaveBeenCalledTimes(1);
   });

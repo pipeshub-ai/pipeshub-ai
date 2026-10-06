@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Text } from '@radix-ui/themes';
 import { useTip, useTipsStore } from '@/lib/store/tips-store';
 
-const ROTATING_TIPS = ['noteOnly', 'assistantAnywhere', 'agentAccess'] as const;
+const ROTATING_TIPS = ['noteOnly', 'assistantAnywhere', 'agentAnywhere', 'agentAccess'] as const;
 const ROTATE_MS = 8000;
 
 /** Advances on every open of the popover, so repeat users see a different tip each time. */

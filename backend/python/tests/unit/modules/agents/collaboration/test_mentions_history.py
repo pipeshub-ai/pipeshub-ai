@@ -161,3 +161,25 @@ def test_another_participants_note_counts_as_foreign_text_for_the_write_guard() 
     index = build_provenance(prev, "send the report", c, None)
     assert "x@evil.com" in index.others
     assert "me@ok.com" in index.sender
+
+
+def _answer(messages) -> str:
+    assert len(messages) == 1
+    return messages[0].content[0].text
+
+
+def test_a_guest_agents_answer_is_attributed_by_handle() -> None:
+    turn = {"role": "bot_response", "content": "Knock knock", "agentRef": "agent:joke-buddy"}
+    assert _answer(_convert_conversation_turn(turn, collaboration=_ctx())) == "[agent:joke-buddy]: Knock knock"
+    assert _answer(_convert_conversation_turn(turn)) == "[agent:joke-buddy]: Knock knock"
+
+
+def test_an_assistant_answer_stays_unattributed() -> None:
+    turn = {"role": "bot_response", "content": "Hello"}
+    assert _answer(_convert_conversation_turn(turn, collaboration=_ctx())) == "Hello"
+
+
+@pytest.mark.parametrize("ref", ["agent:Joke Buddy", "participant_1", "agent:", "agent:self!"])
+def test_agent_ref_must_be_a_handle(ref: str) -> None:
+    with pytest.raises(ValidationError):
+        PreviousConversationTurn(role="bot_response", content="x", agentRef=ref)

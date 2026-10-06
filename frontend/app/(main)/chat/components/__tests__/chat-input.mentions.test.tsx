@@ -135,6 +135,12 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+const mentionsApi = vi.hoisted(() => ({
+  listAgents: vi.fn(),
+  search: vi.fn(),
+}));
+vi.mock('@/chat/mentions/api', () => ({ MentionsApi: mentionsApi, __esModule: true }));
+
 const collab = vi.hoisted(() => ({ getCollaborators: vi.fn() }));
 vi.mock('@/chat/collaboration-api', () => ({ CollaborationApi: { getCollaborators: collab.getCollaborators } }));
 
@@ -160,6 +166,10 @@ beforeEach(() => {
     ({ length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] }) as unknown as DOMRectList;
   document.elementFromPoint = () => null;
   useParticipantsStore.getState().reset();
+  mentionsApi.listAgents.mockReset();
+  mentionsApi.listAgents.mockResolvedValue([]);
+  mentionsApi.search.mockReset();
+  mentionsApi.search.mockResolvedValue({ agents: [], people: [] });
   collab.getCollaborators.mockReset();
   collab.getCollaborators.mockResolvedValue({
     owner: { userId: 'owner-1', displayName: 'Olive Owner' },
@@ -351,33 +361,96 @@ describe('ChatInput with ENABLE_CHAT_MENTIONS', () => {
   });
 });
 
-describe('mentioning an agent that is not the chat’s own', () => {
-  it('is refused with a notice before anything is sent, and the chip stays', async () => {
-    const onSend = vi.fn();
-    render(
-      <Theme>
-        <ChatInput onSend={onSend} />
-      </Theme>,
-    );
+describe('after the share drawer opened from the @ list closes', () => {
+  it('the composer takes focus back with the draft intact', async () => {
+    const { useAddPeopleStore } = await import('@/chat/mentions/add-people-store');
+    renderInput();
     await ready();
-    await act(async () => {
-      editorOf()
-        .chain()
-        .focus('end')
-        .insertContent({ type: 'mention', attrs: { id: 'agent-9', label: 'Offer drafter', mentionType: 'agent' } })
-        .run();
+    await insert('keep this draft');
+    (document.activeElement as HTMLElement | null)?.blur();
+    act(() => {
+      useAddPeopleStore.getState().request('dan');
+      useAddPeopleStore.getState().finish();
     });
+    await waitFor(() => expect(document.activeElement).toBe(box()));
+    expect(box().textContent).toBe('keep this draft');
+  });
+});
+
+describe('guest agent mentions', () => {
+  const JOKE = { id: 'agent-joke', label: 'Joke Buddy', handle: 'joke-buddy' };
+  const OFFER = { id: 'agent-offer', label: 'Offer drafter', handle: 'offer-drafter' };
+
+  const pickAgent = async (id: string, label: string) => {
+    await act(async () => {
+      editorOf().chain().focus('end').insertContent({ type: 'mention', attrs: { id, label, mentionType: 'agent' } }).run();
+    });
+  };
+
+  it('sends an agent chip from a default chat as-is: the server routes the turn to that agent', async () => {
+    const { onSend } = renderInput();
+    await ready();
+    await pickAgent('agent-9', 'Offer drafter');
     await insert(' check this');
     fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith('<@agent:agent-9> check this', undefined, [{ type: 'agent', id: 'agent-9' }]);
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
 
+  it('two different agents in one message are refused before sending, and the draft stays', async () => {
+    const { onSend } = renderInput();
+    await ready();
+    await pickAgent('agent-a', 'Alpha');
+    await pickAgent('agent-b', 'Beta');
+    await insert(' hi');
+    fireEvent.click(sendButton());
     expect(onSend).not.toHaveBeenCalled();
-    expect(useToastStore.getState().toasts.map((x) => x.title)).toEqual(["This agent can't answer in this chat yet. Open its own chat to use it."]);
-    expect(screen.getByTestId('mention-chip').textContent).toContain('Offer drafter');
-    const [notice] = useToastStore.getState().toasts;
-    expect(notice.action?.label).toBe('Open agent chat');
-    router.replace.mockReset();
-    notice.action?.onClick?.();
-    expect(router.replace).toHaveBeenCalledWith('/chat/?agentId=agent-9');
+    expect(useToastStore.getState().toasts.map((x) => x.title)).toEqual([
+      'A message can mention only one agent. Remove the extra mentions and send again.',
+    ]);
+    expect(box().textContent).toContain('hi');
+  });
+
+  it('a typed exact @handle of a known agent is sent as the agent token', async () => {
+    mentionsApi.listAgents.mockResolvedValue([JOKE]);
+    const { onSend } = renderInput();
+    await ready();
+    await waitFor(() => expect(useParticipantsStore.getState().agentsByConv['conv-1']).toEqual([JOKE]));
+    await insert('tell me a joke @joke-buddy please');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith('tell me a joke <@agent:agent-joke> please', undefined, [{ type: 'agent', id: 'agent-joke' }]);
+  });
+
+  it('asks the server for a handle the cached page lacks, then sends the token', async () => {
+    mentionsApi.listAgents.mockImplementation(async (_ref: unknown, q?: string) => (q === 'offer-drafter' ? [OFFER] : []));
+    const { onSend } = renderInput();
+    await ready();
+    await waitFor(() => expect(useParticipantsStore.getState().byConv['conv-1']).toBeTruthy());
+    await insert('@offer-drafter go');
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(mentionsApi.listAgents).toHaveBeenCalledWith({ kind: 'chat', id: 'conv-1' }, 'offer-drafter');
+    expect(onSend).toHaveBeenCalledWith('<@agent:agent-offer> go', undefined, [{ type: 'agent', id: 'agent-offer' }]);
+  });
+
+  it.each([
+    ['inside inline code', 'run `@joke-buddy` now'],
+    ['inside a fenced block', 'see\n```\n@joke-buddy\n```'],
+    ['a longer handle', 'ask @joke-buddy-2 now'],
+    ['a prefix of the handle', 'ask @joke now'],
+    ['an email address', 'mail me@joke-buddy.com'],
+    ['the agent name instead of the handle', 'ask @Joke Buddy now'],
+  ])('never converts %s', async (_name, text) => {
+    mentionsApi.listAgents.mockResolvedValue([JOKE]);
+    const { onSend } = renderInput();
+    await ready();
+    await waitFor(() => expect(useParticipantsStore.getState().agentsByConv['conv-1']).toEqual([JOKE]));
+    await insert(text);
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    const [sent, , mentions] = onSend.mock.calls[0];
+    expect(sent).not.toContain('<@agent:');
+    expect(mentions ?? []).toEqual([]);
   });
 });
 

@@ -641,11 +641,15 @@
       "unknownUser": "Usuario desconocido",
       "unknownTeam": "Equipo desconocido",
       "groupAssistant": "Asistente",
-      "groupAgent": "Agente",
+      "groupAgent": "Agentes",
       "groupPeople": "Personas en este chat",
+      "groupOthers": "Otras personas de tu organización",
       "groupTeams": "Equipos",
       "kindAgent": "agente",
       "kindTeam": "equipo",
+      "notInChat": "No está en este chat",
+      "oneAgentHint": "Un mensaje solo puede mencionar a un agente.",
+      "addPeople": "Añadir personas a este chat…",
       "listLabel": "Sugerencias de mención",
       "loading": "Buscando…",
       "empty": "Sin coincidencias",
@@ -672,6 +676,7 @@
         "noteOnly": "Menciona solo a un compañero para dejar una nota sin consultar a la IA",
         "assistantAnywhere": "@assistant funciona en cualquier lugar",
         "agentAccess": "Los agentes responden con tu acceso",
+        "agentAnywhere": "Menciona en cualquier chat a cualquier agente que puedas usar",
         "gotIt": "Entendido",
         "coachmarkLabel": "Consejo",
         "firstSharedSend_one": "Tu mensaje y la respuesta son visibles para {{count}} persona",
@@ -694,8 +699,7 @@
         "shared": "Pregunta a PipesHub o escribe @ para mencionar a un compañero o a un agente"
       },
       "you": "tú",
-      "mentionsYou": "te menciona",
-      "agentNotInChat": "Este agente todavía no puede responder en este chat. Abre su propio chat para usarlo."
+      "mentionsYou": "te menciona"
     },
     "recordActions": {
       "preview": "Vista previa",
@@ -1303,7 +1307,8 @@
         "MENTION_SA_AGENT_SHARED": "Este agente se ejecuta con una cuenta de servicio y no se puede mencionar en un chat compartido.",
         "MENTION_DIRECTORY_UNAVAILABLE": "Ahora mismo no se pueden comprobar los agentes mencionados. Inténtalo de nuevo en un momento.",
         "MESSAGE_IS_NOTE": "Este mensaje no se envió a la IA: en este chat solo responde cuando alguien menciona a @assistant. Menciona a @assistant para preguntarle algo.",
-        "MESSAGE_NOT_NOTE": "Una nota no puede preguntar a la IA. Quita la mención a @assistant para publicarla como nota."
+        "MESSAGE_NOT_NOTE": "Una nota no puede preguntar a la IA. Quita la mención a @assistant para publicarla como nota.",
+        "TOO_MANY_AGENT_MENTIONS": "Un mensaje solo puede mencionar a un agente. Quita las menciones sobrantes y vuelve a enviarlo."
       },
       "share": {
         "title": "Compartir chat",
@@ -1337,7 +1342,9 @@
         "transferred": "Propiedad transferida",
         "transferredDescription": "{{name}} es ahora el propietario",
         "rateLimited": "Demasiados cambios. Inténtalo de nuevo en {{retryAfter}} segundos.",
-        "limitReached": "Este chat puede tener como máximo {{max}} personas y equipos."
+        "limitReached": "Este chat puede tener como máximo {{max}} personas y equipos.",
+        "draftNotice": "Todavía no se ha compartido nada. Las personas que añadas aquí tendrán acceso cuando envíes tu primer mensaje.",
+        "draftAdd": "Añadir"
       },
       "sidebar": {
         "roleRead": "Puede ver",
@@ -1359,7 +1366,9 @@
         "sentBy": "Enviado por {{name}}",
         "askedByAnswered": "Preguntado por {{name}} · respondido con el acceso de {{name}}",
         "askedByYouAnswered": "Preguntado por ti · respondido con tu acceso",
-        "waitingFor": "Esperando la respuesta de {{name}}"
+        "waitingFor": "Esperando la respuesta de {{name}}",
+        "respondingAgent": "Agente",
+        "respondingAgentAria": "Respondido por {{name}}"
       },
       "consent": {
         "audience_one": "Visible para {{count}} persona · el propietario puede añadir más · los archivos que añadas se comparten",
@@ -1445,7 +1454,13 @@
         },
         "removeSelection": "Quitar a {{name}}"
       },
-      "accessLostBannerEmpty": "Este chat no está disponible para ti. Puede que se haya eliminado o que se haya revocado tu acceso."
+      "accessLostBannerEmpty": "Este chat no está disponible para ti. Puede que se haya eliminado o que se haya revocado tu acceso.",
+      "draft": {
+        "willShare": "Se compartirá con",
+        "edit": "Cambiar con quién se compartirá este chat",
+        "remove": "Quitar a {{name}}",
+        "entry": "{{name}} ({{level}})"
+      }
     },
     "agentDraft": {
       "label": "Borrador de agente",

@@ -67,26 +67,26 @@ test('J-13: A asks for an agent, gets a draft with nothing ticked and nothing cr
   await expectNoBlockingViolations(b.page, 'agent-draft-redacted');
 });
 
-test('J-13: the @ picker offers no agent in a plain chat, to the creator or a colleague', { tag: '@collab' }, async ({ users }) => {
+test('J-13: the @ picker offers an agent the caller can run in a plain chat, with its handle, to its creator', { tag: '@collab' }, async ({ users }) => {
   const a = await users.fresh('J13p');
-  const { b } = users;
   const agents = [
     { _key: 'agent-from-chat', name: 'Offer drafter', handle: 'offer-drafter', createdBy: a.actor.userId, isServiceAccount: false },
   ];
   const listing = { kind: 'reply' as const, body: { success: true, agents, pagination: { currentPage: 1, limit: 100, totalItems: 1, totalPages: 1 } } };
   await fake.script('agent_list', ...Array.from({ length: 40 }, () => listing));
   const chat = await a.api.startChat(chatTitle('j13-picker'));
-  await shareChat(a.api, chat, { userId: b.actor.userId, level: 'write' });
+  // The lane's fake has no service-account lookup, which a shared chat needs, so the plain chat is the one checked here.
 
-  // #16a: the picker and the validator share one verdict, so a plain chat (no agent of its own) offers no agents to anyone.
+  // M2: the picker and the validator share one verdict, and a guest agent may answer in any chat, so every caller who can run it is offered it.
   const list = (page: typeof a.page) => page.getByRole('listbox', { name: 'Mention suggestions' });
-  for (const [person, expected] of [[a, 0], [b, 0]] as const) {
+  for (const [person, expected] of [[a, 1]] as const) {
     await openChat(person.page, chat);
     await composer(person.page).click();
     await person.page.keyboard.type('@');
     await expect(list(person.page)).toBeVisible();
     await expect(list(person.page).getByRole('option').first()).toBeVisible();
     await expect(list(person.page).getByRole('option').filter({ hasText: 'Offer drafter' })).toHaveCount(expected, { timeout: 15_000 });
+    await expect(list(person.page).getByRole('option').filter({ hasText: '@offer-drafter' })).toHaveCount(expected);
     await person.page.keyboard.press('Escape');
   }
 });

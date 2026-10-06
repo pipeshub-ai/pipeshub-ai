@@ -19,9 +19,10 @@ import Mention from '@tiptap/extension-mention';
 import Placeholder from '@tiptap/extension-placeholder';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
-import type { SuggestionKeyDownProps, SuggestionProps } from '@tiptap/suggestion';
+import { findSuggestionMatch, type SuggestionKeyDownProps, type SuggestionProps } from '@tiptap/suggestion';
 import type { ComposerInputHandle, ComposerInputProps, MentionRef } from './composer-input.types';
 import { MentionChipView } from './mention-chip';
+import { useAddPeopleStore } from '@/chat/mentions/add-people-store';
 import { MentionPopover, mentionOptionId, type MentionAnchorRect } from './mention-popover';
 import { fromWire, toWire, type ComposerDocNode } from './mention-serializer';
 import {
@@ -44,6 +45,8 @@ export interface TiptapComposerInputProps extends ComposerInputProps {
 }
 
 interface SuggestionState {
+  /** Deletes the `@query` text and returns the caret to where it was typed. */
+  remove(): void;
   query: string;
   rect: MentionAnchorRect | null;
   from: number;
@@ -56,6 +59,9 @@ interface ChosenMention {
   mentionType: MentionRef['type'];
 }
 
+/** A name has a first, middle and last part and maybe a suffix; longer text is a sentence. */
+const MAX_QUERY_WORDS = 4;
+const MAX_QUERY_CHARS = 64;
 const INTERIM_KEY = new PluginKey('composerInterim');
 const NAV_KEYS = new Set(['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape']);
 
@@ -73,6 +79,11 @@ function plainTextNodes(text: string): ComposerDocNode[] {
       if (line) nodes.push({ type: 'text', text: line });
     });
   return nodes;
+}
+
+function agentIdsIn(editor: Editor): string[] {
+  const ids = toWire(editor.getJSON() as ComposerDocNode).mentions.filter((m) => m.type === 'agent').map((m) => m.id);
+  return [...new Set(ids)];
 }
 
 function hasUnlabelledMention(editor: Editor): boolean {
@@ -125,22 +136,43 @@ export const TiptapComposerInput = forwardRef<ComposerInputHandle, TiptapCompose
     const [activeIndex, setActiveIndex] = useState(0);
     const [labelsWanted, setLabelsWanted] = useState(false);
 
-    const open = suggestion !== null && suggestion.from !== dismissedFrom;
-    const { items, loading } = useMentionables({
-      query: open ? (suggestion?.query ?? '') : '',
-      enabled: open || labelsWanted,
+    const wanted = suggestion !== null && suggestion.from !== dismissedFrom;
+    // Read when the popover opens or its query changes, which is when the doc last changed.
+    const agentKey = wanted && editorRef.current ? agentIdsIn(editorRef.current).join('\u0000') : '';
+    const selectedAgentIds = useMemo(() => (agentKey ? agentKey.split('\u0000') : []), [agentKey]);
+    const { items, loading, settled } = useMentionables({
+      query: wanted ? (suggestion?.query ?? '') : '',
+      enabled: wanted || labelsWanted,
       assistantLabel,
+      selectedAgentIds,
     });
+    // A name with spaces keeps the list open only while someone matches it; "@assistant thanks" is a message, not a search.
+    const matched = items.filter((i) => !i.action).length;
+    const open = wanted && !(/\s/.test(suggestion?.query.trimStart() ?? '') && settled && matched === 0);
     const visibleItems = open ? items : [];
+    // Only the "add people" row is left: it is not the default, so Enter still sends what was typed unless the user moved onto it.
+    const [navigated, setNavigated] = useState(false);
+    const shownIndex = matched === 0 && !navigated ? -1 : activeIndex;
 
-    const view = useRef({ open, items: visibleItems, activeIndex, suggestion });
+    const view = useRef({ open, items: visibleItems, activeIndex, suggestion, navigated, matched });
     useEffect(() => {
-      view.current = { open, items: visibleItems, activeIndex, suggestion };
+      view.current = { open, items: visibleItems, activeIndex, suggestion, navigated, matched };
     });
 
-    const selectItem = useCallback((item: Mentionable) => {
-      view.current.suggestion?.select(item);
+    const addPeople = useCallback(() => {
+      const query = view.current.suggestion?.query.trim() ?? '';
+      view.current.suggestion?.remove();
+      useAddPeopleStore.getState().request(query);
     }, []);
+
+    const selectItem = useCallback(
+      (item: Mentionable) => {
+        if (item.disabled) return;
+        if (item.action) addPeople();
+        else view.current.suggestion?.select(item);
+      },
+      [addPeople],
+    );
 
     const bridge = useRef({
       onStart: (p: SuggestionProps) => {
@@ -148,22 +180,30 @@ export const TiptapComposerInput = forwardRef<ComposerInputHandle, TiptapCompose
           query: p.query,
           rect: toRect(p.clientRect?.()),
           from: p.range.from,
+          remove: () => {
+            p.editor.chain().focus().deleteRange(p.range).run();
+          },
           select: (item) => {
             p.command({ id: item.ref.id, label: item.label, mentionType: item.ref.type });
           },
         });
         setActiveIndex(0);
+        setNavigated(false);
       },
       onUpdate: (p: SuggestionProps) => {
         setSuggestion({
           query: p.query,
           rect: toRect(p.clientRect?.()),
           from: p.range.from,
+          remove: () => {
+            p.editor.chain().focus().deleteRange(p.range).run();
+          },
           select: (item) => {
             p.command({ id: item.ref.id, label: item.label, mentionType: item.ref.type });
           },
         });
         setActiveIndex(0);
+        setNavigated(false);
       },
       onExit: () => {
         setSuggestion(null);
@@ -176,17 +216,21 @@ export const TiptapComposerInput = forwardRef<ComposerInputHandle, TiptapCompose
         switch (event.key) {
           case 'ArrowDown':
             if (n === 0) return false;
+            setNavigated(true);
             setActiveIndex((i) => (i + 1) % n);
             break;
           case 'ArrowUp':
             if (n === 0) return false;
+            setNavigated(true);
             setActiveIndex((i) => (i - 1 + n) % n);
             break;
           case 'Enter':
           case 'Tab': {
             const item = v.items[Math.min(v.activeIndex, n - 1)];
             if (!item) return false;
-            v.suggestion?.select(item);
+            if (item.action && !v.navigated && v.matched === 0) return false;
+            if (item.action) addPeople();
+            else if (!item.disabled) v.suggestion?.select(item);
             break;
           }
           case 'Escape':
@@ -293,6 +337,11 @@ export const TiptapComposerInput = forwardRef<ComposerInputHandle, TiptapCompose
         ComposerMention.configure({
           suggestion: {
             char: '@',
+            allowSpaces: true,
+            findSuggestionMatch: (config) => {
+              const match = findSuggestionMatch(config);
+              return match && match.query.trim().split(/\s+/).length <= MAX_QUERY_WORDS && match.query.length <= MAX_QUERY_CHARS ? match : null;
+            },
             items: () => [],
             command: ({ editor, range, props: raw }) => {
               const props = raw as unknown as ChosenMention;
@@ -399,15 +448,15 @@ export const TiptapComposerInput = forwardRef<ComposerInputHandle, TiptapCompose
         dom.setAttribute('aria-controls', listboxId);
         dom.setAttribute('aria-haspopup', 'listbox');
         dom.setAttribute('aria-autocomplete', 'list');
-        if (visibleItems.length > 0) {
-          dom.setAttribute('aria-activedescendant', mentionOptionId(listboxId, activeIndex));
+        if (visibleItems.length > 0 && shownIndex >= 0) {
+          dom.setAttribute('aria-activedescendant', mentionOptionId(listboxId, shownIndex));
         } else {
           dom.removeAttribute('aria-activedescendant');
         }
       } else {
         ['aria-controls', 'aria-haspopup', 'aria-autocomplete', 'aria-activedescendant'].forEach((a) => dom.removeAttribute(a));
       }
-    }, [editor, open, listboxId, activeIndex, visibleItems.length]);
+    }, [editor, open, listboxId, shownIndex, visibleItems.length]);
 
     useEffect(() => {
       if (!editor || items.length === 0) return;
@@ -486,7 +535,7 @@ export const TiptapComposerInput = forwardRef<ComposerInputHandle, TiptapCompose
           open={open}
           anchorRect={suggestion?.rect ?? null}
           items={visibleItems}
-          activeIndex={activeIndex}
+          activeIndex={shownIndex}
           listboxId={listboxId}
           loading={loading}
           onSelect={selectItem}

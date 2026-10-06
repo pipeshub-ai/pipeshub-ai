@@ -634,11 +634,15 @@
       "unknownUser": "Unbekannter Benutzer",
       "unknownTeam": "Unbekanntes Team",
       "groupAssistant": "Assistent",
-      "groupAgent": "Agent",
+      "groupAgent": "Agenten",
       "groupPeople": "Personen in diesem Chat",
+      "groupOthers": "Weitere Personen in Ihrer Organisation",
       "groupTeams": "Teams",
       "kindAgent": "Agent",
       "kindTeam": "Team",
+      "notInChat": "Nicht in diesem Chat",
+      "oneAgentHint": "Eine Nachricht kann nur einen Agenten erwähnen.",
+      "addPeople": "Personen zu diesem Chat hinzufügen …",
       "listLabel": "Erwähnungsvorschläge",
       "loading": "Suche läuft…",
       "empty": "Keine Treffer",
@@ -665,6 +669,7 @@
         "noteOnly": "Erwähnen Sie nur eine Person aus Ihrem Team, um eine Notiz zu hinterlassen, ohne die KI zu fragen",
         "assistantAnywhere": "@assistant funktioniert überall",
         "agentAccess": "Agenten antworten mit Ihrem Zugriff",
+        "agentAnywhere": "Erwähnen Sie in jedem Chat einen beliebigen Agenten, den Sie nutzen dürfen",
         "gotIt": "Verstanden",
         "coachmarkLabel": "Tipp",
         "firstSharedSend_one": "Ihre Nachricht und die Antwort sind für {{count}} Person sichtbar",
@@ -686,8 +691,7 @@
         "shared": "PipesHub fragen oder @ eingeben, um Teammitglieder oder Agenten zu erwähnen"
       },
       "you": "Sie",
-      "mentionsYou": "erwähnt Sie",
-      "agentNotInChat": "Dieser Agent kann in diesem Chat noch nicht antworten. Öffnen Sie seinen eigenen Chat, um ihn zu nutzen."
+      "mentionsYou": "erwähnt Sie"
     },
     "recordActions": {
       "preview": "Vorschau",
@@ -1286,7 +1290,8 @@
         "MENTION_SA_AGENT_SHARED": "Dieser Agent läuft mit einem Dienstkonto und kann in einem geteilten Chat nicht erwähnt werden.",
         "MENTION_DIRECTORY_UNAVAILABLE": "Die erwähnten Agenten konnten gerade nicht geprüft werden. Versuchen Sie es gleich noch einmal.",
         "MESSAGE_IS_NOTE": "Diese Nachricht wurde nicht an die KI gesendet: In diesem Chat antwortet sie nur, wenn jemand @assistant erwähnt. Erwähnen Sie @assistant, um sie etwas zu fragen.",
-        "MESSAGE_NOT_NOTE": "Eine Notiz kann keine Frage an die KI stellen. Entfernen Sie die Erwähnung von @assistant, um sie als Notiz zu senden."
+        "MESSAGE_NOT_NOTE": "Eine Notiz kann keine Frage an die KI stellen. Entfernen Sie die Erwähnung von @assistant, um sie als Notiz zu senden.",
+        "TOO_MANY_AGENT_MENTIONS": "Eine Nachricht kann nur einen Agenten erwähnen. Entfernen Sie die überzähligen Erwähnungen und senden Sie die Nachricht erneut."
       },
       "share": {
         "title": "Chat teilen",
@@ -1320,7 +1325,9 @@
         "transferred": "Eigentum übertragen",
         "transferredDescription": "{{name}} ist jetzt Eigentümer",
         "rateLimited": "Zu viele Änderungen. Versuchen Sie es in {{retryAfter}} Sekunden erneut.",
-        "limitReached": "Dieser Chat kann höchstens {{max}} Personen und Teams haben."
+        "limitReached": "Dieser Chat kann höchstens {{max}} Personen und Teams haben.",
+        "draftNotice": "Noch wird nichts geteilt. Personen, die Sie hier hinzufügen, erhalten Zugriff, sobald Sie Ihre erste Nachricht senden.",
+        "draftAdd": "Hinzufügen"
       },
       "sidebar": {
         "roleRead": "Kann ansehen",
@@ -1342,7 +1349,9 @@
         "sentBy": "Gesendet von {{name}}",
         "askedByAnswered": "Gefragt von {{name}} · beantwortet mit dem Zugriff von {{name}}",
         "askedByYouAnswered": "Von Ihnen gefragt · mit Ihrem Zugriff beantwortet",
-        "waitingFor": "Warten auf die Antwort von {{name}}"
+        "waitingFor": "Warten auf die Antwort von {{name}}",
+        "respondingAgent": "Agent",
+        "respondingAgentAria": "Beantwortet von {{name}}"
       },
       "consent": {
         "audience_one": "Sichtbar für {{count}} Person · der Eigentümer kann weitere hinzufügen · von Ihnen hinzugefügte Dateien werden geteilt",
@@ -1427,7 +1436,13 @@
         },
         "removeSelection": "{{name}} entfernen"
       },
-      "accessLostBannerEmpty": "Dieser Chat ist für Sie nicht verfügbar. Er wurde möglicherweise gelöscht oder Ihr Zugriff wurde entfernt."
+      "accessLostBannerEmpty": "Dieser Chat ist für Sie nicht verfügbar. Er wurde möglicherweise gelöscht oder Ihr Zugriff wurde entfernt.",
+      "draft": {
+        "willShare": "Wird geteilt mit",
+        "edit": "Ändern, mit wem dieser Chat geteilt wird",
+        "remove": "{{name}} entfernen",
+        "entry": "{{name}} ({{level}})"
+      }
     },
     "agentDraft": {
       "label": "Agentenentwurf",
