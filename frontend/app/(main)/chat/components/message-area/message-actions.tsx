@@ -323,6 +323,7 @@ export function MessageActions({
     <>
       <Flex
         data-testid="message-actions"
+        data-latest={isLastMessage ? 'true' : undefined}
         align="center"
         justify="between"
         style={{

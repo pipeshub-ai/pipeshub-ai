@@ -226,7 +226,7 @@ export const CONVERSATION_MESSAGES_PAGE_SIZE = 20;
  * stays full-pane width (scrollbar on the pane edge); only the inner content
  * and the composer use this style so their edges match.
  */
-export const CHAT_CONTENT_MAX_WIDTH = '50rem';
+export const CHAT_CONTENT_MAX_WIDTH = '57.5rem';
 
 export const CHAT_CONTENT_PADDING_X = {
   mobile: 'var(--space-4)',

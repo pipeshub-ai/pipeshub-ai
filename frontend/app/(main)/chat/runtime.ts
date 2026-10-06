@@ -666,6 +666,7 @@ export function loadHistoricalMessages(
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
             failed: true,
+            ...(msg.createdAt ? { createdAt: msg.createdAt } : {}),
           },
         },
       });

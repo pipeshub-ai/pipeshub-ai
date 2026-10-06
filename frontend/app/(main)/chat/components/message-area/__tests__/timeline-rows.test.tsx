@@ -160,15 +160,16 @@ describe('reply row', () => {
     expect(within(article).queryByText('tell me a joke')).toBeNull();
   });
 
-  it('is mirrored to the right: avatar and body block on the end side, text left-aligned inside', () => {
+  it('is mirrored to the right: header at the end edge, body block spanning to it, text left-aligned inside', () => {
     setup();
     row({ rowMode: 'reply', author: bob, requestedBy: bob, replyingTo: bob });
     const article = screen.getByRole('article');
     expect(article.getAttribute('data-side')).toBe('right');
-    expect(article.getAttribute('style')).toMatch(/grid-template-columns: minmax\(0(px)?, 1fr\) 32px/);
+    expect(article.getAttribute('style')).not.toMatch(/grid-template-columns/);
     const block = within(article).getByTestId('message-body-block');
-    expect(block.getAttribute('style')).toMatch(/margin-inline-start: auto/);
-    expect(block.getAttribute('style')).toMatch(/(^|[ ;])width: 85%/);
+    expect(block.getAttribute('style')).toMatch(/margin-inline-start: var\(--space-8\)/);
+    expect(block.getAttribute('style')).not.toMatch(/(^|[ ;])width:/);
+    expect(within(article).getByTestId('message-avatar').parentElement).toBe(within(article).getByTestId('message-author').parentElement);
     expect(block.getAttribute('style')).toMatch(/text-align: start/);
     expect(block.contains(within(article).getByTestId('answer'))).toBe(true);
     expect(block.contains(within(article).getByTestId('answered-as-label'))).toBe(false);
@@ -245,14 +246,14 @@ describe('reply row', () => {
     const style = screen.getByTestId('message-body-block').getAttribute('style') ?? '';
     expect(style).toMatch(/background: var\(--olive-2\)/);
     expect(style).toMatch(/border-radius: var\(--radius-4\)/);
-    expect(style).toMatch(/padding: var\(--space-3\)/);
+    expect(style).toMatch(/padding: var\(--space-2\) var\(--space-3\)/);
     cleanup();
     row({ rowMode: 'human' });
     expect(screen.queryByTestId('message-body-block')).toBeNull();
     expect(screen.getByTestId('human-message').getAttribute('style') ?? '').not.toMatch(/olive-2/);
   });
 
-  it('indents the block from the left on a phone, with the avatar still on the right', () => {
+  it('indents the block by one space-4 on a phone, with the avatar inline in the header', () => {
     vi.stubGlobal('matchMedia', (q: string) => ({
       matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {},
     }));
@@ -261,9 +262,9 @@ describe('reply row', () => {
       row({ rowMode: 'reply' });
       const article = screen.getByRole('article');
       expect(article.getAttribute('data-side')).toBe('right');
-      expect(article.getAttribute('style')).toMatch(/grid-template-columns: minmax\(0(px)?, 1fr\) 24px/);
+      expect(article.getAttribute('style')).not.toMatch(/grid-template-columns/);
       const block = screen.getByTestId('message-body-block');
-      expect(block.getAttribute('style')).toMatch(/margin-inline-start: var\(--space-6\)/);
+      expect(block.getAttribute('style')).toMatch(/margin-inline-start: var\(--space-4\)/);
       expect(block.getAttribute('style')).toMatch(/background: var\(--olive-2\)/);
     } finally {
       vi.unstubAllGlobals();

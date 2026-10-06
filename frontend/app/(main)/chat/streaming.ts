@@ -271,7 +271,7 @@ function withStreamingErrorMessage(
       {
         ...last,
         content: [{ type: 'text' as const, text: errorText }],
-        metadata: { ...last.metadata, custom: { ...last.metadata?.custom, failed: true } },
+        metadata: { ...last.metadata, custom: { ...last.metadata?.custom, failed: true, createdAt: new Date().toISOString() } },
       },
     ];
   }
@@ -280,7 +280,7 @@ function withStreamingErrorMessage(
     {
       role: 'assistant' as const,
       content: [{ type: 'text' as const, text: errorText }],
-      metadata: { custom: { failed: true } },
+      metadata: { custom: { failed: true, createdAt: new Date().toISOString() } },
     },
   ];
 }

@@ -756,7 +756,7 @@ export function createMarkdownComponents(
     h5: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={5}>{children}</AnchorHeading>,
     h6: ({ children }: { children?: React.ReactNode }) => <AnchorHeading level={6}>{children}</AnchorHeading>,
     p: ({ children }: { children?: React.ReactNode }) => (
-      <Text size="2" as="div" style={{ marginBottom: 'var(--space-3)', lineHeight: 1.6, color: 'var(--slate-12)' }}>
+      <Text size="2" as="div" className="md-p" style={{ marginBottom: 'var(--space-3)', lineHeight: 1.6, color: 'var(--slate-12)' }}>
         {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </Text>
     ),

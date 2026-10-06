@@ -3,7 +3,7 @@ import { AVATAR_SIZE_DESKTOP, AVATAR_SIZE_MOBILE } from './message-avatar';
 
 const QUERY = '(max-width: 640px)';
 
-/** 24 px avatars at 640 px and below, 32 px above. */
+/** 20 px avatars at 640 px and below, 24 px above. */
 export function useAvatarSize(): number {
   const [small, setSmall] = useState(false);
   useEffect(() => {

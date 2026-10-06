@@ -10,7 +10,7 @@ interface AnswerFailedProps {
   onRetry?: () => void;
 }
 
-/** An answer that never arrived: the server's reason, set apart from a real answer. */
+/** An answer that never arrived: the server's reason, drawn flat because it sits inside the reply's block. */
 export function AnswerFailed({ message, onRetry }: AnswerFailedProps) {
   const { t } = useTranslation();
   return (
@@ -19,12 +19,6 @@ export function AnswerFailed({ message, onRetry }: AnswerFailedProps) {
       gap="2"
       role="alert"
       data-testid="answer-failed"
-      style={{
-        border: '1px solid var(--red-a6)',
-        background: 'var(--red-a2)',
-        borderRadius: 'var(--radius-3)',
-        padding: 'var(--space-3)',
-      }}
     >
       <Flex align="center" gap="2">
         <MaterialIcon name="error" size={16} color="var(--red-11)" />
