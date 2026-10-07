@@ -197,7 +197,8 @@ class GraphConnectorOffFilter:
     Off or removed is read afresh for every batch that has such events, so
     turning a connector back on takes effect at once. Per batch with candidates
     that is one connector read, one record read, and for the turned-off ones
-    one conditional write.
+    one conditional write and one more connector read to confirm they are
+    still off.
 
     A failed or slow read settles nothing and pauses the filter for
     ``refresh_seconds`` (at least ``_MIN_PAUSE_SECONDS``), so an unreachable
@@ -349,6 +350,7 @@ class GraphConnectorOffFilter:
             },
             records,
         )
+        swapped = await self._still_off_after_write(swapped, records)
         outcomes = {
             i: o for i, o in outcomes.items()
             if o is not ReadTimeOutcome.SETTLE_CONNECTOR_OFF
@@ -393,3 +395,58 @@ class GraphConnectorOffFilter:
             self._pause("mark the records of turned-off connectors as not indexed", e)
             return set()
         return set(written) & record_ids
+
+    async def _still_off_after_write(
+        self, written: set[str], records: Mapping[str, Mapping[str, Any]]
+    ) -> set[str]:
+        """The written records whose connector is still off once written.
+
+        A connector turned back on between the state read and the write would
+        otherwise have its event settled as not indexed, and turning a
+        connector on does not re-queue such records. So its state is read
+        again after the write: the records of one that is now on (or can no
+        longer be read) get their fields back, conditionally on still holding
+        what was just written, and their events take the normal path, where
+        the handler checks the connector itself.
+        """
+        if not written:
+            return written
+        connectors = {
+            c for c in (gating_connector_id(records[r]) for r in written) if c
+        }
+        try:
+            states = await self._read_states(connectors)
+        except Exception as e:
+            self._pause("re-read the connectors of the records just marked not indexed", e)
+            states = {}
+        reopened = {
+            r for r in written
+            if states.get(gating_connector_id(records[r]) or "")
+            not in (ConnectorState.OFF, ConnectorState.REMOVED)
+        }
+        if reopened:
+            rows = []
+            for record_id in sorted(reopened):
+                record = records[record_id]
+                written_fields = connector_off_updates(record)
+                rows.append((
+                    record_id,
+                    {field: record.get(field) for field in written_fields},
+                    {"indexingStatus": written_fields["indexingStatus"], "reason": written_fields["reason"]},
+                ))
+            try:
+                await asyncio.wait_for(
+                    self._graph.update_nodes_fields_if_match(
+                        CollectionNames.RECORDS.value, rows
+                    ),
+                    timeout=self._read_timeout_seconds,
+                )
+            except Exception as e:
+                # The events still take the normal path; the handler writes
+                # whatever status the connector's state calls for.
+                self._logger.warning(
+                    "Could not restore %d record(s) whose connector was turned "
+                    "back on; the handler will set their status: %r",
+                    len(reopened), e,
+                )
+        return written - reopened
