@@ -470,6 +470,103 @@ class TestAMoveIsOnlyMadeToALaneOfItsOwn:
         assert producer.events == []
         assert report.migrated_at_ms is None
 
+    async def test_the_pair_an_edition_rule_made_is_decided_once_the_move_settles(
+        self,
+        provider: FakeRedisConnectionProvider,
+        graph: _Graph,
+        producer: _RecordingProducer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No pass may sit on the same map for ever: once the move off the
+        shared lane has settled, the pair it joined is decided and it ends."""
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_CACHE_SECONDS", "0")
+        monkeypatch.setattr(lane_upkeep_module, "_FENCE_MARGIN_MS", 0)
+        await provider.get_client().hset(lane_meta_key(TOPIC), "laneCount", str(LANES))
+        graph.add(GITLAB, queued=40)
+        graph.add(SLACK, queued=6)
+        graph.add("drive-1", queued=3)
+        await _assignments(provider).record_at_hash_lane("drive-1", "team")
+        drive_lane = stable_lane("drive-1", LANES)
+        onto_drive = LaneAssignments(
+            logging.getLogger("t"),
+            provider,
+            topic=TOPIC,
+            fallback_lane_count=LANES,
+            # Slack goes beside Drive; anyone already placed stays where it is.
+            choose=lambda request, _snapshot: drive_lane
+            if request.connector_id == SLACK
+            else request.current_lane,
+        )
+
+        passes = [await _upkeep(provider, graph, producer, assignments=onto_drive) for _ in range(4)]
+
+        assert passes[0].migrated_at_ms is None
+        assert passes[-1].migrated_at_ms is not None
+
+
+async def _seed(
+    provider: FakeRedisConnectionProvider,
+    graph: _Graph,
+    placements: dict[str, tuple[int, int | None, int]],
+) -> None:
+    """Team connectors already in the map: id -> (lane, prevLane, queued)."""
+    client = provider.get_client()
+    counts: dict[str, int] = {}
+    mapping = {}
+    for connector_id, (lane, prev, queued) in placements.items():
+        graph.add(connector_id, queued=queued)
+        mapping[connector_id] = LaneEntry(
+            lane, "team", prev_lane=prev, moved_at_ms=1 if prev is not None else None
+        ).encode()
+        counts[f"large:{lane}"] = counts.get(f"large:{lane}", 0) + 1
+    await client.hset(lane_map_key(TOPIC), mapping=mapping)
+    await client.hset(
+        lane_meta_key(TOPIC), mapping={**{k: str(v) for k, v in counts.items()}, "laneCount": str(LANES)}
+    )
+
+
+class TestTheBiggestQueueGetsTheFreeLane:
+    async def test_the_connector_with_the_larger_queue_takes_the_only_free_lane(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """Lane 0 holds 30 and 10 queued, lane 6 holds 200 and 50, lane 7 is
+        empty: the 50 must not wait behind the 200 because lane 0 came first."""
+        placements: dict[str, tuple[int, int | None, int]] = {
+            "a-30": (0, None, 30),
+            "b-10": (0, None, 10),
+            "c-200": (6, None, 200),
+            "d-50": (6, None, 50),
+        }
+        placements |= {f"solo-{lane}": (lane, None, 5) for lane in range(1, 6)}
+        await _seed(provider, graph, placements)
+
+        report = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert entries["d-50"].lane == 7
+        assert {payload["connectorId"] for _t, _e, payload, _k in producer.events} == {"d-50"}
+        assert (entries["a-30"].lane, entries["b-10"].lane, entries["c-200"].lane) == (0, 0, 6)
+        assert report.migrated_at_ms is not None
+
+    async def test_one_already_moved_onto_a_shared_lane_with_nowhere_better_is_decided(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """Every lane has a team connector, lane 0 two of them, and X moved off
+        lane 0 onto lane 1 on its first publish: nowhere is free to go."""
+        placements: dict[str, tuple[int, int | None, int]] = {
+            "keeper-0": (0, None, 100),
+            "second-0": (0, None, 5),
+            "x-moved": (1, 0, 20),
+        }
+        placements |= {f"solo-{lane}": (lane, None, 5) for lane in range(1, LANES)}
+        await _seed(provider, graph, placements)
+
+        report = await _upkeep(provider, graph, producer)
+
+        assert report.migrated_at_ms is not None
+        assert (await _map(provider))["x-moved"].lane == 1
+        assert producer.events == []
+
 
 class TestConnectorsFromBeforeOrgWasOnTheDocument:
     async def test_the_org_comes_from_the_edge_so_the_backlog_keeps_the_lane(
