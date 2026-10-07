@@ -352,11 +352,9 @@ async def _upgrade_fix_up(
         if step == "moved" and connector_id in large:
             rescued += await rescue(connector_id, large[connector_id])
 
-    # Every lane's keeper first, from real counts; then the connectors that
-    # have to leave, largest queue first, so a free lane goes to the one with
-    # the most waiting, wherever it is.
+    # Every lane's keeper first, from real counts.
     waiting: dict[str, int] = {}
-    leaving: list[tuple[int, str, str]] = []
+    keeper_of: dict[int, str] = {}
     for lane, connectors in sorted(on_lane.items()):
         if len(connectors) < 2:
             continue
@@ -370,37 +368,43 @@ async def _upgrade_fix_up(
             # that holds the lane's backlog is the one most likely to time out.
             finished = False
             continue
-        keeper = min(
+        keeper_of[lane] = min(
             connectors,
             key=lambda c, lane=lane: (-waiting[c], entries[c].lane != lane, c),
         )
-        leaving.extend((lane, c, keeper) for c in connectors if c != keeper)
-    leaving.sort(key=lambda item: (-waiting[item[1]], item[0], item[1]))
 
-    # A lane is taken while a large connector is on it or still settling off it.
+    # Then each connector that has to leave a lane, largest queue first, so a
+    # free lane goes to the one with the most waiting. Per connector the lane
+    # it is on is decided first, and its records are re-sent only to the
+    # lane it ends up on.
+    leaves: dict[str, set[int]] = {}
+    for lane, keeper in keeper_of.items():
+        for connector_id in on_lane[lane]:
+            if connector_id != keeper:
+                leaves.setdefault(connector_id, set()).add(lane)
+
+    # A lane is taken while a large connector is on it, is still settling off
+    # it, or a waiting connector holds it for a later pass.
     taken = {e.lane for e in large.values()} | {
         e.prev_lane for e in large.values() if e.prev_lane is not None
     }
-    free = [lane for lane in range(assignments.lane_count) if lane not in taken]
-    waiting_to_move: set[str] = set()
-    handled: set[str] = set()
-    for lane, connector_id, keeper in leaving:
-        if connector_id in handled or connector_id in waiting_to_move:
-            continue
+
+    def free_lanes() -> list[int]:
+        return [lane for lane in range(assignments.lane_count) if lane not in taken]
+
+    for connector_id in sorted(leaves, key=lambda c: (-waiting[c], c)):
         entry = entries[connector_id]
-        if entry.lane == lane:
-            if not free:
-                # Every lane is taken: moving would only make another pair.
-                continue
+        left_one = any(lane != entry.lane for lane in leaves[connector_id])
+        if entry.lane in leaves[connector_id] and free_lanes():
             if entry.prev_lane is not None:
-                # Still settling an earlier move: it cannot move yet, so it
-                # holds a free lane until it can.
-                free.pop(0)
-                waiting_to_move.add(connector_id)
+                # Still settling an earlier move, so it cannot move yet: it
+                # holds a free lane until it can, and nothing is re-sent to a
+                # lane it is about to leave.
+                taken.add(free_lanes()[0])
                 finished = False
                 continue
             try:
-                entry = await assignments.move(
+                placed = await assignments.move(
                     connector_id,
                     LaneRequestReason.UPGRADE,
                     org_id=apps[connector_id].org_id,
@@ -409,37 +413,38 @@ async def _upgrade_fix_up(
             except Exception as e:
                 finished = False
                 logger.info(
-                    "Queue lanes: connector %s has to leave lane %d, which it "
-                    "shares with %s, and will be moved on a later pass: %s: %s",
+                    "Queue lanes: connector %s has to leave lane %d and will be "
+                    "moved on a later pass: %s: %s",
                     connector_id,
-                    lane,
-                    keeper,
+                    entry.lane,
                     type(e).__name__,
                     e,
                 )
                 continue
-            if entry.lane == lane:
-                # The rule kept it where it is; it stays, decided.
-                continue
-            entries[connector_id] = large[connector_id] = entry
-            taken.add(entry.lane)
-            free = [f for f in free if f != entry.lane]
-            moved += 1
-            await assignments.note_fix_up_progress(connector_id, "moved")
-        handled.add(connector_id)
+            if placed.lane != entry.lane:
+                left_lane, entry = entry.lane, placed
+                entries[connector_id] = large[connector_id] = entry
+                taken.add(entry.lane)
+                moved += 1
+                await assignments.note_fix_up_progress(connector_id, "moved")
+                leaves[connector_id].add(left_lane)
+                left_one = True
+        # Its queued records wait on a lane it no longer holds: they follow
+        # it to the lane it is on, which is where its new events already go.
+        # A connector staying where its records already are has nothing to send.
+        if not left_one:
+            continue
         sent = await rescue(connector_id, entry)
         rescued += sent
         logger.info(
-            "Queue lanes: connector %s (%s) is on lane %d, off lane %d where %s "
-            "(%d waiting) stays; %d of its %d queued record(s) re-sent there",
+            "Queue lanes: connector %s (%s) is on lane %d; %d of its %d queued "
+            "record(s) re-sent there from lane(s) %s",
             apps[connector_id].name or connector_id,
             connector_id,
             entry.lane,
-            lane,
-            apps[keeper].name or keeper,
-            waiting[keeper],
             sent,
             waiting[connector_id],
+            ", ".join(str(lane) for lane in sorted(leaves[connector_id] - {entry.lane})),
         )
     return moved, rescued, finished
 
