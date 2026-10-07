@@ -6,6 +6,7 @@ import {
   KafkaAdminService,
   REQUIRED_KAFKA_TOPICS,
   REQUIRED_TOPICS,
+  buildRequiredTopics,
   ensureKafkaTopicsExist,
 } from '../../../src/libs/services/kafka-admin.service';
 import { createMockLogger } from '../../helpers/mock-logger';
@@ -57,6 +58,37 @@ describe('KafkaAdminService', () => {
         expect(topic.growExisting).to.equal(false);
       }
     });
+  });
+
+  describe('KAFKA_TOPIC_PARTITIONS', () => {
+    const name = 'KAFKA_TOPIC_PARTITIONS';
+    let saved: string | undefined;
+    beforeEach(() => {
+      saved = process.env[name];
+      sinon.stub(console, 'warn');
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env[name];
+      else process.env[name] = saved;
+    });
+
+    const recordEvents = () =>
+      buildRequiredTopics().find((t) => t.topic === 'record-events')!;
+
+    it('grows existing topics only for a positive whole number', () => {
+      process.env[name] = '8';
+      expect(recordEvents()).to.include({ numPartitions: 8, growExisting: true });
+      process.env[name] = ' 16 ';
+      expect(recordEvents()).to.include({ numPartitions: 16, growExisting: true });
+    });
+
+    for (const value of [undefined, '', '   ', '0', '-4', '4x', '1.5', '99999999999999999999']) {
+      it(`treats ${JSON.stringify(value)} as not set: 32 for a new topic, no growth`, () => {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+        expect(recordEvents()).to.include({ numPartitions: 32, growExisting: false });
+      });
+    }
   });
 
   describe('partition growth of existing topics', () => {

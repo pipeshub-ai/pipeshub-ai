@@ -369,3 +369,58 @@ class TestRememberedOffsets:
         assert remembered.total == 1
         assert remembered.entities() == [("o", "a")]
         assert remembered.has_room
+
+
+class TestARevokeWhileFetchedBackMessagesAreInHand:
+    async def test_they_are_neither_buffered_nor_remembered_nor_committed(self, harness: Harness) -> None:
+        """The revocation can run during any await after the positions were
+        taken off the queue, where it can no longer see them. They must be left
+        to the partition's next owner, which reads them from the commit."""
+        from app.services.messaging.connector_off import ConnectorOffResult
+
+        harness.produce_backlog(a=500)
+        seen_in_filter: dict[str, int] = {}
+        revoked: list[bool] = []
+        consumer_ref: list[IndexingKafkaConsumer] = []
+
+        class RevokeOnFetchBack:
+            async def settle(self, messages):  # noqa: ANN202
+                for message in messages:
+                    rid = message.payload["recordId"]
+                    seen_in_filter[rid] = seen_in_filter.get(rid, 0) + 1
+                # The second time a-00050 passes through is its fetch-back.
+                if seen_in_filter.get("a-00050") == 2 and not revoked:
+                    revoked.append(True)
+                    await consumer_ref[0]._on_partitions_revoked([TP])
+                return ConnectorOffResult()
+
+        handler = Handler()
+        consumer = IndexingKafkaConsumer(
+            logging.getLogger("test"),
+            KafkaConsumerConfig(
+                topics=[TOPIC], client_id="indexing-test", group_id=GROUP,
+                auto_offset_reset="earliest", enable_auto_commit=False,
+                bootstrap_servers=["kafka:9092"],
+            ),
+            fair_scheduler_config=_fair(),
+            connector_off_filter=RevokeOnFetchBack(),
+        )
+        consumer_ref.append(consumer)
+        harness.consumers.append(consumer)
+        await consumer.start(handler)
+
+        await _until(lambda: bool(revoked))
+        await asyncio.sleep(0.5)
+        main = harness.broker.consumers[0]
+        assert not any(r.startswith("a-0005") for r in handler.seen[55:]), "fetched-back work ran"
+        assert "a-00050" not in handler.seen
+        assert all(tp != TP for e in consumer._remembered.entities()
+                   for tp, _o in consumer._remembered.peek(e, 10**9))
+        assert harness.committed() <= 50
+        assert consumer._scheduler.pending_count == 0
+
+        # Given back: as aiokafka does, the position restarts at the commit.
+        await consumer._on_partitions_assigned([TP])
+        main.position.pop(TP, None)
+        await _until(lambda: harness.committed() == 505)
+        assert {*handler.seen} == {f"a-{i:05d}" for i in range(500)} | {f"b-{i}" for i in range(5)}

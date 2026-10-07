@@ -41,23 +41,35 @@ function configuredPartitions(): number {
   );
 }
 
-/** Whether an operator asked for a partition count, as opposed to the default. */
+/**
+ * Whether an operator asked for a partition count: KAFKA_TOPIC_PARTITIONS holds
+ * a positive whole number. Missing, empty, malformed, zero or out-of-range
+ * values fall back to the default, and the default never grows a topic.
+ */
 function partitionsSetExplicitly(): boolean {
-  return process.env[ENV_KAFKA_TOPIC_PARTITIONS] !== undefined;
+  const raw = process.env[ENV_KAFKA_TOPIC_PARTITIONS]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return false;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0;
 }
 
-// Required topics for the application. Only the indexing topic is laned;
-// entity/sync events are low volume with no fairness problem to solve.
-export const REQUIRED_TOPICS: TopicDefinition[] = Object.values(
-  BrokerTopic,
-).map((topic) => ({
-  topic,
-  numPartitions:
-    topic === BrokerTopic.RECORD_EVENTS ? configuredPartitions() : 1,
-  replicationFactor: 1,
-  growExisting:
-    topic === BrokerTopic.RECORD_EVENTS && partitionsSetExplicitly(),
-}));
+/**
+ * Required topics for the application, from the environment as it is now.
+ * Only the indexing topic is laned; entity/sync events are low volume with no
+ * fairness problem to solve.
+ */
+export function buildRequiredTopics(): TopicDefinition[] {
+  return Object.values(BrokerTopic).map((topic) => ({
+    topic,
+    numPartitions:
+      topic === BrokerTopic.RECORD_EVENTS ? configuredPartitions() : 1,
+    replicationFactor: 1,
+    growExisting:
+      topic === BrokerTopic.RECORD_EVENTS && partitionsSetExplicitly(),
+  }));
+}
+
+export const REQUIRED_TOPICS: TopicDefinition[] = buildRequiredTopics();
 
 /** @deprecated Use REQUIRED_TOPICS instead */
 export const REQUIRED_KAFKA_TOPICS = REQUIRED_TOPICS;

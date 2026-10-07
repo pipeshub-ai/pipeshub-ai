@@ -1637,6 +1637,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # those of revoked partitions, and only what is still remembered, from
         # the head, is buffered. A record at an offset never changes, so one
         # remembered again after a reassignment is the same message.
+        #
+        # Once popped, a position is out of reach of the revocation callback,
+        # which can still run during any await below. So after each await a
+        # position on a partition revoked since the last poll is dropped: not
+        # buffered, not remembered again, not tracked or committed. The
+        # revocation cleared its watermark, and its next owner reads it from
+        # the committed offset.
+        revoked = self._revoked_since_poll
         settled_gone: list[tuple[TopicPartition, int]] = []
         fetched: list[tuple[FairnessKey, TopicPartition, ConsumerRecord]] = []
         for entity in plan:
@@ -1657,7 +1665,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 len(settled_gone),
             )
             for tp, offset in settled_gone:
-                await self.__resolve_offset(_InFlightOffset(tp, offset), done=True)
+                if tp not in revoked:
+                    await self.__resolve_offset(_InFlightOffset(tp, offset), done=True)
         if not fetched:
             return
 
@@ -1668,13 +1677,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             except Exception:
                 continue
         settled = await self.__settle_connector_off(pre_parsed)
+        fetched = [item for item in fetched if item[1] not in revoked]
         settled_reached = [
             (tp, record.offset) for _e, tp, record in fetched if (tp, record.offset) in settled
         ]
         refused: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
         for entity, tp, record in fetched:
             position = (tp, record.offset)
-            if position in settled:
+            if position in settled or tp in revoked:
                 continue
             if entity in refused:
                 refused[entity].append(position)
@@ -1708,7 +1718,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
                 refused[entity] = [position]
         for entity, positions in refused.items():
-            remembered.restore_front(entity, positions)
+            kept = [p for p in positions if p[0] not in revoked]
+            if kept:
+                remembered.restore_front(entity, kept)
         await self.__resolve_settled(settled_reached, settled)
 
     def __retry_not_before(self, parsed: StreamMessage) -> float | None:

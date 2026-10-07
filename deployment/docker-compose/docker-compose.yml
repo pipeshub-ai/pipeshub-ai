@@ -687,7 +687,10 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      # The cp-kafka image does not read this; the app creates its topics at
+      # startup (record-events with 32 partitions, KAFKA_TOPIC_PARTITIONS to
+      # change it). Kept in step with that for anyone reading it here.
+      - KAFKA_CREATE_TOPICS=record-events:32:1,entity-events:1:1,sync-events:1:1
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
