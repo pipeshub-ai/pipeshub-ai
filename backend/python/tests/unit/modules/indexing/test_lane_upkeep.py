@@ -234,24 +234,27 @@ class TestUpgradeFixUp:
         assert (await _map(provider))[SLACK].prev_lane == SHARED
         assert set(collections) == {"apps"}, "no record was read to be re-sent"
 
-    async def test_when_the_one_with_the_backlog_already_moved_off_nobody_moves(
+    async def test_when_the_one_with_the_backlog_already_moved_off_the_other_one_moves(
         self, provider: FakeRedisConnectionProvider, graph: _Graph
     ) -> None:
-        """Left to first publishes, Slack kept the shared lane and GitLab moved.
-        They no longer share a lane, so there is nothing to split; GitLab's
-        older events drain on Slack's lane once."""
+        """Left to first publishes, Slack kept the shared lane and GitLab moved,
+        but GitLab's backlog is still on the shared lane. Slack has to go, onto
+        a lane of its own; GitLab stays where its first publish put it."""
         graph.add(GITLAB, queued=40)
         graph.add(SLACK, queued=6)
         assignments = _assignments(provider)
         await assignments.lane_for(SLACK)
         await assignments.lane_for(GITLAB)
-        before = await _map(provider)
-        assert before[GITLAB].prev_lane == SHARED
+        gitlab = (await _map(provider))[GITLAB]
+        assert gitlab.prev_lane == SHARED
 
-        report = await _upkeep(provider, graph)
+        first = await _upkeep(provider, graph)
 
-        assert await _map(provider) == before
-        assert report.migrated_at_ms is not None
+        entries = await _map(provider)
+        assert entries[GITLAB] == gitlab
+        assert entries[SLACK].lane not in (SHARED, gitlab.lane)
+        assert first.migrated_at_ms is None
+        assert (await _upkeep(provider, graph)).migrated_at_ms is not None
 
     async def test_a_connector_that_already_moved_off_stays_where_it_is(
         self, provider: FakeRedisConnectionProvider, graph: _Graph
