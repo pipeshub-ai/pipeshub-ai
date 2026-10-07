@@ -252,6 +252,10 @@ elseif old_lane and old[5] ~= "" then
     return {"settling", raw}
 end
 
+-- Unless the caller knows the class, the stored one stands: a class
+-- corrected since the caller's lookup must not be written back over.
+if old and ARGV[8] ~= "1" then class = old[3] end
+
 local version = tonumber(redis.call("HGET", meta, "version")) or 0
 if version ~= expected then
     return {"conflict", lane_count, now_ms(), redis.call("HGETALL", meta)}
