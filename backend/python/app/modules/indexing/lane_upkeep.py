@@ -268,26 +268,30 @@ async def _upgrade_fix_up(
     """Separate the large connectors that share a lane, once.
 
     Every connector without an entry is first recorded where hashing has
-    always put it. Then, for each lane, the large connectors that may have
-    events on it are its occupants and any that moved off it on their first
-    publish after the upgrade (``prevLane``). If there is more than one, the
-    one with the most records waiting keeps the lane, since its backlog is
-    already there. Each other occupant is moved by the edition's rule; each
-    other connector, moved now or before, has up to ``rescue_cap`` of its
-    queued records re-sent to its new lane, oldest first, so they stop waiting
-    behind the one that stayed. The copies left on the old lane are harmless:
-    the handler skips a record that is already complete, and the record lease
-    stops two copies running at once.
+    always put it. For each lane, the large connectors that may have events
+    on it are its occupants and any that moved off it on their first publish
+    after the upgrade (``prevLane``). Where there are two or more, the one
+    with the most records waiting keeps the lane, since its backlog is
+    already there. Then, largest queue first:
 
-    The lazy placement alone keeps whichever connector published first; this
-    is what keeps the one with the backlog instead.
+    - another occupant moves to a lane of its own, if one is free, and its
+      queued records are re-sent there; one still settling an earlier move
+      holds a free lane for a later pass, so a smaller queue cannot take it;
+      with no lane free it stays, which is a decision;
+    - a connector that already moved off has its queued records re-sent to
+      the lane it is on now, since its new events already go there.
 
-    Returns (moved, re-sent, finished). It is not finished, and runs again next
-    pass, while a connector could not be recorded, a lane's queued counts could
-    not all be read, a connector that has to move is still settling an earlier
-    move, or a re-send stopped short. Staying put because every lane already
-    holds a large connector is a decision, and finishes. A connector moved or
-    re-sent in an earlier pass (``fix_up_progress``) is not decided again.
+    A lane is free only if no large connector is on it or still settling off
+    it (its backlog is there). The edition's rule picks the lane; where it
+    picks a lane already taken, that is its decision. Re-sending leaves the
+    old copies, which are harmless: the handler skips a record that is
+    already complete, and the record lease stops two copies running at once.
+
+    Returns (moved, re-sent, finished). It is not finished, and runs again
+    next pass, while a connector could not be recorded, a lane's queued
+    counts could not all be read, a connector holding a lane is still
+    settling, or a move or re-send failed. Progress is kept per connector,
+    so records already re-sent are not sent again.
     """
     finished = True
     for connector_id, app in apps.items():
@@ -316,10 +320,11 @@ async def _upgrade_fix_up(
     }
     on_lane: dict[int, list[str]] = {}
     for connector_id, entry in large.items():
-        if connector_id in progress:
-            continue
         on_lane.setdefault(entry.lane, []).append(connector_id)
-        if entry.prev_lane is not None:
+        # A connector the fix-up already moved off a lane is done with it (its
+        # records are re-sent below if that stopped short); one that moved on
+        # its own may still have events there.
+        if entry.prev_lane is not None and connector_id not in progress:
             on_lane.setdefault(entry.prev_lane, []).append(connector_id)
 
     moved = rescued = 0
@@ -347,9 +352,9 @@ async def _upgrade_fix_up(
         if step == "moved" and connector_id in large:
             rescued += await rescue(connector_id, large[connector_id])
 
-    # Every lane's keeper is decided first, from real counts. Then the
-    # connectors that have to leave are taken by queue size, largest first, so
-    # a free lane goes to the one with the most waiting, wherever it is.
+    # Every lane's keeper first, from real counts; then the connectors that
+    # have to leave, largest queue first, so a free lane goes to the one with
+    # the most waiting, wherever it is.
     waiting: dict[str, int] = {}
     leaving: list[tuple[int, str, str]] = []
     for lane, connectors in sorted(on_lane.items()):
@@ -372,34 +377,36 @@ async def _upgrade_fix_up(
         leaving.extend((lane, c, keeper) for c in connectors if c != keeper)
     leaving.sort(key=lambda item: (-waiting[item[1]], item[0], item[1]))
 
-    def shares_its_lane(connector_id: str) -> bool:
-        lane_now = entries[connector_id].lane
-        return any(
-            other != connector_id and other_entry.lane == lane_now
-            for other, other_entry in large.items()
-        )
-
+    # A lane is taken while a large connector is on it or still settling off it.
+    taken = {e.lane for e in large.values()} | {
+        e.prev_lane for e in large.values() if e.prev_lane is not None
+    }
+    free = [lane for lane in range(assignments.lane_count) if lane not in taken]
+    waiting_to_move: set[str] = set()
     handled: set[str] = set()
     for lane, connector_id, keeper in leaving:
-        if connector_id in handled:
+        if connector_id in handled or connector_id in waiting_to_move:
             continue
         entry = entries[connector_id]
         if entry.lane == lane:
-            held = {lane} if entries[keeper].lane != lane else set()
-            if not await _a_lane_is_free(assignments, held | {lane}):
-                # Every other lane already has a large connector: moving
-                # would only make another pair. It stays, decided.
+            if not free:
+                # Every lane is taken: moving would only make another pair.
+                continue
+            if entry.prev_lane is not None:
+                # Still settling an earlier move: it cannot move yet, so it
+                # holds a free lane until it can.
+                free.pop(0)
+                waiting_to_move.add(connector_id)
+                finished = False
                 continue
             try:
                 entry = await assignments.move(
                     connector_id,
                     LaneRequestReason.UPGRADE,
                     org_id=apps[connector_id].org_id,
-                    # A keeper that already moved off still has its backlog here.
-                    still_held=tuple(held),
+                    still_held=tuple(taken),
                 )
             except Exception as e:
-                # Still settling an earlier move, or Redis said no: next pass.
                 finished = False
                 logger.info(
                     "Queue lanes: connector %s has to leave lane %d, which it "
@@ -415,22 +422,10 @@ async def _upgrade_fix_up(
                 # The rule kept it where it is; it stays, decided.
                 continue
             entries[connector_id] = large[connector_id] = entry
-            handled.add(connector_id)
-            if shares_its_lane(connector_id):
-                # It landed beside another large connector after all (an
-                # edition rule may choose so). Nothing is re-sent there; once
-                # this move has settled, the pair it joined is decided.
-                finished = False
-                continue
+            taken.add(entry.lane)
+            free = [f for f in free if f != entry.lane]
             moved += 1
             await assignments.note_fix_up_progress(connector_id, "moved")
-        elif shares_its_lane(connector_id):
-            # It already moved off this lane, onto one it shares. If a lane of
-            # its own is free it gets one once that move settles; if none is,
-            # there is nowhere better to go, and that is decided.
-            if await _a_lane_is_free(assignments, {lane, entry.lane}):
-                finished = False
-            continue
         handled.add(connector_id)
         sent = await rescue(connector_id, entry)
         rescued += sent
@@ -455,21 +450,6 @@ async def _org_of(
     """The connector's org: knowledge bases carry ``orgId``; connectors created
     before it was stored on the document have only the org-app edge."""
     return app.org_id or await org_id_from_app_edge(graph_provider, connector_id)
-
-
-async def _a_lane_is_free(assignments: LaneAssignments, taken: set[int]) -> bool:
-    """Whether some lane outside ``taken`` has no large connector."""
-    meta = await assignments.read_meta()
-
-    def large_on(lane: int) -> int:
-        try:
-            return int(meta.get(f"large:{lane}", "0"))
-        except ValueError:
-            return 0
-
-    return any(
-        large_on(lane) == 0 for lane in range(assignments.lane_count) if lane not in taken
-    )
 
 
 async def _queued(
