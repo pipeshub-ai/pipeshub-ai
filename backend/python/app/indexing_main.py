@@ -1527,6 +1527,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # periodic sampler noticing the pressure it already caused.
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
+    # Large text, code and CSV files are parsed in worker processes
+    # sized from this governor, so they cannot stall the consumer's loop.
+    from app.modules.parsers import parse_pool
+    parse_pool.set_resource_governor(governor)
 
     # This service flips records to COMPLETED, which is when a KB record first
     # becomes searchable — the query service's cached map must be dropped then.
@@ -1717,6 +1721,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+    try:
+        from app.modules.parsers.parse_pool import shutdown_parse_pool
+        if shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down parse worker pool: {e}")
 
 
 from app.api.middlewares.request_context import RequestContextMiddleware

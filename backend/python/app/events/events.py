@@ -26,10 +26,14 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    RecordTypes,
+    get_mime_type_for_extension,
     normalize_file_extension,
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
@@ -366,6 +370,26 @@ class EventProcessor:
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
                 yield event
+
+    @staticmethod
+    def _reads_as_code_file(
+        record_type: str | None, mime_type: str, code_ext: str | None, record_name: str
+    ) -> bool:
+        """True when ``Processor.process_code_document`` decides how a record is read.
+
+        Source code always does. So does a repository file that would otherwise
+        be parsed whole as text, or that is a generated file whatever its type
+        (``package-lock.json`` would reach the JSON parser): that method caps
+        the first and skips the second.
+        """
+        if (
+            mime_type in CODE_FILE_MIME_TYPE_VALUES
+            or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
+        ):
+            return True
+        return record_type == RecordTypes.CODE_FILE.value and (
+            mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
+        )
 
     def _use_service_pipeline(self) -> bool:
         """Return True when the new HTTP service pipeline should be used."""
@@ -1320,6 +1344,10 @@ class EventProcessor:
                 ),
             )
 
+            reads_as_code_file = self._reads_as_code_file(
+                record_type, mime_type, code_ext, record_name
+            )
+
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():
                 if isinstance(file_content, str):
@@ -1327,13 +1355,50 @@ class EventProcessor:
                 else:
                     content_bytes = file_content
 
+                service_mime_type, service_extension = mime_type, extension
+                if reads_as_code_file:
+                    # The parsing service picks a parser from mime and extension
+                    # alone, so the decision the in-process code path makes is
+                    # made here before the bytes are sent.
+                    plan = plan_code_file(
+                        record_name,
+                        event_data.get("filePath"),
+                        code_ext,
+                        content_bytes,
+                        repository_file=record_type == RecordTypes.CODE_FILE.value,
+                    )
+                    if plan.route is CodeFileRoute.SKIP:
+                        async for event in self.processor.process_code_document(
+                            recordName=record_name,
+                            recordId=record_id,
+                            code_binary=content_bytes,
+                            virtual_record_id=virtual_record_id,
+                            extension=code_ext,
+                            file_path=event_data.get("filePath"),
+                            event_type=event_type,
+                            prev_virtual_record_id=prev_virtual_record_id,
+                        ):
+                            yield event
+                        return
+                    if plan.route in (CodeFileRoute.DELIMITED, CodeFileRoute.STRUCTURED):
+                        service_extension = plan.parser
+                        service_mime_type = get_mime_type_for_extension(
+                            plan.parser, fallback=mime_type
+                        )
+                    elif plan.route is CodeFileRoute.CODE:
+                        # The event may carry no extension, or one that
+                        # disagrees with the file's name. The one the grammar
+                        # was chosen by is what makes the service pick the code
+                        # parser over the text one a text/plain mime implies.
+                        service_extension = plan.extension
+
                 async for event in self._orchestrate_via_services(
                     record_id=record_id,
                     org_id=org_id,
                     virtual_record_id=virtual_record_id,
                     record_name=record_name,
-                    mime_type=mime_type,
-                    extension=extension,
+                    mime_type=service_mime_type,
+                    extension=service_extension,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                     file_content=content_bytes,
@@ -1407,10 +1472,7 @@ class EventProcessor:
 
             # Must precede the PLAIN_TEXT branch: code files routinely arrive as
             # text/plain, and that branch returns early.
-            if (
-                mime_type in CODE_FILE_MIME_TYPE_VALUES
-                or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
-            ):
+            if reads_as_code_file:
                 async for event in self.processor.process_code_document(
                     recordName=record_name,
                     recordId=record_id,

@@ -37,6 +37,10 @@ from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
+from app.modules.parsers.parse_pool import (
+    set_resource_governor as set_parse_pool_governor,
+)
+from app.modules.parsers.parse_pool import shutdown_parse_pool
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
@@ -259,6 +263,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # periodic sampler noticing the pressure it already caused.
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
+    set_parse_pool_governor(governor)
 
     # Size the loop's default executor (used by every asyncio.to_thread
     # offload) to the combined heavy+light ceiling so CPU-bound parsers
@@ -300,6 +305,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_logger.exception("Error during resource governor shutdown")
     governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
+    shutdown_parse_pool()
     try:
         config_service.close()
     except Exception:

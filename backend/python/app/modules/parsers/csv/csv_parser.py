@@ -1,10 +1,10 @@
 import asyncio
-import csv
 import io
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
+from collections.abc import Callable
+from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar, Union
 
 from app.config.configuration_service import ConfigurationService
 from app.services.parsing.interface import ParseResult
@@ -26,6 +26,9 @@ from app.models.blocks import (
     GroupType,
     TableMetadata,
 )
+from app.modules.parsers import parse_pool
+from app.modules.parsers.csv import table_detection
+from app.modules.parsers.csv.table_detection import DelimitedReadError, read_csv_tables
 from app.modules.parsers.excel.prompt_template import (
     CSVHeaderDetection,
     TableHeaders,
@@ -45,6 +48,8 @@ from app.utils.streaming import (
 
 logger = create_logger("csv_parser")
 
+T = TypeVar("T")
+
 # Module-level constants for CSV processing
 NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header detection
 DEFAULT_BATCH_SIZE = 50  # Default batch size for processing rows
@@ -53,6 +58,40 @@ MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header gene
 MAX_SUMMARY_SAMPLE_ROWS = 10  # Maximum number of sample rows for table summary
 MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
 MAX_HEADER_DETECTION_ROWS = 10  # CSV uses 6 rows (vs Excel's 4)
+
+
+# Below this a table's rows are converted inline: the loop is shorter than the
+# thread hop that would avoid it.
+ROWS_WORTH_A_THREAD = 1000
+
+
+async def _off_loop_if_many_rows(row_count: int, fn: Callable[..., T], *args: object) -> T:
+    if row_count >= ROWS_WORTH_A_THREAD:
+        return await asyncio.to_thread(fn, *args)
+    return fn(*args)
+
+
+def _simple_row_blocks(
+    rows: list[dict[str, Any]],
+    line_numbers: list[int],
+    first_index: int,
+    table_group_index: int,
+) -> list[Block]:
+    """Row blocks in "column: value" form, for tables too large to describe with the LLM."""
+    return [
+        Block(
+            index=first_index + idx,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={
+                "row_natural_language_text": generate_simple_row_text(row),
+                "row_number": line_numbers[idx] if idx < len(line_numbers) else idx + 1,
+            },
+            parent_index=table_group_index,
+        )
+        for idx, row in enumerate(rows)
+    ]
+
 
 class CSVParser:
     def __init__(
@@ -88,23 +127,25 @@ class CSVParser:
     ) -> ParseResult:
             llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
 
-            try:
-                # Sync CSV scan; keep large files off the event loop.
-                all_rows = await asyncio.to_thread(self.read_raw_rows, io.StringIO(decode_text(content)))
-            except Exception as e:
-                logger.warning("Could not read rows from CSV %s: %s", record_name, e)
-                all_rows = None
+            if parse_pool.should_offload(len(content)):
+                tables = await self.read_tables_in_worker(content, record_name)
+            else:
+                try:
+                    # Sync CSV scan; keep large files off the event loop.
+                    all_rows = await asyncio.to_thread(self.read_raw_rows, io.StringIO(decode_text(content)))
+                except Exception as e:
+                    logger.warning("Could not read rows from CSV %s: %s", record_name, e)
+                    all_rows = None
+                # Detect multiple tables
+                tables = await asyncio.to_thread(self.find_tables_in_csv, all_rows) if all_rows else None
 
-            if all_rows is None or not all_rows:
+            if tables is None:
                 return ParseResult(
                     block_container=BlocksContainer(blocks=[], block_groups=[]),
                     metadata={
                         "record_name": record_name,
                     },
                 )
-
-            # Detect multiple tables
-            tables = await asyncio.to_thread(self.find_tables_in_csv, all_rows)
 
             block_containers = await self.get_blocks_from_csv_with_multiple_tables(tables, llm)
 
@@ -132,6 +173,24 @@ class CSVParser:
 
         tables = await asyncio.to_thread(self.find_tables_in_csv, all_rows)
         return self._build_basic_block_container_from_tables(tables, max_rows=max_rows)
+
+    async def read_tables_in_worker(
+        self, content: bytes | str, record_name: str
+    ) -> list[dict[str, Any]] | None:
+        """Rows and table boundaries, read in a parse worker process.
+
+        ``csv.reader`` holds the GIL for the whole file and table detection is
+        a Python loop over every cell, so neither leaves the event loop free
+        when run in a thread. ``None`` when the file is empty or unreadable.
+        """
+        try:
+            return await parse_pool.submit(
+                read_csv_tables, content, self.delimiter, self.quotechar,
+                label=record_name, size=len(content),
+            )
+        except DelimitedReadError as e:
+            logger.warning("Could not read rows from CSV %s: %s", record_name, e)
+            return None
 
     def _build_basic_block_container_from_tables(
         self,
@@ -356,10 +415,7 @@ class CSVParser:
         Returns:
             List of rows, where each row is a list of string values
         """
-        reader = csv.reader(
-            file_stream, delimiter=self.delimiter, quotechar=self.quotechar
-        )
-        return list(reader)
+        return table_detection.read_raw_rows(file_stream, self.delimiter, self.quotechar)
 
     def _is_empty_row(self, row: List[Any], start_col: Optional[int] = None, end_col: Optional[int] = None) -> bool:
         """
@@ -394,143 +450,18 @@ class CSVParser:
 
     def _get_table(
         self,
-        all_rows: List[List[Any]],
+        all_rows: list[list[Any]],
         start_row: int,
         start_col: int,
         visited_cells: set,
         max_cols: int
-    ) -> Dict[str, Any]:
-        """
-        Extract a table starting from (start_row, start_col) by expanding to find rectangular bounds.
+    ) -> dict[str, Any]:
+        """Extract the table starting at (start_row, start_col). See ``table_detection.get_table``."""
+        return table_detection.get_table(all_rows, start_row, start_col, visited_cells, max_cols)
 
-        This method finds the maximum column and row extent of the table by scanning:
-        - Right until finding a column that's empty within the current region
-        - Down until finding a row that's empty within the current region
-
-        Args:
-            all_rows: All rows from the CSV
-            start_row: Starting row index (0-based)
-            start_col: Starting column index (0-based)
-            visited_cells: Set of (row, col) tuples to track processed cells
-            max_cols: Maximum number of columns across all rows
-
-        Returns:
-            Dictionary with raw_rows (all rows without header assumptions) and metadata:
-            - raw_rows: List of all rows in the table
-            - start_row: Starting line number (1-based)
-            - end_row: Ending line number (1-based)
-            - column_count: Number of columns in the table
-        """
-
-        # Find the last column of the table by scanning right
-        max_col = start_col
-        max_row_in_file = len(all_rows) - 1
-
-        for col in range(start_col, max_cols):
-            has_data = False
-            # Check if this column has any data in the rows we've seen so far
-            # We need to check from start_row downward to find where the table ends
-            for r in range(start_row, max_row_in_file + 1):
-                if r < len(all_rows) and col < len(all_rows[r]):
-                    value = all_rows[r][col]
-                    if value.strip():
-                        has_data = True
-                        max_col = col
-                        break
-            if not has_data:
-                break
-
-        # Find the last row of the table by scanning down
-        max_row = start_row
-        for row in range(start_row+1, max_row_in_file + 1):
-            has_data = False
-            # Check if this row has any data in the columns we've determined
-            for col in range(start_col, max_col + 1):
-                if row < len(all_rows) and col < len(all_rows[row]):
-                    value = all_rows[row][col]
-                    if value.strip():
-                        has_data = True
-                        max_row = row
-                        break
-            if not has_data and row != start_row+1:
-                break
-
-        # Now extract the rectangular table region
-        # Process ALL rows uniformly without assuming first row is headers
-        raw_rows = []
-
-
-        # Extract ALL rows uniformly (including start_row)
-        for row_idx in range(start_row, max_row + 1):
-            if row_idx < len(all_rows):
-                row = all_rows[row_idx]
-                row_data = []
-                for col in range(start_col, max_col + 1):
-                    if col < len(row):
-                        value = row[col].strip()
-
-                        if value:
-                            row_data.append(value)
-                            visited_cells.add((row_idx, col))
-                        else:
-                            row_data.append("null")
-                    else:
-                        row_data.append("null")
-                raw_rows.append(row_data)
-
-        return {
-            "raw_rows": raw_rows,  # All rows without header assumptions
-            "start_row": start_row + 1,  # Convert to 1-based line numbers
-            "end_row": max_row + 1,
-        }
-
-    def find_tables_in_csv(self, all_rows: List[List[Any]]) -> List[Dict[str, Any]]:
-        """
-        Find and extract all tables from CSV rows using region-growing approach.
-
-        Detection criteria:
-        A table is a rectangular region surrounded by empty rows & empty columns.
-        Boundaries only need to be empty within the context of that region, not globally.
-        File edges count as boundaries (no empty rows/columns needed at edges).
-
-        Args:
-            all_rows: List of all rows from CSV (each row is a list of values)
-
-        Returns:
-            List of table dictionaries, each containing:
-            - raw_rows: List of all rows (without header assumptions)
-            - start_row: Starting line number (1-based)
-            - end_row: Ending line number (1-based)
-            - column_count: Number of columns
-        """
-        if not all_rows:
-            return []
-
-        tables = []
-        visited_cells: set = set()  # Track already processed cells as (row, col) tuples
-
-        # Find maximum column count across all rows
-        max_cols = max(len(row) for row in all_rows) if all_rows else 0
-
-        # Scan for tables: iterate through all rows and columns
-        for row_idx in range(len(all_rows)):
-            for col_idx in range(max_cols):
-                # Check if this cell has data and hasn't been visited
-                if (row_idx, col_idx) in visited_cells:
-                    continue
-
-                # Check if cell has non-empty data
-                if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
-                    value = all_rows[row_idx][col_idx]
-                    if value.strip():
-                        # Found a potential table start - expand to find bounds
-                        table = self._get_table(all_rows, row_idx, col_idx, visited_cells, max_cols)
-                        tables.append(table)
-
-
-
-
-        return tables
+    def find_tables_in_csv(self, all_rows: list[list[Any]]) -> list[dict[str, Any]]:
+        """Find every table in the rows. See ``table_detection.find_tables``."""
+        return table_detection.find_tables(all_rows)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -634,6 +565,20 @@ class CSVParser:
 
         headers = self._deduplicate_headers(headers)
 
+        # A Python loop over every cell: seconds for a large table. In a thread
+        # the interpreter hands the GIL back every few milliseconds, where
+        # inline it held the event loop until the last row.
+        return await _off_loop_if_many_rows(
+            len(data_rows), self._rows_to_dicts, data_rows, headers, column_count, data_start_line
+        )
+
+    def _rows_to_dicts(
+        self,
+        data_rows: list[list[Any]],
+        headers: list[str],
+        column_count: int,
+        data_start_line: int,
+    ) -> tuple[list[dict[str, Any]], list[int]]:
         csv_result = []
         line_numbers = []
 
@@ -1011,24 +956,12 @@ class CSVParser:
                         table_row_block_indices.append(block_index)
             else:
                 # Use simple format for rows (skip LLM)
-                for idx, row in enumerate(csv_result):
-                    block_index = len(blocks)
-                    actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
-                    row_text = generate_simple_row_text(row)
-
-                    blocks.append(
-                        Block(
-                            index=block_index,
-                            type=BlockType.TABLE_ROW,
-                            format=DataFormat.JSON,
-                            data={
-                                "row_natural_language_text": row_text,
-                                "row_number": actual_row_number,
-                            },
-                            parent_index=table_group_index,
-                        )
-                    )
-                    table_row_block_indices.append(block_index)
+                row_blocks = await _off_loop_if_many_rows(
+                    len(csv_result), _simple_row_blocks,
+                    csv_result, line_numbers, len(blocks), table_group_index,
+                )
+                blocks.extend(row_blocks)
+                table_row_block_indices.extend(block.index for block in row_blocks)
 
             num_of_rows = table_row_count
             num_of_cols = len(column_headers)

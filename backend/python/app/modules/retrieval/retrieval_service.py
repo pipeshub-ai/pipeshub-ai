@@ -13,6 +13,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
+    QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS,
 )
 
 # from langchain_cohere import CohereEmbeddings
@@ -60,6 +61,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
+    is_local_cpu_embedding_provider,
 )
 from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
@@ -165,6 +167,10 @@ valid_group_labels = [
     ]
 
 class RetrievalService:
+    # Local models may load or download on first use, so their queries get no deadline.
+    # A class default, so an instance built without __init__ (as some tests do) has it too.
+    _cached_embedding_is_local = True
+
     def __init__(
         self,
         logger,
@@ -314,6 +320,7 @@ class RetrievalService:
                 if not embedding_configs:
                     self.logger.info("No embedding config found; using default embedding model")
                     dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
+                    is_local = True
                 else:
                     selected_config = next(
                         (c for c in embedding_configs if c.get("isDefault", False)),
@@ -324,9 +331,13 @@ class RetrievalService:
                     dense_embeddings = await asyncio.to_thread(
                         get_embedding_model, provider, selected_config
                     )
+                    is_local = is_local_cpu_embedding_provider(
+                        provider, (selected_config.get("configuration") or {}).get("endpoint")
+                    )
 
                 self._cached_dense_embeddings = dense_embeddings
                 self._cached_embedding_config_hash = config_hash
+                self._cached_embedding_is_local = is_local
                 return dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
@@ -1436,12 +1447,14 @@ class RetrievalService:
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
+        # Read before the next await, while it still describes the instance just returned.
+        attempt_timeout = None if self._cached_embedding_is_local else QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
         dense_tasks = [
             await_with_retry(
-                lambda q=query: dense_embeddings.aembed_query(q),
+                lambda q=query: asyncio.wait_for(dense_embeddings.aembed_query(q), timeout=attempt_timeout),
                 max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
                 operation="aembed_query",
                 service_name="retrieval",

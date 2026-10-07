@@ -1277,14 +1277,15 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return int(rows[0]) if rows else 0
 
-    async def count_edges_touching(self, handles: Iterable[str]) -> int:
-        """Edges in any edge collection with either end on one of these nodes."""
+    async def count_edges_touching(self, handles: Iterable[str], *, excluding: Iterable[str] = ()) -> int:
+        """Edges in any edge collection but *excluding* with either end on one of these nodes."""
         if not self.http_client:
             raise RuntimeError("Provider not connected")
         wanted = list(handles)
+        skipped = set(excluding)
         seen: set = set()
         for collection, _schema in EDGE_COLLECTIONS:
-            if not await self.http_client.has_collection(collection):
+            if collection in skipped or not await self.http_client.has_collection(collection):
                 continue
             rows = await self.http_client.execute_aql(
                 "FOR e IN @@c FILTER e._from IN @h OR e._to IN @h RETURN e._id",
