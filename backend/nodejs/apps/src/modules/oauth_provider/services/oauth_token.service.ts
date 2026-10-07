@@ -296,6 +296,8 @@ export class OAuthTokenService {
       // Filter to only include scopes that were in the original grant
       scopes = requestedScopes.filter((s) => storedToken.scopes.includes(s))
     }
+    // Nor beyond what the app allows now; it may have lost scopes since the grant.
+    scopes = scopes.filter((s) => app.allowedScopes.includes(s))
 
     // Revoke old refresh token (rotation)
     storedToken.isRevoked = true

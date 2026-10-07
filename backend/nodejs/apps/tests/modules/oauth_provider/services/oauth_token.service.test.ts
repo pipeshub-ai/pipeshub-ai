@@ -1126,8 +1126,12 @@ describe('OAuthTokenService - branch coverage', () => {
         }
       }
 
-      const app = (clientId: string) => ({
+      const app = (
+        clientId: string,
+        allowedScopes: string[] = ['user:read', 'offline_access'],
+      ) => ({
         clientId,
+        allowedScopes,
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
         createdBy: new Types.ObjectId(),
@@ -1149,6 +1153,22 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(stored.save.calledOnce).to.be.true
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
+      })
+
+      it('drops scopes the app no longer allows from the refreshed tokens', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        const result = await service.refreshTokens(
+          app('client-a', ['offline_access']),
+          signRefreshToken('client-a'),
+        )
+
+        expect(result.scope).to.equal('offline_access')
       })
 
       it('rejects a refresh token issued to a different client with invalid_grant', async () => {

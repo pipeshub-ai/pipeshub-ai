@@ -73,6 +73,9 @@ describe('OAuthDeviceService', () => {
       validateScopesForApp: sinon.stub(),
       resolveGrantedScopes: sinon.stub().returns({ granted: ['user:read'], notGranted: [] }),
       getScopeDefinitions: sinon.stub().returns([{ name: 'user:read' }]),
+      getGrantedScopes: sinon.stub().callsFake((requested: string[], allowed: string[]) =>
+        new ScopeValidatorService().getGrantedScopes(requested, allowed),
+      ),
     }
     mockFirstPartyDeviceAppService = {
       getOrCreate: sinon.stub().resolves('pipeshub-agent'),
@@ -203,6 +206,28 @@ describe('OAuthDeviceService', () => {
     expect(mockOAuthTokenService.generateTokens.firstCall.args[1]).to.not.equal(
       null,
     )
+  })
+
+  it('should drop scopes the app lost between approval and poll', async () => {
+    const userId = new Types.ObjectId()
+    const orgId = new Types.ObjectId()
+    const approved = {
+      _id: new Types.ObjectId(),
+      status: OAuthDeviceCodeStatus.APPROVED,
+      expiresAt: new Date(Date.now() + 60_000),
+      userId,
+      orgId,
+      scopes: ['user:read', 'kb:read'],
+      clientId: 'cid',
+    }
+    sinon.stub(OAuthDeviceCode, 'findOne').resolves(approved as any)
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any)
+    stubLookup(Users, { fullName: 'Ada' })
+    stubLookup(Org, { accountType: 'business' })
+
+    await service.poll('cid', undefined, 'device-code')
+
+    expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(['user:read'])
   })
 
   for (const gone of ['user', 'org'] as const) {

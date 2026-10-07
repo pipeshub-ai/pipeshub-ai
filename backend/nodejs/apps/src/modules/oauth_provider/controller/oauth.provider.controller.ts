@@ -605,12 +605,16 @@ export class OAuthProviderController {
       }
     }
 
-    // Generate tokens
+    // The code may predate an edit that removed scopes from the app; the
+    // revocation that edit triggers cannot reach a token minted after it.
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       codeResult.userId,
       codeResult.orgId,
-      codeResult.scopes,
+      this.scopeValidatorService.getGrantedScopes(
+        codeResult.scopes,
+        app.allowedScopes,
+      ),
       true,
       fullName,
       accountType,

@@ -254,11 +254,15 @@ export class OAuthDeviceService {
     const fullName: string | undefined = user.fullName
     const accountType = (org as { accountType?: string }).accountType
 
+    // The approval may predate an edit that removed scopes from the app.
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       userId,
       orgId,
-      claimed.scopes,
+      this.scopeValidatorService.getGrantedScopes(
+        claimed.scopes,
+        app.allowedScopes,
+      ),
       true,
       fullName,
       accountType,
