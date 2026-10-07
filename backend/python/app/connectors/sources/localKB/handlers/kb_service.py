@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.entity_cleanup_intents import (
     EntityCleanupIntentError,
     record_pending_entity_cleanup,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
+    from app.connectors.core.base.data_store.data_store import TransactionStore
 
 read_collections = [
     collection.value for collection in CollectionNames
@@ -175,6 +177,7 @@ class KnowledgeBaseService:
         self.logger = logger
         self.graph_provider = graph_provider
         self.kafka_service = kafka_service
+        self.graph_data_store = GraphDataStore(logger, graph_provider)
         # Returns the processor of the KB's own connector instance, so KB records go
         # through the same graph-write + Kafka path, and the same org, as connectors.
         self.processor_for_kb = processor_for_kb
@@ -464,27 +467,6 @@ class KnowledgeBaseService:
 
             self.logger.info(f"📋 Generated KB ID: {kb_key}")
 
-            # Step 3: Create transaction
-            txn_id = None
-            try:
-                txn_id = await self.graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.APPS.value,
-                        CollectionNames.ORG_APP_RELATION.value,
-                        CollectionNames.USER_APP_RELATION.value,
-                        CollectionNames.PERMISSION.value,
-                    ],
-                )
-                self.logger.info("🔄 Transaction created")
-            except Exception as tx_error:
-                self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": action_failed("create this knowledge base")
-                }
-
             kb_data = {
                 "id": kb_key,
                 # External user id (not the graph user_key) — matches every
@@ -546,59 +528,30 @@ class KnowledgeBaseService:
                 "updatedAtTimestamp": timestamp,
             }
 
-            # Step 5: Execute database operations
+            async def write_kb(tx_store: "TransactionStore") -> None:
+                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
+                await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
+                await tx_store.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value)
+                await tx_store.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value)
+
+            # Creates by one user collide on that user's node (a Neo4j deadlock,
+            # an ArangoDB write conflict). Every write is keyed by kb_key, so a
+            # re-run after a partial Neo4j auto-commit lands the same KB once.
             self.logger.info("💾 Executing database operations...")
-            await self.graph_provider.batch_upsert_nodes(
-                [kb_data],
-                CollectionNames.APPS.value,
-                transaction=txn_id,
-            )
-            await self.graph_provider.batch_create_edges(
-                [permission_edge],
-                CollectionNames.PERMISSION.value,
-                transaction=txn_id,
-            )
-            await self.graph_provider.batch_create_edges(
-                [org_app_edge],
-                CollectionNames.ORG_APP_RELATION.value,
-                transaction=txn_id,
-            )
-            await self.graph_provider.batch_create_edges(
-                [user_app_edge],
-                CollectionNames.USER_APP_RELATION.value,
-                transaction=txn_id,
-            )
-            await self.graph_provider.commit_transaction(txn_id)
+            await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
 
-            result = {"success": True}
-            if result and result.get("success"):
-                response = {
-                    "id": kb_data["id"],
-                    "name": kb_data["name"],
-                    "createdAtTimestamp": kb_data["createdAtTimestamp"],
-                    "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
-                    "success": True,
-                    "userRole": "OWNER"
-                }
-
-                self.logger.info(f"✅ KB '{name}' created successfully: {kb_key}")
-                return response
-
-            else:
-                return {
-                    "success": False,
-                    "code": 500,
-                    "reason": "Failed to create knowledge base in database"
-                }
+            self.logger.info(f"✅ KB '{name}' created successfully: {kb_key}")
+            return {
+                "id": kb_data["id"],
+                "name": kb_data["name"],
+                "createdAtTimestamp": kb_data["createdAtTimestamp"],
+                "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
+                "success": True,
+                "userRole": "OWNER"
+            }
 
         except Exception as e:
             self.logger.error(f"❌ KB creation failed for '{name}': {str(e)}")
-            if txn_id is not None:
-                try:
-                    await self.graph_provider.rollback_transaction(txn_id)
-                except Exception as rb_err:
-                    self.logger.warning(f"Rollback failed: {rb_err}")
-
             return {
                 "success": False,
                 "code": 500,
