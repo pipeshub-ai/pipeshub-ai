@@ -27,7 +27,11 @@ from conversations_audit_support import (
     validation_fields,
 )
 from helper.pipeshub_client import PipeshubClient
-from strict_openapi import assert_spec_forbids_request, assert_strict_openapi_exchange
+from strict_openapi import (
+    assert_spec_forbids_request,
+    assert_strict_openapi_exchange,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -102,6 +106,21 @@ def test_create_with_every_optional_field(
     assert "projectId" not in conversation, "projectVisibility alone links no project"
 
 
+def test_create_with_an_unknown_model_key_answers_with_the_default_model(
+    conversations_audit_client: ConversationsAuditClient,
+    delete_conversation_later: Callable[[str], None],
+) -> None:
+    # API bug: the unknown key is not refused, and modelInfo records a model that did not answer.
+    resp = conversations_audit_client.create_conversation(
+        json={"query": CHEAP_QUERY, "modelKey": "spec-audit-no-such-model"}, timeout=LLM_TIMEOUT_SECONDS
+    )
+    if resp.headers.get("X-Conversation-Id"):
+        delete_conversation_later(resp.headers["X-Conversation-Id"])
+    conversation = _assert_created(resp)
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert conversation["modelInfo"]["modelKey"] == "spec-audit-no-such-model", conversation["modelInfo"]
+
+
 @pytest.mark.parametrize("chat_mode", LEGACY_CHAT_MODES)
 def test_validator_accepts_legacy_chat_modes(
     conversations_audit_client: ConversationsAuditClient, chat_mode: str
@@ -109,6 +128,17 @@ def test_validator_accepts_legacy_chat_modes(
     # The empty query makes the validator refuse the request, so no model runs;
     # what matters is that it names only the query, not chatMode.
     resp = conversations_audit_client.create_conversation(json={"query": "", "chatMode": chat_mode})
+    assert resp.status_code == 400, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert validation_fields(resp) == ["body.query"]
+
+
+def test_validator_does_not_refuse_unknown_fields(
+    conversations_audit_client: ConversationsAuditClient,
+) -> None:
+    # The empty query keeps the model from running; the unknown field is not named.
+    with outside_request_contract("an undocumented body field is sent on purpose"):
+        resp = conversations_audit_client.create_conversation(json={"query": "", "specAuditExtra": 1})
     assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
     assert validation_fields(resp) == ["body.query"]
@@ -146,6 +176,19 @@ def test_create_rejects_markup_or_format_specifiers_in_the_query(
     assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json()["error"]["code"] in ("VALIDATION_ERROR", "HTTP_BAD_REQUEST"), resp.text[:500]
+
+
+@pytest.mark.parametrize("query", ["   ", "\n\t "], ids=["spaces", "mixed-whitespace"])
+def test_create_refuses_a_blank_query_in_the_handler(
+    conversations_audit_client: ConversationsAuditClient, query: str
+) -> None:
+    # Past the validator (length >= 1); the handler trims and refuses before any model runs.
+    resp = conversations_audit_client.create_conversation(json={"query": query})
+    error = resp.json()["error"]
+    assert resp.status_code == 400, resp.text[:500]
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", "Query is required"), resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert_spec_forbids_request(resp, ROUTE)
 
 
 def test_create_without_body_is_rejected(conversations_audit_client: ConversationsAuditClient) -> None:

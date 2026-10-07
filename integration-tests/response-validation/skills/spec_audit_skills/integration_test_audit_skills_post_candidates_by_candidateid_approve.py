@@ -42,6 +42,7 @@ async def test_approve_promotes_candidate_to_active_skill(
         created = resp.json()
         assert created["name"] == name
         assert created["status"] == "active"
+        assert created["source"] == "agent_created"
         assert created["category"] == "spec-audit"
 
         skill = skills_client.fetch(name)

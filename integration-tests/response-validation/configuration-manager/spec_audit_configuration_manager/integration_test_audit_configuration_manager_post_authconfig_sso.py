@@ -187,3 +187,16 @@ def test_set_sso_config_without_a_body_is_rejected_like_an_empty_one(
 
     assert_validation_error(resp, "body.entryPoint", "body.certificate", "body.emailKey")
     assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_set_sso_config_stores_an_entry_point_that_is_not_a_url(
+    config_client: ConfigClient, guard_saved_config: GuardSavedConfig
+) -> None:
+    # API bug: entryPoint is only checked for being non-empty.
+    guard_saved_config(PATH, KV_AUTH_SSO, SSO_DERIVED_FIELDS)
+
+    resp = config_client.post(PATH, json={**REQUIRED_ONLY, "entryPoint": "not a url"})
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert _stored(config_client)["entryPoint"] == "not a url"

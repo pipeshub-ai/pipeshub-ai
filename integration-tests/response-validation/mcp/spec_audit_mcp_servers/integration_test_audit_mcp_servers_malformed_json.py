@@ -10,6 +10,7 @@ import pytest
 from mcp_servers_audit_support import (
     JSON_HEADERS,
     MALFORMED_JSON_BODY,
+    MISSING_AGENT_KEY,
     MISSING_INSTANCE_ID,
     McpServersClient,
 )
@@ -18,6 +19,7 @@ from strict_openapi import assert_strict_openapi_exchange
 pytestmark = pytest.mark.spec_audit
 
 _ID = MISSING_INSTANCE_ID
+_AGENT = f"/agents/{MISSING_AGENT_KEY}"
 
 OPERATIONS = [
     ("GET", "/catalog", "/catalog"),
@@ -34,6 +36,22 @@ OPERATIONS = [
     ("POST", f"/instances/{_ID}/authenticate", "/instances/:instanceId/authenticate"),
     ("PUT", f"/instances/{_ID}/credentials", "/instances/:instanceId/credentials"),
     ("DELETE", f"/instances/{_ID}/credentials", "/instances/:instanceId/credentials"),
+    ("POST", f"/instances/{_ID}/auto-authenticate", "/instances/:instanceId/auto-authenticate"),
+    ("POST", f"/instances/{_ID}/reauthenticate", "/instances/:instanceId/reauthenticate"),
+    ("GET", f"/instances/{_ID}/oauth/authorize", "/instances/:instanceId/oauth/authorize"),
+    ("POST", f"/instances/{_ID}/oauth/refresh", "/instances/:instanceId/oauth/refresh"),
+    ("GET", f"/instances/{_ID}/oauth-config", "/instances/:instanceId/oauth-config"),
+    ("PUT", f"/instances/{_ID}/oauth-config", "/instances/:instanceId/oauth-config"),
+    ("GET", _AGENT, "/agents/:agentKey"),
+    ("POST", f"{_AGENT}/instances/{_ID}/authenticate", "/agents/:agentKey/instances/:instanceId/authenticate"),
+    ("PUT", f"{_AGENT}/instances/{_ID}/credentials", "/agents/:agentKey/instances/:instanceId/credentials"),
+    ("DELETE", f"{_AGENT}/instances/{_ID}/credentials", "/agents/:agentKey/instances/:instanceId/credentials"),
+    ("POST", f"{_AGENT}/instances/{_ID}/reauthenticate", "/agents/:agentKey/instances/:instanceId/reauthenticate"),
+    (
+        "GET",
+        f"{_AGENT}/instances/{_ID}/oauth/authorize",
+        "/agents/:agentKey/instances/:instanceId/oauth/authorize",
+    ),
 ]
 
 

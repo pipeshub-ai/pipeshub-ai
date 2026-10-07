@@ -66,7 +66,8 @@ def seed_skill(skills_client: SkillsClient) -> Iterator[SeedSkill]:
     try:
         yield _seed
     finally:
-        for name, owner in created:
+        # Newest first: a skill another seeded skill `requires` cannot be deleted before it.
+        for name, owner in reversed(created):
             # Skills are creator-scoped, so only the owner's token can delete one.
             if owner is None:
                 skills_client.remove(name, detach="true")

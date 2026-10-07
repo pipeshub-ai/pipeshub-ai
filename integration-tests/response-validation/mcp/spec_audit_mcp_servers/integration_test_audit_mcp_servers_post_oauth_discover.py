@@ -40,6 +40,13 @@ def test_discover_a_server_without_oauth_metadata(mcp_servers_client: McpServers
 
 def test_discover_ignores_an_unknown_body_field(mcp_servers_client: McpServersClient) -> None:
     with outside_request_contract("sends a body field the route does not define"):
+        accepted = mcp_servers_client.post(
+            PATH, json={"url": NO_METADATA_URL, "followRedirects": True}, timeout=120
+        )
+        assert accepted.status_code == 200, accepted.text[:500]
+        assert_strict_openapi_exchange(accepted, ROUTE)
+        assert accepted.json()["metadataFound"] is False
+
         resp = mcp_servers_client.post(
             PATH, json={"url": UNREACHABLE_MCP_URL, "followRedirects": True}
         )

@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import pytest
 from conversations_audit_support import (
+    ARCHIVE_ROUTE,
+    ARCHIVES_ROUTE,
+    ARCHIVES_SEARCH_ROUTE,
     BY_ID_ROUTE,
+    CANCEL_ROUTE,
     CREATE_ROUTE,
     DELETE_ATTACHMENT_ROUTE,
+    FEEDBACK_ROUTE,
     JSON_HEADERS,
     LIST_ROUTE,
     MALFORMED_JSON_BODY,
@@ -18,7 +23,14 @@ from conversations_audit_support import (
     MESSAGES_STREAM_ROUTE,
     MISSING_CONVERSATION_ID,
     MISSING_RECORD_ID,
+    PROJECT_ROUTE,
+    PROJECT_VISIBILITY_ROUTE,
+    REGENERATE_ROUTE,
+    SHARE_ROUTE,
     STREAM_ROUTE,
+    TITLE_ROUTE,
+    UNARCHIVE_ROUTE,
+    UNSHARE_ROUTE,
     UPLOAD_ROUTE,
     ConversationsAuditClient,
 )
@@ -39,6 +51,18 @@ pytestmark = pytest.mark.spec_audit
         ("GET", "/", LIST_ROUTE),
         ("GET", f"/{MISSING_CONVERSATION_ID}", BY_ID_ROUTE),
         ("DELETE", f"/{MISSING_CONVERSATION_ID}", BY_ID_ROUTE),
+        ("POST", f"/{MISSING_CONVERSATION_ID}/share", SHARE_ROUTE),
+        ("POST", f"/{MISSING_CONVERSATION_ID}/unshare", UNSHARE_ROUTE),
+        ("PUT", f"/{MISSING_CONVERSATION_ID}/project", PROJECT_ROUTE),
+        ("PATCH", f"/{MISSING_CONVERSATION_ID}/project-visibility", PROJECT_VISIBILITY_ROUTE),
+        ("POST", f"/{MISSING_CONVERSATION_ID}/message/{MISSING_CONVERSATION_ID}/regenerate", REGENERATE_ROUTE),
+        ("POST", f"/{MISSING_CONVERSATION_ID}/cancel", CANCEL_ROUTE),
+        ("PATCH", f"/{MISSING_CONVERSATION_ID}/title", TITLE_ROUTE),
+        ("POST", f"/{MISSING_CONVERSATION_ID}/message/{MISSING_CONVERSATION_ID}/feedback", FEEDBACK_ROUTE),
+        ("PATCH", f"/{MISSING_CONVERSATION_ID}/archive", ARCHIVE_ROUTE),
+        ("PATCH", f"/{MISSING_CONVERSATION_ID}/unarchive", UNARCHIVE_ROUTE),
+        ("GET", "/show/archives", ARCHIVES_ROUTE),
+        ("GET", "/show/archives/search", ARCHIVES_SEARCH_ROUTE),
     ],
     ids=[
         "create",
@@ -50,6 +74,18 @@ pytestmark = pytest.mark.spec_audit
         "list",
         "get_by_id",
         "delete_by_id",
+        "share",
+        "unshare",
+        "set_project",
+        "set_project_visibility",
+        "regenerate",
+        "cancel",
+        "update_title",
+        "feedback",
+        "archive",
+        "unarchive",
+        "list_archives",
+        "search_archives",
     ],
 )
 def test_malformed_json_body_is_an_internal_error_before_the_token_check(
@@ -60,6 +96,8 @@ def test_malformed_json_body_is_an_internal_error_before_the_token_check(
         "GET": conversations_audit_client.get,
         "POST": conversations_audit_client.post,
         "DELETE": conversations_audit_client.delete,
+        "PUT": conversations_audit_client.put,
+        "PATCH": conversations_audit_client.patch,
     }[method]
     resp = send(sub_path, auth=False, data=MALFORMED_JSON_BODY, headers=JSON_HEADERS)
     assert resp.status_code == 500, resp.text[:500]

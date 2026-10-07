@@ -99,6 +99,67 @@ def test_empty_config_object_alone_is_accepted_and_changes_nothing(
     assert _stored_config(connector_oauth_client, cfg)["config"] == cfg["body"]["config"]
 
 
+@pytest.mark.parametrize("config", [None, False, 0, ""], ids=["null", "false", "zero", "empty-string"])
+def test_falsy_config_next_to_a_name_is_ignored(
+    connector_oauth_client: ConnectorOAuthClient, seed_oauth_config: SeedOAuthConfig, config: Any
+) -> None:
+    # Node forwards `config` only when it is truthy, so the rename goes through on its own.
+    cfg = seed_oauth_config()
+    new_name = unique_name()
+
+    with outside_request_contract("config is typed object; a falsy value is dropped by Node"):
+        resp = connector_oauth_client.update(
+            cfg["connector_type"], cfg["id"], {"oauthInstanceName": new_name, "config": config}
+        )
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    assert resp.json()["oauthConfig"]["oauthInstanceName"] == new_name
+    stored = _stored_config(connector_oauth_client, cfg)
+    assert stored["oauthInstanceName"] == new_name
+    assert stored["config"] == cfg["body"]["config"]
+
+
+def test_empty_array_config_alone_is_accepted_and_changes_nothing(
+    connector_oauth_client: ConnectorOAuthClient, seed_oauth_config: SeedOAuthConfig
+) -> None:
+    # `[]` is truthy for Node's "name or config" check and falsy for Python's merge.
+    cfg = seed_oauth_config()
+
+    with outside_request_contract("config is typed object; an empty array passes as if it were {}"):
+        resp = connector_oauth_client.update(cfg["connector_type"], cfg["id"], {"config": []})
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    assert resp.json()["oauthConfig"]["oauthInstanceName"] == cfg["name"]
+    stored = _stored_config(connector_oauth_client, cfg)
+    assert stored["oauthInstanceName"] == cfg["name"]
+    assert stored["config"] == cfg["body"]["config"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({"extra": {"x": 1}}, id="nested-object"),
+        pytest.param({"extra": None}, id="null-value"),
+        pytest.param({"clientSecret": None}, id="client-secret-null"),
+        pytest.param({"clientId": 123}, id="client-id-number"),
+        pytest.param({"extra": [1, 2]}, id="array-of-numbers"),
+    ],
+)
+def test_config_values_are_merged_without_type_checks(
+    connector_oauth_client: ConnectorOAuthClient, seed_oauth_config: SeedOAuthConfig, extra: dict[str, Any]
+) -> None:
+    cfg = seed_oauth_config()
+
+    with outside_request_contract("config values are typed in the spec; Python stores any JSON value"):
+        resp = connector_oauth_client.update(cfg["connector_type"], cfg["id"], {"config": extra})
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    assert _stored_config(connector_oauth_client, cfg)["config"] == {**cfg["body"]["config"], **extra}
+
+
 def test_base_url_does_not_replace_an_existing_redirect_uri(
     connector_oauth_client: ConnectorOAuthClient, seed_oauth_config: SeedOAuthConfig
 ) -> None:
@@ -185,6 +246,9 @@ def test_config_under_another_connector_type_is_not_found(
         pytest.param({}, id="empty-object"),
         pytest.param({"baseUrl": "http://localhost:3001"}, id="base-url-only"),
         pytest.param({"config": None}, id="config-null"),
+        pytest.param({"config": False}, id="config-false"),
+        pytest.param({"config": 0}, id="config-zero"),
+        pytest.param({"config": ""}, id="config-empty-string"),
         pytest.param(None, id="no-body"),
     ],
 )

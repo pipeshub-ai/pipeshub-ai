@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -64,3 +65,25 @@ def mint_pat(pats_client: PatsClient) -> Iterator[MintPat]:
         # The admin route reaches any owner's token; 404 means the test already revoked it.
         for token_id in created:
             pats_client.admin_revoke(token_id)
+
+
+@pytest.fixture
+def service_token(pipeshub_client: PipeshubClient) -> Iterator[str]:
+    """The raw ``phsvc_`` token of a throwaway service account; the account is deleted on teardown."""
+    slug = f"spec-audit-pat-{uuid.uuid4().hex[:10]}"
+    resp = pipeshub_client.request(
+        "POST", "/api/v1/service-accounts", json={"slug": slug, "fullName": f"Spec audit {slug}"}
+    )
+    assert resp.status_code == 201, f"seeding a service account failed: {resp.status_code} {resp.text[:300]}"
+    account_id = resp.json()["id"]
+    try:
+        resp = pipeshub_client.request(
+            "POST",
+            "/api/v1/service-tokens",
+            json={"serviceAccountId": account_id, "name": "spec-audit pat probe", "scopes": ["kb:read"]},
+        )
+        assert resp.status_code == 201, f"minting a service token failed: {resp.status_code} {resp.text[:300]}"
+        yield resp.json()["token"]["accessToken"]
+    finally:
+        # Deleting the account also revokes the token.
+        pipeshub_client.request("DELETE", f"/api/v1/service-accounts/{account_id}")

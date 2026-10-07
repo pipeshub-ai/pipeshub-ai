@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 
@@ -17,8 +17,10 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
 from search_audit_support import (  # noqa: E402
     OTHER_SCOPE,
+    SEARCH_QUERY,
     MintScopedToken,
     SearchAuditClient,
+    SeedSearch,
     mint_scoped_token,
     scoped_jwt_secret,
 )
@@ -36,13 +38,13 @@ def scoped_token(
     """Factory: ``scoped_token(FETCH_CONFIG_SCOPE)`` -> a service token the deployment accepts.
 
     Extra positional scopes and keyword claims are passed through; ``userId`` and
-    ``orgId`` default to the shared admin's. Skips when SCOPED_JWT_SECRET is unset or
+    ``orgId`` default to the shared admin's. Fails when SCOPED_JWT_SECRET is unset or
     is not the secret this deployment verifies scoped tokens with, since nothing can
     then get past the signature check.
     """
     secret = scoped_jwt_secret()
     if not secret:
-        pytest.skip(
+        pytest.fail(
             "SCOPED_JWT_SECRET is not set: /api/v1/search/updateAppConfig accepts only scoped service tokens"
         )
 
@@ -56,10 +58,40 @@ def scoped_token(
     probe = search_audit_client.update_app_config(token=_mint(OTHER_SCOPE))
     assert probe.status_code == 401, probe.text[:500]
     if probe.json()["error"]["message"] != "Invalid scope":
-        pytest.skip(
+        pytest.fail(
             "SCOPED_JWT_SECRET is not the scoped JWT secret this deployment verifies "
             "with (it answers 'Invalid token' to a token signed with it), so a "
             "scoped service token cannot be minted"
         )
 
     return _mint
+
+
+@pytest.fixture
+def seed_search(
+    search_audit_client: SearchAuditClient, session_kb: dict[str, str]
+) -> Iterator[SeedSearch]:
+    """Factory: run one search as the admin; every one is deleted on teardown.
+
+    ``seed_search(**body)`` returns the new ``searchId``. The default body searches the
+    session's indexed PDF with ``limit: 1``; keyword arguments replace its fields.
+    """
+    created: list[str] = []
+
+    def _seed(**body: Any) -> str:
+        payload = {"query": SEARCH_QUERY, "filters": {"kb": [session_kb["kb_id"]]}, "limit": 1, **body}
+        resp = search_audit_client.post("/", json=payload)
+        if resp.status_code != 200:
+            pytest.fail(f"could not seed a search: {resp.status_code} {resp.text[:300]}")
+        search_id: str = resp.json()["searchId"]
+        created.append(search_id)
+        return search_id
+
+    try:
+        yield _seed
+    finally:
+        for search_id in created:
+            if search_audit_client.delete(f"/{search_id}").status_code == 404:
+                # Archived searches are invisible to delete until they are unarchived.
+                search_audit_client.patch(f"/{search_id}/unarchive")
+                search_audit_client.delete(f"/{search_id}")

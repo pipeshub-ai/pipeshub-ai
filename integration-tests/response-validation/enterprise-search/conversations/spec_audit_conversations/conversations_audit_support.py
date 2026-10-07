@@ -10,6 +10,7 @@ import os
 from typing import Any, Callable
 
 import requests
+from bson import ObjectId
 from pymongo import MongoClient
 
 from helper.agui_sse import (
@@ -45,6 +46,7 @@ PROJECT_VISIBILITIES = ("private", "project")
 
 # Set explicitly in chat.session.schema.ts; holds chat and agent sessions alike.
 COLLECTION = "chatSessions"
+MESSAGES_COLLECTION = "chatSessionMessages"
 
 CREATE_ROUTE = f"{CONVERSATIONS_BASE}/create"
 STREAM_ROUTE = f"{CONVERSATIONS_BASE}/stream"
@@ -54,6 +56,18 @@ MESSAGES_ROUTE = f"{CONVERSATIONS_BASE}/:conversationId/messages"
 MESSAGES_STREAM_ROUTE = f"{CONVERSATIONS_BASE}/:conversationId/messages/stream"
 UPLOAD_ROUTE = f"{CONVERSATIONS_BASE}/attachments/upload"
 DELETE_ATTACHMENT_ROUTE = f"{CONVERSATIONS_BASE}/attachments/:recordId"
+SHARE_ROUTE = f"{BY_ID_ROUTE}/share"
+UNSHARE_ROUTE = f"{BY_ID_ROUTE}/unshare"
+PROJECT_ROUTE = f"{BY_ID_ROUTE}/project"
+PROJECT_VISIBILITY_ROUTE = f"{BY_ID_ROUTE}/project-visibility"
+REGENERATE_ROUTE = f"{BY_ID_ROUTE}/message/:messageId/regenerate"
+CANCEL_ROUTE = f"{BY_ID_ROUTE}/cancel"
+TITLE_ROUTE = f"{BY_ID_ROUTE}/title"
+FEEDBACK_ROUTE = f"{BY_ID_ROUTE}/message/:messageId/feedback"
+ARCHIVE_ROUTE = f"{BY_ID_ROUTE}/archive"
+UNARCHIVE_ROUTE = f"{BY_ID_ROUTE}/unarchive"
+ARCHIVES_ROUTE = f"{CONVERSATIONS_BASE}/show/archives"
+ARCHIVES_SEARCH_ROUTE = f"{CONVERSATIONS_BASE}/show/archives/search"
 
 JSON_HEADERS = {"Content-Type": "application/json"}
 MALFORMED_JSON_BODY = "{not json"
@@ -78,6 +92,8 @@ APPLIED_NODE = {"id": SOME_UUID, "name": "Spec audit", "nodeType": "app", "conne
 
 MultipartFiles = list[tuple[str, tuple[str, io.BytesIO, str]]]
 SeedConversation = Callable[..., str]
+SeedTurn = Callable[..., tuple[str, str, str]]
+SeedProject = Callable[[], str]
 UploadAttachment = Callable[..., requests.Response]
 
 
@@ -121,6 +137,18 @@ class ConversationsAuditClient(ConversationsClient):
     ) -> requests.Response:
         kwargs.setdefault("json", {"runId": run_id})
         return self.post(f"/{conversation_id}/cancel", auth=auth, **kwargs)
+
+
+def share_entry(user_id: str, access_level: str = "read") -> dict[str, Any]:
+    """One ``sharedWith`` element as Mongoose stores it, for seeding."""
+    return {"userId": ObjectId(user_id), "accessLevel": access_level, "_id": ObjectId()}
+
+
+def error_of(resp: requests.Response, status: int) -> dict[str, Any]:
+    """The ``error`` object of an error response, after checking its status."""
+    assert resp.status_code == status, resp.text[:500]
+    error: dict[str, Any] = resp.json()["error"]
+    return error
 
 
 def attachment_files(

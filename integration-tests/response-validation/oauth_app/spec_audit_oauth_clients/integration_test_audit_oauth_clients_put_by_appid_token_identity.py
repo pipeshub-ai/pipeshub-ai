@@ -14,7 +14,7 @@ from oauth_clients_audit_support import (
     request_as,
     token_identity_body,
 )
-from strict_openapi import assert_strict_openapi_exchange
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -127,3 +127,18 @@ def test_set_token_identity_needs_a_service_account_id_or_null(
     assert error["code"] == "VALIDATION_ERROR"
     assert [e["field"] for e in error["metadata"]["errors"]] == ["body.serviceAccountId"]
     assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_unknown_body_field_is_stripped(
+    oauth_clients_client: OAuthClientsAuditClient, seed_oauth_app: SeedOAuthApp
+) -> None:
+    app = seed_oauth_app()
+
+    with outside_request_contract("unknown body field, stripped by setAppTokenIdentitySchema"):
+        resp = oauth_clients_client.set_token_identity(
+            app["id"], json={**token_identity_body(None), "specAuditUnknown": 1}
+        )
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.json()["message"] == "Application tokens now act as its creator"

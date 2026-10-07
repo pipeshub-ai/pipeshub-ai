@@ -132,16 +132,21 @@ class TestOAuthAuthorize(OAuthProviderTestBase):
         JSON error responses.  Validation errors (400) are unreachable without
         a browser session behind the redirect middleware.
         """
-        resp = self.oauth.authorize(
-            response_type="code",
-            client_id=self.client_id,
-            redirect_uri="http://localhost/callback",
-            scope="openid",
-            state="teststate123",
+        # OAuthProviderClient.authorize would send allow_redirects as a query parameter.
+        resp = self.oauth.get(
+            "/api/v1/oauth2/authorize",
+            auth=False,
             allow_redirects=False,
+            params={
+                "response_type": "code",
+                "client_id": self.client_id,
+                "redirect_uri": "http://localhost/callback",
+                "scope": "openid",
+                "state": "teststate123",
+            },
         )
-        assert resp.status_code in (200, 302, 303), (
-            f"Expected 200/302/303, got {resp.status_code}"
+        assert resp.status_code == 302, (
+            f"Expected 302, got {resp.status_code}"
         )
 
 

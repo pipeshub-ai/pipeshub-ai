@@ -11,13 +11,14 @@ from conversations_audit_support import (
     INVALID_AUTH_HEADERS,
     LIST_ROUTE,
     MALFORMED_CONVERSATION_ID,
+    REASONING_EFFORTS,
     ConversationsAuditClient,
     SeedConversation,
     validation_fields,
 )
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_exchange
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -77,6 +78,15 @@ def test_list_accepts_every_documented_filter(
     assert resp.json()["source"] == params.get("source", "owned")
 
 
+def test_list_ignores_unknown_query_parameters(
+    conversations_audit_client: ConversationsAuditClient,
+) -> None:
+    with outside_request_contract("an undocumented query parameter is sent on purpose"):
+        resp = _list(conversations_audit_client, specAuditExtra="1")
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+
 def test_list_finds_a_conversation_by_its_title(
     conversations_audit_client: ConversationsAuditClient, seed_conversation: SeedConversation
 ) -> None:
@@ -88,6 +98,27 @@ def test_list_finds_a_conversation_by_its_title(
     assert _ids(resp) == [conversation_id]
     applied = resp.json()["filters"]["applied"]
     assert "search" in applied["filters"], applied
+
+
+@pytest.mark.parametrize("effort", REASONING_EFFORTS)
+def test_list_reports_the_reasoning_effort_of_a_conversation(
+    conversations_audit_client: ConversationsAuditClient,
+    seed_conversation: SeedConversation,
+    effort: str,
+) -> None:
+    model_info = {
+        "modelKey": "spec-audit-model",
+        "modelName": "spec-audit",
+        "modelFriendlyName": "Spec audit",
+        "modelProvider": "azureOpenAI",
+        "chatMode": "internal_search",
+        "reasoningEffort": effort,
+    }
+    conversation_id = seed_conversation(modelInfo=model_info)
+    resp = _list(conversations_audit_client, conversationId=conversation_id)
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["conversations"][0]["modelInfo"] == model_info
 
 
 def test_list_shared_with_me(
@@ -107,6 +138,26 @@ def test_list_shared_with_me(
     assert resp.json()["source"] == "shared"
     assert _ids(resp) == [conversation_id]
     assert "sharedWith" not in resp.json()["conversations"][0]
+
+
+@pytest.mark.parametrize(
+    ("params", "page", "limit"),
+    [
+        pytest.param({"page": "1.5"}, 1, 10, id="fractional-page"),
+        pytest.param({"page": "2.9", "limit": "5.5"}, 2, 5, id="fractional-page-and-limit"),
+    ],
+)
+def test_list_truncates_fractional_page_and_limit(
+    conversations_audit_client: ConversationsAuditClient,
+    params: dict[str, Any],
+    page: int,
+    limit: int,
+) -> None:
+    resp = _list(conversations_audit_client, **params)
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    pagination = resp.json()["pagination"]
+    assert (pagination["page"], pagination["limit"]) == (page, limit), pagination
 
 
 @pytest.mark.parametrize(

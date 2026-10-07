@@ -21,6 +21,7 @@ from conversations_audit_support import (
     MISSING_CONVERSATION_ID,
     ConversationsAuditClient,
     SeedConversation,
+    SeedTurn,
     StreamRun,
     turn_body,
     validation_fields,
@@ -93,6 +94,23 @@ def test_stream_message_to_an_unreachable_conversation_is_a_failed_stream(
     assert run.error == "Conversation not found"
     assert run.error_code == "internal_error"
     assert run.result is None
+
+
+def test_stream_message_runs_a_turn_on_a_whitespace_only_query(
+    conversations_audit_client: ConversationsAuditClient,
+    seed_turn: SeedTurn,
+) -> None:
+    # API bug: the non-streaming messages route refuses this query; the stream route runs it.
+    conversation_id, _, _ = seed_turn()
+    resp = conversations_audit_client.stream_message(
+        conversation_id, json={**VALID_BODY, "query": "   "}, stream=False, timeout=LLM_TIMEOUT_SECONDS
+    )
+    assert_strict_openapi_exchange(resp, ROUTE)
+    run = StreamRun(resp, EVENT_SCHEMA)
+    assert run.error is None, run.error
+    assert run.result is not None, f"no root RUN_FINISHED: {run.names[-5:]}"
+    contents = [m["content"] for m in run.result["conversation"]["messages"] if m["messageType"] == "user_query"]
+    assert contents[-1].strip() == "", contents
 
 
 @pytest.mark.parametrize(

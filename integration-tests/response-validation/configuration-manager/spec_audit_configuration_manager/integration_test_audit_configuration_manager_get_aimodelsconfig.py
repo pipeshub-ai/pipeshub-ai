@@ -6,7 +6,7 @@ import pytest
 from configuration_manager_audit_support import INVALID_BEARER_HEADERS, request_as
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -19,7 +19,7 @@ PUBLIC_CONFIGURATION_KEYS = {"model", "modelFriendlyName", "dimensions", "defaul
 def test_admin_gets_stored_config_without_provider_secrets(config_client: ConfigClient) -> None:
     resp = config_client.get("/aiModelsConfig")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     body = resp.json()
     # {} when nothing is stored; otherwise the raw KV shape, with no envelope around it.
     assert isinstance(body, dict), body
@@ -45,10 +45,18 @@ def test_unauthenticated_is_rejected(
 ) -> None:
     resp = config_client.get("/aiModelsConfig", auth=False, headers=headers)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_member_is_forbidden(second_user: SecondUser) -> None:
     resp = request_as(second_user, "GET", "/aiModelsConfig")
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_token_without_config_read_scope_is_forbidden(config_client: ConfigClient, narrow_scope_headers: dict[str, str]) -> None:
+    resp = config_client.get("/aiModelsConfig", auth=False, headers=narrow_scope_headers)
+
+    assert resp.status_code == 403, resp.text[:500]
+    assert resp.json()["error"]["code"] == "HTTP_FORBIDDEN", resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)

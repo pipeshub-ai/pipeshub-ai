@@ -58,7 +58,12 @@ JSON_HEADERS = {"Content-Type": "application/json"}
 # Long enough for a knowledge-free agent's single LLM turn.
 ANSWER_TIMEOUT = int(os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "0") or 0) or 240
 
+# A string the AI backend keys no agent under.
+MISSING_AGENT_KEY = "00000000-0000-4000-8000-0000000000aa"
+
 SeedAgentConversation = Callable[..., str]
+MakeAgent = Callable[..., str]
+TrackAgent = Callable[[requests.Response], str]
 SeedProject = Callable[..., str]
 SeedMessage = Callable[..., str]
 UploadAttachment = Callable[..., requests.Response]
@@ -120,6 +125,22 @@ class AgentsAuditClient(AgentConversationsClient):
             f"/{agent_key}/conversations/attachments/upload", files=files, data=data, **kwargs
         )
 
+    def create_agent(self, body: Any, **kwargs: Any) -> requests.Response:
+        return self.post("/create", json=body, **kwargs)
+
+    def get_agent(self, agent_key: str, **kwargs: Any) -> requests.Response:
+        return self.get(f"/{agent_key}", **kwargs)
+
+    def update_agent(self, agent_key: str, body: Any, **kwargs: Any) -> requests.Response:
+        return self.put(f"/{agent_key}", json=body, **kwargs)
+
+    def delete_agent(self, agent_key: str, **kwargs: Any) -> requests.Response:
+        return self.delete(f"/{agent_key}", **kwargs)
+
+    def list_agents(self, **kwargs: Any) -> requests.Response:
+        """GET /api/v1/agents (no trailing slash); pass ``params=`` for the query."""
+        return self.get("", **kwargs)
+
     def feedback(
         self,
         agent_key: str,
@@ -133,6 +154,20 @@ class AgentsAuditClient(AgentConversationsClient):
             json=body,
             **kwargs,
         )
+
+
+def unique_agent_name(prefix: str = "spec-audit-agent") -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def reasoning_model_entry(model: Any) -> dict[str, Any]:
+    """An ``AgentCreateModelEntry`` object for a seeded model, flagged as reasoning."""
+    return {
+        "modelKey": model.model_key,
+        "modelName": model.model_name,
+        "provider": model.provider,
+        "isReasoning": True,
+    }
 
 
 def attachment_files(

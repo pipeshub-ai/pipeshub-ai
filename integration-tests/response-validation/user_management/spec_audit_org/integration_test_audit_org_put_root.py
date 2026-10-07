@@ -80,6 +80,17 @@ def test_empty_values_change_nothing(org_client: OrgClient, org_profile_restored
         assert data.get(field) == before.get(field), field
 
 
+def test_no_body_is_treated_like_an_empty_object(org_client: OrgClient, org_profile_restored: str) -> None:
+    before = org_client.get_organization().json()
+    resp = org_client.put("/")
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ORG_ROUTE)
+    assert resp.json()["message"] == UPDATED_MESSAGE
+    data = resp.json()["data"]
+    for field in ("registeredName", "shortName", "contactEmail", "permanentAddress"):
+        assert data.get(field) == before.get(field), field
+
+
 def test_unknown_fields_are_stripped(org_client: OrgClient, org_profile_restored: str) -> None:
     sent_id = "0123456789abcdef01234567"
     body = {
@@ -89,7 +100,7 @@ def test_unknown_fields_are_stripped(org_client: OrgClient, org_profile_restored
     }
     before = org_client.get_organization().json()
     with outside_request_contract("proves fields outside the update schema are dropped, _id in the address too"):
-        resp = org_client.put("/", json=body, params={"dryRun": "true"})
+        resp = org_client.put("/", json=body)
         assert resp.status_code == 200, resp.text[:500]
         assert_strict_openapi_exchange(resp, ORG_ROUTE)
     data = resp.json()["data"]

@@ -14,6 +14,7 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from helper.http.session_client import SessionClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
@@ -22,6 +23,7 @@ from service_accounts_audit_support import (  # noqa: E402
     ServiceAccountsClient,
     TrackServiceAccount,
     create_body,
+    unique_slug,
 )
 
 logger = logging.getLogger("spec-audit-service-accounts")
@@ -76,3 +78,19 @@ def seed_service_account(
         return account
 
     return _seed
+
+
+@pytest.fixture
+def kb_read_pat(user_session_client: SessionClient) -> Iterator[str]:
+    """The admin's own personal access token, scoped to kb:read only; revoked on teardown."""
+    resp = user_session_client.request(
+        "POST",
+        "/api/v1/personal-access-tokens",
+        json={"name": f"spec-audit-sa-{unique_slug()}", "scopes": ["kb:read"]},
+    )
+    assert resp.status_code == 201, f"minting a PAT failed: {resp.status_code} {resp.text[:300]}"
+    token = resp.json()["token"]
+    try:
+        yield token["accessToken"]
+    finally:
+        user_session_client.request("DELETE", f"/api/v1/personal-access-tokens/{token['id']}")

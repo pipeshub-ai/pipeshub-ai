@@ -15,7 +15,9 @@ from helper.pipeshub_client import PipeshubClient
 from projects_audit_support import (
     ARCHIVE_TEMPLATE,
     CONVERSATIONS_TEMPLATE,
+    KNOWLEDGE_BASE_TEMPLATE,
     MALFORMED_PROJECT_ID,
+    MEMBER_TEMPLATE,
     MEMBERS_TEMPLATE,
     MISSING_PROJECT_ID,
     PIN_TEMPLATE,
@@ -74,6 +76,14 @@ def tokens(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]]:
         pytest.param(
             "project:read", "PUT", f"/{P}/members", MEMBERS_TEMPLATE, MEMBERS_BODY, "project:write",
             id="upsert-members",
+        ),
+        pytest.param(
+            "project:read", "DELETE", f"/{P}/members/{UNKNOWN_USER_ID}", MEMBER_TEMPLATE, None, "project:write",
+            id="remove-member",
+        ),
+        pytest.param(
+            "project:read", "POST", f"/{P}/knowledge-base", KNOWLEDGE_BASE_TEMPLATE, None, "project:write",
+            id="knowledge-base",
         ),
     ],
 )

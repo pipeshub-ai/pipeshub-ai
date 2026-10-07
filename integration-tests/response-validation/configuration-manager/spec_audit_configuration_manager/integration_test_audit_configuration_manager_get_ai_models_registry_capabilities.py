@@ -6,7 +6,7 @@ import pytest
 from configuration_manager_audit_support import INVALID_BEARER_HEADERS, request_as
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -30,7 +30,7 @@ def test_admin_lists_registry_capabilities(config_client: ConfigClient) -> None:
     # Node forwards the Python query service's reply unchanged (status and body).
     resp = config_client.get(PATH)
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     body = resp.json()
     assert set(body) == {"success", "capabilities"}
@@ -51,11 +51,11 @@ def test_unauthenticated_is_rejected(
 ) -> None:
     resp = config_client.get(PATH, auth=False, headers=headers)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_member_is_forbidden(second_user: SecondUser) -> None:
     # userAdminCheck refuses before the proxy call, so the Python service is never reached.
     resp = request_as(second_user, "GET", PATH)
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)

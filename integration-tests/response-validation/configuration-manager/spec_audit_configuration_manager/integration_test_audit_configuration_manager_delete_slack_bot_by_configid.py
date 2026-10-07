@@ -11,7 +11,7 @@ from configuration_manager_audit_support import (
 )
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -32,7 +32,7 @@ def test_admin_deletes_config_then_it_is_gone(
 
     resp = config_client.delete(f"/slack-bot/{config_id}")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {
         "status": "success",
         "message": "Slack Bot configuration deleted",
@@ -41,13 +41,13 @@ def test_admin_deletes_config_then_it_is_gone(
 
     again = config_client.delete(f"/slack-bot/{config_id}")
     assert again.status_code == 404, again.text[:500]
-    assert_strict_openapi_response(again, ROUTE)
+    assert_strict_openapi_exchange(again, ROUTE)
 
 
 def test_unknown_config_id_is_not_found(config_client: ConfigClient) -> None:
     resp = config_client.delete(f"/slack-bot/{MISSING_SLACK_BOT_CONFIG_ID}")
     assert resp.status_code == 404, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 @pytest.mark.parametrize(
@@ -62,7 +62,7 @@ def test_unauthenticated_is_rejected(
         f"/slack-bot/{MISSING_SLACK_BOT_CONFIG_ID}", auth=False, headers=headers
     )
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_member_is_forbidden_and_config_survives(
@@ -74,5 +74,5 @@ def test_member_is_forbidden_and_config_survives(
 
     resp = request_as(second_user, "DELETE", f"/slack-bot/{config_id}")
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert config_id in _stored_config_ids(config_client)

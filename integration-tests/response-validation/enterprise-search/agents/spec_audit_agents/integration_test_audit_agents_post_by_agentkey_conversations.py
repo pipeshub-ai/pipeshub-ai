@@ -11,6 +11,7 @@ from agents_audit_support import (
     MISSING_PROJECT_ID,
     QUICK_TURN,
     SEED_AGENT_KEY,
+    UNKNOWN_MODEL_KEY,
     UNSAFE_PATH_SEGMENT,
     AgentsAuditClient,
     UploadAttachment,
@@ -71,6 +72,23 @@ def test_first_turn_returns_the_answered_conversation(
     assert [m["messageType"] for m in conversation["messages"]] == ["user_query", "bot_response"]
     assert conversation["messages"][0]["attachments"][0]["recordId"] == attachment["recordId"]
 
+
+def test_unknown_model_key_falls_back_to_the_default_model(
+    agents_audit_client: AgentsAuditClient,
+    audit_agent: str,
+    forget_conversation: Callable[[str | None], None],
+) -> None:
+    body = {**QUICK_TURN, "modelKey": UNKNOWN_MODEL_KEY}
+
+    resp = agents_audit_client.create_conversation(audit_agent, json=body, timeout=ANSWER_TIMEOUT)
+    forget_conversation(resp.headers.get(CONVERSATION_ID_HEADER))
+
+    assert resp.status_code == 201, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    conversation = resp.json()["conversation"]
+    assert conversation["status"] == "Complete", conversation.get("failReason")
+    assert conversation["modelInfo"]["modelKey"] == UNKNOWN_MODEL_KEY
+    assert conversation["messages"][-1]["messageType"] == "bot_response"
 
 def test_unknown_agent_fails_the_turn_and_names_the_conversation(
     agents_audit_client: AgentsAuditClient,
@@ -144,6 +162,21 @@ def test_unsafe_query_is_refused_before_the_turn_starts(
     assert resp.status_code == 400, resp.text[:500]
     assert CONVERSATION_ID_HEADER not in resp.headers
     assert_strict_openapi_exchange(resp, ROUTE)
+    assert_spec_forbids_request(resp, ROUTE)
+
+
+def test_blank_query_is_refused_by_the_controller(
+    agents_audit_client: AgentsAuditClient,
+    forget_conversation: Callable[[str | None], None],
+) -> None:
+    resp = agents_audit_client.create_conversation(SEED_AGENT_KEY, json={**QUICK_TURN, "query": "   "})
+    forget_conversation(resp.headers.get(CONVERSATION_ID_HEADER))
+
+    assert resp.status_code == 400, resp.text[:500]
+    assert CONVERSATION_ID_HEADER not in resp.headers
+    assert_strict_openapi_exchange(resp, ROUTE)
+    error = error_of(resp)
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", "Query is required"), resp.text[:500]
     assert_spec_forbids_request(resp, ROUTE)
 
 

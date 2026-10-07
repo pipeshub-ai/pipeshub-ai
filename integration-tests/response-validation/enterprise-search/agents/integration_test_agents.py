@@ -30,13 +30,14 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from ai_models_setup import SeededAIModel
-from openapi_schema_validator import (
+from ai_models_setup import SeededAIModel  # noqa: E402
+from openapi_schema_validator import (  # noqa: E402
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
 )
-from helper.clients.agents_client import AgentsClient
-from pipeshub_client import PipeshubClient
+from helper.clients.agents_client import AgentsClient  # noqa: E402
+from pipeshub_client import PipeshubClient  # noqa: E402
+from strict_openapi import outside_request_contract  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -422,7 +423,8 @@ class TestCreateAgent(AgentsTestBase):
         payload["models"][0]["unexpectedModelField"] = "drop-me"
         payload["webSearch"]["unexpectedWebSearchField"] = "drop-me"
 
-        resp = self._create_agent_raw(payload)
+        with outside_request_contract("unknown fields are stripped by the gateway validator"):
+            resp = self._create_agent_raw(payload)
         assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -864,15 +866,16 @@ class TestGetAgent(AgentsTestBase):
             ],
         )
 
-        resp = self._get_agent_raw(
-            agent_key,
-            params={
-                "include": "toolsets",
-                "page": 2,
-                "limit": 10,
-                "unexpected": "still-allowed",
-            },
-        )
+        with outside_request_contract("the route reads no query parameter"):
+            resp = self._get_agent_raw(
+                agent_key,
+                params={
+                    "include": "toolsets",
+                    "page": 2,
+                    "limit": 10,
+                    "unexpected": "still-allowed",
+                },
+            )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -1213,7 +1216,8 @@ class TestUpdateAgent(AgentsTestBase):
         payload["unexpectedTopLevelField"] = "drop-me"
         payload["webSearch"]["unexpectedWebSearchField"] = "drop-me"
 
-        resp = self._update_agent_raw(agent_key, json_body=payload)
+        with outside_request_contract("unknown fields are stripped by the gateway validator"):
+            resp = self._update_agent_raw(agent_key, json_body=payload)
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -1230,11 +1234,12 @@ class TestUpdateAgent(AgentsTestBase):
             created_agent_keys=created_agent_keys,
         )
 
-        resp = self._update_agent_raw(
-            agent_key,
-            json_body={"description": f"query-param probe {uuid4().hex[:8]}"},
-            params={"page": 2, "limit": 10, "unexpected": "still-allowed"},
-        )
+        with outside_request_contract("the route reads no query parameter"):
+            resp = self._update_agent_raw(
+                agent_key,
+                json_body={"description": f"query-param probe {uuid4().hex[:8]}"},
+                params={"page": 2, "limit": 10, "unexpected": "still-allowed"},
+            )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -1679,10 +1684,11 @@ class TestDeleteAgent(AgentsTestBase):
             seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
         )
-        resp = self.agents.delete(
-            f"/{agent_key}",
-            params={"foo": "bar", "baz": "qux"},
-        )
+        with outside_request_contract("the route reads no query parameter"):
+            resp = self.agents.delete(
+                f"/{agent_key}",
+                params={"foo": "bar", "baz": "qux"},
+            )
         assert resp.status_code == 200, (
             f"Expected 200 with ignored query params, got {resp.status_code}: {resp.text}"
         )
@@ -1702,7 +1708,8 @@ class TestDeleteAgent(AgentsTestBase):
             seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
         )
-        resp = self.agents.delete(f"/{agent_key}", json={"should": "be", "ignored": True})
+        with outside_request_contract("the route reads no body"):
+            resp = self.agents.delete(f"/{agent_key}", json={"should": "be", "ignored": True})
         assert resp.status_code == 200, (
             f"Expected 200 with ignored body, got {resp.status_code}: {resp.text}"
         )

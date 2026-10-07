@@ -127,6 +127,14 @@ def test_no_redirect_uri_needed_without_authorization_code(
         "http://localhost:3000/callback",
         "http://127.0.0.1/callback",
         "ftp://localhost/callback",
+        # new URL() lowercases scheme and host, skips extra or missing slashes and reads "\\" as "/".
+        "HTTPS://spec-audit.example/callback",
+        "Https://Spec-Audit.example/callback",
+        "https:spec-audit.example/callback",
+        "https:///spec-audit.example/callback",
+        "https:\\\\spec-audit.example\\callback",
+        "http://LOCALHOST:3000/callback",
+        "HTTP://127.0.0.1/callback",
     ],
 )
 def test_redirect_uris_the_service_lets_through(
@@ -138,6 +146,21 @@ def test_redirect_uris_the_service_lets_through(
 
     assert resp.status_code == 201, resp.text[:500]
     assert resp.json()["app"]["redirectUris"] == [redirect_uri]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_redirect_uri_surrounding_whitespace_is_trimmed(
+    oauth_clients_client: OAuthClientsAuditClient, created_app_ids: list[str]
+) -> None:
+    resp = _create(
+        oauth_clients_client,
+        created_app_ids,
+        allowedScopes=["openid"],
+        redirectUris=[" https://spec-audit.example/callback "],
+    )
+
+    assert resp.status_code == 201, resp.text[:500]
+    assert resp.json()["app"]["redirectUris"] == ["https://spec-audit.example/callback"]
     assert_strict_openapi_exchange(resp, ROUTE)
 
 
@@ -178,6 +201,8 @@ def test_redirect_uris_the_service_refuses(
         pytest.param({"name": "n", "allowedScopes": [], "allowedGrantTypes": ["client_credentials"]}, ["body.allowedScopes"], id="no-scopes"),
         pytest.param({"name": "n", "allowedScopes": ["openid"], "allowedGrantTypes": ["password"]}, ["body.allowedGrantTypes.0"], id="unknown-grant"),
         pytest.param({"name": "n", **CLIENT_CREDENTIALS, "redirectUris": ["not a url"]}, ["body.redirectUris.0"], id="redirect-not-a-url"),
+        pytest.param({"name": "n", **CLIENT_CREDENTIALS, "redirectUris": ["https://"]}, ["body.redirectUris.0"], id="redirect-without-host"),
+        pytest.param({"name": "n", **CLIENT_CREDENTIALS, "redirectUris": ["https://?x"]}, ["body.redirectUris.0"], id="redirect-query-without-host"),
         pytest.param({"name": "n", **CLIENT_CREDENTIALS, "redirectUris": [f"https://a.example/{i}" for i in range(11)]}, ["body.redirectUris"], id="eleven-redirects"),
         pytest.param({"name": "n", **CLIENT_CREDENTIALS, "homepageUrl": "spec-audit"}, ["body.homepageUrl"], id="homepage-not-a-url"),
         pytest.param({"name": "n", **CLIENT_CREDENTIALS, "privacyPolicyUrl": "spec-audit"}, ["body.privacyPolicyUrl"], id="privacy-not-a-url"),

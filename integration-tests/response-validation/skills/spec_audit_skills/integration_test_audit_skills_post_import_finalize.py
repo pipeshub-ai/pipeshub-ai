@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from helper.second_user import SecondUser
+from helper.pipeshub_client import PipeshubClient
+from helper.second_user import SecondUser, create_second_user, delete_second_user
 from skills_audit_support import (
     RESOURCE_PATH,
     SeedSkill,
@@ -148,3 +149,36 @@ def test_finalize_over_another_users_skill_takes_it_over(
         assert skills_client.fetch(name).status_code == 200
     finally:
         skills_client.remove(name, detach="true")
+
+
+@pytest.mark.parametrize(
+    ("path", "detail"),
+    [
+        pytest.param("../escape.md", "Resource path '../escape.md' must not contain '..' traversal segments", id="traversal"),
+        pytest.param("/abs.md", "Resource path '/abs.md' must be relative, not absolute", id="absolute"),
+        pytest.param("SKILL.md", "Resource path must not be 'SKILL.md'", id="skill-md"),
+    ],
+)
+def test_finalize_invalid_resource_path_is_refused_after_the_skill_is_created(
+    pipeshub_client: PipeshubClient, path: str, detail: str
+) -> None:
+    # API bug: the handler creates the skill before it writes (and validates) the resources.
+    # A fresh member per case keeps these calls off the shared import rate-limit budgets.
+    user = create_second_user(pipeshub_client)
+    name = unique_skill_name()
+    try:
+        resp = request_as(user, "POST", FINALIZE, json={"content": skill_md(name), "resources": {path: "x"}})
+        assert resp.status_code == 400, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+        assert resp.json()["detail"].startswith(detail), resp.json()
+
+        stored = request_as(user, "GET", f"/{name}")
+        assert stored.status_code == 200, stored.text[:500]
+        assert not any(stored.json()["resources"].values())
+
+        retry = request_as(user, "POST", FINALIZE, json={"content": skill_md(name)})
+        assert retry.status_code == 409, retry.text[:500]
+        assert_strict_openapi_exchange(retry, ROUTE)
+    finally:
+        request_as(user, "DELETE", f"/{name}", params={"detach": "true"})
+        delete_second_user(pipeshub_client, user)

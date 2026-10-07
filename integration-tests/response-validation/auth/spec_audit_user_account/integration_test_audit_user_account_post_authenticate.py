@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
+from helper.pipeshub_client import PipeshubClient
+from strict_openapi import (
+    assert_spec_forbids_request,
+    assert_strict_openapi_exchange,
+    outside_request_contract,
+)
 from user_account_audit_support import (
     ACCOUNT_PASSWORD,
     AUTHENTICATE_ROUTE,
@@ -25,7 +31,9 @@ from user_account_audit_support import (
     lock_account,
     otp_body,
     password_body,
+    preserved_setting,
     steps,
+    without_setting,
 )
 
 pytestmark = pytest.mark.spec_audit
@@ -44,6 +52,22 @@ PROVIDER_SHARED_NO_EMAIL = (
     "Ask your admin to allow the email permission for PipesHub."
 )
 ACCOUNT_NOT_FOUND = "Account not found. Please contact your administrator."
+# Messages in backend/nodejs/apps/src/modules/auth/utils/azureAdTokenValidation.ts.
+MICROSOFT_SIGN_IN_FAILED = (
+    "Sign-in with Microsoft didn't complete. Try again; if it keeps happening, "
+    "ask your admin to check the Microsoft sign-in settings."
+)
+MICROSOFT_NOT_SET_UP = (
+    "Microsoft sign-in isn't fully set up. Ask your admin to add the application (client) ID "
+    "in the Microsoft sign-in settings."
+)
+# Configuration-store keys and save routes of the provider sign-in settings, by method.
+PROVIDER_SETTINGS = {
+    "microsoft": ("/services/auth/microsoft", "/api/v1/configurationManager/authConfig/microsoft"),
+    "azureAd": ("/services/auth/azureAd", "/api/v1/configurationManager/authConfig/azureAd"),
+    "google": ("/services/auth/google", "/api/v1/configurationManager/authConfig/google"),
+}
+NOT_A_JWT = "spec-audit-not-a-jwt"
 PASSWORD_AND_OTP = steps(["password", "otp"])
 PASSWORD_AND_OAUTH = steps(["password", "oauth"])
 
@@ -472,3 +496,98 @@ def test_oauth_sign_in_that_cannot_complete(
         {"method": "oauth", "credentials": credentials}, session=session
     )
     _assert_refused(resp, status, code, message)
+
+
+@pytest.fixture(scope="module")
+def provider_sign_in_settings(pipeshub_client: PipeshubClient) -> Iterator[None]:
+    """Microsoft, Azure AD and Google sign-in saved with a client ID, put back when the file is done."""
+    with (
+        preserved_setting(PROVIDER_SETTINGS["microsoft"][0]),
+        preserved_setting(PROVIDER_SETTINGS["azureAd"][0]),
+        preserved_setting(PROVIDER_SETTINGS["google"][0]),
+    ):
+        for _, save_route in PROVIDER_SETTINGS.values():
+            resp = pipeshub_client.request(
+                "POST", save_route, json={"clientId": "spec-audit-client", "enableJit": False}
+            )
+            assert resp.status_code == 200, resp.text[:300]
+        yield
+
+
+@pytest.mark.parametrize("method", ["microsoft", "azureAd"])
+def test_microsoft_sign_in_without_an_id_token_is_bad_request(
+    user_account_audit_client: UserAccountAuditClient,
+    sign_in_policy: SignInPolicy,
+    provider_sign_in_settings: None,
+    method: str,
+) -> None:
+    # The handler reads only credentials.idToken; an access token alone never gets checked.
+    session = sign_in_policy.session_under(steps(["password", method]), user_account_audit_client)
+
+    resp = user_account_audit_client.authenticate(
+        {"method": method, "credentials": {"accessToken": "spec-audit-access-token"}}, session=session
+    )
+    _assert_refused(resp, 400, BAD_REQUEST, MICROSOFT_SIGN_IN_FAILED)
+    assert_spec_forbids_request(resp, ROUTE)
+
+
+@pytest.mark.parametrize("method", ["microsoft", "azureAd"])
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        pytest.param({"idToken": NOT_A_JWT}, id="id_token"),
+        pytest.param({"idToken": NOT_A_JWT, "accessToken": "spec-audit-access-token"}, id="both_tokens"),
+    ],
+)
+def test_microsoft_id_token_is_checked(
+    user_account_audit_client: UserAccountAuditClient,
+    sign_in_policy: SignInPolicy,
+    provider_sign_in_settings: None,
+    method: str,
+    credentials: dict[str, str],
+) -> None:
+    session = sign_in_policy.session_under(steps(["password", method]), user_account_audit_client)
+
+    resp = user_account_audit_client.authenticate(
+        {"method": method, "credentials": credentials}, session=session
+    )
+    _assert_refused(resp, 401, UNAUTHORIZED, MICROSOFT_SIGN_IN_FAILED)
+
+
+@pytest.mark.parametrize("method", ["microsoft", "azureAd"])
+def test_microsoft_sign_in_with_no_client_id_saved_is_bad_request(
+    user_account_audit_client: UserAccountAuditClient,
+    sign_in_policy: SignInPolicy,
+    method: str,
+) -> None:
+    session = sign_in_policy.session_under(steps(["password", method]), user_account_audit_client)
+
+    with without_setting(PROVIDER_SETTINGS[method][0]):
+        resp = user_account_audit_client.authenticate(
+            {"method": method, "credentials": {"idToken": NOT_A_JWT}}, session=session
+        )
+    _assert_refused(resp, 400, BAD_REQUEST, MICROSOFT_NOT_SET_UP)
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        pytest.param(NOT_A_JWT, id="bare_token"),
+        pytest.param({"credential": NOT_A_JWT}, id="credential_object"),
+    ],
+)
+def test_google_token_that_does_not_parse_is_an_internal_error(
+    user_account_audit_client: UserAccountAuditClient,
+    sign_in_policy: SignInPolicy,
+    provider_sign_in_settings: None,
+    credentials: Any,
+) -> None:
+    # Google's library throws a plain Error for a token that is not a JWT, which is not mapped.
+    session = sign_in_policy.session_under(steps(["password", "google"]), user_account_audit_client)
+
+    resp = user_account_audit_client.authenticate(
+        {"method": "google", "credentials": credentials}, session=session
+    )
+    assert resp.status_code == 500, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["error"]["code"] == INTERNAL_ERROR

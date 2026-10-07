@@ -57,6 +57,24 @@ def test_stream_creates_a_conversation_and_finishes(
     assert [m["messageType"] for m in conversation["messages"]][:1] == ["user_query"]
 
 
+def test_stream_runs_a_turn_on_a_whitespace_only_query(
+    conversations_audit_client: ConversationsAuditClient,
+    delete_conversation_later: Callable[[str], None],
+) -> None:
+    # API bug: POST /create refuses this query ("Query is required"); the stream route runs it.
+    resp = conversations_audit_client.stream_conversation(
+        json={**VALID_BODY, "query": "   "}, stream=False, timeout=LLM_TIMEOUT_SECONDS
+    )
+    assert_strict_openapi_exchange(resp, ROUTE)
+    run = StreamRun(resp, "ConversationStreamSSEEvent")
+    conversation_id = run.created.get("conversationId")
+    assert conversation_id, run.names[:10]
+    delete_conversation_later(conversation_id)
+    assert run.created["title"].strip() == "", run.created
+    assert run.error is None, run.error
+    assert run.result is not None, f"no root RUN_FINISHED: {run.names[-5:]}"
+
+
 @pytest.mark.parametrize(
     ("fields", "named"),
     [pytest.param(fields, named, id=case) for case, fields, named in INVALID_TURN_FIELDS]

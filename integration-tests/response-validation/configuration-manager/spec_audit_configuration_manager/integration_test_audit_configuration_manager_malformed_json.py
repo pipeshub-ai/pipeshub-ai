@@ -12,6 +12,7 @@ from configuration_manager_audit_support import (
     JSON_HEADERS,
     MALFORMED_JSON_BODY,
     PRE_ROUTER_OPERATIONS,
+    concrete_path,
 )
 from helper.clients.config_client import ConfigClient
 from strict_openapi import assert_strict_openapi_exchange
@@ -28,8 +29,8 @@ def test_malformed_json_body_is_an_internal_error_before_the_token_check(
     config_client: ConfigClient, method: str, sub_path: str
 ) -> None:
     # API bug: a body that does not parse is a caller mistake, yet it answers 500.
-    send = config_client.get if method == "GET" else config_client.post
-    resp = send(sub_path, auth=False, data=MALFORMED_JSON_BODY, headers=JSON_HEADERS)
+    send = getattr(config_client, method.lower())
+    resp = send(concrete_path(sub_path), auth=False, data=MALFORMED_JSON_BODY, headers=JSON_HEADERS)
 
     assert resp.status_code == 500, resp.text[:500]
     assert resp.json()["error"]["code"] == "INTERNAL_ERROR", resp.text[:500]

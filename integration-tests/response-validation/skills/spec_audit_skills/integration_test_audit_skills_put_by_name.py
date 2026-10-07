@@ -137,3 +137,12 @@ def test_without_token_is_unauthorized(skills_client: SkillsClient) -> None:
     resp = skills_client.put(f"/{MISSING_SKILL_NAME}", json=skill_payload(), auth=False)
     assert resp.status_code == 401, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_null_body_name_is_accepted(skills_client: SkillsClient, seed_skill: SeedSkill) -> None:
+    # `name` is `str | None` in the shared write model, and the path name wins on update.
+    name = seed_skill()["name"]
+    resp = skills_client.put(f"/{name}", json=skill_payload() | {"name": None})
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["name"] == name

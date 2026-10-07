@@ -8,9 +8,10 @@ from service_tokens_audit_support import (
     DENIED_TOKEN_SCOPE,
     ServiceTokensClient,
     request_as,
+    request_with_token,
 )
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -23,7 +24,7 @@ def test_admin_lists_scope_definitions_without_the_denied_scope(
 ) -> None:
     resp = service_tokens_client.list_scopes()
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     body = resp.json()
     assert set(body) == {"scopes"}
@@ -47,10 +48,34 @@ def test_list_scopes_without_token_is_unauthorized(
 ) -> None:
     resp = service_tokens_client.list_scopes(auth=False)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_list_scopes_as_member_is_forbidden(second_user: SecondUser) -> None:
     resp = request_as(second_user, "GET", "/scopes")
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_list_scopes_ignores_query_parameters(
+    service_tokens_client: ServiceTokensClient,
+) -> None:
+    expected = service_tokens_client.list_scopes().json()
+
+    with outside_request_contract("an undocumented query parameter; the handler reads no query"):
+        resp = service_tokens_client.get("/scopes", params={"includeDenied": "true"})
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.json() == expected
+
+
+def test_list_scopes_with_a_token_lacking_user_read_is_forbidden(
+    service_tokens_client: ServiceTokensClient, kb_read_pat: str
+) -> None:
+    resp = request_with_token(
+        service_tokens_client._client.base_url, kb_read_pat, "GET", "/scopes"
+    )
+    assert resp.status_code == 403, resp.text[:500]
+    assert "Insufficient scope" in resp.text
+    assert_strict_openapi_exchange(resp, ROUTE)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from mcp_endpoint_audit_support import (
     JSON_MEDIA_TYPE,
+    JSONRPC_TRANSPORT_ERROR,
     MALFORMED_TOKEN,
     PROTOCOL_VERSION_HEADER,
     SSE_MEDIA_TYPE,
@@ -12,12 +13,12 @@ from mcp_endpoint_audit_support import (
     McpEndpointClient,
     bearer,
 )
-from strict_openapi import assert_strict_openapi_response
+from openapi_schema_validator import load_openapi_document
+from strict_openapi import assert_strict_openapi_exchange, find_operation
 
 pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/mcp"
-JSONRPC_TRANSPORT_ERROR = -32000
 
 
 @pytest.mark.parametrize(
@@ -34,7 +35,7 @@ def test_get_without_valid_token_is_unauthorized(
 ) -> None:
     resp = mcp_endpoint_client.get_root(auth=False, accept=SSE_MEDIA_TYPE, headers=headers)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json()["error"]["message"] == message
 
 
@@ -44,7 +45,7 @@ def test_get_without_sse_accept_is_not_acceptable(
     # The transport checks Accept before anything else.
     resp = mcp_endpoint_client.get_root(accept=JSON_MEDIA_TYPE)
     assert resp.status_code == 406, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {
         "jsonrpc": "2.0",
         "error": {
@@ -62,7 +63,7 @@ def test_get_with_unsupported_protocol_version_is_bad_request(
         headers={PROTOCOL_VERSION_HEADER: UNSUPPORTED_PROTOCOL_VERSION}
     )
     assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     body = resp.json()
     assert body["id"] is None
     assert body["error"]["code"] == JSONRPC_TRANSPORT_ERROR
@@ -71,15 +72,17 @@ def test_get_with_unsupported_protocol_version_is_bad_request(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="API bug: stateless GET /mcp opens an SSE stream that can never carry an event "
-    "instead of the 405 its route documents",
-)
-def test_get_accepting_sse_is_method_not_allowed_in_stateless_mode(
+def test_get_accepting_sse_opens_a_stream_that_never_carries_an_event(
     mcp_endpoint_client: McpEndpointClient,
 ) -> None:
-    # mcp.routes.ts documents 405 for the stateless transport; the SDK answers 200 and holds an idle stream.
+    # API bug: mcp.routes.ts says stateless mode answers 405; the SDK opens an idle stream instead.
     resp = mcp_endpoint_client.open_stream()
-    assert resp.status_code == 405, f"{resp.status_code} {resp.headers.get('Content-Type')} {resp.text[:500]}"
-    assert_strict_openapi_response(resp, ROUTE)
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.headers["Content-Type"].startswith(SSE_MEDIA_TYPE), resp.headers
+    assert resp.content == b"", resp.content[:200]
+    # The checker refuses an empty body where the spec documents one, so the spec is read here.
+    found = find_operation(load_openapi_document(), "get", ROUTE)
+    assert found is not None
+    documented = found[1]["responses"]["200"]["content"]
+    assert list(documented) == [SSE_MEDIA_TYPE], documented
+    assert "405" not in found[1]["responses"]

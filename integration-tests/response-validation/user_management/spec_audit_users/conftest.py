@@ -7,7 +7,7 @@ import socket
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pytest
 
@@ -18,7 +18,12 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
 
 from helper.clients.users_client import UsersClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from helper.second_user import second_user  # noqa: E402, F401 - fixture
+from helper.second_user import (  # noqa: E402
+    SecondUser,
+    create_second_user,
+    delete_second_user,
+    second_user,  # noqa: F401 - fixture
+)
 
 from users_audit_support import (  # noqa: E402
     USER_LOOKUP_SCOPE,
@@ -26,10 +31,17 @@ from users_audit_support import (  # noqa: E402
     SeededUser,
     SeedUser,
     delete_credentials,
+    delete_display_pictures,
+    delete_invite_notifications,
+    forget_access_token,
+    forget_mail,
     insert_blocked_credentials,
+    mint_narrow_scope_token,
     mint_scoped_token,
     request_with_token,
     scoped_jwt_secret,
+    users_with_emails,
+    wait_for_mail_to_settle,
 )
 
 
@@ -132,3 +144,84 @@ def blocked_user(
         yield user
     finally:
         delete_credentials(str(user["_id"]))
+
+
+@pytest.fixture(scope="module")
+def picture_member(pipeshub_client: PipeshubClient) -> Iterator[SecondUser]:
+    """A logged-in member of its own, since /users/dp always acts on the caller's picture."""
+    user = create_second_user(pipeshub_client)
+    try:
+        yield user
+    finally:
+        delete_display_pictures(user.user_id)
+        delete_second_user(pipeshub_client, user, strict=True)
+
+
+@pytest.fixture
+def no_picture(picture_member: SecondUser) -> Iterator[SecondUser]:
+    """``picture_member`` with no display-picture row at the start and end of the test."""
+    delete_display_pictures(picture_member.user_id)
+    try:
+        yield picture_member
+    finally:
+        delete_display_pictures(picture_member.user_id)
+
+
+@pytest.fixture
+def narrow_scope_token(pipeshub_client: PipeshubClient) -> Iterator[str]:
+    """An OAuth access token of the suite's client that holds no ``user:*`` scope."""
+    token = mint_narrow_scope_token(pipeshub_client.base_url, pipeshub_client.timeout_seconds)
+    try:
+        yield token
+    finally:
+        forget_access_token(token)
+
+
+@pytest.fixture
+def mail_sink() -> Iterator[list[str]]:
+    """Addresses a test sends mail to; everything Mailpit holds for them is deleted afterwards."""
+    addresses: list[str] = []
+    try:
+        yield addresses
+    finally:
+        if addresses:
+            wait_for_mail_to_settle(addresses)
+        forget_mail(addresses)
+
+
+@pytest.fixture
+def invitee(users_client: UsersClient, mail_sink: list[str]) -> Iterator[Callable[[], str]]:
+    """Factory of fresh addresses on a reserved domain; accounts an invite made for them are deleted.
+
+    Mailpit is the relay, so the invitation mail is caught there and removed too.
+    """
+    issued: list[str] = []
+
+    def _new() -> str:
+        address = f"spec-audit-inv-{uuid.uuid4().hex[:10]}@example.com"
+        issued.append(address)
+        mail_sink.append(address)
+        return address
+
+    try:
+        yield _new
+    finally:
+        leftovers: list[str] = []
+        for user in users_with_emails(issued) if issued else []:
+            if user.get("isDeleted"):
+                continue
+            resp = users_client.delete_user(str(user["_id"]))
+            if resp.status_code != 200:
+                leftovers.append(f"{user['email']}: {resp.status_code} {resp.text[:200]}")
+        assert not leftovers, f"invited users were not removed: {leftovers}"
+
+
+@pytest.fixture(scope="module")
+def upload_member(pipeshub_client: PipeshubClient) -> Iterator[SecondUser]:
+    """A member of its own for file imports, so the import's notification is not the admin's."""
+    user = create_second_user(pipeshub_client)
+    try:
+        yield user
+    finally:
+        delete_invite_notifications(user.user_id)
+        delete_second_user(pipeshub_client, user, strict=True)

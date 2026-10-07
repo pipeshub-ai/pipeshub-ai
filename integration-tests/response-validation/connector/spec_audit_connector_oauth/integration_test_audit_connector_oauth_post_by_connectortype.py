@@ -156,6 +156,33 @@ def test_config_keys_beyond_the_common_three_are_stored(
         _delete_if_created(connector_oauth_client, SEED_CONNECTOR_TYPE, resp)
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({"extra": {"x": 1}}, id="nested-object"),
+        pytest.param({"extra": None}, id="null-value"),
+        pytest.param({"clientSecret": None}, id="client-secret-null"),
+        pytest.param({"clientId": 123}, id="client-id-number"),
+        pytest.param({"extra": [1, 2]}, id="array-of-numbers"),
+    ],
+)
+def test_config_values_are_stored_without_type_checks(
+    connector_oauth_client: ConnectorOAuthClient, extra: dict[str, Any]
+) -> None:
+    body = oauth_config_body(**extra)
+
+    with outside_request_contract("config values are typed in the spec; Python stores any JSON value"):
+        resp = connector_oauth_client.create(SEED_CONNECTOR_TYPE, body)
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    try:
+        assert resp.status_code == 200, resp.text[:500]
+        stored = _stored(connector_oauth_client, SEED_CONNECTOR_TYPE, resp.json()["oauthConfig"]["_id"])
+        assert stored["config"] == body["config"]
+    finally:
+        _delete_if_created(connector_oauth_client, SEED_CONNECTOR_TYPE, resp)
+
+
 def test_unknown_body_field_is_dropped(
     connector_oauth_client: ConnectorOAuthClient,
 ) -> None:

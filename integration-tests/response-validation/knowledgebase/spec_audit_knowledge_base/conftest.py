@@ -20,13 +20,16 @@ from helper.second_user import SecondUser, second_user  # noqa: E402, F401 - fix
 
 from knowledge_base_audit_support import (  # noqa: E402
     UNRELATED_SCOPE,
+    MakeKb,
     SeedRecord,
+    WebRecordGroup,
     bearer,
     oauth_token_with_scopes,
     soft_delete_set_to,
     unique_name,
     upload_text_record,
     wait_for_record,
+    web_record_group,
 )
 
 
@@ -54,6 +57,32 @@ def _seed_into(kb_client: KBClient, kb_id: str) -> Iterator[SeedRecord]:
     finally:
         for record_id in created:
             kb_client.delete(f"/record/{record_id}")
+
+
+@pytest.fixture
+def make_kb(
+    kb_client: KBClient,
+    pipeshub_client: PipeshubClient,
+    second_user: SecondUser,  # noqa: F811 - the fixture imported above
+) -> Iterator[MakeKb]:
+    """Factory: a new knowledge base owned by the admin, deleted after the test.
+
+    ``make_kb(member_role=None)`` returns its id; with a role, the member is granted it first.
+    """
+    created: list[str] = []
+
+    def _make(member_role: str | None = None) -> str:
+        kb_id = kb_client.create_kb(unique_name("spec-audit-kb"))["id"]
+        created.append(kb_id)
+        if member_role:
+            grant(pipeshub_client, kb_id, user_ids=[second_user.user_id], role=member_role)
+        return kb_id
+
+    try:
+        yield _make
+    finally:
+        for kb_id in created:
+            kb_client.delete(f"/{kb_id}")
 
 
 @pytest.fixture
@@ -108,3 +137,10 @@ def trash_off(pipeshub_client: PipeshubClient) -> Iterator[None]:
     """The trash ("Move Deleted Records to the Trash" in Labs) is off for this test only."""
     with soft_delete_set_to(pipeshub_client, False):
         yield
+
+
+@pytest.fixture(scope="module")
+def synced_record_group(kb_client: KBClient, pipeshub_client: PipeshubClient) -> Iterator[WebRecordGroup]:
+    """A record group of an org-wide Web connector, with the one page it synced."""
+    with web_record_group(pipeshub_client, kb_client) as group:
+        yield group

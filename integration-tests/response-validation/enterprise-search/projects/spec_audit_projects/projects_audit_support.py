@@ -34,6 +34,8 @@ PIN_TEMPLATE = f"{PROJECTS_BASE}/:projectId/pin"
 UNPIN_TEMPLATE = f"{PROJECTS_BASE}/:projectId/unpin"
 CONVERSATIONS_TEMPLATE = f"{PROJECTS_BASE}/:projectId/conversations"
 MEMBERS_TEMPLATE = f"{PROJECTS_BASE}/:projectId/members"
+MEMBER_TEMPLATE = f"{PROJECTS_BASE}/:projectId/members/:memberUserId"
+KNOWLEDGE_BASE_TEMPLATE = f"{PROJECTS_BASE}/:projectId/knowledge-base"
 
 OAUTH_CLIENTS_PATH = "/api/v1/oauth-clients"
 OAUTH_TOKEN_PATH = "/api/v1/oauth2/token"

@@ -68,18 +68,22 @@ def test_member_cannot_delete_another_users_attachment(
 
 
 @pytest.mark.parametrize(
-    "record_id",
+    ("record_id", "code"),
     [
-        pytest.param(UNSAFE_RECORD_ID, id="unsafe-path-segment"),
-        pytest.param(OVERLONG_RECORD_ID, id="over-256-chars"),
+        pytest.param(UNSAFE_RECORD_ID, "HTTP_BAD_REQUEST", id="unsafe-path-segment"),
+        pytest.param(OVERLONG_RECORD_ID, "VALIDATION_ERROR", id="over-256-chars"),
+        # Decodes to two spaces. assert_spec_forbids_request does not read path parameters,
+        # so the code asserted here is what ties this refusal to the path schema's pattern.
+        pytest.param("%20%20", "HTTP_BAD_REQUEST", id="only-spaces"),
     ],
 )
 def test_delete_invalid_record_id_is_rejected(
-    conversations_audit_client: ConversationsAuditClient, record_id: str
+    conversations_audit_client: ConversationsAuditClient, record_id: str, code: str
 ) -> None:
     resp = conversations_audit_client.delete_attachment(record_id)
     assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["error"]["code"] == code, resp.text[:500]
 
 
 def test_delete_without_token_is_unauthorized(

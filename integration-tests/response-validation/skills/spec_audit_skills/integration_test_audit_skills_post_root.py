@@ -90,6 +90,14 @@ def test_create_without_name_is_bad_request(skills_client: SkillsClient) -> None
     assert_spec_forbids_request(resp, ROUTE)
 
 
+def test_create_with_null_name_is_bad_request(skills_client: SkillsClient) -> None:
+    # The shared write model accepts `name: null`; only the create handler refuses it.
+    resp = skills_client.create(skill_payload() | {"name": None})
+    assert resp.status_code == 400, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json() == {"detail": "'name' is required to create a skill."}
+
+
 @pytest.mark.parametrize(
     ("overrides", "detail_part"),
     [

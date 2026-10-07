@@ -6,8 +6,9 @@ import pytest
 from helper.clients.users_client import UsersClient
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 from users_audit_support import (
+    INVALID_BEARER,
     MALFORMED_USER_ID,
     MISSING_USER_ID,
     SeedUser,
@@ -33,7 +34,21 @@ def test_get_user_by_id_returns_user_document(
     assert user["isDeleted"] is False
     # HIDE_EMAIL=true drops the field from the document.
     assert user.get("email", seeded["email"]) == seeded["email"]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_an_empty_full_name_is_returned_as_stored(
+    users_client: UsersClient, seed_user: SeedUser
+) -> None:
+    # PUT /users/:id stores an empty fullName, so readers get one back.
+    seeded = seed_user()
+    cleared = users_client.put(f"/{seeded['_id']}", json={"fullName": ""})
+    assert cleared.status_code == 200, cleared.text[:500]
+
+    resp = users_client.get_user(seeded["_id"])
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["fullName"] == "", resp.json()
 
 
 def test_get_user_by_id_is_readable_by_non_admin_member(
@@ -46,29 +61,49 @@ def test_get_user_by_id_is_readable_by_non_admin_member(
 
     assert resp.status_code == 200, resp.text[:500]
     assert resp.json()["_id"] == admin_id
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
-def test_get_user_by_id_without_token_is_unauthorized(
-    users_client: UsersClient,
-) -> None:
-    resp = users_client.get(f"/{MISSING_USER_ID}", auth=False)
-
-    assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+def test_a_query_is_ignored(users_client: UsersClient, seed_user: SeedUser) -> None:
+    seeded = seed_user()
+    with outside_request_contract("the route takes no query; this shows extra ones are ignored"):
+        resp = users_client.get(f"/{seeded['_id']}", params={"fields": "email"})
+        assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.json()["fullName"] == seeded["fullName"], resp.json()
 
 
 @pytest.mark.parametrize(
-    ("user_id", "expected_status"),
-    [
-        pytest.param(MALFORMED_USER_ID, 400, id="malformed-id"),
-        pytest.param(MISSING_USER_ID, 404, id="missing-id"),
-    ],
+    ("headers", "message"),
+    [({}, "No token provided"), (INVALID_BEARER, "Invalid token")],
+    ids=["no-token", "not-a-jwt"],
 )
-def test_get_user_by_id_rejects_unusable_id(
-    users_client: UsersClient, user_id: str, expected_status: int
+def test_rejected_credentials_are_unauthorized(
+    users_client: UsersClient, headers: dict[str, str], message: str
 ) -> None:
-    resp = users_client.get_user(user_id)
+    resp = users_client.get(f"/{MISSING_USER_ID}", auth=False, headers=headers)
+    assert resp.status_code == 401, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert message in resp.text, resp.text[:500]
 
-    assert resp.status_code == expected_status, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+
+@pytest.mark.parametrize("target", ["unknown", "deleted"])
+def test_an_unknown_or_deleted_user_is_not_found(
+    users_client: UsersClient, seed_user: SeedUser, target: str
+) -> None:
+    user_id = MISSING_USER_ID
+    if target == "deleted":
+        user_id = seed_user()["_id"]
+        deleted = users_client.delete_user(user_id)
+        assert deleted.status_code == 200, deleted.text[:500]
+    resp = users_client.get_user(user_id)
+    assert resp.status_code == 404, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert "User not found" in resp.text, resp.text[:500]
+
+
+def test_a_malformed_id_is_a_validation_error(users_client: UsersClient) -> None:
+    resp = users_client.get_user(MALFORMED_USER_ID)
+    assert resp.status_code == 400, resp.text[:500]
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR", resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)

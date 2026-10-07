@@ -12,7 +12,7 @@ from configuration_manager_audit_support import (
 )
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -27,7 +27,7 @@ def test_admin_lists_seeded_config_with_masked_secrets(
 
     resp = config_client.get("/slack-bot")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     payload = resp.json()
     assert payload["status"] == "success"
@@ -61,7 +61,7 @@ def test_deleted_config_is_no_longer_listed(
 
     resp = config_client.get("/slack-bot")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert seeded["id"] not in [c["id"] for c in resp.json()["configs"]]
 
 
@@ -75,10 +75,10 @@ def test_unauthenticated_is_rejected(
 ) -> None:
     resp = config_client.get("/slack-bot", auth=False, headers=headers)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_member_is_forbidden(second_user: SecondUser) -> None:
     resp = request_as(second_user, "GET", "/slack-bot")
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
