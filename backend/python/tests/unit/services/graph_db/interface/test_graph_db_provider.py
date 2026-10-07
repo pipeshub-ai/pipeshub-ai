@@ -732,3 +732,28 @@ class TestRecordLinkDefaults:
 
         instance.batch_upsert_records.assert_not_awaited()
         instance.create_record_relation.assert_not_awaited()
+
+
+class TestBatchedFieldsIfMatchDefault:
+    """Providers without a single-statement version get one conditional write
+    per row, with the same answer: the keys whose expectation held."""
+
+    async def test_writes_each_row_through_the_single_row_method(self) -> None:
+        provider = _make_concrete_class()()
+        calls = []
+
+        async def single(key, collection, updates, expected, transaction=None):  # noqa: ANN202
+            calls.append((key, collection, updates, expected, transaction))
+            return key != "moved-on"
+
+        provider.update_node_fields_if_match = single
+        rows = [
+            ("queued", {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+            ("moved-on", {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+        ]
+
+        applied = await provider.update_nodes_fields_if_match("records", rows, "txn")
+
+        assert applied == ["queued"]
+        assert [c[0] for c in calls] == ["queued", "moved-on"]
+        assert calls[0][1:] == ("records", rows[0][1], rows[0][2], "txn")

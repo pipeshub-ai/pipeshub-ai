@@ -90,8 +90,11 @@ export type StreamMessageForTopic<TTopic extends BrokerTopic> = StreamMessage<
 
 export interface TopicDefinition {
   topic: string;
+  /** Partitions to create the topic with. */
   numPartitions?: number;
   replicationFactor?: number;
+  /** Also raise an existing topic to numPartitions (never lowers it). */
+  growExisting?: boolean;
 }
 
 export interface IMessageProducer {

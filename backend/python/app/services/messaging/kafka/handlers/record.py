@@ -15,7 +15,6 @@ from app.config.constants.arangodb import (
     EventTypes,
     ExtensionTypes,
     MimeTypes,
-    OriginTypes,
     ProgressStatus,
     RecordTypes,
 )
@@ -31,6 +30,17 @@ from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
+from app.modules.indexing.connector_off_events import (
+    ConnectorState,
+    already_indexed,
+    clears_embeddings_first,
+    connector_gated_event,
+    connector_state,
+    gating_connector_id,
+)
+from app.modules.indexing.connector_off_events import (
+    resuming_enrichment as record_resuming_enrichment,
+)
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
@@ -1182,50 +1192,32 @@ class RecordEventHandler(BaseEventService):
 
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
-            if (
-                not vector_db_only
-                and (
-                    event_type == EventTypes.UPDATE_RECORD.value
-                    or event_type == EventTypes.REINDEX_RECORD.value
-                )
+            if clears_embeddings_first(event_type, payload):
+                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
+            elif not vector_db_only and event_type in (
+                EventTypes.UPDATE_RECORD.value,
+                EventTypes.REINDEX_RECORD.value,
             ):
-                from app.config.constants.arangodb import (
-                    RECONCILIATION_ENABLED_EXTENSIONS,
-                    RECONCILIATION_ENABLED_MIME_TYPES,
+                self.logger.info(
+                    f"📊 Reconciliation-enabled type detected for record {record_id}, "
+                    f"skipping full embedding deletion"
                 )
-                is_reconciliation_type = (
-                    mime_type in RECONCILIATION_ENABLED_MIME_TYPES
-                    or extension in RECONCILIATION_ENABLED_EXTENSIONS
-                )
-                if is_reconciliation_type:
-                    self.logger.info(
-                        f"📊 Reconciliation-enabled type detected for record {record_id}, "
-                        f"skipping full embedding deletion"
-                    )
-                else:
-                    await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([virtual_record_id])
 
             doc = dict(record)
 
             # The guard stops a replayed newRecord from re-running the pipeline over
-            # an indexed corpus. An explicit reindex is the one case that must run
-            # anyway, so it opts out rather than the guard being relaxed for
-            # everyone: without this, reindex reports success while doing nothing.
-            force_reindex = bool(payload.get("forceReindex"))
+            # an indexed corpus. An explicit reindex (forceReindex) is the one case
+            # that must run anyway, so it opts out rather than the guard being
+            # relaxed for everyone: without this, reindex reports success while
+            # doing nothing.
             # Indexed but with enrichment still IN_PROGRESS means the handler
             # that was enriching it was cut short: this delivery holds the
             # record (its lease, or this process's claim on it), so nothing
             # else is enriching it. Running it again
             # finishes the enrichment, which is what lets its queued duplicates
             # be promoted; acknowledging it here would leave them parked.
-            enrichment_cut_short = (
-                doc.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
-            )
-            resuming_enrichment = (
-                enrichment_cut_short
-                and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
-            )
-            if (not force_reindex) and (not enrichment_cut_short) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            resuming_enrichment = record_resuming_enrichment(doc)
+            if already_indexed(event_type, payload, doc):
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1238,17 +1230,12 @@ class RecordEventHandler(BaseEventService):
             # holding a Pool.INDEX slot) before landing on FAILED instead of
             # AUTO_INDEX_OFF. vectorDbOnly still opts out — the vector-store
             # rebuild deliberately re-embeds disabled connectors from blob.
-            if (
-                not vector_db_only
-                and (
-                    event_type == EventTypes.NEW_RECORD.value
-                    or event_type == EventTypes.REINDEX_RECORD.value
-                    or event_type == EventTypes.UPDATE_RECORD.value
-                )
-            ):
-                connector_id = record.get("connectorId")
-                origin = record.get("origin")
-                if connector_id and origin == OriginTypes.CONNECTOR.value:
+            # The consumers settle some of these events at read time with the
+            # same rule (connector_off_events.read_time_outcome); a change to
+            # the steps here belongs there too.
+            if connector_gated_event(event_type, payload):
+                connector_id = gating_connector_id(record)
+                if connector_id:
                     connector_instance = await self.event_processor.graph_provider.get_document(
                         connector_id,
                         CollectionNames.APPS.value,
@@ -1258,21 +1245,20 @@ class RecordEventHandler(BaseEventService):
                         # like a deleted connector.
                         raise_on_error=True,
                     )
-                    if resuming_enrichment and (
-                        not connector_instance or not connector_instance.get("isActive", False)
-                    ):
+                    state = connector_state(connector_instance)
+                    if resuming_enrichment and state is not ConnectorState.ACTIVE:
                         # Stays searchable: only the enrichment is given up. Its
                         # end lets the finally block promote the QUEUED copies.
                         await self._end_enrichment_without_running(
                             record_id,
                             ENRICHMENT_STOPPED_CONNECTOR_OFF
-                            if connector_instance
+                            if state is ConnectorState.OFF
                             else ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
                         )
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         return
-                    if not connector_instance:
+                    if state is ConnectorState.REMOVED:
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} not found (possibly deleted)."
@@ -1280,7 +1266,7 @@ class RecordEventHandler(BaseEventService):
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         return
-                    if not connector_instance.get("isActive", False):
+                    if state is ConnectorState.OFF:
                         self.logger.info(
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} is inactive."

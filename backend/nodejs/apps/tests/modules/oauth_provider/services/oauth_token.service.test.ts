@@ -6,12 +6,22 @@ import { Types } from 'mongoose'
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
+import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
 import {
   InvalidTokenError,
   ExpiredTokenError,
   InvalidGrantError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
+
+// The re-read after a user grant stores its tokens.
+function stubCurrentApp(doc: { allowedScopes: string[] } | null) {
+  return sinon.stub(OAuthApp, 'findOne').returns({
+    select: sinon.stub().returns({
+      lean: sinon.stub().returns({ exec: sinon.stub().resolves(doc) }),
+    }),
+  } as any)
+}
 
 describe('OAuthTokenService', () => {
   let service: OAuthTokenService
@@ -92,6 +102,70 @@ describe('OAuthTokenService', () => {
 
       expect(result.accessToken).to.be.a('string')
       expect(result.refreshToken).to.be.a('string')
+    })
+
+    describe('recheckAppScopes', () => {
+      const userId = new Types.ObjectId().toString()
+      const orgId = new Types.ObjectId().toString()
+      const mint = () =>
+        service.generateTokens(
+          mockApp, userId, orgId, ['org:read', 'offline_access'], true,
+          undefined, undefined, { recheckAppScopes: true },
+        )
+
+      beforeEach(() => {
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+      })
+
+      it('returns the tokens when the app still allows every scope', async () => {
+        stubCurrentApp({ allowedScopes: ['org:read', 'offline_access', 'kb:read'] })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+
+        const result = await mint()
+
+        expect(result.accessToken).to.be.a('string')
+        expect(accessRevoke.called).to.be.false
+      })
+
+      it('revokes the new tokens and fails when the app lost a scope while they were minted', async () => {
+        stubCurrentApp({ allowedScopes: ['offline_access'] })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+        const refreshRevoke = sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
+
+        try {
+          await mint()
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+
+        expect(accessRevoke.calledOnce).to.be.true
+        expect(accessRevoke.firstCall.args[1]).to.include({ isRevoked: true })
+        expect(refreshRevoke.calledOnce).to.be.true
+      })
+
+      it('revokes the new tokens when the app was deleted while they were minted', async () => {
+        stubCurrentApp(null)
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
+
+        try {
+          await mint()
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+        expect(accessRevoke.calledOnce).to.be.true
+      })
+
+      it('does not read the app again without the option', async () => {
+        const findApp = stubCurrentApp(null)
+
+        await service.generateTokens(mockApp, userId, orgId, ['org:read'], false)
+
+        expect(findApp.called).to.be.false
+      })
     })
 
     it('should not generate refresh token without offline_access scope', async () => {
@@ -1126,8 +1200,16 @@ describe('OAuthTokenService - branch coverage', () => {
         }
       }
 
-      const app = (clientId: string) => ({
+      beforeEach(() => {
+        stubCurrentApp({ allowedScopes: ['user:read', 'offline_access'] })
+      })
+
+      const app = (
+        clientId: string,
+        allowedScopes: string[] = ['user:read', 'offline_access'],
+      ) => ({
         clientId,
+        allowedScopes,
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
         createdBy: new Types.ObjectId(),
@@ -1149,6 +1231,22 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(stored.save.calledOnce).to.be.true
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
+      })
+
+      it('drops scopes the app no longer allows from the refreshed tokens', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        const result = await service.refreshTokens(
+          app('client-a', ['offline_access']),
+          signRefreshToken('client-a'),
+        )
+
+        expect(result.scope).to.equal('offline_access')
       })
 
       it('rejects a refresh token issued to a different client with invalid_grant', async () => {

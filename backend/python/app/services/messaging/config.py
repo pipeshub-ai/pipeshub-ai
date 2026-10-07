@@ -476,7 +476,9 @@ class MessagingEnvConfig:
 
         On Kafka a lane *is* a partition, so this only switches key-based
         routing on; the real lane count is the topic's partition count
-        (``KAFKA_TOPIC_PARTITIONS``, applied by the Node admin service). On
+        (``KAFKA_TOPIC_PARTITIONS``, applied by the Node admin service: 32
+        for a topic it creates, and an existing topic grown only when that is
+        set explicitly). On
         Redis Streams this is the actual number of ``record-events.N``
         streams and must match on producers and consumers.
         """
@@ -537,12 +539,33 @@ class MessagingEnvConfig:
         )
 
     @property
+    def fair_scheduling_max_remembered_positions(self) -> int:
+        """Kafka: how many messages the consumer may read past connectors at
+        their cap, remembering only each one's partition and offset (about
+        200 bytes apiece with its commit-watermark entry, so ~40 MB at the
+        default). Past it, a lane whose next message belongs to such a
+        connector stops until it drains. ``0`` turns reading past off.
+        Redis Streams ignores it."""
+        return max(0, _env_int("FAIR_SCHEDULING_MAX_REMEMBERED_POSITIONS", 200_000))
+
+    @property
     def fair_scheduling_max_dwell_seconds(self) -> float:
         """How long a buffered offset may go unresolved before the consumer
         force-commits past it. Bounds the damage from a dispatch path that
         fails to settle its watermark claim: without it, one such offset
         stalls every later commit on its partition until a restart."""
         return _env_seconds("FAIR_SCHEDULING_MAX_DWELL_SECONDS", 900.0)
+
+    @property
+    def connector_state_refresh_seconds(self) -> float:
+        """How long the indexing consumer trusts that a connector is on before
+        reading it again, when it settles the queued events of turned-off and
+        removed connectors as they are read. Only "on" is remembered: "off" or
+        "removed" is read afresh for every batch before anything is settled,
+        so turning a connector back on takes effect at once. A connector
+        turned off less than this long ago has its events skipped by the
+        handler one by one, as before. ``0`` turns read-time settling off."""
+        return _env_seconds("INDEXING_CONNECTOR_STATE_REFRESH_SECONDS", 15.0)
 
 
 messaging_env = MessagingEnvConfig()
