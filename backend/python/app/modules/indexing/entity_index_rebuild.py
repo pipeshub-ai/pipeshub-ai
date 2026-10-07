@@ -15,7 +15,10 @@ projects what the graph already holds, with no extraction or LLM call:
 A document is done when its ``entityIndexState`` equals the current marker,
 ``v<ENTITY_INDEX_VERSION>:<embedding fingerprint>``, so a model change re-runs
 every pass, and each point records the model that embedded it, so a point
-from another model is re-embedded whenever it is next written. Mechanics
+from another model is re-embedded whenever it is next written. The marker
+also carries the collection's stamp (``EntityVectorStore.collection_stamp``),
+so a collection dropped, recreated or emptied from outside is refilled the
+same way. Mechanics
 follow ``vector_membership_backfill``: one Redis leader, one page per tick, a
 resumable cursor on the document, bounded attempts, backoff on failure.
 """
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -151,15 +155,18 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str) -> str:
-    return f"v{ENTITY_INDEX_VERSION}:{fingerprint}"
+def entity_index_marker(fingerprint: str, stamp: str = "") -> str:
+    """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
+    under another stamp was projected into a collection that is gone."""
+    return f"v{ENTITY_INDEX_VERSION}{'@' + stamp if stamp else ''}:{fingerprint}"
+
+
+_MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
 
 
 def fingerprint_of(marker: object) -> str | None:
-    if not isinstance(marker, str) or not marker.startswith("v") or ":" not in marker:
-        return None
-    version, fingerprint = marker.split(":", 1)
-    return fingerprint if version[1:].isdigit() and fingerprint else None
+    match = _MARKER.fullmatch(marker) if isinstance(marker, str) else None
+    return match.group(1) if match else None
 
 
 def _text(value: object) -> str:
@@ -258,7 +265,11 @@ class EntityIndexRebuilder:
             return "entity_cleanup"
         # Holding the leader lock, this is the one place a collection another
         # model wrote is dropped (see EntityVectorStore._ensure_initialized).
-        marker = entity_index_marker(await self.store.embedding_fingerprint(recreate=True))
+        fingerprint = await self.store.embedding_fingerprint(recreate=True)
+        # Read every tick, after the line above may have recreated the
+        # collection: a collection without its stamp gets a new one, which no
+        # document has reached, so every pass runs again.
+        marker = entity_index_marker(fingerprint, await self.store.collection_stamp())
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):

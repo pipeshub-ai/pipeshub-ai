@@ -32,6 +32,7 @@ from app.services.docling.docling_service import (
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -241,6 +242,7 @@ def run(host: str = "0.0.0.0", port: int = 8081, *, reload: bool = False) -> Non
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 if __name__ == "__main__":

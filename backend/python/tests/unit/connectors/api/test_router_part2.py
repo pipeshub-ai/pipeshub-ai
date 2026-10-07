@@ -2565,7 +2565,7 @@ class TestToggleRollsBackOnPublishFailure:
         connector_type: str = "Web",
         publish_error: Exception | None = RuntimeError("broker down"),
         cached: dict | None = None,
-        update_results: list | None = None,
+        revert_error: Exception | None = None,
         current_version: int = 5000,
     ):
         from app.connectors.api.router import toggle_connector_instance
@@ -2574,13 +2574,15 @@ class TestToggleRollsBackOnPublishFailure:
         req = _make_request(user_id="u1", is_admin=True, body={"type": "sync", **(body or {})})
         org = {"_key": "o1", "accountType": "individual"}
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(
-            side_effect=lambda key, collection: (
-                {"_key": "c1", "updatedAtTimestamp": current_version}
-                if collection == CollectionNames.APPS.value
-                else org
-            )
-        )
+        graph_provider.get_document = AsyncMock(return_value=org)
+
+        async def compare_and_set(key, collection, updates, expected) -> bool:
+            if revert_error is not None:
+                raise revert_error
+            assert collection == CollectionNames.APPS.value
+            return expected == {"updatedAtTimestamp": current_version}
+
+        graph_provider.update_node_fields_if_match = AsyncMock(side_effect=compare_and_set)
         instance = _make_instance(
             connector_type=connector_type,
             scope="personal",
@@ -2590,9 +2592,7 @@ class TestToggleRollsBackOnPublishFailure:
         )
         registry = req.app.state.connector_registry
         registry.get_connector_instance = AsyncMock(return_value=instance)
-        registry.update_connector_instance = AsyncMock(
-            side_effect=update_results or [{"updatedAtTimestamp": 5000}, True]
-        )
+        registry.update_connector_instance = AsyncMock(return_value={"updatedAtTimestamp": 5000})
         req.app.container.connectors_map = dict(cached or {})
         req.app.container.messaging_producer.send_message = AsyncMock(side_effect=publish_error)
 
@@ -2606,6 +2606,7 @@ class TestToggleRollsBackOnPublishFailure:
                 result, error = None, exc
 
         updates = [c.kwargs["updates"] for c in registry.update_connector_instance.await_args_list]
+        updates += [c.args[2] for c in graph_provider.update_node_fields_if_match.await_args_list]
         return result, error, updates, req.app.container.connectors_map
 
     async def test_enable_publish_failure_reverts_is_active(self):
@@ -2649,7 +2650,7 @@ class TestToggleRollsBackOnPublishFailure:
     async def test_revert_failure_still_returns_original_error(self):
         _, error, updates, _ = await self._toggle(
             is_active=False,
-            update_results=[{"updatedAtTimestamp": 5000}, RuntimeError("db down")],
+            revert_error=RuntimeError("db down"),
         )
 
         assert error is not None and error.status_code == 500
@@ -2662,7 +2663,8 @@ class TestToggleRollsBackOnPublishFailure:
         )
 
         assert error is not None and error.status_code == 500
-        assert len(updates) == 1
+        # The revert was attempted against the version it wrote, and refused.
+        assert len(updates) == 2
         assert connectors_map == {"c1": conn}
         conn.cleanup.assert_not_awaited()
 

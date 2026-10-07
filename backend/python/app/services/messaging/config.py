@@ -338,21 +338,19 @@ class MessagingEnvConfig:
 
     @property
     def stranded_record_republish_after_seconds(self) -> float:
-        """How long a record may sit unqueued before its event is re-sent.
+        """The youngest a waiting record can be before the stranded sweep looks at it.
 
         Zero disables the sweep. Guards the gap no other recovery path covers:
         a record on a live connector whose event was lost or never published is
         invisible to the stale scan (which only looks at IN_PROGRESS) and to the
-        inactive-connector sweep. Set it well above the largest backlog the
-        broker is expected to carry, or records legitimately waiting their turn
-        will be published a second time.
+        inactive-connector sweep.
+
+        This is a minimum age, not a promise to re-send at that age, so it does
+        not need to be sized to the backlog: a record older than this is still
+        left alone while the broker shows older work waiting on its lane, and
+        each re-send doubles the wait before the next (see
+        ``indexing_main._republish_stranded_records``).
         """
-        # On by default (was 0 = off). A record stranded QUEUED/NOT_STARTED
-        # with no event behind it is otherwise never indexed: the stale scan
-        # only covers IN_PROGRESS, and the inactive-connector sweep only covers
-        # dead connectors. An hour is well above any backlog a healthy broker
-        # carries, and a false positive only costs a duplicate event the
-        # handler already de-duplicates (COMPLETED short-circuit + record lease).
         return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property

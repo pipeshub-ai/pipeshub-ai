@@ -7021,49 +7021,6 @@
     {}
    ],
    [
-    "delete_all_edges_for_node",
-    [
-     "agentTools/tool-old",
-     "toolsetHasTool"
-    ],
-    {}
-   ],
-   [
-    "delete_nodes",
-    [
-     [
-      "tool-old"
-     ],
-     "agentTools"
-    ],
-    {}
-   ],
-   [
-    "delete_all_edges_for_node",
-    [
-     "agentToolsets/ts-old",
-     "agentHasToolset"
-    ],
-    {}
-   ],
-   [
-    "delete_nodes",
-    [
-     [
-      "ts-old"
-     ],
-     "agentToolsets"
-    ],
-    {}
-   ],
-   [
-    "commit_transaction",
-    [
-     "txn-1"
-    ],
-    {}
-   ],
-   [
     "batch_upsert_nodes",
     [
      [
@@ -7079,21 +7036,6 @@
       }
      ],
      "agentToolsets"
-    ],
-    {}
-   ],
-   [
-    "batch_create_edges",
-    [
-     [
-      {
-       "_from": "agentInstances/private",
-       "_to": "agentToolsets/<uuid-1>",
-       "createdAtTimestamp": "<ts>",
-       "updatedAtTimestamp": "<ts>"
-      }
-     ],
-     "agentHasToolset"
     ],
     {}
    ],
@@ -7128,6 +7070,64 @@
       }
      ],
      "toolsetHasTool"
+    ],
+    {}
+   ],
+   [
+    "batch_create_edges",
+    [
+     [
+      {
+       "_from": "agentInstances/private",
+       "_to": "agentToolsets/<uuid-1>",
+       "createdAtTimestamp": "<ts>",
+       "updatedAtTimestamp": "<ts>"
+      }
+     ],
+     "agentHasToolset"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
+     "agentToolsets/ts-old",
+     "agentHasToolset"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
+     "agentTools/tool-old",
+     "toolsetHasTool"
+    ],
+    {}
+   ],
+   [
+    "delete_nodes",
+    [
+     [
+      "tool-old"
+     ],
+     "agentTools"
+    ],
+    {}
+   ],
+   [
+    "delete_nodes",
+    [
+     [
+      "ts-old"
+     ],
+     "agentToolsets"
+    ],
+    {}
+   ],
+   [
+    "commit_transaction",
+    [
+     "txn-1"
     ],
     {}
    ],
@@ -12066,12 +12066,16 @@
     {}
    ],
    [
-    "delete_edge",
+    "batch_delete_edges",
     [
-     "org-1",
-     "organizations",
-     "shared",
-     "agentInstances",
+     [
+      {
+       "from_collection": "organizations",
+       "from_id": "org-1",
+       "to_collection": "agentInstances",
+       "to_id": "shared"
+      }
+     ],
      "permission"
     ],
     {}
@@ -13549,6 +13553,14 @@
    [
     "delete_all_edges_for_node",
     [
+     "agentToolsets/ts-old",
+     "agentHasToolset"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
      "agentTools/tool-old",
      "toolsetHasTool"
     ],
@@ -13561,14 +13573,6 @@
       "tool-old"
      ],
      "agentTools"
-    ],
-    {}
-   ],
-   [
-    "delete_all_edges_for_node",
-    [
-     "agentToolsets/ts-old",
-     "agentHasToolset"
     ],
     {}
    ],
@@ -13821,49 +13825,6 @@
     {}
    ],
    [
-    "delete_all_edges_for_node",
-    [
-     "agentTools/tool-old",
-     "toolsetHasTool"
-    ],
-    {}
-   ],
-   [
-    "delete_nodes",
-    [
-     [
-      "tool-old"
-     ],
-     "agentTools"
-    ],
-    {}
-   ],
-   [
-    "delete_all_edges_for_node",
-    [
-     "agentToolsets/ts-old",
-     "agentHasToolset"
-    ],
-    {}
-   ],
-   [
-    "delete_nodes",
-    [
-     [
-      "ts-old"
-     ],
-     "agentToolsets"
-    ],
-    {}
-   ],
-   [
-    "commit_transaction",
-    [
-     "txn-1"
-    ],
-    {}
-   ],
-   [
     "batch_upsert_nodes",
     [
      [
@@ -13881,9 +13842,86 @@
      "agentToolsets"
     ],
     {}
+   ],
+   [
+    "batch_upsert_nodes",
+    [
+     [
+      {
+       "_key": "<uuid-2>",
+       "createdAtTimestamp": "<ts>",
+       "createdBy": "k-alice",
+       "description": "",
+       "fullName": "jira.a",
+       "name": "a",
+       "toolsetName": "jira",
+       "updatedAtTimestamp": "<ts>"
+      }
+     ],
+     "agentTools"
+    ],
+    {}
+   ],
+   [
+    "batch_create_edges",
+    [
+     [
+      {
+       "_from": "agentToolsets/<uuid-1>",
+       "_to": "agentTools/<uuid-2>",
+       "createdAtTimestamp": "<ts>",
+       "updatedAtTimestamp": "<ts>"
+      }
+     ],
+     "toolsetHasTool"
+    ],
+    {}
+   ],
+   [
+    "rollback_transaction",
+    [
+     "txn-1"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
+     "agentToolsets/<uuid-1>",
+     "agentHasToolset"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
+     "agentToolsets/<uuid-1>",
+     "toolsetHasTool"
+    ],
+    {}
+   ],
+   [
+    "delete_nodes",
+    [
+     [
+      "<uuid-2>"
+     ],
+     "agentTools"
+    ],
+    {}
+   ],
+   [
+    "delete_nodes",
+    [
+     [
+      "<uuid-1>"
+     ],
+     "agentToolsets"
+    ],
+    {}
    ]
   ],
-  "committed": 1,
+  "committed": 0,
   "edges": {
    "agentHasKnowledge": [
     {
@@ -13897,7 +13935,12 @@
      "_to": "agentMcpServers/mcp-old"
     }
    ],
-   "agentHasToolset": [],
+   "agentHasToolset": [
+    {
+     "_from": "agentInstances/private",
+     "_to": "agentToolsets/ts-old"
+    }
+   ],
    "permission": [
     {
      "_from": "users/k-alice",
@@ -13930,7 +13973,12 @@
      "type": "ORG"
     }
    ],
-   "toolsetHasTool": []
+   "toolsetHasTool": [
+    {
+     "_from": "agentToolsets/ts-old",
+     "_to": "agentTools/tool-old"
+    }
+   ]
   },
   "nodes": {
    "agentInstances": {
@@ -13984,17 +14032,17 @@
      "orgId": "org-1"
     }
    },
-   "agentTools": {},
+   "agentTools": {
+    "tool-old": {
+     "_key": "tool-old",
+     "fullName": "jira.search",
+     "name": "search"
+    }
+   },
    "agentToolsets": {
-    "<uuid-1>": {
-     "_key": "<uuid-1>",
-     "createdAtTimestamp": "<ts>",
-     "createdBy": "k-alice",
-     "displayName": "Jira",
-     "name": "jira",
-     "type": "app",
-     "updatedAtTimestamp": "<ts>",
-     "userId": "u-alice"
+    "ts-old": {
+     "_key": "ts-old",
+     "name": "jira"
     }
    },
    "organizations": {
@@ -14033,7 +14081,7 @@
     }
    }
   },
-  "rolled_back": 0,
+  "rolled_back": 1,
   "status": 500
  },
  "update-toolsets-fail-delete": {
@@ -14118,6 +14166,14 @@
    [
     "delete_all_edges_for_node",
     [
+     "agentToolsets/ts-old",
+     "agentHasToolset"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
      "agentTools/tool-old",
      "toolsetHasTool"
     ],
@@ -14137,6 +14193,14 @@
     "rollback_transaction",
     [
      "txn-1"
+    ],
+    {}
+   ],
+   [
+    "get_edges_from_node",
+    [
+     "agentInstances/private",
+     "agentHasToolset"
     ],
     {}
    ]
@@ -14407,49 +14471,6 @@
     {}
    ],
    [
-    "delete_all_edges_for_node",
-    [
-     "agentTools/tool-old",
-     "toolsetHasTool"
-    ],
-    {}
-   ],
-   [
-    "delete_nodes",
-    [
-     [
-      "tool-old"
-     ],
-     "agentTools"
-    ],
-    {}
-   ],
-   [
-    "delete_all_edges_for_node",
-    [
-     "agentToolsets/ts-old",
-     "agentHasToolset"
-    ],
-    {}
-   ],
-   [
-    "delete_nodes",
-    [
-     [
-      "ts-old"
-     ],
-     "agentToolsets"
-    ],
-    {}
-   ],
-   [
-    "commit_transaction",
-    [
-     "txn-1"
-    ],
-    {}
-   ],
-   [
     "batch_upsert_nodes",
     [
      [
@@ -14477,27 +14498,6 @@
       }
      ],
      "agentToolsets"
-    ],
-    {}
-   ],
-   [
-    "batch_create_edges",
-    [
-     [
-      {
-       "_from": "agentInstances/private",
-       "_to": "agentToolsets/<uuid-1>",
-       "createdAtTimestamp": "<ts>",
-       "updatedAtTimestamp": "<ts>"
-      },
-      {
-       "_from": "agentInstances/private",
-       "_to": "agentToolsets/<uuid-2>",
-       "createdAtTimestamp": "<ts>",
-       "updatedAtTimestamp": "<ts>"
-      }
-     ],
-     "agentHasToolset"
     ],
     {}
    ],
@@ -14564,6 +14564,70 @@
       }
      ],
      "toolsetHasTool"
+    ],
+    {}
+   ],
+   [
+    "batch_create_edges",
+    [
+     [
+      {
+       "_from": "agentInstances/private",
+       "_to": "agentToolsets/<uuid-1>",
+       "createdAtTimestamp": "<ts>",
+       "updatedAtTimestamp": "<ts>"
+      },
+      {
+       "_from": "agentInstances/private",
+       "_to": "agentToolsets/<uuid-2>",
+       "createdAtTimestamp": "<ts>",
+       "updatedAtTimestamp": "<ts>"
+      }
+     ],
+     "agentHasToolset"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
+     "agentToolsets/ts-old",
+     "agentHasToolset"
+    ],
+    {}
+   ],
+   [
+    "delete_all_edges_for_node",
+    [
+     "agentTools/tool-old",
+     "toolsetHasTool"
+    ],
+    {}
+   ],
+   [
+    "delete_nodes",
+    [
+     [
+      "tool-old"
+     ],
+     "agentTools"
+    ],
+    {}
+   ],
+   [
+    "delete_nodes",
+    [
+     [
+      "ts-old"
+     ],
+     "agentToolsets"
+    ],
+    {}
+   ],
+   [
+    "commit_transaction",
+    [
+     "txn-1"
     ],
     {}
    ]

@@ -170,6 +170,11 @@ _CANDIDATE_OVERFETCH = 2
 # Metadata key recording which model embedded the point (``embedding_fingerprint``).
 EMBEDDING_MODEL_FIELD = "embeddingModel"
 
+# The point holding ``EntityVectorStore.collection_stamp``. Entity point ids
+# are derived from "org:type:id", which this name cannot be.
+_STAMP_POINT_ID = str(uuid.uuid5(uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "entity-index-stamp"))
+_STAMP_FIELD = "indexStamp"
+
 _STRING_METADATA_FIELDS = (
     "entityId", "entityType", "orgId", "name", "canonicalName", "domain", "typeCategory", "level",
     EMBEDDING_MODEL_FIELD,
@@ -407,6 +412,70 @@ class EntityVectorStore:
         delete), and the chat routes hide the entity tools."""
         return await self.vector_db_service.collection_exists(self.collection_name)
 
+    async def collection_stamp(self) -> str:
+        """A token kept in the collection as a point of its own, so that it
+        goes when the collection's points go.
+
+        A collection dropped, recreated or emptied from outside (by hand, or
+        by a records rebuild in a release that took the entity index along)
+        therefore has no stamp. It is then set up again (``ensure_collection``)
+        and given a new one. The rebuild puts the stamp in its marker: what
+        was projected under another stamp is not in this collection, however
+        many points indexing has written to it since. One read by id per call.
+        For the rebuild leader only (see ``ensure_collection``)."""
+        stamp = await self._read_stamp()
+        if stamp:
+            return stamp
+        await self.ensure_collection()
+        # Never all digits: Redis hands a numeric string back as a number.
+        stamp = f"s{uuid.uuid4().hex[:11]}"
+        unit = [1.0] + [0.0] * (self._embedding_size - 1)
+        await self.vector_db_service.upsert_points(
+            collection_name=self.collection_name,
+            # No orgId and no entityType: no search, sweep or delete matches it.
+            points=[VectorPoint(
+                id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
+                payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp}},
+            )],
+        )
+        self.logger.info(
+            "Entity collection '%s' carried no stamp (it is new, or was dropped, recreated or "
+            "emptied from outside); stamped %s, so the rebuild projects the graph into it again",
+            self.collection_name, stamp,
+        )
+        return stamp
+
+    async def _read_stamp(self) -> str | None:
+        try:
+            points = await self.vector_db_service.retrieve_points(self.collection_name, [_STAMP_POINT_ID])
+        except Exception:
+            # Some backends refuse a read by id from a collection that does
+            # not exist; anything else is a read that failed.
+            if await self.collection_exists():
+                raise
+            return None
+        for point in points:
+            stamp = ((point.payload or {}).get("metadata") or {}).get(_STAMP_FIELD)
+            if stamp:
+                return _as_text(stamp)
+        return None
+
+    async def ensure_collection(self) -> None:
+        """Create the collection and its payload indexes where they are missing.
+
+        Initialisation does this once per model, so a collection dropped or
+        recreated from outside afterwards would stay as it was left until the
+        service restarts. For the rebuild leader only: like initialisation
+        with ``recreate``, it drops a collection of another dimension."""
+        await self._ensure_initialized(recreate=True)
+        async with self._init_lock:
+            if not self._initialized:
+                raise VectorStoreError(
+                    "Entity vector store is re-initialising; the collection is set up when it has",
+                    details={"collection": self.collection_name},
+                )
+            await self._init_collection(recreate=self.recreate_on_dimension_mismatch)
+
     async def _init_embeddings(self, embedding_configs: list[dict[str, Any]] | None = None) -> None:
         if not embedding_configs:
             self._dense_embeddings = get_default_embedding_model()
@@ -438,6 +507,13 @@ class EntityVectorStore:
 
     async def _init_collection(self, *, recreate: bool = False) -> None:
         info = await self.vector_db_service.get_collection_info(self.collection_name)
+        if info.exists:
+            # Ensured on every start, not only at creation: a process that
+            # died between the two left the collection without them. Before
+            # the mismatch check, which filters on one: a collection recreated
+            # from outside this store has none, and Redis cannot filter on a
+            # field its index does not have.
+            await self._ensure_payload_indexes()
         mismatch = await self._collection_mismatch(info)
         if mismatch:
             if not recreate:
@@ -460,11 +536,12 @@ class EntityVectorStore:
                 ),
             )
             self.logger.info("Created entity vector collection '%s'", self.collection_name)
-        # Ensured on every start, not only at creation: create_index is
-        # idempotent on every provider, and a process that died between the
-        # two left the collection without them. connectorIds and
-        # recordGroupIds are top-level payload siblings of metadata (not
-        # nested in it) — see ``upsert_entities_batch``.
+            await self._ensure_payload_indexes()
+
+    async def _ensure_payload_indexes(self) -> None:
+        """create_index is idempotent on every provider. connectorIds and
+        recordGroupIds are top-level payload siblings of metadata (not nested
+        in it) — see ``upsert_entities_batch``."""
         for field, schema in [
             ("metadata.orgId", {"type": "keyword"}),
             ("metadata.entityType", {"type": "keyword"}),

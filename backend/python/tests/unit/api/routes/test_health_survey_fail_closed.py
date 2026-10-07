@@ -68,7 +68,32 @@ class TestSurveyPropagatesFailure:
 
         await survey_managed_collections(svc, MagicMock())
 
-        registry.list_managed_collections.assert_awaited_once_with(fresh=True)
+        registry.list_managed_collections.assert_awaited_once_with(fresh=True, strict=True)
+
+    @pytest.mark.asyncio
+    async def test_a_kv_store_that_cannot_be_read_is_not_an_empty_manifest(self) -> None:
+        """With the real registry: its manifest read answers a failed read as
+        "empty" unless asked to raise, and "nothing indexed" lets the model
+        change through while the records collection still holds vectors."""
+        from tests.unit.services.vector_db.test_collection_registry import (
+            _make_config_service,
+            _make_registry,
+            _make_vdb,
+        )
+
+        vdb = _make_vdb(exists=True, dimension=1024)
+        registry = _make_registry(
+            vector_db_service=vdb, config_service=_make_config_service(down=True)
+        )
+        svc = _retrieval_service(registry=registry)
+
+        with pytest.raises(CollectionSurveyError):
+            await survey_managed_collections(svc, MagicMock())
+        with pytest.raises(HTTPException) as exc:
+            await check_collection_info(svc, MagicMock(), 1536, MagicMock())
+
+        assert exc.value.status_code == 503
+        vdb.delete_collection.assert_not_awaited()
 
 
 class TestGuardFailsClosed:
@@ -105,14 +130,14 @@ class TestGuardFailsClosed:
 
         await check_collection_info(svc, MagicMock(), 1024, MagicMock())
 
-        svc.collection_registry.recreate_all_collections.assert_awaited_once()
+        svc.collection_registry.recreate_records_collections.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_failed_rebuild_refuses_the_change(self) -> None:
         """The rebuild drops the old collection first; reporting success after
         it fails would let the caller save or delete the model on top of that."""
         registry = make_collection_registry("records")
-        registry.recreate_all_collections = AsyncMock(side_effect=RuntimeError("boom"))
+        registry.recreate_records_collections = AsyncMock(side_effect=RuntimeError("boom"))
         svc = _retrieval_service(
             registry=registry,
             info=VectorCollectionInfo(
@@ -133,7 +158,7 @@ class TestEmptyManifestRebuild:
         """Creating one here would have to invent a context; under a per-org or
         per-connector strategy that names a collection belonging to nobody."""
         registry = make_collection_registry("records")
-        registry.recreate_all_collections = AsyncMock(return_value=[])
+        registry.recreate_records_collections = AsyncMock(return_value=[])
         svc = _retrieval_service(registry=registry)
 
         await recreate_collection(svc, 1024, MagicMock())
@@ -143,7 +168,7 @@ class TestEmptyManifestRebuild:
     @pytest.mark.asyncio
     async def test_rebuild_failure_propagates(self):
         registry = make_collection_registry("records")
-        registry.recreate_all_collections = AsyncMock(side_effect=RuntimeError("boom"))
+        registry.recreate_records_collections = AsyncMock(side_effect=RuntimeError("boom"))
         svc = _retrieval_service(registry=registry)
 
         with pytest.raises(RuntimeError):
@@ -193,7 +218,7 @@ class TestEntityIndexIsNotIndexedContent:
 
         await check_collection_info(svc, MagicMock(), 1536, MagicMock())
 
-        svc.collection_registry.recreate_all_collections.assert_not_awaited()
+        svc.collection_registry.recreate_records_collections.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_records_points_still_refuse_with_the_records_dimension(self) -> None:

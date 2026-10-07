@@ -2,9 +2,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.exceptions.graph_db_exceptions import GraphQueryError
+from app.models.entities import FileRecord, RecordType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
+    MoveDestinationMissing,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -4175,6 +4179,28 @@ class TestValidateUploadContext:
         assert result["parent_folder"]["_key"] == "f1"
 
     @pytest.mark.asyncio
+    async def test_a_folder_in_the_trash_is_refused_and_says_so(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"_key": "uk1", "id": "uk1", "userId": "u1"}
+        )
+        neo4j_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        neo4j_provider.get_and_validate_folder_in_kb = AsyncMock(
+            return_value={"_key": "f1", "recordName": "Reports", "isDeleted": True}
+        )
+
+        result = await neo4j_provider._validate_upload_context(
+            "kb1", "u1", "org1", parent_folder_id="f1"
+        )
+
+        assert result == {
+            "valid": False,
+            "success": False,
+            "code": 409,
+            "reason": "'Reports' is in Recently deleted, so you can't upload files to it. "
+            "Restore it first, or choose another folder.",
+        }
+
+    @pytest.mark.asyncio
     async def test_user_not_found(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.get_user_by_user_id = AsyncMock(return_value=None)
 
@@ -5819,6 +5845,154 @@ class TestRecordLinksAreOneStatement:
         await neo4j_provider.link_record_to_group("r1", None, inherit=True)
 
         neo4j_provider.client.execute_query.assert_not_awaited()
+
+
+class TestValidateFolderInKb:
+    """A folder in the trash is no place to put something; the caller can still ask about it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("call", "clause"),
+        [
+            ({}, "(folder.isDeleted IS NULL OR folder.isDeleted = false)"),
+            ({"visibility": RecordVisibility.DELETED}, "folder.isDeleted = true"),
+        ],
+        ids=["live-by-default", "in-the-trash"],
+    )
+    async def test_the_folder_is_matched_by_visibility(
+        self, neo4j_provider: Neo4jProvider, call: dict, clause: str
+    ) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"count": 1}]
+
+        assert await neo4j_provider.validate_folder_in_kb("kb1", "f1", **call) is True
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert f"AND {clause}" in query
+
+    @pytest.mark.asyncio
+    async def test_exists_in_kb_still_counts_a_folder_in_the_trash(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"count": 1}]
+
+        assert await neo4j_provider.validate_folder_exists_in_kb("kb1", "f1") is True
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "isDeleted" not in query
+
+    @pytest.mark.asyncio
+    async def test_no_match_or_a_failure_is_false(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"count": 0}]
+        assert await neo4j_provider.validate_folder_in_kb("kb1", "f1") is False
+
+        neo4j_provider.client.execute_query.side_effect = RuntimeError("down")
+        assert await neo4j_provider.validate_folder_in_kb("kb1", "f1") is False
+
+
+class TestRecordMoveIsOneStatement:
+    """A move's record write and its parent edges are checked against each other by the path reads."""
+
+    @staticmethod
+    def _folder() -> FileRecord:
+        return FileRecord(
+            id="r1", org_id="org-1", record_name="Reports", record_type=RecordType.FILE,
+            external_record_id="r1", version=0, origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE, connector_id="kb-1", mime_type="application/vnd.folder",
+            is_file=False, parent_external_record_id="folder-2",
+        )
+
+    @pytest.mark.asyncio
+    async def test_under_another_parent(self, neo4j_provider: Neo4jProvider) -> None:
+        await neo4j_provider.upsert_record_under_parent(self._folder(), "folder-2", transaction="tx")
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call = neo4j_provider.client.execute_query.await_args
+        query, parameters = call.args[0], call.kwargs["parameters"]
+        steps = [
+            # Before any write: a parent that is gone, or in the trash, leaves no row to write for.
+            "MATCH (parent:Record {id: $parent_id})",
+            # Its write lock before its trash state is read, so a trash still being written is waited for.
+            "SET parent.moveLock = true",
+            "REMOVE parent.moveLock",
+            "WHERE (parent.isDeleted IS NULL OR parent.isDeleted = false)",
+            "trashedExternalRecordId: holder.externalRecordId",
+            "MERGE (n:Record {id: node.id})",
+            "MERGE (n)-[e:IS_OF_TYPE]->(t)",
+            "OPTIONAL MATCH ()-[old:RECORD_RELATION {relationshipType: $parent_child}]->(n)",
+            "DELETE old",
+            "MERGE (parent)-[link:RECORD_RELATION]->(n)",
+            "RETURN n.id",
+        ]
+        assert [query.index(step) for step in steps] == sorted(query.index(step) for step in steps)
+        assert parameters["nodes"][0]["externalParentId"] == "folder-2"
+        assert (parameters["parent_child"], parameters["parent_id"]) == ("PARENT_CHILD", "folder-2")
+        assert parameters["parent_edge"]["relationshipType"] == "PARENT_CHILD"
+        assert call.kwargs["txn_id"] == "tx"
+
+    @pytest.mark.asyncio
+    async def test_to_the_root(self, neo4j_provider: Neo4jProvider) -> None:
+        record = self._folder()
+        record.parent_external_record_id = None
+
+        await neo4j_provider.upsert_record_under_parent(record, None)
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call = neo4j_provider.client.execute_query.await_args
+        assert "DELETE old" in call.args[0]
+        assert "(parent" not in call.args[0]
+        assert "parent_id" not in call.kwargs["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_a_parent_that_is_gone_is_raised(self, neo4j_provider: Neo4jProvider) -> None:
+        """Its MATCH comes first, so the statement wrote nothing; answered quietly, the move looked done."""
+        neo4j_provider.client.execute_query.return_value = []
+
+        with pytest.raises(MoveDestinationMissing, match="its new parent folder-2 is not in the graph or is in the trash"):
+            await neo4j_provider.upsert_record_under_parent(self._folder(), "folder-2")
+
+    @pytest.mark.asyncio
+    async def test_a_move_to_the_root_needs_no_parent(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.return_value = []
+
+        await neo4j_provider.upsert_record_under_parent(self._folder(), None)
+
+    @pytest.mark.asyncio
+    async def test_a_failure_is_raised(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.side_effect = RuntimeError("LockAcquisitionTimeout")
+
+        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await neo4j_provider.upsert_record_under_parent(self._folder(), "folder-2")
+
+    @pytest.mark.asyncio
+    async def test_the_plain_upsert_touches_no_parent_edge(self, neo4j_provider: Neo4jProvider) -> None:
+        await neo4j_provider.batch_upsert_records([self._folder()])
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "MERGE (n:Record {id: node.id})" in query
+        assert query.rstrip().endswith("RETURN n.id")
+        assert "RECORD_RELATION" not in query
+        assert "trashedExternalRecordId" not in query
+
+
+class TestDeleteParentChildEdgeToRecord:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("rows", "deleted"), [([{"deleted": True}], True), ([{"deleted": False}], False), ([], False)])
+    async def test_answers_whether_an_edge_was_deleted(
+        self, neo4j_provider: Neo4jProvider, rows: list[dict], deleted: bool
+    ) -> None:
+        neo4j_provider.client.execute_query.return_value = rows
+
+        assert await neo4j_provider.delete_parent_child_edge_to_record("r1", transaction="tx") is deleted
+
+        call = neo4j_provider.client.execute_query.await_args
+        assert call.kwargs == {"parameters": {"record_id": "r1"}, "txn_id": "tx"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_is_raised(self, neo4j_provider: Neo4jProvider) -> None:
+        """Answered False, the caller went on to write the new parent edge beside the old one."""
+        neo4j_provider.client.execute_query.side_effect = RuntimeError("LockAcquisitionTimeout")
+
+        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await neo4j_provider.delete_parent_child_edge_to_record("r1")
 
 
 class TestPrincipalLookupsCanRaise:

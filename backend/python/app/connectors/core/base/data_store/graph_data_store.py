@@ -728,6 +728,14 @@ class GraphTransactionStore(TransactionStore):
         result = await self.graph_provider.batch_upsert_records(
             records, transaction=self.txn, release_trashed_external_ids=release_trashed_external_ids
         )
+        self._memo_forget_upserted(records)
+        return result
+
+    async def upsert_record_under_parent(self, record: Record, parent_record_id: str | None) -> None:
+        await self.graph_provider.upsert_record_under_parent(record, parent_record_id, transaction=self.txn)
+        self._memo_forget_upserted([record])
+
+    def _memo_forget_upserted(self, records: list[Record]) -> None:
         # Forget, never cache, what was just written: the upsert merges into the
         # stored vertex, so the caller's object is not what a read returns (it
         # lacks virtualRecordId, which the upsert never writes), and some record
@@ -741,7 +749,6 @@ class GraphTransactionStore(TransactionStore):
             if external_id and connector_id:
                 # Every visibility: releasing a trashed record's external id renames it.
                 self._memo_drop_external_id(connector_id, external_id)
-        return result
 
     async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
         """

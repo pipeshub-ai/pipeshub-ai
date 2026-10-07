@@ -224,7 +224,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
@@ -275,11 +275,15 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Most characters one agent turn may stream before it is stopped as a
+      # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
+      - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
 
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       # Raising this above 1 gives /stream/record requests more headroom
@@ -296,6 +300,14 @@ services:
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
+      # Largest file from a code repository that is read as code or as plain
+      # text, in MB (default 5). Larger ones are marked "not supported" with
+      # the reason; CSV, JSON and YAML files keep their own parsers' limits.
+      - CODE_FILE_MAX_SIZE_MB=${CODE_FILE_MAX_SIZE_MB:-}
+      # Worker processes that parse large text, code and CSV files off the
+      # indexing event loop. Empty derives it from the CPU limit (1 on a
+      # 4-CPU host, at most 4); 0 parses in threads instead.
+      - PARSE_POOL_WORKERS=${PARSE_POOL_WORKERS:-}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}

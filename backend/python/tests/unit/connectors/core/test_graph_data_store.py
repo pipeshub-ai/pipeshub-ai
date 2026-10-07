@@ -210,6 +210,23 @@ class TestGraphTransactionStore:
         assert mock_graph_provider.get_record_by_external_id.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_a_record_moved_under_a_parent_is_reread_too(self, tx_store, mock_graph_provider) -> None:
+        mock_graph_provider.upsert_record_under_parent = AsyncMock()
+        before = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=before)
+        await tx_store.get_record_by_external_id("conn-1", "z")
+
+        moved = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z")
+        await tx_store.upsert_record_under_parent(moved, "folder-1")
+
+        mock_graph_provider.upsert_record_under_parent.assert_awaited_once_with(
+            moved, "folder-1", transaction="txn-123"
+        )
+        after = MagicMock(id="rec-x")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=after)
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is after
+
+    @pytest.mark.asyncio
     async def test_deleting_by_key_drops_it_from_the_cache(
         self, tx_store, mock_graph_provider
     ) -> None:

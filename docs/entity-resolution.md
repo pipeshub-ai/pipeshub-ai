@@ -172,8 +172,10 @@ without extraction or model calls other than embedding:
   points are not swept; single-record delete removes them.
 
 A document is done when its `entityIndexState` equals
-`v<ENTITY_INDEX_VERSION>:<provider>:<model>:<dimension>`, so changing the
-embedding model re-runs every pass. Each point also records the model that
+`v<ENTITY_INDEX_VERSION>@<stamp>:<provider>:<model>:<dimension>`, so changing
+the embedding model re-runs every pass. (The stamp identifies the collection
+the document was projected into; see "An index emptied from outside" below.)
+Each point also records the model that
 embedded it (`metadata.embeddingModel`). A write re-embeds a point from
 another model, or one written before this field existed, even when its text
 is unchanged. Indexing therefore repairs whatever a pass missed. The first
@@ -229,6 +231,44 @@ are re-embedded in place.
 
 Points of legacy nodes without an org are not projected, so after a recreate
 they return only when their records are reindexed.
+
+### An index emptied from outside
+
+The entity index is not part of "Delete all embeddings", nor of the records
+rebuild that an embedding model change runs. Both go through
+`CollectionRegistry.recreate_records_collections`, which drops and recreates
+records collections only. That holds even where the collection manifest lists
+`entities`: an earlier release adopted it into the manifest on some
+deployments, and there the cleanup dropped it. On a model change the entity
+store recreates and refills its own collection, as described above.
+
+Nothing else would notice an entities collection that was emptied anyway
+(dropped by hand, or by that earlier cleanup), because every document still
+says done. Counting its points does not help: indexing writes record points
+back into a recreated collection within minutes, and from then on it only
+looks partly filled. So the collection carries a **stamp**:
+
+- The stamp is a short random token stored in the collection as a point of
+  its own (`EntityVectorStore.collection_stamp`). It has no org and no entity
+  type, so no search, sweep, listing or delete matches it. It is gone exactly
+  when the collection's points are gone: dropped, recreated or wiped.
+- The rebuild leader reads it on every tick, one read by id, after the step
+  that may recreate the collection for a new model. A collection without a
+  stamp is set up again (created if missing, its payload indexes ensured) and
+  given a new one.
+- The stamp is part of the marker. A document done under another stamp, or
+  under none, was projected into a collection that no longer exists, so its
+  pass runs again. A pass under way starts over.
+- A new stamp is written only when there is none, and it is written before
+  any pass runs under it. A deployment with nothing to index therefore holds
+  just its stamp and stays idle. A read that fails is not a missing stamp:
+  the tick fails and is retried.
+
+Collections from before stamps have none, so every deployment projects its
+graph once more after upgrading. Points whose text, membership and model are
+unchanged are not rewritten or re-embedded. This is what repairs a deployment
+whose entity index an earlier cleanup emptied. A model change costs one run,
+not two: the collection is recreated and stamped in the same tick.
 
 The rebuild runs on one indexing replica at a time (Redis leader
 `entity_index_rebuild:leader`), one page per tick. It resumes from the cursor

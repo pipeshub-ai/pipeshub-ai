@@ -203,9 +203,18 @@ async def _create_toolset_edges(
     user_info: dict[str, Any],
     user_key: str,
     graph_provider: IGraphDBProvider,
-    logger: Logger
+    logger: Logger,
+    transaction: str | None = None,
+    written_toolset_keys: list[str] | None = None,
+    written_tool_keys: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Create toolset nodes and edges for agent using batch operations"""
+    """Create toolset nodes and edges for agent using batch operations.
+
+    The agent is linked to the toolsets last, once each has its tools, so nothing reading
+    the agent sees a toolset half built. ``written_toolset_keys`` and ``written_tool_keys``,
+    when given, receive each node key before any write starts, so a caller can remove
+    whatever this left behind if it fails midway.
+    """
     from app.agents.constants.toolset_constants import normalize_app_name
 
     created_toolsets = []
@@ -221,6 +230,8 @@ async def _create_toolset_edges(
 
     for toolset_name, toolset_data in toolsets_with_tools.items():
         toolset_key = str(uuid.uuid4())
+        if written_toolset_keys is not None:
+            written_toolset_keys.append(toolset_key)
         display_name = toolset_data["displayName"]
         toolset_type = toolset_data["type"]
         tools_list = toolset_data["tools"]
@@ -253,31 +264,14 @@ async def _create_toolset_edges(
 
     # Batch create all toolset nodes
     try:
-        result = await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value)
+        result = await graph_provider.batch_upsert_nodes(
+            toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction
+        )
         if not result:
             return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
     except Exception as e:
         logger.error(f"Failed to batch create toolset nodes: {e}")
         return created_toolsets, [{"name": "all", "error": action_failed("add these tools to the agent")}]
-
-    # Prepare agent -> toolset edges
-    agent_toolset_edges = [
-        {
-            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-            "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
-            "createdAtTimestamp": time,
-            "updatedAtTimestamp": time,
-        }
-        for toolset_info in toolset_mapping.values()
-    ]
-
-    # Batch create agent -> toolset edges. Re-raise — mirrors `_create_mcp_server_edges`,
-    # since every caller already wraps this in a transaction rollback or an HTTPException.
-    try:
-        await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value)
-    except Exception as e:
-        logger.error(f"Failed to create agent-toolset edges: {e}")
-        raise
 
     # Prepare all tool nodes and edges
     tool_nodes = []
@@ -291,6 +285,8 @@ async def _create_toolset_edges(
             description = tool_data["description"]
 
             tool_key = str(uuid.uuid4())
+            if written_tool_keys is not None:
+                written_tool_keys.append(tool_key)
 
             tool_node = {
                 "_key": tool_key,
@@ -323,7 +319,9 @@ async def _create_toolset_edges(
     # silently even when the referenced node was never created.
     if tool_nodes:
         try:
-            result = await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value)
+            result = await graph_provider.batch_upsert_nodes(
+                tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
+            )
             if not result:
                 raise RuntimeError("Failed to create tool nodes")
         except Exception as e:
@@ -333,10 +331,36 @@ async def _create_toolset_edges(
     # Batch create toolset -> tool edges. Re-raise for the same reason as above.
     if toolset_tool_edges:
         try:
-            await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value)
+            result = await graph_provider.batch_create_edges(
+                toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction
+            )
+            if not result:
+                raise RuntimeError("Failed to link tools to their toolsets")
         except Exception as e:
             logger.error(f"Failed to create toolset-tool edges: {e}")
             raise
+
+    agent_toolset_edges = [
+        {
+            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+            "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+        }
+        for toolset_info in toolset_mapping.values()
+    ]
+
+    # Batch create agent -> toolset edges. Re-raise — mirrors `_create_mcp_server_edges`,
+    # since every caller already wraps this in a transaction rollback or an HTTPException.
+    try:
+        result = await graph_provider.batch_create_edges(
+            agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction
+        )
+        if not result:
+            raise RuntimeError("Failed to link toolsets to the agent")
+    except Exception as e:
+        logger.error(f"Failed to create agent-toolset edges: {e}")
+        raise
 
     # Build response with created toolsets and tools
     for toolset_name, toolset_info in toolset_mapping.items():
@@ -711,6 +735,66 @@ async def _remove_knowledge_nodes(keys: list[str], graph_provider: IGraphDBProvi
         logger.error(f"Failed to remove knowledge nodes {keys}: {cleanup_error}")
 
 
+async def _finish_unlinking_old(
+    agent_full_id: str,
+    edge_collection: str,
+    old_ids: list[str],
+    deleted_old_ids: list[str],
+    new_ids: set[str],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> bool:
+    """After a save failed partway through unlinking the agent's old attachments, finish
+    unlinking them where the writes persisted (a rollback that undoes nothing). Returns
+    whether it did, so the caller can remove the old nodes too.
+
+    Acts only on evidence read back from the graph: a new link still present, or a
+    removed old link still gone. A real rollback restores the old links and drops the
+    new ones, and a failed read shows nothing, so both are left as they are. Best effort
+    throughout; failures are logged.
+    """
+    try:
+        edges = await graph_provider.get_edges_from_node(agent_full_id, edge_collection)
+    except Exception as read_error:
+        logger.error(f"Could not read the {edge_collection} links of {agent_full_id} after a failed save: {read_error}")
+        return False
+    linked = {edge.get("_to") for edge in edges or []}
+    remaining_old = [old_id for old_id in old_ids if old_id in linked]
+    if new_ids:
+        persisted = bool(linked & new_ids)
+    else:
+        persisted = any(old_id not in linked for old_id in deleted_old_ids)
+    if not persisted:
+        return False
+    for old_id in remaining_old:
+        try:
+            await graph_provider.delete_all_edges_for_node(old_id, edge_collection)
+        except Exception as cleanup_error:
+            logger.error(f"Failed to unlink {old_id}: {cleanup_error}")
+    return True
+
+
+async def _remove_toolsets(
+    toolset_keys: list[str], tool_keys: list[str], graph_provider: IGraphDBProvider, logger: Logger,
+) -> None:
+    """Best-effort removal of toolset nodes, their tool nodes and every link to them;
+    failures are only logged."""
+    for key in toolset_keys:
+        toolset_id = f"{CollectionNames.AGENT_TOOLSETS.value}/{key}"
+        for edge_collection in (CollectionNames.AGENT_HAS_TOOLSET.value, CollectionNames.TOOLSET_HAS_TOOL.value):
+            try:
+                await graph_provider.delete_all_edges_for_node(toolset_id, edge_collection)
+            except Exception as cleanup_error:
+                logger.error(f"Failed to unlink toolset {key}: {cleanup_error}")
+    for keys, collection in ((tool_keys, CollectionNames.AGENT_TOOLS.value), (toolset_keys, CollectionNames.AGENT_TOOLSETS.value)):
+        if not keys:
+            continue
+        try:
+            await graph_provider.delete_nodes(keys, collection)
+        except Exception as cleanup_error:
+            logger.error(f"Failed to remove {collection} nodes {keys}: {cleanup_error}")
+
+
 async def _finish_removing_old_knowledge(
     agent_full_id: str,
     old_ids: list[str],
@@ -721,32 +805,13 @@ async def _finish_removing_old_knowledge(
     logger: Logger,
 ) -> None:
     """After a knowledge save failed partway through removing the old links, finish
-    removing them where the writes persisted (a rollback that undoes nothing).
-
-    Acts only on evidence read back from the graph: a new link still present, or a
-    removed old link still gone while others remain. A real rollback restores the old
-    links and drops the new ones, and a failed read shows nothing, so both are left as
-    they are. Best effort throughout; failures are logged.
-    """
-    try:
-        edges = await graph_provider.get_edges_from_node(agent_full_id, CollectionNames.AGENT_HAS_KNOWLEDGE.value)
-    except Exception as read_error:
-        logger.error(f"Could not read knowledge links of {agent_full_id} after a failed save: {read_error}")
-        return
-    linked = {edge.get("_to") for edge in edges or []}
-    remaining_old = [old_id for old_id in old_ids if old_id in linked]
+    removing them where the writes persisted (see `_finish_unlinking_old`)."""
     new_ids = {f"{CollectionNames.AGENT_KNOWLEDGE.value}/{key}" for key in new_keys}
-    if new_ids:
-        persisted = bool(linked & new_ids)
-    else:
-        persisted = bool(remaining_old) and any(old_id not in linked for old_id in deleted_old_ids)
-    if not persisted:
+    if not await _finish_unlinking_old(
+        agent_full_id, CollectionNames.AGENT_HAS_KNOWLEDGE.value, old_ids, deleted_old_ids, new_ids,
+        graph_provider, logger,
+    ):
         return
-    for old_id in remaining_old:
-        try:
-            await graph_provider.delete_all_edges_for_node(old_id, CollectionNames.AGENT_HAS_KNOWLEDGE.value)
-        except Exception as cleanup_error:
-            logger.error(f"Failed to unlink old knowledge {old_id}: {cleanup_error}")
     # Old knowledge nodes with no link are never read, so removing them is tidy-up only.
     if old_keys:
         try:

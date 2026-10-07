@@ -22,6 +22,7 @@ from app.modules.agents.service.builders import (
     _create_skill_edges,
     _create_toolset_edges,
     _finish_removing_old_knowledge,
+    _finish_unlinking_old,
     _format_web_search_for_response,
     _parse_default_reasoning_effort,
     _parse_knowledge_sources,
@@ -31,6 +32,7 @@ from app.modules.agents.service.builders import (
     _parse_toolsets,
     _parse_web_search,
     _remove_knowledge_nodes,
+    _remove_toolsets,
     sa_forces_org_sharing,
 )
 from app.modules.agents.service.errors import (
@@ -679,13 +681,19 @@ class AgentService:
 
         # Update toolsets if provided in request (even if empty array - means delete all)
         if "toolsets" in body:
-            # Parse toolsets first to validate before deletion
+            # Parse toolsets first to validate before anything is written
             toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
 
-            # Use transaction for atomic delete-then-create operation
             transaction_id = None
+            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+            toolset_keys: list[str] = []
+            toolset_full_ids: list[str] = []
+            all_tool_keys: list[str] = []
+            all_tool_full_ids: list[str] = []
+            new_toolset_keys: list[str] = []
+            new_tool_keys: list[str] = []
+            unlinked_old_ids: list[str] = []
             try:
-                # Start transaction for atomic operations
                 transaction_id = await graph_provider.begin_transaction(
                     read=[],
                     write=[
@@ -697,8 +705,6 @@ class AgentService:
                 )
                 logger.debug(f"Started transaction for toolset update on agent {agent_id}")
 
-                agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-
                 # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
 
                 # Get all toolset edges from agent
@@ -709,8 +715,6 @@ class AgentService:
                 )
 
                 # Extract toolset keys and full IDs
-                toolset_keys = []
-                toolset_full_ids = []
                 for edge in toolset_edges:
                     toolset_full_id = edge.get("_to")
                     if toolset_full_id:
@@ -722,8 +726,6 @@ class AgentService:
                 logger.debug(f"Found {len(toolset_keys)} toolset(s) connected to agent {agent_id}")
 
                 # Get all tool edges for each toolset
-                all_tool_keys = []
-                all_tool_full_ids = []
                 for toolset_full_id in toolset_full_ids:
                     tool_edges = await graph_provider.get_edges_from_node(
                         toolset_full_id,
@@ -741,66 +743,63 @@ class AgentService:
 
                 logger.debug(f"Found {len(all_tool_keys)} tool(s) connected to toolsets")
 
-                # ========== PHASE 2: DELETE FROM LEAVES TO ROOT ==========
+                # ========== PHASE 2: WRITE THE NEW TOOLSETS ==========
 
-                # Step 1: Delete toolset -> tool edges (TOOLSET_HAS_TOOL)
-                # This must be done first before deleting tool nodes
-                total_tool_edges_deleted = 0
-                for tool_full_id in all_tool_full_ids:
-                    count = await graph_provider.delete_all_edges_for_node(
-                        tool_full_id,
-                        CollectionNames.TOOLSET_HAS_TOOL.value,
-                        transaction=transaction_id
+                # New toolsets are written, with their tools, before the old ones are unlinked:
+                # on a backend whose rollback does not undo writes (Neo4j without explicit
+                # transactions), a failure then leaves the agent with its old toolsets rather
+                # than none, and the except block below removes what the failed attempt wrote.
+                if toolsets_with_tools:
+                    created_toolsets, failed_toolsets = await _create_toolset_edges(
+                        agent_id, toolsets_with_tools, user_context, user_key, graph_provider, logger,
+                        transaction=transaction_id,
+                        written_toolset_keys=new_toolset_keys,
+                        written_tool_keys=new_tool_keys,
                     )
-                    total_tool_edges_deleted += count
+                    if failed_toolsets:
+                        raise RuntimeError(f"Toolsets could not be attached: {failed_toolsets}")
+                    logger.info(f"Created {len(created_toolsets)} toolset(s) for agent {agent_id}")
+                else:
+                    logger.info(f"All toolsets removed for agent {agent_id}")
 
-                logger.debug(f"Deleted {total_tool_edges_deleted} toolset->tool edge(s)")
+                # ========== PHASE 3: UNLINK, THEN REMOVE, THE OLD TOOLSETS ==========
 
-                # Step 2: Delete tool nodes (now safe, all their edges are gone)
-                deleted_tool_nodes = 0
-                if all_tool_keys:
-                    result = await graph_provider.delete_nodes(
-                        all_tool_keys,
-                        CollectionNames.AGENT_TOOLS.value,
-                        transaction=transaction_id
-                    )
-                    deleted_tool_nodes = len(all_tool_keys) if result else 0
-                    logger.debug(f"Deleted {deleted_tool_nodes} tool node(s)")
-
-                # Step 3: Delete agent -> toolset edges (AGENT_HAS_TOOLSET)
-                # Note: We don't check TOOLSET_HAS_TOOL again - those edges were deleted in Step 1
-                total_toolset_edges_deleted = 0
                 for toolset_full_id in toolset_full_ids:
-                    count = await graph_provider.delete_all_edges_for_node(
+                    await graph_provider.delete_all_edges_for_node(
                         toolset_full_id,
                         CollectionNames.AGENT_HAS_TOOLSET.value,
                         transaction=transaction_id
                     )
-                    total_toolset_edges_deleted += count
+                    unlinked_old_ids.append(toolset_full_id)
 
-                logger.debug(f"Deleted {total_toolset_edges_deleted} agent->toolset edge(s)")
-
-                # Step 4: Delete toolset nodes (now safe, all their edges are gone)
-                deleted_toolset_nodes = 0
+                # Nothing links to the old toolsets now; remove them from the leaves up.
+                for tool_full_id in all_tool_full_ids:
+                    await graph_provider.delete_all_edges_for_node(
+                        tool_full_id,
+                        CollectionNames.TOOLSET_HAS_TOOL.value,
+                        transaction=transaction_id
+                    )
+                if all_tool_keys:
+                    await graph_provider.delete_nodes(
+                        all_tool_keys,
+                        CollectionNames.AGENT_TOOLS.value,
+                        transaction=transaction_id
+                    )
                 if toolset_keys:
-                    result = await graph_provider.delete_nodes(
+                    await graph_provider.delete_nodes(
                         toolset_keys,
                         CollectionNames.AGENT_TOOLSETS.value,
                         transaction=transaction_id
                     )
-                    deleted_toolset_nodes = len(toolset_keys) if result else 0
-                    logger.debug(f"Deleted {deleted_toolset_nodes} toolset node(s)")
 
                 logger.info(
-                    f"Deleted for agent {agent_id}: "
-                    f"{deleted_tool_nodes} tool(s), {deleted_toolset_nodes} toolset(s), "
-                    f"{total_tool_edges_deleted + total_toolset_edges_deleted} edge(s) total"
+                    f"Removed {len(toolset_keys)} old toolset(s) and {len(all_tool_keys)} old tool(s) "
+                    f"from agent {agent_id}"
                 )
 
-                # Commit transaction after deletion
                 await graph_provider.commit_transaction(transaction_id)
                 transaction_id = None
-                logger.debug(f"Committed transaction for toolset deletion on agent {agent_id}")
+                logger.debug(f"Committed transaction for toolset update on agent {agent_id}")
 
             except Exception as e:
                 if transaction_id:
@@ -809,35 +808,22 @@ class AgentService:
                         logger.warning(f"Aborted transaction for toolset update on agent {agent_id}")
                     except Exception as abort_error:
                         logger.error(f"Failed to abort transaction: {abort_error}")
-                logger.error(f"Failed to delete toolset nodes and edges for agent {agent_id}: {e}", exc_info=True)
+                # Before any old toolset is unlinked the agent is still on its old set, so the
+                # new writes go. After that the new set is the intended state: keep it.
+                if not unlinked_old_ids:
+                    if new_toolset_keys or new_tool_keys:
+                        await _remove_toolsets(new_toolset_keys, new_tool_keys, graph_provider, logger)
+                elif await _finish_unlinking_old(
+                    agent_full_id, CollectionNames.AGENT_HAS_TOOLSET.value, toolset_full_ids, unlinked_old_ids,
+                    {f"{CollectionNames.AGENT_TOOLSETS.value}/{key}" for key in new_toolset_keys},
+                    graph_provider, logger,
+                ):
+                    await _remove_toolsets(toolset_keys, all_tool_keys, graph_provider, logger)
+                logger.error(f"Failed to replace toolsets for agent {agent_id}: {e}", exc_info=True)
                 raise HTTPException(
                     status_code=500,
                     detail=action_failed("save this agent")
                 ) from e
-
-            # Create new toolset nodes, tool nodes, and edges only if there are toolsets to create
-            if toolsets_with_tools:
-                try:
-                    created_toolsets, failed_toolsets = await _create_toolset_edges(
-                        agent_id, toolsets_with_tools, user_context, user_key,
-                        graph_provider, logger
-                    )
-                    if failed_toolsets:
-                        logger.warning(
-                            f"Agent {agent_id}: {len(failed_toolsets)} toolset(s) failed to create: {failed_toolsets}"
-                        )
-                    logger.info(f"Created {len(created_toolsets)} toolset(s) for agent {agent_id}")
-                except Exception as e:
-                    logger.error(
-                        f"Failed to create toolset edges for agent {agent_id} after deletion: {e}",
-                        exc_info=True
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail=action_failed("save this agent")
-                    ) from e
-            else:
-                logger.info(f"All toolsets removed for agent {agent_id}")
 
         # Update attached MCP servers if provided in request (even if empty array - means detach all)
         if "mcpServers" in body:

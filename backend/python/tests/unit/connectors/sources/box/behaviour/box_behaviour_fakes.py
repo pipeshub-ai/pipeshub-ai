@@ -416,6 +416,7 @@ class FakeBoxRecordsDb:
         self.missing_file_nodes: set[str] = set()
         self.fail_write_for: set[str] = set()
         self.fail_group_write_for: set[str] = set()
+        self.fail_group_delete_for: set[str] = set()
         self.shared_links: dict[str, set[str]] = {}
         # "fail": report a failed cascade without raising, as the graph providers do;
         # "partial": remove only the given roots, then report failure (a cascade that committed partway).
@@ -513,10 +514,14 @@ class FakeBoxRecordsDb:
     async def get_all_user_groups(self, connector_id: str) -> list[Any]:
         return list(self.user_groups.values())
 
-    async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> None:
+    async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        # Like the real processor: a delete that fails raises.
+        if external_group_id in self.fail_group_delete_for:
+            raise RuntimeError("database unavailable (on_user_group_deleted)")
         self.deleted_groups.append(external_group_id)
         self.user_groups.pop(external_group_id, None)
         self.group_members.pop(external_group_id, None)
+        return True
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         self._check("remove_user_access_to_record")

@@ -37,6 +37,7 @@ from app.config.constants.arangodb import (
     PermissionModel,
     PersonMigrationMode,
     ProgressStatus,
+    RecordRelations,
     RecordTypes,
 )
 
@@ -139,6 +140,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     IGraphDBProvider,
+    MoveDestinationMissing,
     _containers_from_row,
     _distinct_connector_types,
     _unsupported_container_filters,
@@ -169,6 +171,7 @@ from app.services.graph_db.vector_membership_queries import (
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import folder_in_trash
 
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
@@ -233,6 +236,8 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 
 # Written, then removed or deleted, inside one purge statement to take a node's write lock.
 _PURGE_LOCK = "purgeLock"
+# Written and removed at the start of a move statement to take its new parent's write lock.
+_MOVE_LOCK = "moveLock"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # The roots of a connector's delete batches: records in the trash whose parent is
@@ -1373,17 +1378,10 @@ class Neo4jProvider(IGraphDBProvider):
             neo4j_nodes.append(neo4j_node)
         return neo4j_nodes
 
-    async def _upsert_record_with_type(
-        self, record: Record, transaction: str | None, *, release_trashed_external_ids: bool
-    ) -> None:
-        """Upsert a record, its type node and the IS_OF_TYPE edge between them.
-
-        One statement: each statement commits on its own unless explicit
-        transactions are on, so a type node or edge that failed left a record
-        without its type, and a trash release outlived a refused upsert.
-        Records in the trash holding the record's external id give it up when
-        *release_trashed_external_ids* is set.
-        """
+    def _upsert_record_with_type_cypher(
+        self, record: Record, *, release_trashed_external_ids: bool
+    ) -> tuple[str, dict[str, Any]]:
+        """The statement of ``_upsert_record_with_type`` up to its RETURN, with the record bound as ``n``."""
         node = self._nodes_for_upsert([record.to_arango_base_record()], CollectionNames.RECORDS.value)[0]
         parameters: dict[str, Any] = {
             "nodes": [node], "ids": [node["id"]], "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
@@ -1412,17 +1410,29 @@ class Neo4jProvider(IGraphDBProvider):
             MERGE (n)-[e:{edge_collection_to_relationship(CollectionNames.IS_OF_TYPE.value)}]->(t)
             SET e = $edge
             """
-        await self.client.execute_query(
-            f"""
+        return f"""
             UNWIND $nodes AS node
             {release}
             MERGE (n:Record {{id: node.id}})
             SET n += node
-            {typed}
-            RETURN n.id
-            """,
-            parameters=parameters,
-            txn_id=transaction,
+            {typed}""", parameters
+
+    async def _upsert_record_with_type(
+        self, record: Record, transaction: str | None, *, release_trashed_external_ids: bool
+    ) -> None:
+        """Upsert a record, its type node and the IS_OF_TYPE edge between them.
+
+        One statement: each statement commits on its own unless explicit
+        transactions are on, so a type node or edge that failed left a record
+        without its type, and a trash release outlived a refused upsert.
+        Records in the trash holding the record's external id give it up when
+        *release_trashed_external_ids* is set.
+        """
+        statement, parameters = self._upsert_record_with_type_cypher(
+            record, release_trashed_external_ids=release_trashed_external_ids
+        )
+        await self.client.execute_query(
+            f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
         )
 
     async def delete_nodes(
@@ -6778,6 +6788,61 @@ class Neo4jProvider(IGraphDBProvider):
             collection=CollectionNames.RECORD_RELATIONS.value,
             transaction=transaction
         )
+
+    async def upsert_record_under_parent(
+        self,
+        record: Record,
+        parent_record_id: str | None,
+        transaction: str | None = None,
+    ) -> None:
+        # One statement: the record carries externalParentId, which the path reads
+        # check against the edge, so the two change together or not at all. Written
+        # apart, a failure after the old edge was deleted left the item in no folder.
+        statement, parameters = self._upsert_record_with_type_cypher(record, release_trashed_external_ids=True)
+        relationship_type = edge_collection_to_relationship(CollectionNames.RECORD_RELATIONS.value)
+        parameters["parent_child"] = RecordRelations.PARENT_CHILD.value
+        carried = "n"
+        if parent_record_id:
+            # The parent is matched before anything is written, so one that is gone
+            # or in the trash (a folder deleted while the move was on its way) leaves
+            # no row to write for. Its write lock comes first, held to the end: a trash
+            # of it still being written is waited for and then seen, where a plain
+            # read would see it live and the edge below would wait for the trash and
+            # then attach the item under it. The edge is created from that same node,
+            # not looked up again.
+            statement = f"""
+            MATCH (parent:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $parent_id}})
+            SET parent.{_MOVE_LOCK} = true
+            REMOVE parent.{_MOVE_LOCK}
+            WITH parent
+            WHERE {cypher_live_record("parent")}
+            CALL {{{statement}
+                RETURN n
+            }}"""
+            carried = "parent, n"
+        statement += f"""
+            WITH {carried}
+            OPTIONAL MATCH ()-[old:{relationship_type} {{relationshipType: $parent_child}}]->(n)
+            DELETE old
+            WITH {carried}, count(*) AS _"""
+        if parent_record_id:
+            now = get_epoch_timestamp_in_ms()
+            statement += f"""
+            MERGE (parent)-[link:{relationship_type}]->(n)
+            SET link = $parent_edge"""
+            parameters.update(
+                parent_id=parent_record_id,
+                parent_edge={
+                    "relationshipType": RecordRelations.PARENT_CHILD.value,
+                    "createdAtTimestamp": now,
+                    "updatedAtTimestamp": now,
+                },
+            )
+        written = await self.client.execute_query(
+            f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
+        )
+        if parent_record_id and not written:
+            raise MoveDestinationMissing(record.id, parent_record_id)
 
     async def batch_upsert_record_relations(
         self,
@@ -13194,11 +13259,25 @@ class Neo4jProvider(IGraphDBProvider):
         folder_id: str,
         transaction: str | None = None
     ) -> bool:
-        """Validate that a folder exists in a knowledge base"""
+        """Validate that a folder exists in a knowledge base, in the trash or not"""
+        return await self.validate_folder_in_kb(
+            kb_id, folder_id, transaction, visibility=RecordVisibility.ALL
+        )
+
+    async def validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> bool:
+        """Validate that a folder exists in a knowledge base and matches *visibility*"""
         try:
-            query = """
-            MATCH (folder:Record {id: $folder_id})-[:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
+            query = f"""
+            MATCH (folder:Record {{id: $folder_id}})-[:BELONGS_TO]->(kb:App {{id: $kb_id, type: "KB"}})
             WHERE folder.mimeType = "application/vnd.folder"
+              AND {cypher_record_visibility("folder", visibility)}
             RETURN count(folder) AS count
             """
 
@@ -13213,15 +13292,6 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to validate folder exists: {str(e)}")
             return False
-
-    async def validate_folder_in_kb(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: str | None = None
-    ) -> bool:
-        """Validate that a folder exists and belongs to a knowledge base"""
-        return await self.validate_folder_exists_in_kb(kb_id, folder_id, transaction)
 
     async def _validate_folder_creation(
         self,
@@ -13356,6 +13426,13 @@ class Neo4jProvider(IGraphDBProvider):
                             f"Folder {folder_label} was not found in knowledge base {kb_label}. "
                             "The folder may not exist or may belong to a different knowledge base."
                         ),
+                    }
+                if not is_live_record(parent_folder):
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "code": 409,
+                        "reason": folder_in_trash(parent_folder.get("recordName"), "upload files to it"),
                     }
                 return {
                     "valid": True,
@@ -16090,8 +16167,10 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return results[0].get("deleted", False) if results else False
         except Exception as e:
+            # Raised, not answered False: a caller that went on to write the new parent
+            # edge after a swallowed failure left the record under two parents.
             self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
-            return False
+            raise
 
     async def _get_user_accessible_team_app_ids(
         self,

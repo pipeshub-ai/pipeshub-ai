@@ -2416,7 +2416,11 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "extractionStatus": ProgressStatus.COMPLETED.value,
         }]
-        gp.update_node = _fail_every_write_except_md5()
+
+        async def _fail_the_identity_write(record_id, collection, fields):
+            return "virtualRecordId" not in fields
+
+        gp.update_node = AsyncMock(side_effect=_fail_the_identity_write)
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
@@ -2485,3 +2489,340 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
 
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
+
+
+# ===========================================================================
+# Duplicate attach: the record's status is written last
+# ===========================================================================
+
+_TWIN = {
+    "_key": "twin",
+    "orgId": "org-1",
+    "md5Checksum": "abc",
+    "recordType": "FILE",
+    "sizeInBytes": 10,
+    "virtualRecordId": "vr-1",
+    "summaryDocumentId": "sum-1",
+    "indexingStatus": ProgressStatus.COMPLETED.value,
+    "extractionStatus": ProgressStatus.COMPLETED.value,
+}
+
+
+def _twin(**overrides):
+    return {**_TWIN, **overrides}
+
+
+def _copy(key="r1", **overrides):
+    return {
+        "_key": key,
+        "orgId": "org-1",
+        "md5Checksum": "abc",
+        "recordType": "FILE",
+        "sizeInBytes": 10,
+        "indexingStatus": ProgressStatus.QUEUED.value,
+        "virtualRecordId": None,
+        "summaryDocumentId": None,
+        **overrides,
+    }
+
+
+def _step(key, fields):
+    """Name one graph write by what it does to the record."""
+    if "md5Checksum" in fields:
+        return None
+    if fields.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
+        return ("claim", key)
+    if "indexingStatus" in fields:
+        return ("status", key)
+    if "virtualRecordId" in fields:
+        return ("identity", key)
+    return None
+
+
+def _record_attach(ep, gp, finds):
+    """Wire the graph so every attach step is recorded, in order, with its fields.
+
+    ``finds`` is what each duplicate lookup returns, in call order.
+    """
+    steps, fields_of = [], {}
+    answers = list(finds)
+
+    async def _find(**kwargs):
+        steps.append(("find",))
+        return answers.pop(0)
+
+    async def _edges(src, dst):
+        steps.append(("edges", f"{src}->{dst}"))
+        return True
+
+    async def _update(key, collection, fields):
+        step = _step(key, fields)
+        if step:
+            steps.append(step)
+            fields_of.setdefault(step, fields)
+        return True
+
+    async def _sync(vrid):
+        steps.append(("sync", vrid))
+
+    gp.find_duplicate_records = AsyncMock(side_effect=_find)
+    gp.copy_document_relationships = AsyncMock(side_effect=_edges)
+    gp.update_node = AsyncMock(side_effect=_update)
+    gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
+    return steps, fields_of, patch.object(ep, "sync_vector_membership", side_effect=_sync)
+
+
+class TestProcessedTwinAttachOrdering:
+    """The same-collection attach writes the record's status last.
+
+    The record handler acknowledges a redelivered newRecord for a COMPLETED record.
+    Writing COMPLETED first turned any failure in the edge copy or the
+    membership sync into a permanent one: the record claimed to be indexed
+    while its connectorId was missing from the VRID's points.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_record_is_claimed_first_and_completed_last(self):
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, sync = _record_attach(ep, gp, [[_twin()]])
+        doc = _copy()
+
+        with sync, patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert steps == [
+            ("find",),
+            ("claim", "r1"),
+            ("edges", "twin->r1"),
+            ("identity", "r1"),
+            ("sync", "vr-1"),
+            ("status", "r1"),
+        ]
+        assert fields_of[("identity", "r1")] == {
+            "virtualRecordId": "vr-1", "summaryDocumentId": "sum-1",
+        }
+        assert fields_of[("status", "r1")] == {
+            "isDirty": False,
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "processingStartedAt": None,
+            "lastIndexTimestamp": 100,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "lastExtractionTimestamp": 100,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_failed_sync_leaves_status_unwritten_and_restores_identity(self):
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, _ = _record_attach(ep, gp, [[_twin()]])
+        doc = _copy(virtualRecordId="vr-own", summaryDocumentId="sum-own")
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ) as sync:
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert ("status", "r1") not in steps
+        assert gp.update_node.await_args.args == (
+            "r1", "records", {"virtualRecordId": "vr-own", "summaryDocumentId": "sum-own"},
+        )
+        # A sync that raised may already have written some points, so the
+        # VRID is recomputed once the identity is back.
+        assert [c.args for c in sync.await_args_list] == [("vr-1",), ("vr-1",)]
+
+    @pytest.mark.asyncio
+    async def test_an_identity_write_whose_answer_is_lost_is_restored(self):
+        """The write may have landed. Left alone, the record would keep the
+        twin's VRID, and a later reindex of it would overwrite the twin's vectors."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
+        writes = []
+
+        async def _update(key, collection, fields):
+            writes.append(fields)
+            if fields.get("virtualRecordId") == "vr-1":
+                raise RuntimeError("connection reset")
+            return True
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with pytest.raises(RuntimeError, match="connection reset"):
+                await ep._check_duplicate_by_md5(b"x", _copy(virtualRecordId="vr-own"))
+
+        assert writes[-1] == {"virtualRecordId": "vr-own", "summaryDocumentId": None}
+        # The sync never started, so no point can carry this record.
+        sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_resync_is_reported_apart_from_the_restored_identity(self):
+        """With the vector store down the identity is still put back; the log
+        must not say it was not."""
+        ep, logger, _, gp = _make_event_processor()
+        steps, _, _ = _record_attach(ep, gp, [[_twin()]])
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.update_node.await_args.args[2] == {"virtualRecordId": None, "summaryDocumentId": None}
+        assert logger.error.call_count == 1
+        assert "Could not re-sync VRID" in logger.error.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_status_write_restores_identity_and_membership(self):
+        """By then the record's connectorId is on the VRID's points."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
+
+        async def _update(key, collection, fields):
+            return fields.get("indexingStatus") != ProgressStatus.COMPLETED.value
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with pytest.raises(IndexingError, match="duplicate record fields"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.update_node.await_args.args[2] == {"virtualRecordId": None, "summaryDocumentId": None}
+        assert sync.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_status_write_that_landed_is_not_undone(self):
+        """Only its answer was lost. Taking the identity away would leave a
+        COMPLETED record with no VRID, which no redelivery ever revisits."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.COMPLETED.value})
+
+        async def _update(key, collection, fields):
+            if fields.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+                raise RuntimeError("connection reset")
+            return True
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            with pytest.raises(RuntimeError, match="connection reset"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.update_node.await_args.args[2]["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_cancellation_mid_attach_restores_identity(self):
+        import asyncio
+
+        ep, _, _, gp = _make_event_processor()
+        steps, _, _ = _record_attach(ep, gp, [[_twin()]])
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError(),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert steps[-1] == ("identity", "r1")
+        assert gp.update_node.await_args.args[2] == {"virtualRecordId": None, "summaryDocumentId": None}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_restore_is_reported_and_keeps_the_original_error(self):
+        ep, logger, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert "Could not restore" in logger.error.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_empty_twin_without_vrid_is_attached_without_a_sync(self):
+        ep, _, _, gp = _make_event_processor()
+        empty = _twin(virtualRecordId=None, indexingStatus=ProgressStatus.EMPTY.value,
+                      extractionStatus=None)
+        steps, fields_of, sync = _record_attach(ep, gp, [[empty]])
+
+        with sync:
+            result = await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert result.skip_indexing is True
+        assert [s[0] for s in steps] == ["find", "claim", "edges", "identity", "status"]
+        assert fields_of[("status", "r1")]["indexingStatus"] == ProgressStatus.EMPTY.value
+        assert fields_of[("status", "r1")]["extractionStatus"] == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_entities_are_synced_once_the_record_is_attached(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        seen = {}
+
+        async def _sync_entities(doc):
+            seen["status"] = doc.get("indexingStatus")
+
+        ep.sink_orchestrator = MagicMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(side_effect=_sync_entities)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert seen == {"status": ProgressStatus.COMPLETED.value}
+
+    @pytest.mark.asyncio
+    async def test_a_redelivery_after_a_failed_sync_attaches(self):
+        """The failed attempt left nothing COMPLETED behind, so the retry is
+        not acknowledged as already done and runs the whole attach again."""
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, _ = _record_attach(ep, gp, [[_twin()], [_twin()]])
+        doc = _copy()
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            # Fails, the restore's re-sync, then the retry's.
+            side_effect=[IndexingError("qdrant down"), None, None],
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", doc)
+            assert doc["indexingStatus"] != ProgressStatus.COMPLETED.value
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert steps[-1] == ("status", "r1")
+
+    @pytest.mark.asyncio
+    async def test_a_twin_that_finished_while_this_record_was_parked_is_attached_the_same_way(self):
+        ep, _, _, gp = _make_event_processor()
+        enriching = _twin(
+            extractionStatus=ProgressStatus.IN_PROGRESS.value,
+            processingStartedAt=10**15,
+        )
+        steps, _, sync = _record_attach(ep, gp, [[enriching]])
+        # The re-read twin must still carry this content's checksum.
+        gp.get_document = AsyncMock(
+            return_value=_twin(md5Checksum=ep._hash_for_dedup(b"x", "FILE", None))
+        )
+
+        with sync:
+            result = await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert result.skip_indexing is True
+        assert steps == [
+            ("find",),
+            ("status", "r1"),  # parked QUEUED
+            ("claim", "r1"),
+            ("edges", "twin->r1"),
+            ("identity", "r1"),
+            ("sync", "vr-1"),
+            ("status", "r1"),
+        ]
