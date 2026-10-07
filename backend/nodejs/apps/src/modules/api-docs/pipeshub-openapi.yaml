@@ -557,6 +557,8 @@ components:
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             crawl:delete: Delete crawling jobs
+            skill:read: Read custom agent skills
+            skill:write: Create and manage custom agent skills
             mcp:read: Read MCP servers and their tools
             mcp:write: Add, configure and authenticate MCP servers
             mcp:delete: Remove MCP servers and their credentials
@@ -602,6 +604,8 @@ components:
             config:write: Update system configuration
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
+            skill:read: Read custom agent skills
+            skill:write: Create and manage custom agent skills
             mcp:read: Read MCP servers and their tools
             mcp:write: Add, configure and authenticate MCP servers
             mcp:delete: Remove MCP servers and their credentials
@@ -5234,26 +5238,6 @@ components:
         - recordType
         - origin
         - orgId
-
-    UpdateRecordEnrichment:
-      type: object
-      description: |
-        Fields merged into successful record-update responses (Node gateway and Local KB connector).
-      properties:
-        timestamp:
-          type: integer
-          format: int64
-          description: Epoch milliseconds when the response was generated
-        fileUpdated:
-          type: boolean
-        location:
-          type: string
-          enum: [kb_root, folder]
-        kb:
-          type: object
-          additionalProperties: true
-        userPermission:
-          type: string
 
     GetRecordByIdResponseSchema:
       type: object
@@ -16330,12 +16314,11 @@ components:
                 type: string
               value:
                 type: string
-      propertyNames:
-        enum: [name, displayName, fieldType, required, defaultValue, placeholder, description, isSecret, options, validation, examples]
       additionalProperties:
         description: |
-          Restates `examples`, the only name `propertyNames` lets through that is not covered
-          above for tools that drop a property literally called `examples` as an annotation.
+          The API returns only the fields listed above. This restates `examples` for tools that
+          drop a property literally called `examples` as an annotation; OpenAPI 3.0 has no
+          `propertyNames` to also close the object to other names.
         type: array
         items:
           type: object
@@ -16682,13 +16665,11 @@ components:
           description: |
             Maximum number of images to return. Required when `includeImages` is `true`; when
             left out otherwise, the stored value is kept.
-      if:
-        required: [includeImages]
-        properties:
-          includeImages:
-            const: true
-      then:
-        required: [maxImages]
+      anyOf:
+        - properties:
+            includeImages:
+              enum: [false]
+        - required: [maxImages]
 
     AddWebSearchProviderRequest:
       type: object
@@ -17559,18 +17540,17 @@ components:
         configuration:
           allOf:
             - $ref: '#/components/schemas/AIModelProviderConfiguration'
-            - if:
-                required: [modelFriendlyName]
-                properties:
-                  modelFriendlyName:
-                    pattern: '\S'
-              then:
-                required: [model]
-                properties:
-                  model:
-                    not:
-                      pattern: ','
-              description: A non-empty `modelFriendlyName` needs a `model` that names a single model (no comma).
+            - description: A non-empty `modelFriendlyName` needs a `model` that names a single model (no comma).
+              anyOf:
+                - properties:
+                    modelFriendlyName:
+                      not:
+                        pattern: '\S'
+                - required: [model]
+                  properties:
+                    model:
+                      not:
+                        pattern: ','
         isMultimodal:
           type: boolean
           description: Whether the model supports multimodal inputs
@@ -17613,18 +17593,17 @@ components:
         configuration:
           allOf:
             - $ref: '#/components/schemas/AIModelProviderConfiguration'
-            - if:
-                required: [modelFriendlyName]
-                properties:
-                  modelFriendlyName:
-                    pattern: '\S'
-              then:
-                required: [model]
-                properties:
-                  model:
-                    not:
-                      pattern: ','
-              description: A non-empty `modelFriendlyName` needs a `model` that names a single model (no comma).
+            - description: A non-empty `modelFriendlyName` needs a `model` that names a single model (no comma).
+              anyOf:
+                - properties:
+                    modelFriendlyName:
+                      not:
+                        pattern: '\S'
+                - required: [model]
+                  properties:
+                    model:
+                      not:
+                        pattern: ','
         isMultimodal:
           type: boolean
           description: Whether the model supports multimodal inputs
@@ -20772,9 +20751,13 @@ components:
           $ref: '#/components/schemas/ApiDocsRequestBodyObject'
         responses:
           type: object
-          description: Status code (or `default`) to the response description.
+          description: |
+            Status code (or `default`) to the response description, or to a reference to a
+            shared response under `components.responses` (for example the markup filter's 400).
           additionalProperties:
-            $ref: '#/components/schemas/ApiDocsResponseObject'
+            oneOf:
+              - $ref: '#/components/schemas/ApiDocsResponseObject'
+              - $ref: '#/components/schemas/ApiDocsReferenceObject'
         security:
           type: array
           description: |
@@ -21706,18 +21689,17 @@ components:
         configuration:
           allOf:
             - $ref: '#/components/schemas/AIModelProviderConfiguration'
-            - if:
-                required: [modelFriendlyName]
-                properties:
-                  modelFriendlyName:
-                    pattern: '\S'
-              then:
-                required: [model]
-                properties:
-                  model:
-                    not:
-                      pattern: ','
-              description: A non-empty `modelFriendlyName` needs a `model` that names a single model (no comma).
+            - description: A non-empty `modelFriendlyName` needs a `model` that names a single model (no comma).
+              anyOf:
+                - properties:
+                    modelFriendlyName:
+                      not:
+                        pattern: '\S'
+                - required: [model]
+                  properties:
+                    model:
+                      not:
+                        pattern: ','
         isMultimodal:
           type: boolean
           default: false
@@ -21904,6 +21886,17 @@ components:
           description: Stored tool selection for this server.
           items:
             $ref: '#/components/schemas/AgentCreateToolRef'
+
+    ApiDocsReferenceObject:
+      type: object
+      description: An OpenAPI 3.0 Reference Object, pointing into the spec's `components`.
+      additionalProperties: false
+      required:
+        - $ref
+      properties:
+        $ref:
+          type: string
+          example: '#/components/responses/XssRejected'
 
 security:
   - bearerAuth: []
@@ -26926,13 +26919,13 @@ paths:
                     one of `#?!@$%^&*-`, and at most 72 bytes (`maxLength` here counts
                     characters; non-ASCII characters count more than one byte). Both rules
                     are checked by the handler, not the validator, and refused with `400`.
-              if:
-                required:
-                  - password
-              then:
-                properties:
-                  email:
-                    pattern: '@[Aa][Cc][Mm][Ee]-[Dd][Ee][Mm][Oo]\.[Ee][Xx][Aa][Mm][Pp][Ll][Ee]$'
+              anyOf:
+                - not:
+                    required:
+                      - password
+                - properties:
+                    email:
+                      pattern: '@[Aa][Cc][Mm][Ee]-[Dd][Ee][Mm][Oo]\.[Ee][Xx][Aa][Mm][Pp][Ll][Ee]$'
           application/x-www-form-urlencoded:
             schema:
               type: object
@@ -26981,13 +26974,13 @@ paths:
                     one of `#?!@$%^&*-`, and at most 72 bytes (`maxLength` here counts
                     characters; non-ASCII characters count more than one byte). Both rules
                     are checked by the handler, not the validator, and refused with `400`.
-              if:
-                required:
-                  - password
-              then:
-                properties:
-                  email:
-                    pattern: '@[Aa][Cc][Mm][Ee]-[Dd][Ee][Mm][Oo]\.[Ee][Xx][Aa][Mm][Pp][Ll][Ee]$'
+              anyOf:
+                - not:
+                    required:
+                      - password
+                - properties:
+                    email:
+                      pattern: '@[Aa][Cc][Mm][Ee]-[Dd][Ee][Mm][Oo]\.[Ee][Xx][Aa][Mm][Pp][Ll][Ee]$'
       responses:
         '201':
           description: User created successfully
@@ -36640,79 +36633,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  # Local KB connector — router prefix /api/v1/kb (PUT response includes UpdateRecordEnrichment)
-  /kb/record/{recordId}:
-    put:
-      tags:
-        - Records
-      summary: Update record (Local KB connector)
-      description: |
-        Python connector route <code>PUT /api/v1/kb/record/{record_id}</code>. Successful JSON body includes
-        <code>UpdateRecordEnrichment</code> (<code>timestamp</code>, <code>fileUpdated</code>, etc.).
-      operationId: updateRecordKbConnector
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: recordId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        description: Updated record metadata and content
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                updates:
-                  type: object
-                  additionalProperties: true
-                fileMetadata:
-                  type: object
-                  nullable: true
-                  additionalProperties: true
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              properties:
-                updates:
-                  type: object
-                  additionalProperties: true
-                fileMetadata:
-                  type: object
-                  nullable: true
-                  additionalProperties: true
-      responses:
-        '200':
-          description: Record updated successfully
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - type: object
-                    properties:
-                      success:
-                        type: boolean
-                  - $ref: '#/components/schemas/UpdateRecordEnrichment'
-        '400':
-          description: |
-            Invalid request
-
-            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a `<script`, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded `<script` (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.").
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Insufficient permissions
-        '404':
-          description: Record not found
-        '500':
-          $ref: '#/components/responses/BodyParserFailure'
-
   # -------------------- Reindex/Sync Endpoints --------------------
   /knowledgeBase/reindex/record/{recordId}:
     post:
@@ -37160,21 +37080,16 @@ paths:
                   enum: [OWNER, WRITER, READER]
                   description: Permission role to grant. Required when userIds is not empty; omit for team-only grants.
               anyOf:
-                - properties:
+                - required:
+                    - role
+                  properties:
                     userIds:
                       minItems: 1
                 - properties:
+                    userIds:
+                      maxItems: 0
                     teamIds:
                       minItems: 1
-              if:
-                properties:
-                  userIds:
-                    minItems: 1
-                required:
-                  - userIds
-              then:
-                required:
-                  - role
           application/x-www-form-urlencoded:
             schema:
               type: object
@@ -37197,21 +37112,16 @@ paths:
                   enum: [OWNER, WRITER, READER]
                   description: Permission role to grant. Required when userIds is not empty; omit for team-only grants.
               anyOf:
-                - properties:
+                - required:
+                    - role
+                  properties:
                     userIds:
                       minItems: 1
                 - properties:
+                    userIds:
+                      maxItems: 0
                     teamIds:
                       minItems: 1
-              if:
-                properties:
-                  userIds:
-                    minItems: 1
-                required:
-                  - userIds
-              then:
-                required:
-                  - role
       responses:
         '201':
           description: Permissions granted successfully
@@ -61970,19 +61880,18 @@ paths:
                     Pub/Sub topic for Gmail push notifications. Required, and must not be empty,
                     when real-time updates are on; the handler then answers
                     `400 Topic name is required when real-time updates are enabled`. Ignored when they are off.
-              if:
-                required: [enableRealTimeUpdates]
-                properties:
-                  enableRealTimeUpdates:
-                    anyOf:
-                      - const: true
-                      - type: string
-                        pattern: '^[Tt][Rr][Uu][Ee]$'
-              then:
-                required: [topicName]
-                properties:
-                  topicName:
-                    minLength: 1
+              anyOf:
+                - properties:
+                    enableRealTimeUpdates:
+                      not:
+                        anyOf:
+                          - enum: [true]
+                          - type: string
+                            pattern: '^[Tt][Rr][Uu][Ee]$'
+                - required: [topicName]
+                  properties:
+                    topicName:
+                      minLength: 1
           application/x-www-form-urlencoded:
             schema:
               type: object
@@ -62010,19 +61919,18 @@ paths:
                     Pub/Sub topic for Gmail push notifications. Required, and must not be empty,
                     when real-time updates are on; the handler then answers
                     `400 Topic name is required when real-time updates are enabled`. Ignored when they are off.
-              if:
-                required: [enableRealTimeUpdates]
-                properties:
-                  enableRealTimeUpdates:
-                    anyOf:
-                      - const: true
-                      - type: string
-                        pattern: '^[Tt][Rr][Uu][Ee]$'
-              then:
-                required: [topicName]
-                properties:
-                  topicName:
-                    minLength: 1
+              anyOf:
+                - properties:
+                    enableRealTimeUpdates:
+                      not:
+                        anyOf:
+                          - enum: [true]
+                          - type: string
+                            pattern: '^[Tt][Rr][Uu][Ee]$'
+                - required: [topicName]
+                  properties:
+                    topicName:
+                      minLength: 1
       responses:
         '200':
           description: Google Workspace OAuth configuration saved
@@ -62253,26 +62161,24 @@ paths:
                     type: string
                     description: Required, and must not be empty, when real-time updates are on.
                 allOf:
-                  - if:
-                      required: [fileChanged]
-                      properties:
-                        fileChanged:
-                          enum: [true, 'true']
-                    then:
-                      required: [fileContent]
-                  - if:
-                      required: [enableRealTimeUpdates]
-                      properties:
-                        enableRealTimeUpdates:
-                          anyOf:
-                            - const: true
-                            - type: string
-                              pattern: '^[Tt][Rr][Uu][Ee]$'
-                    then:
-                      required: [topicName]
-                      properties:
-                        topicName:
-                          minLength: 1
+                  - anyOf:
+                      - properties:
+                          fileChanged:
+                            not:
+                              enum: [true, 'true']
+                      - required: [fileContent]
+                  - anyOf:
+                      - properties:
+                          enableRealTimeUpdates:
+                            not:
+                              anyOf:
+                                - enum: [true]
+                                - type: string
+                                  pattern: '^[Tt][Rr][Uu][Ee]$'
+                      - required: [topicName]
+                        properties:
+                          topicName:
+                            minLength: 1
               - title: Individual organization
                 type: object
                 required: [access_token, refresh_token, access_token_expiry_time]
@@ -62352,26 +62258,24 @@ paths:
                     type: string
                     description: Required, and must not be empty, when real-time updates are on.
                 allOf:
-                  - if:
-                      required: [fileChanged]
-                      properties:
-                        fileChanged:
-                          enum: [true, 'true']
-                    then:
-                      required: [fileContent]
-                  - if:
-                      required: [enableRealTimeUpdates]
-                      properties:
-                        enableRealTimeUpdates:
-                          anyOf:
-                            - const: true
-                            - type: string
-                              pattern: '^[Tt][Rr][Uu][Ee]$'
-                    then:
-                      required: [topicName]
-                      properties:
-                        topicName:
-                          minLength: 1
+                  - anyOf:
+                      - properties:
+                          fileChanged:
+                            not:
+                              enum: [true, 'true']
+                      - required: [fileContent]
+                  - anyOf:
+                      - properties:
+                          enableRealTimeUpdates:
+                            not:
+                              anyOf:
+                                - enum: [true]
+                                - type: string
+                                  pattern: '^[Tt][Rr][Uu][Ee]$'
+                      - required: [topicName]
+                        properties:
+                          topicName:
+                            minLength: 1
               - title: Individual organization
                 type: object
                 required: [access_token, refresh_token, access_token_expiry_time]

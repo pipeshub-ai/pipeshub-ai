@@ -36,14 +36,18 @@ _OPENAPI_PATH = (
 SPEC_URI = "urn:pipeshub:openapi"
 
 
-def _strip_nonvalidation_keys(obj: Any) -> Any:
-    """Remove OpenAPI-only keys that confuse strict validators."""
+def _strip_nonvalidation_keys(obj: Any, *, under_properties: bool = False) -> Any:
+    """Remove OpenAPI-only keys that confuse strict validators.
+
+    Keys directly under ``properties`` are field names, not keywords, so a field called
+    ``examples`` keeps its schema.
+    """
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
-            if k in ("example", "examples", "discriminator", "xml", "externalDocs"):
+            if not under_properties and k in ("example", "examples", "discriminator", "xml", "externalDocs"):
                 continue
-            out[k] = _strip_nonvalidation_keys(v)
+            out[k] = _strip_nonvalidation_keys(v, under_properties=k == "properties" and not under_properties)
         return out
     if isinstance(obj, list):
         return [_strip_nonvalidation_keys(i) for i in obj]
