@@ -75,6 +75,7 @@ __all__ = [
     "AssignedRedisLaneRouter",
     "LaneAssignments",
     "LaneEntry",
+    "LaneMapUnavailableError",
     "LaneMoveRefusedError",
     "lane_map_key",
     "lane_meta_key",
@@ -93,6 +94,9 @@ STATE_DELETED: Final = "deleted"
 _MAX_COMMIT_ATTEMPTS = 25
 # One warning per connector per this long when a lookup falls back.
 _FALLBACK_WARNING_INTERVAL_SECONDS = 60.0
+# After a lookup fails, connectors with nothing cached go straight to their
+# hash lane for this long instead of each waiting on Redis again.
+_UNAVAILABLE_HOLD_SECONDS = 5.0
 
 
 def lane_map_key(topic: str) -> str:
@@ -184,9 +188,10 @@ return {entry or "", lane_count, now_ms, redis.call("HGETALL", KEYS[2])}
 # fallback lane count.
 #
 # "assign" never touches a connector that already has a lane inside the lane
-# count; "move" does, unless a previous move is still settling. Either way the
-# write is refused, and the current snapshot returned, if the meta version is
-# no longer the one the rule saw.
+# count; "move" does, unless a previous move is still settling. An entry
+# outside the lane count is replaced, unless it too is still settling. Either
+# way the write is refused, and the current snapshot returned, if the meta
+# version is no longer the one the rule saw.
 _COMMIT_SCRIPT = """
 local map, meta = KEYS[1], KEYS[2]
 local id, lane, class = ARGV[1], tonumber(ARGV[2]), ARGV[3]
@@ -228,6 +233,11 @@ if old then old_lane = tonumber(old[2]) end
 if old_lane and old_lane < lane_count then
     if mode ~= "move" or old_lane == lane then return {"existing", raw} end
     if old[5] ~= "" then return {"settling", raw} end
+elseif old_lane and old[5] ~= "" then
+    -- Outside the lane count but still settling a move: replacing prevLane
+    -- would lose the lane its earlier events wait on. It keeps publishing to
+    -- its current lane, which the consumer adopted, until the move settles.
+    return {"settling", raw}
 end
 
 local version = tonumber(redis.call("HGET", meta, "version")) or 0
@@ -346,6 +356,10 @@ def _without(snapshot: LaneSnapshot, entry: LaneEntry) -> LaneSnapshot:
     return replace(snapshot, lanes=lanes)
 
 
+class LaneMapUnavailableError(RuntimeError):
+    """The lane map could not be read just now; the caller falls back."""
+
+
 class LaneMoveRefusedError(RuntimeError):
     """A move was asked for that this edition, or the map's state, does not allow."""
 
@@ -394,8 +408,8 @@ class LaneAssignments:
             max_connections=max(1, max_connections),
             socket_timeout_seconds=timeout,
             socket_connect_timeout_seconds=timeout,
-            # A lookup that fails falls back to the hash lane; retrying here
-            # would only hold the publish that is waiting on it.
+            # A lookup that fails falls back to the hash lane, so one retry
+            # (a pooled connection that went stale) is all it is worth.
             retry_attempts=1,
             blocking=True,
         )
@@ -406,6 +420,8 @@ class LaneAssignments:
         self._cache: dict[str, _Cached] = {}
         self._known_lane_count: int | None = None
         self._shas: dict[str, str] = {}
+        # Monotonic time until which lookups are not tried after one failed.
+        self._unavailable_until = 0.0
         # One placement at a time per loop: two of them racing each other's
         # commits from the same process would only cost round trips.
         self._placement_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
@@ -433,13 +449,21 @@ class LaneAssignments:
         Raises if Redis cannot answer and this process has never seen the
         connector; the caller decides what to fall back to.
         """
+        now = time.monotonic()
         with self._lock:
             cached = self._cache.get(connector_id)
-        if cached is not None and time.monotonic() - cached.fetched_at < self._cache_seconds:
+        if cached is not None and now - cached.fetched_at < self._cache_seconds:
             return cached.lane
+        if now < self._unavailable_until:
+            # Redis just failed a lookup: answer at once rather than make
+            # every publish wait out its own timeout.
+            if cached is not None:
+                return cached.lane
+            raise LaneMapUnavailableError("The lane map did not answer a moment ago")
         try:
             lane = await self._lookup_or_place(connector_id, hint or LaneHint(), is_new=False)
         except Exception:
+            self._unavailable_until = time.monotonic() + _UNAVAILABLE_HOLD_SECONDS
             if cached is not None:
                 # An entry almost never changes, so a stale lane is still
                 # the best answer there is.
@@ -568,10 +592,13 @@ class LaneAssignments:
                 cached = self._cache.get(connector_id)
             if cached is not None and time.monotonic() - cached.fetched_at < self._cache_seconds:
                 return cached.lane
+            # An event says its class only for an upload, so a repaired entry
+            # keeps the class it already has unless the caller knows better.
             connector_class = (
                 ConnectorClass.SYSTEM.value
                 if connector_id == DEFAULT_LANE_KEY
-                else hint.connector_class or ConnectorClass.TEAM.value
+                else hint.connector_class
+                or (entry.connector_class if entry is not None else ConnectorClass.TEAM.value)
             )
             reason = (
                 LaneRequestReason.LANE_OUT_OF_RANGE
@@ -777,7 +804,12 @@ class AssignedRedisLaneRouter(RedisLaneRouter):
         return self.lane_name(topic, lane), lane_key
 
     def _fall_back(self, key: str, lane: int, error: Exception) -> None:
-        reason = "timeout" if isinstance(error, (TimeoutError, asyncio.TimeoutError)) else "error"
+        if isinstance(error, LaneMapUnavailableError):
+            reason = "held"
+        elif isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+            reason = "timeout"
+        else:
+            reason = "error"
         metrics.record_lane_assignment_fallback(reason)
         now = time.monotonic()
         with self._warn_lock:

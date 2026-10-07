@@ -66,6 +66,20 @@ class TestCreateClient:
         provider.create_client(ClientOptions(blocking=blocking, max_connections=10))
         assert "max_connections" not in mock_cluster_cls.call_args.kwargs
 
+    def test_the_requested_retry_attempts_reach_the_client(self, mock_cluster_cls) -> None:
+        provider = ClusterRedisProvider(_config())
+        provider.create_client(ClientOptions(retry_attempts=1))
+
+        kwargs = mock_cluster_cls.call_args.kwargs
+        assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (1, 1)
+
+    def test_three_retries_unless_asked_otherwise(self, mock_cluster_cls) -> None:
+        provider = ClusterRedisProvider(_config())
+        provider.create_client()
+
+        kwargs = mock_cluster_cls.call_args.kwargs
+        assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (3, 3)
+
     def test_fresh_instance_each_call(self, mock_cluster_cls):
         provider = ClusterRedisProvider(_config())
         c1 = provider.create_client()
@@ -148,6 +162,8 @@ class TestCreatePubsubClient:
         assert built[0]["port"] == 7001
         # A plain node connection, not a cluster one.
         assert "startup_nodes" not in built[0]
+        assert "cluster_error_retry_attempts" not in built[0]
+        assert "connection_error_retry_attempts" not in built[0]
 
     def test_falls_back_to_the_configured_endpoint_before_discovery(
         self, mock_cluster_cls, monkeypatch
