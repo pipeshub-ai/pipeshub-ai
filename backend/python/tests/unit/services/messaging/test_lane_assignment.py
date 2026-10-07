@@ -2,7 +2,7 @@
 
 Runs the real Lua scripts against an in-memory Redis (fakeredis with Lua),
 standalone and with the cluster double that refuses a script whose keys span
-hash slots. ``tests/integration/messaging/test_lane_assignment_it.py`` runs
+hash slots. ``tests/integration/messaging/test_redis_lane_assignment_it.py`` runs
 the same placements against a real Redis 7 server.
 """
 from __future__ import annotations
