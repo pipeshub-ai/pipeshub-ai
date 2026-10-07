@@ -920,6 +920,35 @@ class TestBatchedFieldsIfMatch:
         )
         await _assert_batched_fields_if_match(provider, keys)
 
+    async def test_neo4j_reads_a_write_that_commits_while_it_waits(self, neo4j) -> None:
+        """Another delivery claims the record and holds its lock until after this
+        write has read it; the claim must survive, not be overwritten."""
+        provider, org_id = neo4j
+        key = f"{org_id}-claimed"
+        records = CollectionNames.RECORDS.value
+        await provider.client.execute_query(
+            "CREATE (r:Record) SET r = $row",
+            parameters={"row": {"id": key, "orgId": org_id, "indexingStatus": "QUEUED"}},
+        )
+        session = provider.client.driver.session(database="neo4j")
+        tx = await session.begin_transaction()
+        try:
+            await tx.run(
+                "MATCH (r:Record {id: $id}) SET r.indexingStatus = 'IN_PROGRESS'", id=key,
+            )
+            write = asyncio.create_task(provider.update_nodes_fields_if_match(records, [
+                (key, {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+            ]))
+            await asyncio.sleep(HOLD_SECONDS)
+            assert not write.done()
+            await tx.commit()
+        finally:
+            await session.close()
+        assert await write == []
+        stored = await provider.get_document(key, records)
+        assert stored["indexingStatus"] == "IN_PROGRESS"
+        assert "matchLock" not in stored
+
     async def test_arango(self, arango) -> None:
         provider, org_id = arango
         from app.config.constants.arangodb import Connectors, OriginTypes
