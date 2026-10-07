@@ -24,7 +24,7 @@ info:
 
     **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST` ("HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again."). It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/` and `/connectors`, and POST, PUT and PATCH under `/skills`, skip the filter.
 
-    **Body parsers.** `application/json` bodies (up to 10 MB) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse, or a body past these limits, is answered `500 INTERNAL_ERROR`. Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. The form media type is therefore listed only on operations whose body is all text: every value a string (string enums included), in objects and lists whose own values are strings.
+    **Body parsers.** `application/json` bodies (up to 10 MB) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse, or a body past these limits, is answered `500 INTERNAL_ERROR`. Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
     **OAuth scopes.** On an operation whose `security` names `oauth2` scopes, an OAuth access token holding none of them gets `403 HTTP_FORBIDDEN` ("Insufficient scope. Required: ...") right after authentication. Session tokens are never scope-checked.
 
@@ -23045,10 +23045,7 @@ paths:
       security: []
       requestBody:
         description: |
-          Client metadata to register. A form-encoded body is parsed and validated the same way as
-          JSON (the app parses `application/x-www-form-urlencoded` for every route). In a form body
-          a list field such as `redirect_uris` must repeat its key: a key sent once parses as a
-          string and is refused with `400 VALIDATION_ERROR` ("must be a list").
+          Client metadata to register.
         content:
           application/json:
             schema:
