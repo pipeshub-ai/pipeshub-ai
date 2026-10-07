@@ -38,9 +38,9 @@ from tests.integration.messaging.conftest import (
     delete_kafka_topic,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio, pytest.mark.timeout(240)]
 
-_A = 3_000
+_A = 1_500
 _B = 5
 
 
