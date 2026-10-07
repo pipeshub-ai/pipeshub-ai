@@ -24,6 +24,24 @@ jobs:
       - name: Lint OpenAPI spec with Spectral
         run: spectral lint backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml --ruleset .spectral.yaml --fail-severity error
 
+      # The SDK repo (pipeshub-ai/open-api) validates the synced spec with Speakeasy and
+      # rejects what the SDK generator can't build, e.g. two properties that map to one field.
+      # Same CLI version as open-api's validate-openapi.yml, so a spec that passes here passes there.
+      - name: Install Speakeasy CLI
+        env:
+          SPEAKEASY_VERSION: v1.739.0
+          SPEAKEASY_SHA256: a75f9ecda63e48551ff605a51d32fe98b6368fe645216751dcf6a7a4efb86063
+        run: |
+          curl -fsSL -o /tmp/speakeasy.zip "https://github.com/speakeasy-api/speakeasy/releases/download/${SPEAKEASY_VERSION}/speakeasy_linux_amd64.zip"
+          echo "${SPEAKEASY_SHA256}  /tmp/speakeasy.zip" | sha256sum -c -
+          sudo unzip -o -q /tmp/speakeasy.zip speakeasy -d /usr/local/bin
+
+      - name: Validate OpenAPI spec with Speakeasy
+        run: speakeasy validate openapi -s backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+
+      - name: Lint OpenAPI spec with Speakeasy
+        run: speakeasy lint openapi -s backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+
       # Step 2: Check route coverage (code routes vs spec)
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
