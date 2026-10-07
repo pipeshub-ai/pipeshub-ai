@@ -118,7 +118,7 @@ async def _stream_lengths(redis: object, topic: str, connector: str) -> dict[str
     """Which streams hold this connector's events, and how many."""
     lengths: dict[str, int] = {}
     for stream in lane_topics_for(topic, MessageBrokerType.REDIS):
-        entries = await redis.xrange(stream, count=GITLAB_EVENTS + SLACK_EVENTS)  # type: ignore[attr-defined]
+        entries = await redis.xrange(stream, count=GITLAB_EVENTS + 4 * SLACK_EVENTS)  # type: ignore[attr-defined]
         mine = sum(f'"connectorId": "{connector}"' in fields["value"] for _id, fields in entries)
         if mine:
             lengths[stream] = mine
@@ -262,31 +262,13 @@ def assert_reproduced(outcome: Outcome) -> None:
     assert GITLAB_EVENTS - outcome.gitlab_dispatched_by_end > 18_000, outcome.describe()
 
 
-class _Graph:
-    """The graph reads lane upkeep makes, for the two connectors."""
-
-    def __init__(self, queued: dict[str, int]) -> None:
-        self.queued = queued
-
-    async def get_documents_paginated(self, collection, skip=0, limit=50, **_kwargs) -> list[dict[str, object]]:
-        assert collection == "apps", f"lane upkeep read {collection}"
-        rows = [
-            {"_key": c, "name": c, "type": "GITLAB", "scope": "team", "orgId": "org-1"}
-            for c in sorted(self.queued)
-        ]
-        return rows[skip : skip + limit]
-
-    async def get_connector_stats(self, _org_id: str, connector_id: str) -> dict[str, object]:
-        return {"data": {"stats": {"indexingStatus": {"QUEUED": self.queued[connector_id]}}}}
-
-
 async def run_upgrade(
     monkeypatch: pytest.MonkeyPatch, topic: str, redis_config: RedisStreamsConfig, group: str
 ) -> tuple[dict[str, object], Outcome]:
     """The report's install upgraded: its lanes were filled by hashing, then
-    assigned lanes are switched on, the indexing service's upkeep runs the
-    one-time fix-up, and Slack publishes again before the consumer starts."""
-    from app.modules.indexing.lane_upkeep import run_lane_upkeep
+    assigned lanes are switched on and both connectors publish again before
+    the consumer starts. There is no one-time step: each connector is placed
+    by the rule on its first publish after the switch."""
     from app.services.messaging.lanes import assignment
     from app.services.messaging.lanes.assignment import lane_assignments_in_use
 
@@ -307,18 +289,16 @@ async def run_upgrade(
     producer = MessagingFactory.create_producer(logger, redis_config, MessageBrokerType.REDIS)
     await producer.initialize()
     try:
-        assignments = lane_assignments_in_use(topic)
-        assert assignments is not None
-        await run_lane_upkeep(
-            assignments=assignments,
-            graph_provider=_Graph({gitlab: GITLAB_EVENTS, slack: SLACK_EVENTS}),  # type: ignore[arg-type]
-            backlog=None,
-            logger=logger,
+        # GitLab publishes first after the switch, as the busier connector would.
+        await producer.send_messages(
+            topic, [_event(gitlab, i) for i in range(GITLAB_EVENTS, GITLAB_EVENTS + SLACK_EVENTS)]
         )
-        entries = await assignments.read_map()
         await producer.send_messages(
             topic, [_event(slack, i) for i in range(SLACK_EVENTS, 2 * SLACK_EVENTS)]
         )
+        assignments = lane_assignments_in_use(topic)
+        assert assignments is not None
+        entries = await assignments.read_map()
     finally:
         await producer.cleanup()
 
@@ -336,15 +316,17 @@ async def run_upgrade(
 
 
 def assert_upgrade_separated_them(lanes: dict[str, object], outcome: Outcome) -> None:
-    """GitLab, with the backlog, kept the lane; Slack moved. Slack's new
-    events are indexed without waiting for GitLab. The upgrade moves no
-    queued event, so the ones Slack queued before it still wait their turn
-    behind GitLab's backlog."""
+    """After the switch, nothing is re-arranged. GitLab, publishing first,
+    keeps its hash lane and its own order. Slack, finding that lane taken,
+    moves on its first publish: its new events are dispatched without waiting
+    for GitLab. The events Slack queued before the switch stay on the old
+    lane and finish there, behind GitLab's backlog."""
     assert lanes["gitlab"] == lanes["hash_lane"], lanes
     assert lanes["gitlab_prev"] is None, lanes
     assert lanes["slack"] != lanes["hash_lane"], lanes
     assert lanes["slack_prev"] == lanes["hash_lane"], lanes
     assert outcome.slack_stream_lengths.get(lanes["hash_stream"]) == SLACK_EVENTS, outcome.describe()
+    assert outcome.gitlab_stream_lengths == {lanes["hash_stream"]: GITLAB_EVENTS + SLACK_EVENTS}, outcome.describe()
     assert outcome.slack_dispatched == SLACK_EVENTS, outcome.describe()
     assert outcome.slack_earlier_dispatched == 0, outcome.describe()
     assert outcome.gitlab_dispatched_when_slack_done is not None

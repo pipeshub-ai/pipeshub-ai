@@ -47,7 +47,7 @@ async def test_with_hashing_slack_waits_behind_gitlab(setup, unique_suffix) -> N
     report_scenario.assert_reproduced(outcome)
 
 
-async def test_an_upgraded_install_has_its_colliding_connectors_separated(setup, unique_suffix) -> None:
+async def test_an_upgraded_install_spreads_new_work_from_the_first_publish(setup, unique_suffix) -> None:
     config, topic, monkeypatch = setup
 
     lanes, outcome = await report_scenario.run_upgrade(monkeypatch, topic, config, group=f"{topic}-{unique_suffix}")
