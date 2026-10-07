@@ -394,6 +394,71 @@ class TestStubEdgesMoveOntoTheLogin:
 
         asyncio.run(_run())
 
+    def test_neo4j_keeps_every_entity_relation_type_between_a_record_and_the_stub(self):
+        async def _run() -> None:
+            entity_rel = neo4j_module.EDGE_COLLECTION_TO_RELATIONSHIP[
+                CollectionNames.ENTITY_RELATIONS.value
+            ]
+            record_label = neo4j_module.COLLECTION_TO_LABEL[CollectionNames.RECORDS.value]
+
+            def relation(edge_type, record="rec-1", stub_is_start=False):
+                return {
+                    "rel_type": entity_rel,
+                    "from_id": "stub-key" if stub_is_start else record,
+                    "to_id": record if stub_is_start else "stub-key",
+                    "from_labels": ["User"] if stub_is_start else [record_label],
+                    "to_labels": [record_label] if stub_is_start else ["User"],
+                    "props": {"edgeType": edge_type},
+                }
+
+            provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+            provider.client = MagicMock()
+            provider.client.execute_query = AsyncMock(
+                side_effect=[
+                    [
+                        relation("CREATED_BY"),
+                        relation("ASSIGNED_TO"),
+                        relation("ASSIGNED_TO"),
+                        relation("REPORTED_BY", stub_is_start=True),
+                    ],
+                    *[None] * 3,
+                ]
+            )
+            provider.delete_nodes = AsyncMock(return_value=True)
+
+            await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
+
+            merges = provider.client.execute_query.await_args_list[1:]
+            assert len(merges) == 3
+            params = [m.kwargs["parameters"] for m in merges]
+            assert [
+                (p["from_id"], p["to_id"], p["identity_edgeType"]) for p in params
+            ] == [
+                ("rec-1", "keep-key", "CREATED_BY"),
+                ("rec-1", "keep-key", "ASSIGNED_TO"),
+                ("keep-key", "rec-1", "REPORTED_BY"),
+            ]
+            assert "edgeType: $identity_edgeType" in merges[0].args[0]
+            assert all(p["props"]["edgeType"] == p["identity_edgeType"] for p in params)
+
+        asyncio.run(_run())
+
+    def test_arango_entity_relations_dedupe_per_edge_type(self):
+        async def _run() -> None:
+            provider = ArangoHTTPProvider(logger=MagicMock(), config_service=MagicMock())
+            provider.http_client = MagicMock()
+            provider.http_client.execute_aql = AsyncMock(return_value=[])
+            provider.delete_nodes = AsyncMock(return_value=True)
+
+            await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
+
+            collection = CollectionNames.ENTITY_RELATIONS.value
+            queries = [c.args[0] for c in provider.http_client.execute_aql.await_args_list]
+            move = next(q for q in queries if "INSERT" in q and f"INTO {collection}" in q)
+            assert "other.edgeType == e.edgeType" in move
+
+        asyncio.run(_run())
+
     def test_arango_authenticated_as_dedupes_per_connector_only(self):
         async def _run() -> None:
             provider = ArangoHTTPProvider(logger=MagicMock(), config_service=MagicMock())
@@ -430,6 +495,7 @@ class TestStubEdgesMoveOntoTheLogin:
                 assert sum(f"IN {collection}" in q for q in queries) == 2
             assert CollectionNames.USER_DRIVE_RELATION.value in STUB_EDGE_COLLECTIONS
             assert CollectionNames.AUTHENTICATED_AS.value in STUB_EDGE_COLLECTIONS
+            assert CollectionNames.ENTITY_RELATIONS.value in STUB_EDGE_COLLECTIONS
             first = provider.http_client.execute_aql.await_args_list[0]
             assert first.kwargs["bind_vars"] == {
                 "stub_id": "users/stub-key",

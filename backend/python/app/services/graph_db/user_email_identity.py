@@ -14,12 +14,16 @@ STUB_EDGE_COLLECTIONS = (
     CollectionNames.USER_APP_RELATION.value,
     CollectionNames.USER_DRIVE_RELATION.value,
     CollectionNames.AUTHENTICATED_AS.value,
+    CollectionNames.ENTITY_RELATIONS.value,
 )
 
 # One AUTHENTICATED_AS edge exists per connector, so connectorId is part of the
 # edge's identity: two connectors linking the same two users must both survive.
+# ENTITY_RELATIONS holds CREATED_BY / ASSIGNED_TO / REPORTED_BY on the same
+# record/user pair, so edgeType must be part of the identity as well.
 STUB_EDGE_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     CollectionNames.AUTHENTICATED_AS.value: ("connectorId",),
+    CollectionNames.ENTITY_RELATIONS.value: ("edgeType",),
 }
 
 VERIFIED_EMAIL_WRITE_COLLECTIONS = (
