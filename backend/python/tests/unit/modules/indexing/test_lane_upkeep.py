@@ -600,6 +600,72 @@ class TestAFreeLaneReallyIsFree:
         assert second.migrated_at_ms is not None
 
 
+    async def _settle(self, provider: FakeRedisConnectionProvider, connector_id: str) -> None:
+        """Its earlier move has settled: upkeep cleared its previous lane."""
+        entry = (await _map(provider))[connector_id]
+        settled = LaneEntry(entry.lane, entry.connector_class)
+        await provider.get_client().hset(lane_map_key(TOPIC), connector_id, settled.encode())
+
+    async def test_its_current_lane_is_decided_before_its_records_are_re_sent(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """Lane 0: GitLab (100). Slack (40) moved off lane 0 onto lane 1,
+        beside Drive (80). Lane 7 is free. Slack must end on lane 7 with its
+        records there, not have them re-sent behind Drive."""
+        placements: dict[str, tuple[int, int | None, int]] = {
+            "gitlab-100": (0, None, 100),
+            "slack-40": (1, 0, 40),
+            "drive-80": (1, None, 80),
+        }
+        placements |= {f"solo-{lane}": (lane, None, 5) for lane in range(2, 7)}
+        await _seed(provider, graph, placements)
+
+        first = await _upkeep(provider, graph, producer)
+
+        assert first.migrated_at_ms is None
+        assert producer.events == [], "nothing re-sent onto the lane it still has to leave"
+        await self._settle(provider, "slack-40")
+        second = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert (entries["slack-40"].lane, entries["drive-80"].lane) == (7, 1)
+        assert {t for t, *_ in producer.events} == {f"{TOPIC}.7"}
+        assert len(producer.events) == 40
+        assert second.migrated_at_ms is not None
+
+    async def test_a_held_lane_is_held_even_with_another_lane_free(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """Lanes 6 and 7 free; A (50) still settling on a shared lane; B (30)
+        and C (10) each share another lane. A, with the most waiting, holds
+        lane 6, so only B may take a free lane."""
+        placements: dict[str, tuple[int, int | None, int]] = {
+            "k0-100": (0, None, 100),
+            "b-30": (0, None, 30),
+            "k1-100": (1, None, 100),
+            "c-10": (1, None, 10),
+            "k2-200": (2, None, 200),
+            "a-50": (2, 3, 50),
+            "big-3": (3, None, 300),
+            "solo-4": (4, None, 5),
+            "solo-5": (5, None, 5),
+        }
+        await _seed(provider, graph, placements)
+
+        first = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert first.migrated_at_ms is None
+        assert (entries["b-30"].lane, entries["c-10"].lane, entries["a-50"].lane) == (7, 1, 2)
+        assert not any(e.lane == 6 for e in entries.values()), "lane 6 is held for A"
+
+        await self._settle(provider, "a-50")
+        second = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert (entries["a-50"].lane, entries["c-10"].lane) == (6, 1)
+        assert second.migrated_at_ms is not None
+
     async def test_a_connector_recorded_late_beside_one_already_moved_is_separated(
         self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
     ) -> None:
