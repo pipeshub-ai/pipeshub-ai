@@ -10,14 +10,23 @@ import { Logger } from './logger.service';
 import { parsePositiveIntSafe } from '../utils/env.utils';
 
 /**
- * Partition count for the indexing topic.
+ * Partition count the indexing topic is created with when
+ * KAFKA_TOPIC_PARTITIONS is not set.
  *
- * On Kafka a fair-scheduling lane *is* a partition, so this is what bounds
- * how many keys can be isolated from one another -- and, because the indexing
- * consumer holds a partition for a record's whole lifetime, it is also the
- * ceiling on indexing concurrency. Default 1 preserves existing behaviour.
+ * On Kafka a fair-scheduling lane *is* a partition: connectors are placed on
+ * partitions by key, so the partition count is how many connectors can be kept
+ * apart before two share one and one's backlog waits behind the other's. And,
+ * because the indexing consumer holds a partition for a record's whole
+ * lifetime, it is also the ceiling on indexing concurrency. 32 keeps the chance
+ * of two of a typical install's connectors sharing a lane low, is well within
+ * what a single broker handles, and stays under the governor's index limits on
+ * most hosts.
+ *
+ * Only a topic this service creates gets it. An existing topic is grown only
+ * when KAFKA_TOPIC_PARTITIONS is set explicitly: growing moves keys between
+ * partitions once, which is an operator's decision, not an upgrade's.
  */
-const DEFAULT_TOPIC_PARTITIONS = 1;
+const DEFAULT_NEW_TOPIC_PARTITIONS = 32;
 
 /** Message from a caught value, which is not necessarily an Error. */
 function errorMessage(error: unknown): string {
@@ -27,9 +36,14 @@ function errorMessage(error: unknown): string {
 function configuredPartitions(): number {
   return parsePositiveIntSafe(
     process.env[ENV_KAFKA_TOPIC_PARTITIONS],
-    DEFAULT_TOPIC_PARTITIONS,
+    DEFAULT_NEW_TOPIC_PARTITIONS,
     ENV_KAFKA_TOPIC_PARTITIONS,
   );
+}
+
+/** Whether an operator asked for a partition count, as opposed to the default. */
+function partitionsSetExplicitly(): boolean {
+  return process.env[ENV_KAFKA_TOPIC_PARTITIONS] !== undefined;
 }
 
 // Required topics for the application. Only the indexing topic is laned;
@@ -41,6 +55,8 @@ export const REQUIRED_TOPICS: TopicDefinition[] = Object.values(
   numPartitions:
     topic === BrokerTopic.RECORD_EVENTS ? configuredPartitions() : 1,
   replicationFactor: 1,
+  growExisting:
+    topic === BrokerTopic.RECORD_EVENTS && partitionsSetExplicitly(),
 }));
 
 /** @deprecated Use REQUIRED_TOPICS instead */
@@ -63,7 +79,9 @@ export class KafkaAdminService implements IMessageAdmin {
   }
 
   /**
-   * Raises the partition count of topics that already exist.
+   * Raises the partition count of topics that already exist, for the topics
+   * marked `growExisting` (the indexing topic, when KAFKA_TOPIC_PARTITIONS is
+   * set). The new-install default alone never grows a topic.
    *
    * createTopics only ever creates; an install that already has
    * record-events at one partition would otherwise stay there forever and
@@ -77,7 +95,9 @@ export class KafkaAdminService implements IMessageAdmin {
    * logged because it is a real, one-time change in message placement.
    */
   private async growPartitions(existing: TopicDefinition[]): Promise<void> {
-    const wanted = existing.filter((t) => (t.numPartitions ?? 1) > 1);
+    const wanted = existing.filter(
+      (t) => t.growExisting === true && (t.numPartitions ?? 1) > 1,
+    );
     if (wanted.length === 0) {
       return;
     }

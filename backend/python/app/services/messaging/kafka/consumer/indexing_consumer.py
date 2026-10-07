@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import ssl
 import threading
@@ -44,6 +45,10 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.backlog import read_partition_backlog
+from app.services.messaging.kafka.consumer.remembered import (
+    OffsetFetcher,
+    RememberedOffsets,
+)
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
@@ -99,6 +104,12 @@ _BUSY_POLL_TIMEOUT_MS = 50
 _DEFAULT_KEY_LEVEL = "__default__"
 # A message the read phase has not parsed yet (see __parse_batch).
 _UNPARSED = object()
+# Remembered messages fetched back per connector per read pass, and how long
+# one fetch-back may take before it is retried on the next pass.
+_FETCH_BACK_BATCH = 500
+# Messages read per pass while reading past a connector at its cap.
+_READ_PAST_BATCH = 1000
+_FETCH_BACK_TIMEOUT_SECONDS = 15.0
 
 # Re-exported for backwards compatibility with existing call sites/tests in
 # this module; canonical definition lives in app.services.messaging.config
@@ -141,6 +152,7 @@ class _ReadOutcome:
     BUFFERED = "buffered"
     RESOLVED = "resolved"       # terminal inline, e.g. an unparseable message
     PARKED = "parked"           # key is capped; held in memory, keep reading
+    REMEMBERED = "remembered"   # key is capped; position kept, keep reading
     STOP_PARTITION = "stop"     # no buffer room at all: seek back and stop
 
 
@@ -284,9 +296,20 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._deferred_messages: deque[
             tuple[TopicPartition, ConsumerRecord, StreamMessage, FairnessKey]
         ] = deque()
+        # Positions of messages read past a connector at its cap; see
+        # remembered.py. None when the budget is 0, which keeps parking.
+        self._remembered: RememberedOffsets | None = None
+        self._offset_fetcher: OffsetFetcher | None = None
+        self._remembered_budget_logged = False
+        self._fetch_back_task: asyncio.Task | None = None
+        self._fetch_back_plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
         if self.fair_scheduler_config.enabled:
             self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider)
             self._offset_tracker = PartitionOffsetTracker(logger=logger)
+            if self.fair_scheduler_config.max_remembered_positions > 0:
+                self._remembered = RememberedOffsets(
+                    self.fair_scheduler_config.max_remembered_positions
+                )
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
@@ -622,6 +645,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.logger.error(f"Error stopping Kafka consumer: {e}")
         self._lane_paused.clear()
         self._deferred_messages.clear()
+        if self._remembered is not None:
+            self._remembered.clear()
+        if self._fetch_back_task is not None:
+            self._fetch_back_task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._fetch_back_task
+            self._fetch_back_task = None
+        if self._offset_fetcher is not None:
+            await self._offset_fetcher.close()
+            self._offset_fetcher = None
         with self._partition_lock:
             self._in_flight_partitions.clear()
             self._deferred_partition_offsets.clear()
@@ -699,6 +732,17 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._deferred_messages = deque(
             entry for entry in self._deferred_messages if entry[0] not in revoked_set
         )
+        forgotten = (
+            self._remembered.drop_partitions(revoked_set)
+            if self._remembered is not None
+            else 0
+        )
+        if forgotten:
+            self.logger.info(
+                "Rebalance: forgot %d remembered position(s) on revoked "
+                "partition(s); their new owner reads them from the committed offset",
+                forgotten,
+            )
         with self._partition_lock:
             for tp in revoked_set:
                 self._in_flight_partitions.discard(tp)
@@ -1031,6 +1075,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if scheduler is None or self.consumer is None:
             return
         self.__drain_deferred()
+        await self.__fetch_back_remembered()
         buffer_room = max(
             0,
             self.fair_scheduler_config.max_buffered_messages
@@ -1048,20 +1093,30 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # dispatch of everything already buffered by the whole timeout --
         # which caps throughput at (partitions / timeout) records per second
         # no matter how much is waiting.
+        # Remembered messages are buffered work too: a full-length poll here
+        # would hold each fetch-back for the whole timeout.
         poll_timeout_ms = (
             _BUSY_POLL_TIMEOUT_MS
             if scheduler.pending_count
+            or (self._remembered is not None and self._remembered.total)
             else messaging_env.message_timeout_ms
         )
+        max_records = max(
+            1, min(max(1, messaging_env.message_batch_size_indexing), buffer_room)
+        )
+        remembered = self._remembered
+        if remembered is not None and remembered.total and remembered.has_room:
+            # Reading past a connector at its cap: its messages cost a position,
+            # not buffer room, so the read is sized to the positions left. One
+            # that does turn out to need buffer room with none left is seeked
+            # back, as before.
+            max_records = max(
+                max_records,
+                min(_READ_PAST_BATCH, remembered.budget - remembered.total),
+            )
         message_batch = await self.consumer.getmany(
             timeout_ms=poll_timeout_ms,
-            max_records=max(
-                1,
-                min(
-                    max(1, messaging_env.message_batch_size_indexing),
-                    buffer_room,
-                ),
-            ),
+            max_records=max_records,
         )  # type: ignore
         self._partitions_with_data = {
             tp for tp, messages in (message_batch or {}).items() if messages
@@ -1111,6 +1166,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
                     self.__seek_back(tp, message.offset)
                     break
+                if outcome == _ReadOutcome.REMEMBERED:
+                    continue
                 if outcome == _ReadOutcome.PARKED:
                     # Steer the remaining budget at lanes that can still make
                     # progress -- but only if there are any. Pausing the last
@@ -1334,8 +1391,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         scheduler = self._scheduler
         cap = self.fair_scheduler_config.max_per_entity_messages
         buffer_has_room = self.__buffer_has_room()
+        remembered = self._remembered
         for tp, key in list(self._lane_paused.items()):
             if not buffer_has_room or scheduler.pending_count_for(key) >= cap:
+                continue
+            # Stopped for want of positions: the next message is this key's,
+            # and it cannot be read until a fetch-back has freed one.
+            if remembered is not None and remembered.holds(key) and not remembered.has_room:
                 continue
             del self._lane_paused[tp]
             if self.consumer is None:
@@ -1416,6 +1478,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         ):
             if level == _DEFAULT_KEY_LEVEL:
                 metrics.record_missing_key("kafka", field)
+        entity = scheduler.entity_key(key)
+        remembered = self._remembered
+        if remembered is not None and remembered.holds(entity):
+            # Behind this connector's own remembered messages: buffering it
+            # now would put it ahead of them.
+            return self.__remember(entity, tp, message.offset)
         result = scheduler.enqueue(key, (tp, message, parsed), not_before=not_before)
         if result == EnqueueResult.ACCEPTED:
             return _ReadOutcome.BUFFERED, None
@@ -1425,6 +1493,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # re-reads it, which is exactly the guarantee that makes it safe to
         # drop the message here.
         metrics.record_deferred("kafka", result.value)
+        if result == EnqueueResult.ENTITY_FULL and remembered is not None:
+            return self.__remember(entity, tp, message.offset)
         if result == EnqueueResult.ENTITY_FULL and self.__buffer_has_room():
             # This key is capped but the buffer as a whole is not. Park the
             # message and keep reading: reading is the only way to reach a key
@@ -1435,6 +1505,200 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._deferred_messages.append((tp, message, parsed, key))
             return _ReadOutcome.PARKED, scheduler.entity_key(key)
         return _ReadOutcome.STOP_PARTITION, scheduler.entity_key(key)
+
+    def __remember(
+        self, entity: FairnessKey, tp: TopicPartition, offset: int
+    ) -> tuple[str, FairnessKey | None]:
+        """Keep only this message's position and read on.
+
+        Its offset stays tracked, with no dwell clock, so the watermark floors
+        at it and the dwell sweep leaves it alone, exactly as for a buffered
+        message. With the positions budget spent, the lane stops as it did
+        before positions existed: seeked back and paused until this connector
+        has room.
+        """
+        remembered = self._remembered
+        if remembered is not None and remembered.remember(entity, tp, offset):
+            return _ReadOutcome.REMEMBERED, None
+        if not self._remembered_budget_logged:
+            self.logger.warning(
+                "Remembered-positions budget of %d is spent; lanes whose next "
+                "message belongs to a connector at its cap stop until it drains",
+                self.fair_scheduler_config.max_remembered_positions,
+            )
+            self._remembered_budget_logged = True
+        return _ReadOutcome.STOP_PARTITION, entity
+
+    def __offset_fetcher(self) -> OffsetFetcher:
+        if self._offset_fetcher is None:
+            client_config = {
+                name: value
+                for name, value in IndexingKafkaConsumer.kafka_config_to_dict(
+                    self.kafka_config
+                ).items()
+                if name
+                not in ("topics", "group_id", "enable_auto_commit", "auto_offset_reset")
+            }
+            client_config["client_id"] = f"{self.kafka_config.client_id}-fetch-back"
+            self._offset_fetcher = OffsetFetcher(client_config, self.logger)
+        return self._offset_fetcher
+
+    async def __fetch_back_remembered(self) -> None:
+        """Buffer remembered messages again, oldest first per connector, as far
+        as each connector's cap and the buffer allow.
+
+        Read through a separate reader, so the main consumer's position and
+        the group are untouched. An offset retention has deleted is resolved
+        and logged: its record is still waiting, and the stranded-record sweep
+        re-sends it once the partition has been committed past its queue time.
+        """
+        task = self._fetch_back_task
+        if task is not None:
+            if not task.done():
+                return
+            self._fetch_back_task = None
+            plan, self._fetch_back_plan = self._fetch_back_plan, {}
+            try:
+                found, gone = task.result()
+            except Exception as e:
+                self.logger.warning(
+                    "Could not fetch back %d remembered message(s); trying again "
+                    "on the next pass: %r",
+                    sum(len(p) for p in plan.values()),
+                    e,
+                )
+                return
+            await self.__buffer_fetched_back(plan, found, gone)
+            return
+
+        remembered = self._remembered
+        scheduler = self._scheduler
+        if not remembered or not remembered.total or scheduler is None:
+            return
+        cap = self.fair_scheduler_config.max_per_entity_messages
+        room = (
+            self.fair_scheduler_config.max_buffered_messages
+            - scheduler.pending_count
+            - len(self._deferred_messages)
+        )
+        plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
+        for entity in remembered.entities():
+            free = cap - scheduler.pending_count_for(entity)
+            # Refilled in chunks, not a message at a time as the connector's
+            # buffered work is dispatched: each fetch is a broker round trip.
+            if free < max(1, min(cap // 2, remembered.count(entity))):
+                continue
+            take = min(free, room, _FETCH_BACK_BATCH)
+            if take <= 0:
+                continue
+            plan[entity] = remembered.peek(entity, take)
+            room -= len(plan[entity])
+            if room <= 0:
+                break
+        if not plan:
+            return
+        wanted: dict[TopicPartition, list[int]] = {}
+        for positions in plan.values():
+            for tp, offset in positions:
+                wanted.setdefault(tp, []).append(offset)
+        # In the background: reading and dispatching carry on while the
+        # broker answers, and the results are buffered on a later pass.
+        self._fetch_back_plan = plan
+        self._fetch_back_task = asyncio.create_task(
+            asyncio.wait_for(
+                self.__offset_fetcher().fetch(wanted),
+                timeout=_FETCH_BACK_TIMEOUT_SECONDS,
+            )
+        )
+
+    async def __buffer_fetched_back(
+        self,
+        plan: dict[FairnessKey, list[tuple[TopicPartition, int]]],
+        found: dict[tuple[TopicPartition, int], ConsumerRecord],
+        gone: set[tuple[TopicPartition, int]],
+    ) -> None:
+        remembered = self._remembered
+        scheduler = self._scheduler
+        if remembered is None or scheduler is None:
+            return
+        # Positions are looked up afresh: a rebalance during the fetch may have
+        # forgotten some of them.
+        assigned = self.consumer.assignment() if self.consumer is not None else set()
+        settled_gone: list[tuple[TopicPartition, int]] = []
+        fetched: list[tuple[FairnessKey, TopicPartition, ConsumerRecord]] = []
+        for entity in plan:
+            for _ in range(len(plan[entity])):
+                position = remembered.head(entity)
+                if position is None or position not in found and position not in gone:
+                    break
+                if position[0] not in assigned:
+                    break
+                remembered.pop(entity)
+                if position in gone:
+                    settled_gone.append(position)
+                else:
+                    fetched.append((entity, position[0], found[position]))
+        if settled_gone:
+            self.logger.warning(
+                "%d remembered message(s) were deleted by Kafka retention before "
+                "they could be read back; their records are re-sent by the "
+                "stranded-record sweep",
+                len(settled_gone),
+            )
+            for tp, offset in settled_gone:
+                await self.__resolve_offset(_InFlightOffset(tp, offset), done=True)
+        if not fetched:
+            return
+
+        pre_parsed: dict[tuple[TopicPartition, int], StreamMessage | None] = {}
+        for _entity, tp, record in fetched:
+            try:
+                pre_parsed[(tp, record.offset)] = await self.__parse_message(record)
+            except Exception:
+                continue
+        settled = await self.__settle_connector_off(pre_parsed)
+        settled_reached = [
+            (tp, record.offset) for _e, tp, record in fetched if (tp, record.offset) in settled
+        ]
+        refused: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
+        for entity, tp, record in fetched:
+            position = (tp, record.offset)
+            if position in settled:
+                continue
+            if entity in refused:
+                refused[entity].append(position)
+                continue
+            parsed = pre_parsed.get(position)
+            if parsed is None:
+                # Unparseable now means unparseable when first read, before its
+                # key was known: the terminal path, as for any poison message.
+                await self.__commit_if_appropriate(
+                    record,
+                    None,
+                    success=False,
+                    is_terminal_error=True,
+                    in_flight=_InFlightOffset(tp, record.offset),
+                )
+                continue
+            result = scheduler.enqueue(
+                self.key_extractor.extract(parsed),
+                (tp, record, parsed),
+                not_before=self.__retry_not_before(parsed),
+            )
+            if result != EnqueueResult.ACCEPTED:
+                # Other connectors may have taken the room measured when the
+                # fetch was planned; this connector's rest go back in order.
+                self.logger.debug(
+                    "Fetched-back message %s-%s could not be buffered (%s); "
+                    "remembering it again",
+                    tp,
+                    record.offset,
+                    result.value,
+                )
+                refused[entity] = [position]
+        for entity, positions in refused.items():
+            remembered.restore_front(entity, positions)
+        await self.__resolve_settled(settled_reached, settled)
 
     def __retry_not_before(self, parsed: StreamMessage) -> float | None:
         not_before = parsed.payload.get("_retry_not_before")

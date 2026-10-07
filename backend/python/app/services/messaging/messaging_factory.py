@@ -66,6 +66,7 @@ def _fair_scheduler_config_from_env() -> FairSchedulerConfig:
         max_per_entity_messages=messaging_env.fair_scheduling_max_per_entity,
         max_dwell_seconds=messaging_env.fair_scheduling_max_dwell_seconds,
         parallel_partitions=messaging_env.fair_scheduling_parallel_partitions,
+        max_remembered_positions=messaging_env.fair_scheduling_max_remembered_positions,
     )
 
 

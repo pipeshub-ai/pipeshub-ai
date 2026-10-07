@@ -193,10 +193,25 @@ flowchart TD
 Key structures:
 
 - **`DRRScheduler`** (`scheduling/drr_scheduler.py`): hierarchical deficit round robin over `(orgId, connectorId, tier)`; the tier level is appended by `TieredKeyExtractor` and enabled by `FairSchedulerConfig.tier_level` (on by default). Each leaf is a FIFO. `try_pop` only inspects the *head* of each leaf; a head that is not eligible is skipped without spending deficit, which is what lets a connector's light leaf proceed while its heavy leaf is blocked. Buffer bounded by `FAIR_SCHEDULING_MAX_BUFFER` (2000) and `FAIR_SCHEDULING_MAX_PER_ENTITY` (500 per connector across both tiers; `entity_key()` gives the prefix the cap applies to).
-- **Lanes**: `record-events.0..7` streams (or Kafka partitions), chosen by hash of `connectorId`. A lane whose entries are parked for lack of buffer room is skipped while another lane is producing.
+- **Lanes**: `record-events.0..7` streams (or Kafka partitions), chosen by hash of `connectorId`, so two connectors can share one. On Redis, a lane whose entries are parked for lack of buffer room is skipped while another lane is producing. On Kafka, the consumer reads past a connector at its cap and remembers only positions (below).
 - **Held entries / PEL**: buffered entries stay un-ACKed; ownership is refreshed with `XCLAIM JUSTID` so they are neither stolen nor counted as failed deliveries. Idle drains (`_drain_pending`) run only after 3 consecutive empty polls.
 - **Retry counters** (`RetryManager`, Redis): `messaging:retry:<stable id>` counts processing failures; `messaging:deliveries:<stable id>` counts hand-backs. Both are separate from Redis's own `times_delivered`, which is only a poison-message backstop (`REDIS_MAX_DELIVERIES`, 10).
 - **Connector-off filter** (`ConnectorOffFilter`, `messaging/connector_off.py`; implemented by `app/modules/indexing/connector_off_events.py::GraphConnectorOffFilter`): every batch the read phase reads goes through it before anything is buffered. See "Events of turned-off and removed connectors" below.
+
+#### Reading past a connector at its cap (Kafka)
+
+Two connectors can share a partition. When one of them has a large backlog at the head of it, its first `FAIR_SCHEDULING_MAX_PER_ENTITY` (500) messages fill its share of the buffer. Before, its further messages were then parked in memory with their whole payload, counted against `FAIR_SCHEDULING_MAX_BUFFER` (2000), and once that was full the partition was seeked back and paused. The other connector's messages further down the same partition were not read until the backlog drained, and the scheduler, fair as it is, never saw them. With the default of one partition (below), that was every connector on the install.
+
+Now a message whose connector is at its cap, or whose connector already has remembered messages (so each connector's own order stays oldest-first), is remembered by position only: partition and offset (`kafka/consumer/remembered.py::RememberedOffsets`). Reading carries on, so later messages of other connectors reach the buffer and DRR interleaves them. While positions are remembered the consumer reads up to 1,000 messages a pass (they cost a position, not buffer room) and polls with the short timeout.
+
+- **Fetch-back.** When a connector's buffered count has dropped by half its cap (or by all it has remembered), its oldest remembered messages are read back, up to 500 a pass, by a second consumer of its own (`OffsetFetcher`): assigned partitions by hand, `group_id` None, so it never joins the group, never commits, and never moves the main consumer's position. The fetch runs in the background; its results are buffered on a later pass, through the connector-off filter like any read.
+- **Watermark.** A remembered offset stays tracked in `PartitionOffsetTracker` as buffered (no dwell clock), so the commit never passes it and the dwell sweep never force-commits past it. The stranded-record sweep therefore reads it as not finished (the partition's committed offset is at or below it), and does not re-send its record.
+- **Budget.** `FAIR_SCHEDULING_MAX_REMEMBERED_POSITIONS` (200,000) across every connector, about 145 bytes each with its watermark entry (measured: 28.7 MB at 200,000). Past it a lane whose next message belongs to a connector with remembered messages, or at its cap, is seeked back and paused as before, and is not resumed until a fetch-back has freed a position. `0` restores parking.
+- **Rebalance.** Positions on a revoked partition are forgotten in the revocation callback, before the new owner starts; it reads them from the committed offset, which is at or below the oldest of them. A fetch-back in flight across a revoke is matched against the positions still remembered, so nothing of a revoked partition is buffered here.
+- **Retention.** An offset below the partition's first retained offset, or one a fetch steps over, has been deleted. It is resolved in the watermark and logged (`N remembered message(s) were deleted by Kafka retention …`); its record is still waiting, and the stranded-record sweep re-sends it once the partition has been committed past its queue time. Nothing stalls.
+- **Restart.** Positions are not persisted. A restart re-reads from the committed offset, which is at or below the oldest remembered offset, so everything after it is read again, including messages of other connectors that were already indexed. Those take the handler's "already indexed" path: a dispatch slot, the record lease and one graph read each, but no download, parse or embedding. With the reported shape (200,000 remembered messages of one connector and, say, 20,000 indexed meanwhile from others) that is the 200,000 remembered again, at read speed and no payload held, plus 20,000 cheap skips.
+
+The partition count is what limits how many connectors can be kept apart at all. The Node admin service now creates `record-events` with 32 partitions on a new install (`KAFKA_TOPIC_PARTITIONS` overrides it). An existing topic is never grown by that default; it is grown only when `KAFKA_TOPIC_PARTITIONS` is set explicitly, because growing moves connectors between partitions once. Redis Streams keeps the earlier behaviour (parking within the buffer): there, a remembered entry would stay in the consumer's pending list, and keeping 200,000 of them from being claimed as idle costs a full ownership refresh every 10 seconds.
 
 #### Events of turned-off and removed connectors
 
@@ -307,7 +322,7 @@ The record's status cannot say whether its event is still on the broker, because
 
 The claim (`lastRepublishedAt`, `republishCount`) is written before the send and put back if the send fails, so a record can never be sent without a persisted claim.
 
-**What "not finished with" means.** An event that was read and is buffered in the scheduler, parked because its key is at its cap, waiting behind a lane the consumer has paused, sleeping out a retry back-off, or being processed right now is still waiting from the record's point of view. Both brokers report it that way, which is why the sweep reads the broker and not the consumer's memory (the answer is also the same from any replica):
+**What "not finished with" means.** An event that was read and is buffered in the scheduler, parked because its key is at its cap, remembered by position on Kafka (section 4.1), waiting behind a lane the consumer has paused, sleeping out a retry back-off, or being processed right now is still waiting from the record's point of view. Both brokers report it that way, which is why the sweep reads the broker and not the consumer's memory (the answer is also the same from any replica):
 
 | Broker | Lane | Oldest unfinished event | Cost per pass |
 | --- | --- | --- | --- |
@@ -522,6 +537,8 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `MAX_PENDING_INDEXING_TASKS` | derived (`2 × index limits`, 64–256) | total dispatch budget; the heavy tier's ceiling is derived under it (see 4.2 layer 2) |
 | `RECORD_PROCESSING_TIMEOUT` | 1800s | active-processing budget and parse-slot wait bound |
 | `FAIR_SCHEDULING_ENABLED` / `_MAX_BUFFER` / `_MAX_PER_ENTITY` / `_LANE_COUNT` | true / 2000 / 500 / 8 | consumer buffering and lane routing |
+| `FAIR_SCHEDULING_MAX_REMEMBERED_POSITIONS` | 200000 | Kafka: messages the consumer may read past connectors at their cap, keeping only partition and offset (~145 bytes each); `0` parks within the buffer as before (section 4.1) |
+| `KAFKA_TOPIC_PARTITIONS` | 32 for a new topic | partitions `record-events` is created with by the Node admin service; an existing topic is grown to it only when it is set explicitly |
 | `GOVERNOR_MEM_SOFT` / `GOVERNOR_MEM_HARD` | 0.70 / 0.80 | memory brakes on raw cgroup occupancy |
 | `GOVERNOR_HEAVY_PARSE_WORKING_SET_GB` | 1.5 | sizes `heavy_memory_cap` |
 | `GOVERNOR_EMBEDDING_CPU_RESERVATION` | 2 (≤ 25% of quota) | CPUs withheld from heavy parse when embeddings are local |

@@ -476,7 +476,9 @@ class MessagingEnvConfig:
 
         On Kafka a lane *is* a partition, so this only switches key-based
         routing on; the real lane count is the topic's partition count
-        (``KAFKA_TOPIC_PARTITIONS``, applied by the Node admin service). On
+        (``KAFKA_TOPIC_PARTITIONS``, applied by the Node admin service: 32
+        for a topic it creates, and an existing topic grown only when that is
+        set explicitly). On
         Redis Streams this is the actual number of ``record-events.N``
         streams and must match on producers and consumers.
         """
@@ -515,6 +517,16 @@ class MessagingEnvConfig:
             os.getenv("FAIR_SCHEDULING_METRICS_PER_CONNECTOR", "false").lower()
             == "true"
         )
+
+    @property
+    def fair_scheduling_max_remembered_positions(self) -> int:
+        """Kafka: how many messages the consumer may read past connectors at
+        their cap, remembering only each one's partition and offset (about
+        200 bytes apiece with its commit-watermark entry, so ~40 MB at the
+        default). Past it, a lane whose next message belongs to such a
+        connector stops until it drains. ``0`` turns reading past off.
+        Redis Streams ignores it."""
+        return max(0, _env_int("FAIR_SCHEDULING_MAX_REMEMBERED_POSITIONS", 200_000))
 
     @property
     def fair_scheduling_max_dwell_seconds(self) -> float:

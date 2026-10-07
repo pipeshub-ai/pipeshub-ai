@@ -44,9 +44,57 @@ describe('KafkaAdminService', () => {
 
     it('should have partition and replication config', () => {
       for (const topic of REQUIRED_KAFKA_TOPICS) {
-        expect(topic.numPartitions).to.equal(1);
+        expect(topic.numPartitions).to.equal(
+          topic.topic === 'record-events' ? 32 : 1,
+        );
         expect(topic.replicationFactor).to.equal(1);
       }
+    });
+
+    it('should never grow an existing topic by the new-install default alone', () => {
+      // KAFKA_TOPIC_PARTITIONS is unset in the test environment.
+      for (const topic of REQUIRED_KAFKA_TOPICS) {
+        expect(topic.growExisting).to.equal(false);
+      }
+    });
+  });
+
+  describe('partition growth of existing topics', () => {
+    beforeEach(() => {
+      mockAdmin.createPartitions = sinon.stub().resolves(true);
+      mockAdmin.listTopics.resolves(['record-events']);
+      mockAdmin.fetchTopicMetadata.resolves({
+        topics: [{ name: 'record-events', partitions: [{ partitionId: 0 }] }],
+      });
+    });
+
+    it('leaves an existing one-partition topic alone without an explicit setting', async () => {
+      const service = new KafkaAdminService({ brokers: ['localhost:9092'] }, mockLogger);
+      await service.ensureTopicsExist([{ topic: 'record-events', numPartitions: 32 }]);
+      expect(mockAdmin.fetchTopicMetadata.called).to.be.false;
+      expect(mockAdmin.createPartitions.called).to.be.false;
+      expect(mockAdmin.createTopics.called).to.be.false;
+    });
+
+    it('grows an existing topic when the partition count was set explicitly', async () => {
+      const service = new KafkaAdminService({ brokers: ['localhost:9092'] }, mockLogger);
+      await service.ensureTopicsExist([
+        { topic: 'record-events', numPartitions: 8, growExisting: true },
+      ]);
+      expect(mockAdmin.createPartitions.calledOnce).to.be.true;
+      expect(mockAdmin.createPartitions.firstCall.args[0].topicPartitions).to.deep.equal([
+        { topic: 'record-events', count: 8 },
+      ]);
+    });
+
+    it('creates a new indexing topic with 32 partitions by default', async () => {
+      mockAdmin.listTopics.resolves([]);
+      const service = new KafkaAdminService({ brokers: ['localhost:9092'] }, mockLogger);
+      await service.ensureTopicsExist();
+      const created = mockAdmin.createTopics.firstCall.args[0].topics;
+      const recordEvents = created.find((t: { topic: string }) => t.topic === 'record-events');
+      expect(recordEvents.numPartitions).to.equal(32);
+      expect(mockAdmin.createPartitions.called).to.be.false;
     });
   });
 
