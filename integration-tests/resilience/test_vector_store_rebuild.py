@@ -587,30 +587,25 @@ async def test_deleting_the_default_model_while_its_vectors_are_stored_is_refuse
     size_before = await vector_store.dense_size(COLLECTION)
 
     resp = delete_embedding_model(pipeshub_client, model_key)
-    if resp.status_code >= 400:
-        message = error_message(resp)
-        still_there = any(m.model_key == model_key for m in list_embedding_models(pipeshub_client))
-        assert DELETE_REFUSED_PHRASE in message.lower(), (
-            f"Deleting the default embedding model was refused with HTTP {resp.status_code} "
-            f"({message}), but not because the vector store holds its vectors."
+    if resp.status_code < 400:
+        # The model is gone; the module's restore puts the original default back.
+        journey.local_model_key = None
+        now_default = default_model(list_embedding_models(pipeshub_client))
+        size = await vector_store.dense_size(COLLECTION)
+        pytest.fail(
+            f"Deleting {LOCAL_MODEL_NAME}, the default embedding model, while the vector "
+            f"store holds its vectors answered HTTP {resp.status_code} instead of being "
+            f"refused. The default is now {now_default}, and the collection is {size} wide."
         )
-        assert still_there and await vector_store.dense_size(COLLECTION) == size_before, (
-            "The delete was refused, yet the model or the collection changed anyway."
-        )
-        return
-    journey.local_model_key = None
-    now_default = default_model(list_embedding_models(pipeshub_client))
-    assert now_default == journey.default_before, (
-        f"After deleting {LOCAL_MODEL_NAME}, the default embedding model is {now_default}, "
-        f"not the original {journey.default_before}."
+    message = error_message(resp)
+    still_there = any(m.model_key == model_key for m in list_embedding_models(pipeshub_client))
+    assert DELETE_REFUSED_PHRASE in message.lower(), (
+        f"Deleting the default embedding model was refused with HTTP {resp.status_code} "
+        f"({message}), but not because the vector store holds its vectors."
     )
-    size = await vector_store.dense_size(COLLECTION)
-    if size != journey.size_before:
-        raise CollectionSizeMismatch(
-            f"Deleting {LOCAL_MODEL_NAME} made {now_default.model} the default, but the "
-            f"collection still holds {LOCAL_MODEL_DIMENSION}-wide vectors "
-            f"(size {size}, the new default writes {journey.size_before})."
-        )
+    assert still_there and await vector_store.dense_size(COLLECTION) == size_before, (
+        "The delete was refused, yet the model or the collection changed anyway."
+    )
 
 
 @pytest.mark.order(10)
