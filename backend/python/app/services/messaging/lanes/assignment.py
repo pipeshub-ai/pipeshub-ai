@@ -588,8 +588,10 @@ class LaneAssignments:
                 and hint.connector_class
                 and entry.connector_class != hint.connector_class
             ):
-                # A first publish guessed the class; creation knows it.
-                await self._eval(
+                # A first publish guessed the class; creation knows it. The
+                # script answers with the row as it is now, which a move since
+                # the lookup may have put on another lane.
+                reply = await self._eval(
                     _COMMIT_SCRIPT,
                     connector_id,
                     lane,
@@ -600,6 +602,9 @@ class LaneAssignments:
                     self._fallback_lane_count,
                     "1",
                 )
+                current = LaneEntry.parse(reply[1]) if len(reply) > 1 else None
+                if current is not None:
+                    lane = current.lane
         else:
             lane = await self._place(
                 connector_id,
