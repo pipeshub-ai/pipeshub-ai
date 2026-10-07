@@ -4,6 +4,7 @@ from logging import Logger
 from typing import Any, Dict, List, Optional
 
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
@@ -41,6 +42,13 @@ class ConnectorInitError(Exception):
     just return ``False`` and get the generic message, as before. Background
     callers (factory, event service) already treat any exception from ``init()``
     as a failure, so raising it there is safe."""
+
+
+class ConnectionCheckResult(BaseModel):
+    """Outcome of trying credentials before they are saved. ``message`` is shown to the user."""
+
+    success: bool
+    message: str
 
 
 class ConnectorSyncSkippedError(Exception):
@@ -200,6 +208,19 @@ class BaseConnector(ABC):
     @abstractmethod
     def test_connection_and_access(self) -> bool:
         NotImplementedError("This method should be implemented by the subclass")
+
+    @classmethod
+    async def check_connection(
+        cls, auth_config: dict[str, Any], logger: Logger
+    ) -> ConnectionCheckResult:
+        """Try auth settings the user has typed but not saved, without creating an instance.
+
+        Connectors that override this get a connection check in the setup form."""
+        raise NotImplementedError(f"{cls.__name__} has no connection check")
+
+    @classmethod
+    def supports_connection_check(cls) -> bool:
+        return cls.check_connection.__func__ is not BaseConnector.check_connection.__func__
 
     @abstractmethod
     def get_signed_url(self, record: Record) -> Optional[str]:

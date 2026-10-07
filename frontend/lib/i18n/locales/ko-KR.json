@@ -2377,6 +2377,17 @@
         "addRecords": "레코드 추가"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "연결 테스트 중…",
+          "egressTitle": "방화벽에서 PipesHub 허용",
+          "egressDescription": "{{name}}이(가) 방화벽 뒤에 있거나 알려진 IP 주소만 허용하는 경우 다음 주소의 연결을 허용하세요:",
+          "copyIp": "IP 주소 복사",
+          "ipCopied": "IP 주소를 복사했습니다",
+          "copyFailed": "복사할 수 없습니다",
+          "copyFailedDescription": "주소를 직접 복사하거나 이 사이트의 클립보드 접근을 허용하세요.",
+          "failedTitle": "{{name}}에 연결하지 못했습니다",
+          "requestFailed": "연결을 테스트하지 못했습니다. 다시 시도하세요."
+        },
         "methodLabel": "인증 방법",
         "methodPlaceholder": "인증 유형 선택...",
         "credentialsHeading": "{{name}} 자격 증명",

@@ -2231,6 +2231,17 @@
         "addRecords": "Add Records"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "Testing connection…",
+          "egressTitle": "Allow PipesHub through your firewall",
+          "egressDescription": "If {{name}} is behind a firewall or only accepts known IP addresses, allow connections from:",
+          "copyIp": "Copy IP address",
+          "ipCopied": "IP address copied",
+          "copyFailed": "Could not copy",
+          "copyFailedDescription": "Copy the address manually or allow clipboard access for this site.",
+          "failedTitle": "Couldn't connect to {{name}}",
+          "requestFailed": "The connection could not be tested. Please try again."
+        },
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",

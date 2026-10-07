@@ -50,6 +50,8 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
+  testConnectorConnection,
+  getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
   getRecordContent,
@@ -418,6 +420,22 @@ const lookupRecordSchema = z.object({
   }),
 });
 
+const testConnectorConnectionSchema = z.object({
+  params: z.object({
+    connectorType: z.string().min(1, 'Connector type is required'),
+  }),
+  body: z.object({
+    auth: z.record(z.unknown()),
+    connectorId: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      )
+      .optional(),
+  }),
+});
+
 // ============================================================================
 // Router Factory
 // ============================================================================
@@ -485,6 +503,29 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(connectorTypeParamSchema),
     getConnectorSchema(config)
+  );
+
+  /**
+   * POST /registry/:connectorType/test-connection
+   * Try auth settings from the setup form before they are saved
+   */
+  router.post(
+    '/registry/:connectorType/test-connection',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(testConnectorConnectionSchema),
+    testConnectorConnection(config)
+  );
+
+  /**
+   * GET /network/egress-ips
+   * Public IPs connectors connect from, to allow in a firewall
+   */
+  router.get(
+    '/network/egress-ips',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    getConnectorEgressIps(config)
   );
 
   // ============================================================================

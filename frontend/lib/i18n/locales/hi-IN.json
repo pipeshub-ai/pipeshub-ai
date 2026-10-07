@@ -2235,6 +2235,17 @@
         "addRecords": "रिकॉर्ड जोड़ें"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "कनेक्शन की जाँच हो रही है…",
+          "egressTitle": "अपने फ़ायरवॉल में PipesHub को अनुमति दें",
+          "egressDescription": "यदि {{name}} फ़ायरवॉल के पीछे है या केवल ज्ञात IP पतों को स्वीकार करता है, तो इनसे कनेक्शन की अनुमति दें:",
+          "copyIp": "IP पता कॉपी करें",
+          "ipCopied": "IP पता कॉपी किया गया",
+          "copyFailed": "कॉपी नहीं हो सका",
+          "copyFailedDescription": "पता मैन्युअल रूप से कॉपी करें या इस साइट को क्लिपबोर्ड एक्सेस की अनुमति दें।",
+          "failedTitle": "{{name}} से कनेक्ट नहीं हो सका",
+          "requestFailed": "कनेक्शन की जाँच नहीं हो सकी। कृपया फिर से प्रयास करें।"
+        },
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",

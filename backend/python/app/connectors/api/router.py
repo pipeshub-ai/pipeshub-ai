@@ -85,7 +85,11 @@ from app.edition_config import (
     vector_store_rebuild_available,
 )
 from app.edition_services import get_data_entities_processor_cls
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectionCheckResult,
+    ConnectorInitError,
+)
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
@@ -141,6 +145,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import record_to_text
+from app.utils.egress_ips import get_egress_ips
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.user_messages import (
     EPUB_PREVIEW_UNAVAILABLE,
@@ -8286,6 +8291,8 @@ async def get_connector_schema(
             if promoted_key in metadata:
                 cleaned_schema[promoted_key] = metadata[promoted_key]
 
+        cleaned_schema["supportsConnectionCheck"] = _connection_check_class(connector_type) is not None
+
         return {
             "success": True,
             "schema": cleaned_schema
@@ -8299,6 +8306,90 @@ async def get_connector_schema(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("load this connector's setup form")
         ) from e
+
+
+def _connection_check_class(connector_type: str) -> type[BaseConnector] | None:
+    connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
+    if connector_cls is None or not connector_cls.supports_connection_check():
+        return None
+    return connector_cls
+
+
+@router.post(
+    "/api/v1/connectors/registry/{connector_type}/test-connection",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+)
+async def check_connector_connection(connector_type: str, request: Request) -> dict[str, Any]:
+    """Try the auth settings on the setup form before they are saved.
+
+    With ``connectorId`` (editing an instance) the settings are laid over the saved ones,
+    as saving them does, so the check sees what the save will store. A failed check is a
+    200 with ``success: false``; its ``message`` is meant for the user.
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated"
+        )
+
+    await check_beta_connector_access(connector_type, request)
+    if not await connector_registry.get_connector_metadata(connector_type):
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector type '{connector_type}' not found in registry"
+        )
+    connector_cls = _connection_check_class(connector_type)
+    if connector_cls is None:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"{connector_type} has no connection check"
+        )
+
+    body = _trim_connector_config(await request.json())
+    auth = body.get(OAuthConfigKeys.AUTH) if isinstance(body, dict) else None
+    if not isinstance(auth, dict):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="auth must be an object"
+        )
+    auth = _without_server_set_auth_fields(auth)
+
+    connector_id = body.get("connectorId")
+    if connector_id:
+        instance = await get_validated_connector_instance(connector_id, request)
+        if instance.get("type", "").replace(" ", "").lower() != connector_type.replace(" ", "").lower():
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="connectorId is not a connector of this type"
+            )
+        config_service = resolve_config_service(container, org_id)
+        saved = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
+        auth = {**(saved.get(OAuthConfigKeys.AUTH) or {}), **auth}
+
+    try:
+        result = await connector_cls.check_connection(auth, logger)
+    except Exception:
+        logger.error("Connection check for %s failed", connector_type, exc_info=True)
+        result = ConnectionCheckResult(
+            success=False,
+            message="The connection could not be tested. Please try again.",
+        )
+    return result.model_dump()
+
+
+@router.get(
+    "/api/v1/connectors/network/egress-ips",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+)
+async def get_connector_egress_ips() -> dict[str, Any]:
+    """Public IPs connectors connect from, for users to allow in their firewalls."""
+    return {"success": True, "egressIps": await get_egress_ips()}
 
 @router.get("/api/v1/connectors/agents/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_active_agent_instances(

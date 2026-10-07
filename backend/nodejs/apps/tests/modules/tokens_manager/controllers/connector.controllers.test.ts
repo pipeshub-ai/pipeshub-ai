@@ -33,6 +33,8 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
+  testConnectorConnection,
+  getConnectorEgressIps,
   getActiveAgentInstances,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
@@ -1044,6 +1046,59 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
+  describe('testConnectorConnection', () => {
+    it('forwards only the auth values and instance id, and passes a failed check through as 200', async () => {
+      const handler = testConnectorConnection(mockAppConfig)
+      req.params = { connectorType: 'PostgreSQL' }
+      req.body = { auth: { host: 'db', password: 'pw' }, connectorId: 'c1', extra: 'dropped' }
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: false, message: 'Timed out' },
+      })
+
+      await handler(req, res, next)
+
+      expect(execute.firstCall.args[0]).to.equal(
+        'http://connector-backend:8088/api/v1/connectors/registry/PostgreSQL/test-connection',
+      )
+      expect(execute.firstCall.args[3]).to.deep.equal({
+        auth: { host: 'db', password: 'pw' },
+        connectorId: 'c1',
+      })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ success: false, message: 'Timed out' })).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('passes a backend rejection to next', async () => {
+      const handler = testConnectorConnection(mockAppConfig)
+      req.params = { connectorType: 'Jira' }
+      req.body = { auth: {} }
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 400,
+        data: { detail: 'Jira has no connection check' },
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('getConnectorEgressIps', () => {
+    it('returns the connector service addresses', async () => {
+      const handler = getConnectorEgressIps(mockAppConfig)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true, egressIps: ['203.0.113.10'] },
+      })
+
+      await handler(req, res, next)
+
+      expect(res.json.calledWith({ success: true, egressIps: ['203.0.113.10'] })).to.be.true
     })
   })
 

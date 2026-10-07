@@ -1523,6 +1523,86 @@ export const getConnectorSchema =
     }
   };
 
+/**
+ * Try auth settings from the setup form before they are saved.
+ * A failed check comes back as 200 with `success: false` and a message for the user.
+ */
+export const testConnectorConnection =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorType } = req.params;
+      const { auth, connectorId } = req.body;
+
+      if (!connectorType) {
+        throw new BadRequestError('Connector type is required');
+      }
+
+      const headers = buildProxyHeaders(req);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/registry/${encodeURIComponent(connectorType)}/test-connection`,
+        HttpMethod.POST,
+        headers,
+        { auth, connectorId },
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Testing connector connection',
+        'Connector type not found'
+      );
+    } catch (error: any) {
+      logger.error('Error testing connector connection', {
+        error: error.message,
+        connectorType: req.params.connectorType,
+        userId: req.user?.userId,
+        status: error.response?.status,
+      });
+      const handledError = handleBackendError(error, 'test the connection');
+      next(handledError);
+    }
+  };
+
+/**
+ * Public IPs connectors connect from, for users to allow in their firewalls.
+ */
+export const getConnectorEgressIps =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const headers = buildProxyHeaders(req);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/network/egress-ips`,
+        HttpMethod.GET,
+        headers,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Getting connector egress IPs',
+        'Egress IPs not found'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector egress IPs', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+      });
+      const handledError = handleBackendError(error, 'get the connector IP addresses');
+      next(handledError);
+    }
+  };
+
 
   /**
  * Get all active agent instances.

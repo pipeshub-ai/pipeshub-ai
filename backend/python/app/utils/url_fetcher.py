@@ -12,6 +12,7 @@ Install:
   pip install cloudscraper requests   # optional fallbacks
 """
 
+import asyncio
 import ipaddress
 import os
 import random
@@ -260,6 +261,51 @@ def resolve_public_http_target(url: str, *, block_non_global: bool = True) -> Pu
     if not addresses:
         raise FetchError(f"No addresses resolved for hostname {hostname!r}")
     return PublicTarget(parsed.scheme, hostname, port, tuple(addresses))
+
+
+async def host_refusal_reason(host: str, *, lookup_timeout_s: float = 5.0) -> str | None:
+    """Why a host a user typed (a database server, say) must not be connected to, or None.
+
+    The rule model endpoints follow (``model_egress.address_refusal``): link-local and cloud
+    metadata addresses never, private or internal ones not while
+    PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. The reason does not say what the name resolves
+    to, which would describe the deployment's network. A name that does not resolve is left
+    to fail on its own.
+    """
+    # model_egress imports this module.
+    from app.utils.model_egress import address_refusal, parse_answers
+
+    allow_private = not private_addresses_blocked()
+    private_reason = (
+        f'"{host}" is a private or internal address, which this deployment does not allow '
+        f"({PRIVATE_ADDRESS_SWITCH_ENV})."
+    )
+    # Database drivers read a path as a local Unix socket.
+    if host.startswith("/"):
+        return None if allow_private else private_reason
+    if host.lower().removesuffix(".") == "metadata.google.internal":
+        return f'"{host}" is a cloud metadata address, which is never allowed.'
+    if not allow_private and _hostname_is_blocked(host):
+        return private_reason
+
+    ip = literal_ip(host)
+    if ip is not None:
+        addresses = [ip]
+    else:
+        try:
+            infos = await asyncio.wait_for(
+                asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM),
+                lookup_timeout_s,
+            )
+            addresses = parse_answers(infos)
+        except (socket.gaierror, UnicodeError):
+            addresses = []
+        except TimeoutError:
+            if not allow_private:
+                return f'"{host}" could not be looked up in time to check that it is a public address.'
+            addresses = []
+    reason = address_refusal(addresses, allow_private=allow_private)
+    return f'"{host}" is {reason}.' if reason else None
 
 
 def validate_public_http_url(url: str, *, block_non_global: bool = True) -> None:

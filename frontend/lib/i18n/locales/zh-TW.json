@@ -2377,6 +2377,17 @@
         "addRecords": "新增記錄"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "正在測試連線…",
+          "egressTitle": "在防火牆中允許 PipesHub",
+          "egressDescription": "如果 {{name}} 位於防火牆後方或只接受已知的 IP 位址，請允許來自以下位址的連線：",
+          "copyIp": "複製 IP 位址",
+          "ipCopied": "已複製 IP 位址",
+          "copyFailed": "無法複製",
+          "copyFailedDescription": "請手動複製位址，或允許此網站存取剪貼簿。",
+          "failedTitle": "無法連線到 {{name}}",
+          "requestFailed": "無法測試連線，請再試一次。"
+        },
         "methodLabel": "驗證方式",
         "methodPlaceholder": "選取驗證類型...",
         "credentialsHeading": "{{name}} 憑證",

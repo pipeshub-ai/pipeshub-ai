@@ -2377,6 +2377,17 @@
         "addRecords": "添加记录"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "正在测试连接…",
+          "egressTitle": "在防火墙中允许 PipesHub",
+          "egressDescription": "如果 {{name}} 位于防火墙之后或只接受已知的 IP 地址，请允许来自以下地址的连接：",
+          "copyIp": "复制 IP 地址",
+          "ipCopied": "已复制 IP 地址",
+          "copyFailed": "无法复制",
+          "copyFailedDescription": "请手动复制地址，或允许此网站访问剪贴板。",
+          "failedTitle": "无法连接到 {{name}}",
+          "requestFailed": "无法测试连接，请重试。"
+        },
         "methodLabel": "认证方式",
         "methodPlaceholder": "选择认证类型...",
         "credentialsHeading": "{{name}} 凭证",

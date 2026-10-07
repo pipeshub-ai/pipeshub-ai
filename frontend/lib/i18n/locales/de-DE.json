@@ -2240,6 +2240,17 @@
         "addRecords": "Datensätze hinzufügen"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "Verbindung wird getestet…",
+          "egressTitle": "PipesHub in Ihrer Firewall zulassen",
+          "egressDescription": "Wenn {{name}} hinter einer Firewall liegt oder nur bekannte IP-Adressen zulässt, erlauben Sie Verbindungen von:",
+          "copyIp": "IP-Adresse kopieren",
+          "ipCopied": "IP-Adresse kopiert",
+          "copyFailed": "Kopieren nicht möglich",
+          "copyFailedDescription": "Kopieren Sie die Adresse manuell oder erlauben Sie dieser Website den Zugriff auf die Zwischenablage.",
+          "failedTitle": "Verbindung zu {{name}} fehlgeschlagen",
+          "requestFailed": "Die Verbindung konnte nicht getestet werden. Bitte versuchen Sie es erneut."
+        },
         "methodLabel": "Authentifizierungsmethode",
         "methodPlaceholder": "Authentifizierungstyp wählen...",
         "credentialsHeading": "{{name}}-Anmeldedaten",
