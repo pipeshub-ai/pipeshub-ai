@@ -487,10 +487,9 @@ export function OAuthAuthorizeView() {
 
   return (
     <Flex
-      align="center"
-      justify="center"
       style={{
-        minHeight: '100vh',
+        height: '100vh',
+        overflowY: 'auto',
         padding: 'var(--space-5)',
         background: 'var(--gray-2)',
       }}
@@ -499,6 +498,7 @@ export function OAuthAuthorizeView() {
         style={{
           width: '100%',
           maxWidth: 560,
+          margin: 'auto',
           padding: 'var(--space-5)',
           borderRadius: 'var(--radius-3)',
           border: '1px solid var(--gray-6)',
@@ -617,27 +617,37 @@ export function OAuthAuthorizeView() {
               <Text as="p" size="2" color="gray">
                 {t('oauthConsent.notGrantedHeading')}
               </Text>
-              {notGrantedScopes.map((scopeItem) => (
-                <Flex
-                  key={scopeItem.name}
-                  direction="column"
-                  gap="1"
-                  align="start"
-                  p="3"
-                  width="100%"
-                  style={{
-                    borderRadius: 'var(--radius-2)',
-                    border: '1px dashed var(--gray-6)',
-                  }}
-                >
-                  <Text as="div" size="2" color="gray" style={{ width: '100%' }}>
-                    {scopeItem.name}
-                  </Text>
-                  <Text as="div" size="1" color="gray" style={{ width: '100%' }}>
-                    {scopeItem.description}
-                  </Text>
-                </Flex>
-              ))}
+              <Box
+                style={{
+                  maxHeight: 200,
+                  overflowY: 'auto',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 'var(--space-2)',
+                }}
+              >
+                {notGrantedScopes.map((scopeItem) => (
+                  <Flex
+                    key={scopeItem.name}
+                    direction="column"
+                    gap="1"
+                    align="start"
+                    p="3"
+                    width="100%"
+                    style={{
+                      borderRadius: 'var(--radius-2)',
+                      border: '1px dashed var(--gray-6)',
+                    }}
+                  >
+                    <Text as="div" size="2" color="gray" style={{ width: '100%' }}>
+                      {scopeItem.name}
+                    </Text>
+                    <Text as="div" size="1" color="gray" style={{ width: '100%' }}>
+                      {scopeItem.description}
+                    </Text>
+                  </Flex>
+                ))}
+              </Box>
               <Text as="p" size="2" color="gray">
                 {t('oauthConsent.notGrantedAdminHint')}
               </Text>
