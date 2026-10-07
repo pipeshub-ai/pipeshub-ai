@@ -64,6 +64,8 @@ class Outcome:
     gitlab_stream_lengths: dict[str, int]
     slack_stream_lengths: dict[str, int]
     slack_dispatched: int = 0
+    # After an upgrade: Slack's events queued before the switch, counted apart.
+    slack_earlier_dispatched: int = 0
     seconds_to_last_slack: float | None = None
     gitlab_dispatched_when_slack_done: int | None = None
     gitlab_dispatched_by_end: int = 0
@@ -77,7 +79,8 @@ class Outcome:
         return (
             f"GitLab streams {self.gitlab_stream_lengths}, Slack streams "
             f"{self.slack_stream_lengths}; Slack dispatched {self.slack_dispatched}/"
-            f"{SLACK_EVENTS} (last after {self.seconds_to_last_slack}s), GitLab "
+            f"{SLACK_EVENTS} (last after {self.seconds_to_last_slack}s) and "
+            f"{self.slack_earlier_dispatched} queued before an upgrade, GitLab "
             f"dispatched {self.gitlab_dispatched_when_slack_done} by then and "
             f"{self.gitlab_dispatched_by_end} by the end"
         )
@@ -135,7 +138,10 @@ async def _consume(
     slack: str,
     *,
     publish: bool,
+    slack_fresh_from: int = 0,
 ) -> Outcome:
+    """``slack_fresh_from``: Slack events below this index were queued before
+    an upgrade and are counted apart from the ones the test waits for."""
     logger = logging.getLogger("it-report")
     if publish:
         producer = MessagingFactory.create_producer(logger, redis_config, MessageBrokerType.REDIS)
@@ -185,6 +191,8 @@ async def _consume(
         connector = message.payload["connectorId"]
         if connector == gitlab:
             outcome.gitlab_dispatched_by_end += 1
+        elif int(message.payload["index"]) < slack_fresh_from:
+            outcome.slack_earlier_dispatched += 1
         else:
             outcome.slack_dispatched += 1
             if outcome.slack_dispatched == SLACK_EVENTS:
@@ -255,34 +263,17 @@ def assert_reproduced(outcome: Outcome) -> None:
 
 
 class _Graph:
-    """The three graph reads lane upkeep makes, for the two connectors."""
+    """The graph reads lane upkeep makes, for the two connectors."""
 
     def __init__(self, queued: dict[str, int]) -> None:
         self.queued = queued
 
-    async def get_documents_paginated(
-        self, collection, skip=0, limit=50, filters=None, sort_field=None, **_kwargs
-    ) -> list[dict[str, object]]:
-        if collection == "apps":
-            rows = [
-                {"_key": c, "name": c, "type": "GITLAB", "scope": "team", "orgId": "org-1"}
-                for c in sorted(self.queued)
-            ]
-        else:
-            connector = filters["connectorId"]
-            rows = [
-                {
-                    "_key": f"{connector}-{i}",
-                    "orgId": "org-1",
-                    "connectorId": connector,
-                    "indexingStatus": "QUEUED",
-                    "queuedAtTimestamp": i,
-                    "origin": "CONNECTOR",
-                    "extension": "txt",
-                    "mimeType": "text/plain",
-                }
-                for i in range(self.queued[connector])
-            ]
+    async def get_documents_paginated(self, collection, skip=0, limit=50, **_kwargs) -> list[dict[str, object]]:
+        assert collection == "apps", f"lane upkeep read {collection}"
+        rows = [
+            {"_key": c, "name": c, "type": "GITLAB", "scope": "team", "orgId": "org-1"}
+            for c in sorted(self.queued)
+        ]
         return rows[skip : skip + limit]
 
     async def get_connector_stats(self, _org_id: str, connector_id: str) -> dict[str, object]:
@@ -293,8 +284,8 @@ async def run_upgrade(
     monkeypatch: pytest.MonkeyPatch, topic: str, redis_config: RedisStreamsConfig, group: str
 ) -> tuple[dict[str, object], Outcome]:
     """The report's install upgraded: its lanes were filled by hashing, then
-    assigned lanes are switched on and the indexing service's upkeep runs the
-    one-time fix-up before the consumer starts."""
+    assigned lanes are switched on, the indexing service's upkeep runs the
+    one-time fix-up, and Slack publishes again before the consumer starts."""
     from app.modules.indexing.lane_upkeep import run_lane_upkeep
     from app.services.messaging.lanes import assignment
     from app.services.messaging.lanes.assignment import lane_assignments_in_use
@@ -321,11 +312,13 @@ async def run_upgrade(
         await run_lane_upkeep(
             assignments=assignments,
             graph_provider=_Graph({gitlab: GITLAB_EVENTS, slack: SLACK_EVENTS}),  # type: ignore[arg-type]
-            producer=producer,
             backlog=None,
             logger=logger,
         )
         entries = await assignments.read_map()
+        await producer.send_messages(
+            topic, [_event(slack, i) for i in range(SLACK_EVENTS, 2 * SLACK_EVENTS)]
+        )
     finally:
         await producer.cleanup()
 
@@ -335,18 +328,25 @@ async def run_upgrade(
         "slack": entries[slack].lane,
         "slack_prev": entries[slack].prev_lane,
         "hash_lane": stable_lane(gitlab, LANES),
+        "hash_stream": f"{topic}.{stable_lane(gitlab, LANES)}",
     }
-    return lanes, await _consume(topic, redis_config, group, gitlab, slack, publish=False)
+    return lanes, await _consume(
+        topic, redis_config, group, gitlab, slack, publish=False, slack_fresh_from=SLACK_EVENTS
+    )
 
 
 def assert_upgrade_separated_them(lanes: dict[str, object], outcome: Outcome) -> None:
-    """GitLab, with the backlog, kept the lane; Slack moved and its queued
-    records followed it, so they are indexed without waiting for GitLab."""
+    """GitLab, with the backlog, kept the lane; Slack moved. Slack's new
+    events are indexed without waiting for GitLab. The upgrade moves no
+    queued event, so the ones Slack queued before it still wait their turn
+    behind GitLab's backlog."""
     assert lanes["gitlab"] == lanes["hash_lane"], lanes
     assert lanes["gitlab_prev"] is None, lanes
     assert lanes["slack"] != lanes["hash_lane"], lanes
     assert lanes["slack_prev"] == lanes["hash_lane"], lanes
+    assert outcome.slack_stream_lengths.get(lanes["hash_stream"]) == SLACK_EVENTS, outcome.describe()
     assert outcome.slack_dispatched == SLACK_EVENTS, outcome.describe()
+    assert outcome.slack_earlier_dispatched == 0, outcome.describe()
     assert outcome.gitlab_dispatched_when_slack_done is not None
     assert GITLAB_EVENTS - outcome.gitlab_dispatched_when_slack_done > 18_000, outcome.describe()
     assert outcome.gitlab_order == sorted(outcome.gitlab_order), f"GitLab's own order was kept: {outcome.gitlab_order}"
