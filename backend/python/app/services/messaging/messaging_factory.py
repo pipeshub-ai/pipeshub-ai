@@ -46,6 +46,7 @@ from app.services.messaging.scheduling.key_extractors import CompositeKeyExtract
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
+    from app.services.messaging.connector_off import ConnectorOffFilter
     from app.services.messaging.disposition import AbandonedMessageSink
     from app.services.resource_governor import ResourceGovernor
 
@@ -218,6 +219,7 @@ class MessagingFactory:
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
         disposition_sink: "AbandonedMessageSink | None" = None,
+        connector_off_filter: "ConnectorOffFilter | None" = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -250,6 +252,9 @@ class MessagingFactory:
             weight_provider: Optional per-key DRR quantum provider (INDEXING consumers only),
                       for giving some keys a larger share than others. Defaults to a
                       flat quantum for every key.
+            connector_off_filter: Optional (INDEXING consumers only). Settles, as they
+                      are read, the record events the handler would only skip because
+                      their connector is turned off or removed.
 
         Returns:
             IMessagingConsumer instance
@@ -284,6 +289,7 @@ class MessagingFactory:
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
+                    connector_off_filter=connector_off_filter,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -306,5 +312,6 @@ class MessagingFactory:
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
+                    connector_off_filter=connector_off_filter,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

@@ -524,6 +524,17 @@ class MessagingEnvConfig:
         stalls every later commit on its partition until a restart."""
         return _env_seconds("FAIR_SCHEDULING_MAX_DWELL_SECONDS", 900.0)
 
+    @property
+    def connector_state_refresh_seconds(self) -> float:
+        """How long the indexing consumer trusts that a connector is on before
+        reading it again, when it settles the queued events of turned-off and
+        removed connectors as they are read. Only "on" is remembered: "off" or
+        "removed" is read afresh for every batch before anything is settled,
+        so turning a connector back on takes effect at once. A connector
+        turned off less than this long ago has its events skipped by the
+        handler one by one, as before. ``0`` turns read-time settling off."""
+        return _env_seconds("INDEXING_CONNECTOR_STATE_REFRESH_SECONDS", 15.0)
+
 
 messaging_env = MessagingEnvConfig()
 

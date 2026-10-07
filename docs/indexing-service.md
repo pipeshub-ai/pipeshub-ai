@@ -196,6 +196,23 @@ Key structures:
 - **Lanes**: `record-events.0..7` streams (or Kafka partitions), chosen by hash of `connectorId`. A lane whose entries are parked for lack of buffer room is skipped while another lane is producing.
 - **Held entries / PEL**: buffered entries stay un-ACKed; ownership is refreshed with `XCLAIM JUSTID` so they are neither stolen nor counted as failed deliveries. Idle drains (`_drain_pending`) run only after 3 consecutive empty polls.
 - **Retry counters** (`RetryManager`, Redis): `messaging:retry:<stable id>` counts processing failures; `messaging:deliveries:<stable id>` counts hand-backs. Both are separate from Redis's own `times_delivered`, which is only a poison-message backstop (`REDIS_MAX_DELIVERIES`, 10).
+- **Connector-off filter** (`ConnectorOffFilter`, `messaging/connector_off.py`; implemented by `app/modules/indexing/connector_off_events.py::GraphConnectorOffFilter`): every batch the read phase reads goes through it before anything is buffered. See "Events of turned-off and removed connectors" below.
+
+#### Events of turned-off and removed connectors
+
+The handler skips a `newRecord`, `updateRecord` or `reindexRecord` whose record's connector is turned off (it writes `indexingStatus=AUTO_INDEX_OFF`, `reason=CONNECTOR_OFF`) or removed (it writes nothing). Before, each of those events still took a buffer slot, a dispatch slot and an index permit on its way to being skipped, so a turned-off connector's backlog was worked through one record at a time, and anything behind it on the same lane waited for it.
+
+The read phase now settles them as it reads them, on both brokers. For each batch the filter:
+
+1. Picks the record events whose connector is not known to be on. "On" is remembered for `INDEXING_CONNECTOR_STATE_REFRESH_SECONDS` (15s), so a batch of live connectors' events costs no graph call. "Off" and "removed" are never remembered: they are read afresh (one query for the batch's connectors) before anything is settled, so a connector turned back on takes effect on the next batch and the sync it starts is indexed.
+2. Reads those events' records in one query and decides each one with `read_time_outcome`, which replays the handler's own steps in the handler's order (the handler calls the same functions, so the two cannot drift; `tests/unit/modules/indexing/test_connector_off_events.py` runs the real handler on the same records to prove it). An event is settled only when the skip is all the handler would do with it.
+3. Writes `AUTO_INDEX_OFF` / `CONNECTOR_OFF` for the turned-off ones in one `batch_update_nodes` (the same fields the handler writes: `extractionStatus` kept, `parsingStatus` mirrored if it was `IN_PROGRESS`, `processingStartedAt` cleared), then the consumer acknowledges them: one `XACK` per stream on Redis; on Kafka the offsets are tracked and marked done in the commit watermark, with one commit per partition. Settled messages behind a Kafka seek-back are not resolved; they are read again and settle again with the same write.
+
+Never settled, always left to the handler: the vector-store rebuild (`vectorDbOnly`, which deliberately re-embeds turned-off connectors from blob), a record whose enrichment was cut short (the handler ends it and releases its copies), an `updateRecord`/`reindexRecord` of a type that is not reconciled block by block (the handler deletes its embeddings first), an already-indexed record (its copies are released), a removed connector's record that is `COMPLETED`, `EMPTY` or `ENABLE_MULTIMODAL_MODELS` (same), a record `IN_PROGRESS` or in flight in this process (another delivery may hold its lease), a missing record of a connector that is only turned off, uploads, and every other event type (deletes, bulk deletes, membership syncs). A trashed record, or a missing record of a removed connector, is acknowledged with no write, as the handler does.
+
+If a connector or record read fails or takes longer than 3s, or the status write fails, nothing in that batch that needed it is settled and the filter stands aside for 30s (or the refresh period, if longer), so an unreachable graph costs the read loop one timeout per pause rather than one per batch. Each read pass that settled anything logs one line, `Acknowledged N queued event(s) of turned-off or removed connectors without indexing them: <connector>=<count> …`, and counts them in `pipeshub_indexing_connector_off_settled_total{broker}`. Read-time settling applies with fair scheduling on (the default); `INDEXING_CONNECTOR_STATE_REFRESH_SECONDS=0` turns it off.
+
+Turning a connector back on does not re-queue its `AUTO_INDEX_OFF` records, now or before this change: the toggle starts an incremental sync, which skips records in that status. They are indexed again by **Manual index** on the connector (a reindex of `AUTO_INDEX_OFF` records), a per-record or per-folder reindex, or a later change to the item at its source.
 
 ### 4.2 Admission control layers
 
@@ -486,6 +503,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | 429 backpressure, HTTP retry/circuit breaker | `messaging/backpressure.py`, `services/base_client.py` |
 | Tiers, gates, control law, probe, feedback | `backend/python/app/services/resource_governor/` |
 | Record handler, status writes, disposition sink | `backend/python/app/services/messaging/kafka/handlers/record.py` |
+| Settling turned-off and removed connectors' events at read time | `messaging/connector_off.py` (consumer side), `backend/python/app/modules/indexing/connector_off_events.py` (the shared rule and the graph-backed filter) |
 | Dedup, IN_PROGRESS, START_PARSING, format dispatch | `backend/python/app/events/events.py` |
 | Per-format parsers (in-process path) | `backend/python/app/events/processor.py` |
 | Parse worker pool and worker entry point | `backend/python/app/modules/parsers/parse_pool.py`, `parse_worker.py` |
@@ -511,4 +529,5 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `MAX_DELIVERY_ATTEMPTS` / `REDIS_MAX_DELIVERIES` | 3 / 10 | failure retries / delivery backstop |
 | `PARSE_POOL_WORKERS` | derived (half the heavy-parse ceiling, 1–4) | worker processes for large text, code and CSV parses; capped at the heavy-parse ceiling; `0` parses in threads instead (section 4.7) |
 | `CODE_FILE_MAX_SIZE_MB` | 5 | largest repository file read as code or as plain text; larger ones are marked `FILE_TYPE_NOT_SUPPORTED` with the reason (section 4.8). Read at startup |
+| `INDEXING_CONNECTOR_STATE_REFRESH_SECONDS` | 15 | how long a connector is trusted to be on before its state is read again, for settling turned-off and removed connectors' events as they are read; off and removed are always read afresh; `0` turns read-time settling off (section 4.1) |
 | `STRANDED_RECORD_REPUBLISH_AFTER_SECONDS` | 3600 | youngest a waiting record can be before the stranded sweep looks at it; `0` disables the sweep. Not a backlog-sized threshold (section 4.6) |

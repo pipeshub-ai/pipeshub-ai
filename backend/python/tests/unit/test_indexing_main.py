@@ -49,6 +49,7 @@ def _make_container():
     mock_config_service.close = AsyncMock()
     container.config_service.return_value = mock_config_service
     container.graph_provider = AsyncMock()
+    container.connector_off_filter = AsyncMock(return_value=None)
     mock_producer = AsyncMock()
     mock_producer.send_event = AsyncMock(return_value=True)
     mock_consumer = MagicMock()
@@ -1060,6 +1061,30 @@ class TestStartKafkaConsumers:
         assert consumers[0][0] == "record"
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
+
+    async def test_connector_off_filter_reaches_the_record_consumer(self) -> None:
+        """The container's filter is what lets the consumer settle a turned-off
+        connector's backlog as it is read; built but not passed, it does nothing."""
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        connector_off_filter = MagicMock()
+        mock_container.connector_off_filter = AsyncMock(return_value=connector_off_filter)
+        mock_consumer = MagicMock(start=AsyncMock())
+
+        with (
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.REDIS),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer) as create_consumer,
+        ):
+            await start_kafka_consumers(mock_container)
+
+        assert create_consumer.call_args.kwargs["connector_off_filter"] is connector_off_filter
 
     async def test_distributed_concurrency_failure_aborts_startup(self) -> None:
         """Redis is a startup requirement: an unreachable one fails the boot.

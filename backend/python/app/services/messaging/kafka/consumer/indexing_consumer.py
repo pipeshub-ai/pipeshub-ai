@@ -25,6 +25,11 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
     messaging_env,
 )
+from app.services.messaging.connector_off import (
+    ConnectorOffFilter,
+    describe_connector_off,
+    settle_connector_off,
+)
 from app.services.messaging.disposition import (
     AbandonedMessageSink,
     describe_message,
@@ -92,6 +97,8 @@ _DWELL_SWEEP_INTERVAL_SECONDS = 30.0
 _BUSY_POLL_TIMEOUT_MS = 50
 # Sentinel CompositeKeyExtractor uses for an absent fairness field.
 _DEFAULT_KEY_LEVEL = "__default__"
+# A message the read phase has not parsed yet (see __parse_batch).
+_UNPARSED = object()
 
 # Re-exported for backwards compatibility with existing call sites/tests in
 # this module; canonical definition lives in app.services.messaging.config
@@ -179,6 +186,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
         disposition_sink: Optional[AbandonedMessageSink] = None,
+        connector_off_filter: ConnectorOffFilter | None = None,
     ) -> None:
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
@@ -189,6 +197,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Told about every message this consumer gives up on, before the commit
         # that makes it unrecoverable — see disposition.AbandonedMessageSink.
         self.disposition_sink = disposition_sink
+        # Settles, as they are read, the events the handler would only skip
+        # because their connector is off or gone -- see connector_off.py.
+        self.connector_off_filter = connector_off_filter
         self.producer = producer
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
@@ -1058,6 +1069,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not message_batch:
             return
 
+        pre_parsed = await self.__parse_batch(message_batch)
+        settled = await self.__settle_connector_off(pre_parsed)
+        settled_reached: list[tuple[TopicPartition, int]] = []
         for tp, messages in message_batch.items():
             # Every partition in the batch is drained or explicitly seeked
             # back. Returning early from the outer loop would abandon
@@ -1069,8 +1083,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 if not self.running:
                     self.__seek_back(tp, message.offset)
                     break
+                position = (tp, message.offset)
+                if position in settled:
+                    settled_reached.append(position)
+                    continue
                 try:
-                    outcome, blocked_key = await self.__enqueue_message(tp, message)
+                    outcome, blocked_key = await self.__enqueue_message(
+                        tp, message, pre_parsed.get(position, _UNPARSED)
+                    )
                 except Exception as e:
                     # The offset is already tracked, so leaving it unresolved
                     # would pin the watermark; hand it back for redelivery.
@@ -1106,6 +1126,90 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     self.__seek_back(tp, message.offset)
                     self.__pause_lane(tp, blocked_key)
                     break
+        await self.__resolve_settled(settled_reached, settled)
+
+    async def __parse_batch(
+        self, message_batch: dict[TopicPartition, list[ConsumerRecord]]
+    ) -> dict[tuple[TopicPartition, int], StreamMessage | None]:
+        """Parse a polled batch up front, for the connector-off filter.
+
+        A message whose parse raises is left out: ``__enqueue_message`` parses
+        it again and fails it exactly as it always did.
+        """
+        parsed: dict[tuple[TopicPartition, int], StreamMessage | None] = {}
+        for tp, messages in message_batch.items():
+            for message in messages:
+                try:
+                    parsed[(tp, message.offset)] = await self.__parse_message(message)
+                except Exception:
+                    continue
+        return parsed
+
+    async def __settle_connector_off(
+        self, pre_parsed: dict[tuple[TopicPartition, int], StreamMessage | None]
+    ) -> dict[tuple[TopicPartition, int], StreamMessage]:
+        """The messages of turned-off or removed connectors the filter settled:
+        their record status is written, so they only need their offsets
+        resolved, and never take buffer room or a dispatch slot."""
+        if self.connector_off_filter is None or not pre_parsed:
+            return {}
+        positions = list(pre_parsed)
+        with self._partition_lock:
+            in_flight_records = set(self._in_flight_records)
+        # A record already being processed here is left to its handler.
+        considered = [
+            None
+            if message is None
+            or str(message.payload.get("recordId") or "") in in_flight_records
+            else message
+            for message in (pre_parsed[p] for p in positions)
+        ]
+        result = await settle_connector_off(
+            self.connector_off_filter, considered, self.logger
+        )
+        settled = {positions[i]: considered[i] for i in result.settled}
+        return {p: m for p, m in settled.items() if m is not None}
+
+    async def __resolve_settled(
+        self,
+        reached: list[tuple[TopicPartition, int]],
+        settled: dict[tuple[TopicPartition, int], StreamMessage],
+    ) -> None:
+        """Resolve the settled offsets the read reached, with one commit per
+        partition rather than one per message.
+
+        Settled messages behind a seek-back are not resolved: they are read
+        again, and settling them again writes the same status.
+        """
+        offset_tracker = self._offset_tracker
+        if not reached or offset_tracker is None or self.consumer is None:
+            return
+        commits: dict[TopicPartition, int] = {}
+        for tp, offset in reached:
+            offset_tracker.track(tp, offset)
+            watermark = offset_tracker.mark_done(tp, offset)
+            if watermark is not None:
+                commits[tp] = watermark
+        messages = [settled[position] for position in reached]
+        for message in messages:
+            tracking_id = message.payload.get("_retry_tracking_id")
+            if tracking_id:
+                await self._clear_retry_tracking(str(tracking_id))
+        metrics.record_connector_off_settled("kafka", len(messages))
+        self.logger.info(
+            "Acknowledged %d queued event(s) of turned-off or removed connectors "
+            "without indexing them: %s",
+            len(messages),
+            describe_connector_off(messages),
+        )
+        if commits:
+            try:
+                await self.consumer.commit(commits)  # type: ignore
+            except Exception as e:
+                # The next commit on these partitions carries them.
+                self.logger.warning(
+                    "Could not commit past %d settled offset(s): %s", len(reached), e
+                )
 
     def __publish_scheduler_metrics(self) -> None:
         """Gauges, refreshed once per consume iteration.
@@ -1253,7 +1357,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(f"Failed to seek {tp} back to {offset}: {e}")
 
     async def __enqueue_message(
-        self, tp: TopicPartition, message: ConsumerRecord
+        self,
+        tp: TopicPartition,
+        message: ConsumerRecord,
+        pre_parsed: "StreamMessage | None | object" = _UNPARSED,
     ) -> tuple[str, FairnessKey | None]:
         """Enqueue one read message into the scheduler, returning a
         :class:`_ReadOutcome` and, when the read must stop, the fairness key
@@ -1277,7 +1384,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         offset_tracker.track(tp, message.offset)
 
-        parsed = await self.__parse_message(message)
+        parsed = (
+            await self.__parse_message(message)
+            if pre_parsed is _UNPARSED
+            else pre_parsed
+        )
         if parsed is None:
             # Poison message: can never become valid, so it never enters the
             # scheduler -- resolve it immediately via the existing terminal

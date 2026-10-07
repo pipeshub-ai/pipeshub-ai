@@ -66,6 +66,13 @@ MISSING_KEY = METRICS_BACKEND.counter(
     ["broker", "field"],
 )
 
+CONNECTOR_OFF_SETTLED = METRICS_BACKEND.counter(
+    "pipeshub_indexing_connector_off_settled_total",
+    "Queued events of turned-off or removed connectors acknowledged as they "
+    "were read, without being buffered or dispatched",
+    ["broker"],
+)
+
 # Bounded: one series per index tier. A heavy tier pinned at its ceiling
 # while light reads zero is the signature of attachments queueing on the
 # heavy-parse slots -- healthy, as long as light keeps moving.
@@ -110,3 +117,7 @@ def record_missing_key(broker: str, field: str) -> None:
 
 def record_gate_waiters(broker: str, tier: str, count: int) -> None:
     GATE_WAITERS.set(broker, tier, value=count)
+
+
+def record_connector_off_settled(broker: str, count: int) -> None:
+    CONNECTOR_OFF_SETTLED.inc(broker, value=count)

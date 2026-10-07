@@ -23,6 +23,11 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
     messaging_env,
 )
+from app.services.messaging.connector_off import (
+    ConnectorOffFilter,
+    describe_connector_off,
+    settle_connector_off,
+)
 from app.services.messaging.disposition import (
     AbandonedMessageSink,
     describe_message,
@@ -131,6 +136,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         weight_provider: WeightProvider | None = None,
         disposition_sink: Optional[AbandonedMessageSink] = None,
         provider: "IRedisConnectionProvider | None" = None,
+        connector_off_filter: ConnectorOffFilter | None = None,
     ) -> None:
         self.logger = logger
         self.config = config
@@ -145,6 +151,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Told about every message this consumer gives up on, before the XACK
         # that makes it unrecoverable — see disposition.AbandonedMessageSink.
         self.disposition_sink = disposition_sink
+        # Settles, as they are read, the events the handler would only skip
+        # because their connector is off or gone -- see connector_off.py.
+        self.connector_off_filter = connector_off_filter
         self.producer = producer
         self.concurrency_manager = concurrency_manager
         # When set, node-local parsing/indexing admission is delegated to the
@@ -1374,6 +1383,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     ) -> None:
         """Parse a freshly read entry and hand it to the scheduler."""
         parsed = await self._parse_message(message_id, fields)
+        await self.__enqueue_parsed(stream_name, message_id, fields, parsed)
+
+    async def __enqueue_parsed(
+        self,
+        stream_name: str,
+        message_id: str,
+        fields: dict[str, str],
+        parsed: StreamMessage | None,
+    ) -> None:
+        """Hand a freshly read, already parsed entry to the scheduler."""
         if parsed is None:
             # No recordId can be recovered from an envelope that would not
             # parse. The entry itself is not logged: it carries the whole
@@ -1677,18 +1696,93 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
 
         self._consecutive_empty_polls = 0
-        for stream_name, messages in results:
-            for message_id, fields in messages:
-                if not self.running:
-                    return
-                try:
-                    await self.__enqueue_message(stream_name, message_id, fields)
-                except Exception as e:
-                    self.logger.error(
-                        "Error enqueuing message %s for fair scheduling: %s",
-                        message_id,
-                        e,
-                    )
+        entries = [
+            (stream_name, message_id, fields)
+            for stream_name, messages in results
+            for message_id, fields in messages
+        ]
+        parsed = [
+            await self._parse_message(message_id, fields)
+            for _stream, message_id, fields in entries
+        ]
+        settled = await self.__settle_connector_off(entries, parsed)
+        for position, (stream_name, message_id, fields) in enumerate(entries):
+            if not self.running:
+                return
+            if position in settled:
+                continue
+            try:
+                await self.__enqueue_parsed(
+                    stream_name, message_id, fields, parsed[position]
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Error enqueuing message %s for fair scheduling: %s",
+                    message_id,
+                    e,
+                )
+
+    async def __settle_connector_off(
+        self,
+        entries: list[tuple[str, str, dict[str, str]]],
+        parsed: list[StreamMessage | None],
+    ) -> frozenset[int]:
+        """Acknowledge the entries of turned-off or removed connectors that the
+        filter settled, before any of them takes buffer room or a dispatch slot.
+
+        Positions of entries whose ack failed are not returned, so they take the
+        normal path, where the handler skips them as it always did.
+        """
+        if self.connector_off_filter is None or self.redis is None:
+            return frozenset()
+        # A record already being processed here is left to its handler.
+        considered = [
+            None
+            if message is None
+            or self._is_record_in_flight(str(message.payload.get("recordId") or ""))
+            else message
+            for message in parsed
+        ]
+        result = await settle_connector_off(
+            self.connector_off_filter, considered, self.logger
+        )
+        if not result.settled:
+            return frozenset()
+        by_stream: dict[str, list[int]] = {}
+        for position in sorted(result.settled):
+            by_stream.setdefault(entries[position][0], []).append(position)
+        acked: set[int] = set()
+        for stream_name, positions in by_stream.items():
+            try:
+                await self.redis.xack(  # type: ignore[union-attr]
+                    stream_name,
+                    self.config.group_id,
+                    *[entries[p][1] for p in positions],
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "Could not acknowledge %d settled event(s) of turned-off "
+                    "connectors on %s; they take the normal path: %s",
+                    len(positions),
+                    stream_name,
+                    e,
+                )
+                continue
+            acked.update(positions)
+        settled = [parsed[p] for p in sorted(acked)]
+        for message in settled:
+            tracking_id = message.payload.get("_retry_tracking_id") if message else None
+            if tracking_id:
+                await self._clear_retry_tracking(str(tracking_id))
+        if settled:
+            metrics.record_connector_off_settled("redis", len(settled))
+            self.logger.info(
+                "Acknowledged %d queued event(s) of turned-off or removed "
+                "connectors without indexing them: %s",
+                len(settled),
+                describe_connector_off(settled),
+            )
+        return frozenset(acked)
 
     async def __dispatch_phase(self) -> None:
         """Dispatch fairly-scheduled entries while pipeline capacity and

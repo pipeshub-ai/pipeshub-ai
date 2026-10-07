@@ -1364,6 +1364,7 @@ async def start_kafka_consumers(
         record_event_handler = await KafkaUtils.create_record_event_handler(
             app_container, producer=retry_producer
         )
+        connector_off_filter = await app_container.connector_off_filter()
 
         # Same process-wide singleton the ParsingClient/DoclingClient/
         # EmbeddingServerEmbeddings instances used by this consumer's
@@ -1381,6 +1382,7 @@ async def start_kafka_consumers(
             governor=governor,
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
+            connector_off_filter=connector_off_filter,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
