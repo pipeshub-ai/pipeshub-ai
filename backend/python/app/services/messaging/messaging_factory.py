@@ -7,6 +7,7 @@ from app.services.messaging.config import (
     MessageBrokerType,
     RedisConfig,
     RedisStreamsConfig,
+    Topic,
     get_message_broker_type,
     messaging_env,
 )
@@ -95,18 +96,22 @@ def _build_producer_lane_router(
     """The hash router, or on Redis with assignment on, the lane map's router.
 
     The lane map lives on the broker's own Redis, so a lookup and the publish
-    it serves fail together. Only the first laned topic is assigned; any other
-    laned topic keeps hashing.
+    it serves fail together. Only ``record-events`` is assigned, since that is
+    the topic the creation and delete hooks and the indexing consumer keep the
+    map for; any other laned topic keeps hashing, and with ``record-events``
+    not laned there is nothing to assign.
     """
+    topic = Topic.RECORD_EVENTS.value
     if (
         broker_type == MessageBrokerType.KAFKA
         or lane_config.assignment is not LaneAssignmentMode.ASSIGNED
+        or topic not in lane_config.laned_topics
     ):
         return build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA)
     assignments = shared_lane_assignments(
         logger,
         get_redis_provider(RedisConnectionConfig.from_redis_config(config)),
-        topic=lane_config.laned_topics[0],
+        topic=topic,
         fallback_lane_count=lane_config.lane_count,
         cache_seconds=lane_config.assignment_cache_seconds,
     )

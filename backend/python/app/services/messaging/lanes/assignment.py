@@ -75,6 +75,7 @@ __all__ = [
     "AssignedRedisLaneRouter",
     "LaneAssignments",
     "LaneEntry",
+    "LaneMapUnavailableError",
     "LaneMoveRefusedError",
     "UpkeepResult",
     "lane_assignments_in_use",
@@ -95,6 +96,9 @@ STATE_DELETED: Final = "deleted"
 _MAX_COMMIT_ATTEMPTS = 25
 # One warning per connector per this long when a lookup falls back.
 _FALLBACK_WARNING_INTERVAL_SECONDS = 60.0
+# After a lookup fails, connectors with nothing cached go straight to their
+# hash lane for this long instead of each waiting on Redis again.
+_UNAVAILABLE_HOLD_SECONDS = 5.0
 
 
 def lane_map_key(topic: str) -> str:
@@ -210,12 +214,13 @@ return {entry or "", lane_count, now_ms, redis.call("HGETALL", KEYS[2])}
 # KEYS: map, meta.
 # ARGV: connector id, lane, class, expected meta version, mode ("assign" or
 # "move"), the lane its events may be on from before the map ("" if none),
-# fallback lane count.
+# fallback lane count, "1" if the class is known for sure.
 #
 # "assign" never touches a connector that already has a lane inside the lane
-# count; "move" does, unless a previous move is still settling. Either way the
-# write is refused, and the current snapshot returned, if the meta version is
-# no longer the one the rule saw.
+# count; "move" does, unless a previous move is still settling. An entry
+# outside the lane count is replaced, unless it too is still settling. Either
+# way the write is refused, and the current snapshot returned, if the meta
+# version is no longer the one the rule saw.
 _COMMIT_SCRIPT = _LUA_HELPERS + """
 local map, meta = KEYS[1], KEYS[2]
 local id, lane, class = ARGV[1], tonumber(ARGV[2]), ARGV[3]
@@ -232,8 +237,25 @@ local old_lane = nil
 if old then old_lane = tonumber(old[2]) end
 
 if old_lane and old_lane < lane_count then
-    if mode ~= "move" or old_lane == lane then return {"existing", raw} end
+    if mode ~= "move" or old_lane == lane then
+        -- The caller knows the class for sure (creation): a first publish may
+        -- have guessed it, so correct the entry and its count in place.
+        if ARGV[8] == "1" and old[3] ~= class and old[4] == "live" then
+            redis.call("HINCRBY", meta, size_of(old[3]) .. old_lane, -1)
+            redis.call("HINCRBY", meta, size_of(class) .. old_lane, 1)
+            old[3] = class
+            raw = table.concat(old, "|")
+            redis.call("HSET", map, id, raw)
+            redis.call("HINCRBY", meta, "version", 1)
+        end
+        return {"existing", raw}
+    end
     if old[5] ~= "" then return {"settling", raw} end
+elseif old_lane and old[5] ~= "" then
+    -- Outside the lane count but still settling a move: replacing prevLane
+    -- would lose the lane its earlier events wait on. It keeps publishing to
+    -- its current lane, which the consumer adopted, until the move settles.
+    return {"settling", raw}
 end
 
 local version = tonumber(redis.call("HGET", meta, "version")) or 0
@@ -489,6 +511,9 @@ def _without(snapshot: LaneSnapshot, entry: LaneEntry) -> LaneSnapshot:
     return replace(snapshot, lanes=lanes)
 
 
+_FIX_UP_FIELD_PREFIX = "fixUp:"
+
+
 def _with_large_on(snapshot: LaneSnapshot, lanes: Collection[int]) -> LaneSnapshot:
     held = set(lanes)
     return replace(
@@ -510,6 +535,10 @@ class UpkeepResult:
     cleared: int
     removed: int
     now_ms: int
+
+
+class LaneMapUnavailableError(RuntimeError):
+    """The lane map could not be read just now; the caller falls back."""
 
 
 class LaneMoveRefusedError(RuntimeError):
@@ -560,8 +589,8 @@ class LaneAssignments:
             max_connections=max(1, max_connections),
             socket_timeout_seconds=timeout,
             socket_connect_timeout_seconds=timeout,
-            # A lookup that fails falls back to the hash lane; retrying here
-            # would only hold the publish that is waiting on it.
+            # A lookup that fails falls back to the hash lane, so one retry
+            # (a pooled connection that went stale) is all it is worth.
             retry_attempts=1,
             blocking=True,
         )
@@ -572,6 +601,8 @@ class LaneAssignments:
         self._cache: dict[str, _Cached] = {}
         self._known_lane_count: int | None = None
         self._shas: dict[str, str] = {}
+        # Monotonic time until which lookups are not tried after one failed.
+        self._unavailable_until = 0.0
         # One placement at a time per loop: two of them racing each other's
         # commits from the same process would only cost round trips.
         self._placement_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
@@ -599,13 +630,21 @@ class LaneAssignments:
         Raises if Redis cannot answer and this process has never seen the
         connector; the caller decides what to fall back to.
         """
+        now = time.monotonic()
         with self._lock:
             cached = self._cache.get(connector_id)
-        if cached is not None and time.monotonic() - cached.fetched_at < self._cache_seconds:
+        if cached is not None and now - cached.fetched_at < self._cache_seconds:
             return cached.lane
+        if now < self._unavailable_until:
+            # Redis just failed a lookup: answer at once rather than make
+            # every publish wait out its own timeout.
+            if cached is not None:
+                return cached.lane
+            raise LaneMapUnavailableError("The lane map did not answer a moment ago")
         try:
             lane = await self._lookup_or_place(connector_id, hint or LaneHint(), is_new=False)
         except Exception:
+            self._unavailable_until = time.monotonic() + _UNAVAILABLE_HOLD_SECONDS
             if cached is not None:
                 # An entry almost never changes, so a stale lane is still
                 # the best answer there is.
@@ -633,7 +672,9 @@ class LaneAssignments:
             connector_class=str(connector_class),
             connector_type=connector_type,
         )
-        return await self._lookup_or_place(connector_id, hint, is_new=is_new)
+        return await self._lookup_or_place(
+            connector_id, hint, is_new=is_new, class_is_known=True
+        )
 
     async def move(
         self,
@@ -799,12 +840,33 @@ class LaneAssignments:
             now_ms=int(reply[3]),
         )
 
+    async def fix_up_progress(self) -> dict[str, str]:
+        """Per connector, how far the upgrade fix-up got: ``moved`` once it was
+        moved off a shared lane, ``rescued`` once its queued records followed."""
+        prefix = _FIX_UP_FIELD_PREFIX
+        return {
+            name[len(prefix) :]: value
+            for name, value in (await self.read_meta()).items()
+            if name.startswith(prefix)
+        }
+
+    async def note_fix_up_progress(self, connector_id: str, step: str) -> None:
+        # Not a placement input, so the meta version is left alone.
+        await self._client().hset(  # type: ignore[misc]
+            self._meta, f"{_FIX_UP_FIELD_PREFIX}{connector_id}", step
+        )
+
     async def mark_migrated(self) -> int:
         """Record that the one-time upgrade fix-up is done; returns when it was."""
         return int(await self._eval(_MARK_MIGRATED_SCRIPT))
 
     async def _lookup_or_place(
-        self, connector_id: str, hint: LaneHint, *, is_new: bool
+        self,
+        connector_id: str,
+        hint: LaneHint,
+        *,
+        is_new: bool,
+        class_is_known: bool = False,
     ) -> int:
         reply = await self._eval(_LOOKUP_SCRIPT, connector_id, self._fallback_lane_count, "")
         lane_count = self._note_lane_count(reply[1])
@@ -813,6 +875,23 @@ class LaneAssignments:
             if entry is None:
                 raise RuntimeError(f"Unexpected lane map reply: {reply!r}")
             lane = entry.lane
+            if (
+                class_is_known
+                and hint.connector_class
+                and entry.connector_class != hint.connector_class
+            ):
+                # A first publish guessed the class; creation knows it.
+                await self._eval(
+                    _COMMIT_SCRIPT,
+                    connector_id,
+                    lane,
+                    hint.connector_class,
+                    0,
+                    "assign",
+                    "",
+                    self._fallback_lane_count,
+                    "1",
+                )
         else:
             lane = await self._place(
                 connector_id,
@@ -820,12 +899,21 @@ class LaneAssignments:
                 entry,
                 snapshot_from_meta(_pairs(reply[3]), lane_count, int(reply[2])),
                 is_new=is_new,
+                class_is_known=class_is_known,
             )
         self._remember(connector_id, lane)
         return lane
 
     def _note_lane_count(self, value: object) -> int:
         lane_count = max(1, int(value))  # type: ignore[call-overload]
+        if self._known_lane_count is not None and lane_count < self._known_lane_count:
+            # The consumer now reads fewer lanes: a cached lane past the new
+            # count is looked up again rather than used until it expires.
+            with self._lock:
+                for connector_id in [
+                    c for c, cached in self._cache.items() if cached.lane >= lane_count
+                ]:
+                    del self._cache[connector_id]
         self._known_lane_count = lane_count
         return lane_count
 
@@ -837,6 +925,7 @@ class LaneAssignments:
         snapshot: LaneSnapshot,
         *,
         is_new: bool = False,
+        class_is_known: bool = False,
     ) -> int:
         lock = self._placement_lock()
         async with lock:
@@ -845,10 +934,13 @@ class LaneAssignments:
                 cached = self._cache.get(connector_id)
             if cached is not None and time.monotonic() - cached.fetched_at < self._cache_seconds:
                 return cached.lane
+            # An event says its class only for an upload, so a repaired entry
+            # keeps the class it already has unless the caller knows better.
             connector_class = (
                 ConnectorClass.SYSTEM.value
                 if connector_id == DEFAULT_LANE_KEY
-                else hint.connector_class or ConnectorClass.TEAM.value
+                else hint.connector_class
+                or (entry.connector_class if entry is not None else ConnectorClass.TEAM.value)
             )
             reason = (
                 LaneRequestReason.LANE_OUT_OF_RANGE
@@ -865,7 +957,12 @@ class LaneAssignments:
             )
             legacy_lane = None if is_new else request.hash_lane
             status, value, occupancy = await self._commit_loop(
-                request, entry, snapshot, mode="assign", legacy_lane=legacy_lane
+                request,
+                entry,
+                snapshot,
+                mode="assign",
+                legacy_lane=legacy_lane,
+                class_is_known=class_is_known,
             )
             placed = LaneEntry.parse(value)
             if placed is None:
@@ -884,6 +981,7 @@ class LaneAssignments:
         legacy_lane: int | None,
         choose: Callable[[LaneRequest, LaneSnapshot], LaneChoice] | None = None,
         still_held: Collection[int] = (),
+        class_is_known: bool = False,
     ) -> tuple[str, object, tuple[int, int]]:
         """Commit the rule's choice, asking it again on a fresh snapshot for as
         long as another placement keeps getting in first.
@@ -921,6 +1019,7 @@ class LaneAssignments:
                 mode,
                 "" if legacy_lane is None else legacy_lane,
                 self._fallback_lane_count,
+                "1" if class_is_known else "",
             )
             status = _text(reply[0])
             if status == "assigned":
@@ -1058,7 +1157,12 @@ class AssignedRedisLaneRouter(RedisLaneRouter):
         return self.lane_name(topic, lane), lane_key
 
     def _fall_back(self, key: str, lane: int, error: Exception) -> None:
-        reason = "timeout" if isinstance(error, (TimeoutError, asyncio.TimeoutError)) else "error"
+        if isinstance(error, LaneMapUnavailableError):
+            reason = "held"
+        elif isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+            reason = "timeout"
+        else:
+            reason = "error"
         metrics.record_lane_assignment_fallback(reason)
         now = time.monotonic()
         with self._warn_lock:

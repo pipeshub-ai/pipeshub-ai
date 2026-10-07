@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("fakeredis.aioredis")
 pytest.importorskip("lupa")
 
+from app.modules.indexing import lane_upkeep as lane_upkeep_module
 from app.modules.indexing.lane_upkeep import (
     LaneReport,
     last_lane_report,
@@ -42,6 +43,10 @@ class _Graph:
         self.apps: dict[str, dict[str, Any]] = {}
         self.queued: dict[str, list[dict[str, Any]]] = {}
         self.fail_apps = False
+        # Connectors a paged scan of apps misses although they exist.
+        self.hidden_from_scan: set[str] = set()
+        self.fail_reads = False
+        self.fail_stats: set[str] = set()
 
     def add(self, connector_id: str, *, queued: int = 0, scope: str = "team", kind: str = "SLACK") -> None:
         self.apps[connector_id] = {
@@ -71,13 +76,24 @@ class _Graph:
         if collection == "apps":
             if self.fail_apps:
                 raise ConnectionError("graph unavailable")
-            rows = sorted(self.apps.values(), key=lambda d: d["_key"])
+            rows = sorted(
+                (d for d in self.apps.values() if d["_key"] not in self.hidden_from_scan),
+                key=lambda d: d["_key"],
+            )
         else:
             rows = list(self.queued.get(filters["connectorId"], []))
             rows.sort(key=lambda r: r[sort_field])
         return rows[skip : skip + limit]
 
+    async def get_document(self, key: str, collection: str, **_kwargs: object) -> dict[str, Any] | None:
+        if self.fail_reads:
+            raise ConnectionError("graph unavailable")
+        return self.apps.get(key) if collection == "apps" else None
+
     async def get_connector_stats(self, org_id: str, connector_id: str) -> dict[str, Any]:
+        if connector_id in self.fail_stats:
+            # What both providers return when the aggregation fails.
+            return {"success": False, "data": None}
         queued = len(self.queued.get(connector_id, []))
         return {"success": True, "data": {"stats": {"indexingStatus": {"QUEUED": queued}}}}
 
@@ -273,7 +289,120 @@ class TestUpgradeFixUp:
         assert await _map(provider) == {}
 
 
+class TestTheFixUpFinishesOnlyWhenItHasSeparatedThem:
+    async def test_a_connector_still_settling_is_moved_on_a_later_pass_and_only_then_is_it_done(
+        self,
+        provider: FakeRedisConnectionProvider,
+        graph: _Graph,
+        producer: _RecordingProducer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A and B share a hash lane; C, with the biggest queue, hashes to the
+        lane the rule gives A when A publishes after B. A must leave C's lane
+        but is still settling the move off its hash lane."""
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_CACHE_SECONDS", "0")
+        monkeypatch.setattr(lane_upkeep_module, "_FENCE_MARGIN_MS", 0)
+        a, b = _colliding(2, prefix="pair")
+        shared = stable_lane(a, LANES)
+        target = 0 if shared else 1
+        c = next(x for x in (f"solo-{i}" for i in range(500)) if stable_lane(x, LANES) == target)
+        graph.add(a, queued=5)
+        graph.add(b, queued=10)
+        graph.add(c, queued=40)
+        assignments = _assignments(provider)
+        await assignments.lane_for(b)
+        await assignments.lane_for(a)
+        a_entry = (await _map(provider))[a]
+        assert (a_entry.lane, a_entry.prev_lane) == (target, shared)
+
+        first = await _upkeep(provider, graph, producer)
+
+        assert first.migrated_at_ms is None
+        assert (await _map(provider))[a].lane == target, "A could not leave yet"
+        assert f"{TOPIC}.{target}" not in {t for t, *_ in producer.events}, (
+            "nothing re-sent onto the lane A still shares with C"
+        )
+
+        second = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert entries[c].lane == target
+        assert entries[a].lane not in (target, shared)
+        assert {t for t, *_ in producer.events} == {f"{TOPIC}.{entries[a].lane}"}
+        assert second.migrated_at_ms is not None
+
+    async def test_an_unknown_queue_count_keeps_everyone_where_they_are_until_it_is_known(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        graph.add(GITLAB, queued=40)
+        graph.add(SLACK, queued=6)
+        graph.fail_stats = {GITLAB}
+
+        first = await _upkeep(provider, graph, producer)
+
+        assert first.migrated_at_ms is None
+        assert {e.lane for e in (await _map(provider)).values()} == {SHARED}
+        assert producer.events == []
+
+        graph.fail_stats = set()
+        second = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert (entries[GITLAB].lane, entries[SLACK].prev_lane) == (SHARED, SHARED)
+        assert entries[SLACK].lane != SHARED
+        assert second.migrated_at_ms is not None
+
+    async def test_a_re_send_that_stopped_short_is_finished_next_pass_and_nothing_is_decided_twice(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        graph.add(GITLAB, queued=40)
+        graph.add(SLACK, queued=4)
+        send = producer.send_event
+        calls = 0
+
+        async def fail_once_at_the_third(**kwargs: object) -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise ConnectionError("broker blip")
+            return await send(**kwargs)
+
+        producer.send_event = fail_once_at_the_third  # type: ignore[method-assign]
+        first = await _upkeep(provider, graph, producer)
+        slack_lane = (await _map(provider))[SLACK].lane
+        graph.queued[GITLAB] = []  # GitLab drained since: it still keeps its lane
+
+        second = await _upkeep(provider, graph, producer)
+
+        assert first.migrated_at_ms is None
+        assert second.migrated_at_ms is not None
+        entries = await _map(provider)
+        assert (entries[GITLAB].lane, entries[SLACK].lane) == (SHARED, slack_lane)
+        assert {t for t, *_ in producer.events} == {f"{TOPIC}.{slack_lane}"}
+
+
 class TestKeepingTheMapInStepWithTheGraph:
+    async def test_a_live_connector_a_paged_scan_missed_keeps_its_lane(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """A removal in a page already read shifts the next page by one."""
+        graph.add("slack-1")
+        await _assignments(provider).lane_for("slack-1")
+        graph.hidden_from_scan = {"slack-1"}
+
+        await _upkeep(provider, graph, producer)
+
+        assert (await _map(provider))["slack-1"].is_live
+
+    async def test_a_connector_whose_read_fails_keeps_its_lane(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        await _assignments(provider).lane_for("gone-or-not")
+        graph.fail_reads = True
+
+        await _upkeep(provider, graph, producer)
+
+        assert (await _map(provider))["gone-or-not"].is_live
     async def test_a_class_guessed_on_first_publish_is_corrected(
         self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
     ) -> None:

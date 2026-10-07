@@ -68,14 +68,14 @@ class TestCreation:
         assert lane != stable_lane(first, LANES)
         assert entry.prev_lane is None
 
-    async def test_a_connector_that_already_has_a_lane_keeps_it(
+    async def test_a_connector_that_already_has_a_lane_keeps_it_with_its_real_class(
         self, provider: FakeRedisConnectionProvider
     ) -> None:
         assignments = _assignments(provider)
         lane = await assignments.lane_for("gitlab-1")
 
         assert await assignments.assign("gitlab-1", ConnectorClass.PERSONAL) == lane
-        assert (await _map(provider))["gitlab-1"].connector_class == "team"
+        assert (await _map(provider))["gitlab-1"].connector_class == "personal"
 
     async def test_the_class_known_at_creation_is_recorded(
         self, provider: FakeRedisConnectionProvider
