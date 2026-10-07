@@ -319,8 +319,8 @@ class EntityResolver:
             add(TOPIC, topic)
 
         for raw in metadata.languages or []:
-            if isinstance(raw, str):
-                add(LANGUAGE, canonical_language(raw) or raw)
+            if isinstance(raw, str) and (language := canonical_language(raw)):
+                add(LANGUAGE, language)
         return names
 
     # ---- tier 0 ------------------------------------------------------

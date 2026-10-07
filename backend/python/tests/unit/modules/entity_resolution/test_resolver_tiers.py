@@ -110,9 +110,10 @@ class TestCollection:
     ) -> None:
         model = scripted_model()
         resolver = make_resolver()
-        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon"])
+        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon", "Python"])
         resolution = await resolver.resolve(ctx_factory("r1", "acme", meta))
-        assert meta.languages == ["English", "French", "Klingon"]
+        # Not natural languages: extraction also reports code and made-up ones.
+        assert meta.languages == ["English", "French"]
         assert fake_store.match_calls == []
         assert model.calls == []
         assert resolution.stats.names_deduped == 1

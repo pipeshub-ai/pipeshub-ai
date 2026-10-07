@@ -2,11 +2,18 @@
 
 Extraction is asked for ISO language names but returns codes, regional tags
 and native spellings too. Languages are a closed set, so they are mapped
-through this table instead of the vector and model tiers. An unknown value
-falls through to plain normalization in the resolver.
+through this table instead of the vector and model tiers; a natural language
+the table does not list is recognised through lingua (already the detector
+used for sentence splitting). Anything else — Python, Go, JSON, YAML, which
+extraction also reports as "languages" — is not a language and has no
+canonical name.
 """
 
 from __future__ import annotations
+
+from functools import cache
+
+from lingua import Language
 
 from app.modules.entity_resolution.normalizer import normalize_name
 
@@ -66,16 +73,33 @@ for _canonical, _aliases in _LANGUAGES.items():
         _LOOKUP[normalize_name(_alias)] = _canonical
 
 
+# lingua's enum names that are not the name people use.
+_LINGUA_DISPLAY = {Language.BOKMAL: "Norwegian", Language.NYNORSK: "Norwegian", Language.SLOVENE: "Slovenian"}
+
+
+@cache
+def _lingua_lookup() -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for language in Language.all():
+        display = _LINGUA_DISPLAY.get(language, language.name.replace("_", " ").title())
+        for key in (display, language.name.replace("_", " "), language.iso_code_639_1.name, language.iso_code_639_3.name):
+            lookup[normalize_name(key)] = display
+    return lookup
+
+
 def canonical_language(raw: str) -> str | None:
-    """The canonical English name for ``raw``, or ``None`` when unknown."""
+    """The canonical English name for ``raw``, or ``None`` when it is not a
+    natural language."""
     normalized = normalize_name(raw)
     if not normalized:
         return None
-    if normalized in _LOOKUP:
-        return _LOOKUP[normalized]
     # "en_US" / "en-us" style tags: try the primary subtag.
     primary = normalized.replace("_", "-").split("-", 1)[0]
-    return _LOOKUP.get(primary)
+    for key in (normalized, primary):
+        if key in _LOOKUP:
+            return _LOOKUP[key]
+    lingua = _lingua_lookup()
+    return lingua.get(normalized) or lingua.get(primary)
 
 
 __all__ = ["canonical_language"]

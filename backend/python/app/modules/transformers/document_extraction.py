@@ -5,14 +5,16 @@ import logging
 from typing import Any, List, Optional
 
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
 from app.config.constants.arangodb import DepartmentNames
-from app.models.blocks import Block, SemanticMetadata
+from app.models.blocks import Block, BlockType, SemanticMetadata
+from app.modules.entity_resolution.languages import canonical_language
 from app.modules.extraction.prompt_template import (
     prompt_for_document_extraction,
 )
+from app.modules.parsers.text_splitting import detect_language
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import coerce_message_content_to_text
@@ -168,7 +170,7 @@ class DocumentClassification(BaseModel):
         description="Nested subcategories for the document"
     )
     languages: List[str] = Field(
-        description="List of languages detected in the document"
+        description="Natural languages the document is written in"
     )
     topics: List[str] = Field(
         description="List of key topics/themes extracted from the document"
@@ -186,6 +188,48 @@ class DocumentClassification(BaseModel):
             "recommendations, or unsupported claims."
         )
     )
+
+    @field_validator("languages", mode="after")
+    @classmethod
+    def _only_natural_languages(cls, values: list[str]) -> list[str]:
+        names = (canonical_language(v) for v in values if isinstance(v, str))
+        return list(dict.fromkeys(n for n in names if n))
+
+
+_LANGUAGE_SAMPLE_CHARS = 2000
+
+
+def _written_language(blocks: list[Block]) -> list[str]:
+    """The language the record's text is written in, for a classification that
+    named none (it listed only code or formats, or nothing)."""
+    parts: list[str] = []
+    size = 0
+    # Text blocks only: an image block's data can be a base64 data URI.
+    for block in blocks:
+        if block.type == BlockType.TEXT and isinstance(block.data, str):
+            parts.append(block.data)
+            size += len(block.data) + 1
+            if size >= _LANGUAGE_SAMPLE_CHARS:
+                break
+    sample = " ".join(parts)[:_LANGUAGE_SAMPLE_CHARS]
+    name = canonical_language(detect_language(sample)) if sample.strip() else None
+    return [name] if name else []
+
+
+def semantic_metadata_from_classification(
+    classification: DocumentClassification, blocks: list[Block],
+) -> SemanticMetadata:
+    return SemanticMetadata(
+        departments=classification.departments,
+        languages=classification.languages or _written_language(blocks),
+        topics=classification.topics,
+        summary=classification.summary,
+        categories=[classification.category],
+        sub_category_level_1=classification.subcategories.level1,
+        sub_category_level_2=classification.subcategories.level2,
+        sub_category_level_3=classification.subcategories.level3,
+    )
+
 
 class DocumentExtraction(Transformer):
     def __init__(self, logger, graph_provider: IGraphDBProvider, config_service) -> None:
@@ -207,16 +251,7 @@ class DocumentExtraction(Transformer):
         if document_classification is None:
             record.semantic_metadata = None
             return
-        record.semantic_metadata = SemanticMetadata(
-            departments=document_classification.departments,
-            languages=document_classification.languages,
-            topics=document_classification.topics,
-            summary=document_classification.summary,
-            categories=[document_classification.category],
-            sub_category_level_1=document_classification.subcategories.level1,
-            sub_category_level_2=document_classification.subcategories.level2,
-            sub_category_level_3=document_classification.subcategories.level3,
-        )
+        record.semantic_metadata = semantic_metadata_from_classification(document_classification, blocks)
         self.logger.debug("🎯 Document extraction completed successfully")
 
 
