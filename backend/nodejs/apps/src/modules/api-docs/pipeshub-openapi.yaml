@@ -23058,9 +23058,6 @@ paths:
               redirect_uris:
                 - http://localhost:8765/callback
               token_endpoint_auth_method: none
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/OAuthDynamicClientRegistrationRequest'
         required: true
       responses:
         '201':
@@ -25028,9 +25025,6 @@ paths:
         description: "Request payload"
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/AuthenticateRequest'
-          application/x-www-form-urlencoded:
             schema:
               $ref: '#/components/schemas/AuthenticateRequest'
         required: true
@@ -27863,39 +27857,6 @@ paths:
                   enum: [admin, member]
                   description: Organization role for invited users. Only org admins may invite as admin.
                   example: member
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-                - emails
-              properties:
-                emails:
-                  type: array
-                  items:
-                    type: string
-                    format: email
-                    pattern: '^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$'
-                  minItems: 1
-                  description: |
-                    Array of email addresses to invite. The validator only checks for strings; the
-                    pattern is the handler's check, which answers `400` `Invalid emails are found`.
-                    Surrounding whitespace is trimmed before either check.
-                  example: ["user1@company.com", "user2@company.com"]
-                groupIds:
-                  type: array
-                  items:
-                    type: string
-                    pattern: '^[a-fA-F0-9]{24}$'
-                  description: |
-                    Optional group IDs to add invited users to. Not checked as ObjectIds: a value that is not
-                    one fails inside the handler with `500`.
-                  example: ["507f1f77bcf86cd799439011"]
-                role:
-                  type: string
-                  enum: [admin, member]
-                  description: Organization role for invited users. Only org admins may invite as admin.
-                  example: member
       responses:
         '200':
           description: Invitations processed (including all-skipped case)
@@ -28615,21 +28576,6 @@ paths:
         description: "Request payload"
         content:
           application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-                - userIds
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                    pattern: '^[a-fA-F0-9]{24}$'
-                  minItems: 1
-                  description: Array of MongoDB ObjectId strings
-                  example: ["507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"]
-          application/x-www-form-urlencoded:
             schema:
               type: object
               additionalProperties: false
@@ -30168,9 +30114,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/TeamCreateRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/TeamCreateRequest'
       responses:
         '201':
           description: Team created
@@ -30529,9 +30472,6 @@ paths:
         description: Partial team update. A call with no body is treated like `{}`.
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/TeamUpdateRequest'
-          application/x-www-form-urlencoded:
             schema:
               $ref: '#/components/schemas/TeamUpdateRequest'
       responses:
@@ -31192,40 +31132,6 @@ paths:
         description: "Request payload. A request with no body is treated like `{}` (no-op update, 200)."
         content:
           application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                contactEmail:
-                  type: string
-                  format: email
-                  pattern: '^(?!\.)(?!.*\.\.)([A-Za-z0-9_''+\-.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$'
-                  description: Primary contact email for the organization (stored lower-cased)
-                  example: "admin@acme.com"
-                registeredName:
-                  type: string
-                  description: Official registered/legal name; an empty string leaves it unchanged
-                  example: "Acme Corporation Inc."
-                shortName:
-                  type: string
-                  description: Short display name for UI; an empty string leaves it unchanged
-                  example: "Acme Corp"
-                permanentAddress:
-                  type: object
-                  additionalProperties: false
-                  description: Replaces the whole stored address; an `_id` sent here is dropped.
-                  properties:
-                    addressLine1:
-                      type: string
-                    city:
-                      type: string
-                    state:
-                      type: string
-                    postCode:
-                      type: string
-                    country:
-                      type: string
-          application/x-www-form-urlencoded:
             schema:
               type: object
               additionalProperties: false
@@ -32404,28 +32310,6 @@ paths:
               required:
                 - groupIds
                 - userIds
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                groupIds:
-                  type: array
-                  minItems: 1
-                  items:
-                    type: string
-                    pattern: '^[a-fA-F0-9]{24}$'
-                  description: IDs of groups to add users to
-                userIds:
-                  type: array
-                  minItems: 1
-                  items:
-                    type: string
-                    pattern: '^[a-fA-F0-9]{24}$'
-                  description: User IDs to add
-              required:
-                - groupIds
-                - userIds
       responses:
         '200':
           description: Users added to groups successfully
@@ -32508,26 +32392,6 @@ paths:
         description: "Request payload"
         content:
           application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                groupIds:
-                  type: array
-                  minItems: 1
-                  items:
-                    type: string
-                    pattern: '^[a-fA-F0-9]{24}$'
-                userIds:
-                  type: array
-                  minItems: 1
-                  items:
-                    type: string
-                    pattern: '^[a-fA-F0-9]{24}$'
-              required:
-                - groupIds
-                - userIds
-          application/x-www-form-urlencoded:
             schema:
               type: object
               additionalProperties: false
@@ -34954,9 +34818,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RestoreRecordsRequestBody'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/RestoreRecordsRequestBody'
       responses:
         '200':
           description: Outcome for each requested record
@@ -36617,38 +36478,6 @@ paths:
                       maxItems: 0
                     teamIds:
                       minItems: 1
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required:
-                - userIds
-                - teamIds
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                  description: Mongo user ids to grant the role to
-                teamIds:
-                  type: array
-                  items:
-                    type: string
-                  description: Graph team ids to grant access to
-                role:
-                  type: string
-                  enum: [OWNER, WRITER, READER]
-                  description: Permission role to grant. Required when userIds is not empty; omit for team-only grants.
-              anyOf:
-                - required:
-                    - role
-                  properties:
-                    userIds:
-                      minItems: 1
-                - properties:
-                    userIds:
-                      maxItems: 0
-                    teamIds:
-                      minItems: 1
       responses:
         '201':
           description: Permissions granted successfully
@@ -36880,30 +36709,6 @@ paths:
                 - role
                 - userIds
                 - teamIds
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              properties:
-                role:
-                  type: string
-                  enum: [OWNER, WRITER, READER]
-                  description: New permission role to assign (required)
-                userIds:
-                  type: array
-                  minItems: 1
-                  items:
-                    type: string
-                  description: Mongo user ids to update (at least one)
-                teamIds:
-                  type: array
-                  maxItems: 0
-                  items:
-                    type: string
-                  description: Must be sent, and empty — non-empty values are rejected (teams cannot have roles updated)
-              required:
-                - role
-                - userIds
-                - teamIds
       responses:
         '200':
           description: Permissions updated successfully
@@ -37022,30 +36827,6 @@ paths:
         description: User and/or team permission removal payload
         content:
           application/json:
-            schema:
-              type: object
-              required:
-                - userIds
-                - teamIds
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                  description: Mongo user ids to remove (at least one of `userIds` or `teamIds` must be non-empty)
-                teamIds:
-                  type: array
-                  items:
-                    type: string
-                  description: Graph team ids to remove
-              anyOf:
-                - properties:
-                    userIds:
-                      minItems: 1
-                - properties:
-                    teamIds:
-                      minItems: 1
-          application/x-www-form-urlencoded:
             schema:
               type: object
               required:
@@ -40713,9 +40494,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ShareRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/ShareRequest'
       responses:
         '200':
           description: Conversation shared successfully
@@ -41763,22 +41541,6 @@ paths:
                   minItems: 1
                   description: IDs of users to remove from the conversation's share list.
                   example: ["507f1f77bcf86cd799439011"]
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              additionalProperties: false
-              required:
-                - userIds
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
-                    pattern: '^[0-9a-fA-F]{24}$'
-                  minItems: 1
-                  description: IDs of users to remove from the conversation's share list.
-                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: Conversation unshared successfully
@@ -42150,9 +41912,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateProjectRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/CreateProjectRequest'
       responses:
         '201':
           description: Project created
@@ -42447,9 +42206,6 @@ paths:
           with the project as it is.
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateProjectRequest'
-          application/x-www-form-urlencoded:
             schema:
               $ref: '#/components/schemas/UpdateProjectRequest'
       responses:
@@ -43201,9 +42957,6 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/ProjectMembersUpsertRequest'
-          application/x-www-form-urlencoded:
             schema:
               $ref: '#/components/schemas/ProjectMembersUpsertRequest'
       responses:
@@ -44550,9 +44303,6 @@ paths:
                   userIds:
                     - "65f1c0a4e2b9c4d8f3a1b2c4"
                   accessLevel: read
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/SemanticSearchShareRequest'
       responses:
         '200':
           description: |
@@ -44702,9 +44452,6 @@ paths:
                 value:
                   userIds:
                     - "65f1c0a4e2b9c4d8f3a1b2c4"
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/SemanticSearchShareRequest'
       responses:
         '200':
           description: |
@@ -49841,9 +49588,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ReindexConnectorRequestBody'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/ReindexConnectorRequestBody'
       responses:
         '200':
           description: Reindex triggered successfully
@@ -51976,49 +51720,6 @@ paths:
                       type: string
                 baseUrl:
                   type: string
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required:
-                - name
-                - auth
-              properties:
-                name:
-                  type: string
-                  minLength: 1
-                  pattern: '\S'
-                  description: Must hold a non-blank character.
-                displayName:
-                  type: string
-                type:
-                  type: string
-                auth:
-                  type: object
-                  description: Authentication settings. Fields not listed here are dropped without an error.
-                  required:
-                    - type
-                  properties:
-                    type:
-                      type: string
-                      minLength: 1
-                      pattern: '\S'
-                      description: Auth type; must hold a non-blank character.
-                    clientId:
-                      type: string
-                    clientSecret:
-                      type: string
-                    apiToken:
-                      type: string
-                    oauthAppId:
-                      type: string
-                    scopes:
-                      type: array
-                      items:
-                        type: string
-                    tenantId:
-                      type: string
-                baseUrl:
-                  type: string
       responses:
         '400':
           description: |
@@ -52344,39 +52045,6 @@ paths:
                       type: string
                 baseUrl:
                   type: string
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required:
-                - auth
-              properties:
-                auth:
-                  type: object
-                  description: Authentication settings. Fields not listed here are dropped without an error.
-                  required:
-                    - type
-                  properties:
-                    type:
-                      type: string
-                      minLength: 1
-                      pattern: '\S'
-                      description: Auth type; must hold a non-blank character.
-                    clientId:
-                      type: string
-                    clientSecret:
-                      type: string
-                    apiToken:
-                      type: string
-                    oauthAppId:
-                      type: string
-                    scopes:
-                      type: array
-                      items:
-                        type: string
-                    tenantId:
-                      type: string
-                baseUrl:
-                  type: string
       responses:
         '400':
           description: |
@@ -52448,39 +52116,6 @@ paths:
         description: Updated toolset authentication configuration and optional base URL.
         content:
           application/json:
-            schema:
-              type: object
-              required:
-                - auth
-              properties:
-                auth:
-                  type: object
-                  description: Authentication settings. Fields not listed here are dropped without an error.
-                  required:
-                    - type
-                  properties:
-                    type:
-                      type: string
-                      minLength: 1
-                      pattern: '\S'
-                      description: Auth type; must hold a non-blank character.
-                    clientId:
-                      type: string
-                    clientSecret:
-                      type: string
-                    apiToken:
-                      type: string
-                    oauthAppId:
-                      type: string
-                    scopes:
-                      type: array
-                      items:
-                        type: string
-                    tenantId:
-                      type: string
-                baseUrl:
-                  type: string
-          application/x-www-form-urlencoded:
             schema:
               type: object
               required:
@@ -54339,28 +53974,6 @@ paths:
                       type: string
                     password:
                       type: string
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required:
-                - auth
-              properties:
-                auth:
-                  type: object
-                  minProperties: 1
-                  description: |-
-                    The new credentials; they replace the saved ones whole. Other fields sent here are
-                    dropped by the validator, and an `auth` left empty is refused. Each field must also be
-                    one the toolset's credential form declares for the instance's auth type.
-                  properties:
-                    email:
-                      type: string
-                    apiToken:
-                      type: string
-                    username:
-                      type: string
-                    password:
-                      type: string
       responses:
         '200':
           description: Credentials updated successfully
@@ -55773,9 +55386,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/SkillFinalizeImportRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/SkillFinalizeImportRequest'
       responses:
         '201':
           description: Skill created from the imported content
@@ -55942,9 +55552,6 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/SkillWriteRequest'
-          application/x-www-form-urlencoded:
             schema:
               $ref: '#/components/schemas/SkillWriteRequest'
       responses:
@@ -63098,9 +62705,6 @@ paths:
                     indexing:
                       modelType: slm
                       modelKey: 3f2a1c8e-0000-0000-0000-000000000001
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/UpdateModelRolesRequest'
       responses:
         '200':
           description: Role assignments updated successfully
@@ -65510,9 +65114,6 @@ paths:
               $ref: '#/components/schemas/McpServerCredentialsRequest'
             example:
               apiToken: <token issued by the MCP server>
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/McpServerCredentialsRequest'
       responses:
         '200':
           description: Credentials stored
@@ -65599,9 +65200,6 @@ paths:
               $ref: '#/components/schemas/McpServerCredentialsRequest'
             example:
               apiToken: <token issued by the MCP server>
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/McpServerCredentialsRequest'
       responses:
         '200':
           description: Credentials stored
@@ -66334,9 +65932,6 @@ paths:
               $ref: '#/components/schemas/McpServerCredentialsRequest'
             example:
               apiToken: <token issued by the MCP server>
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/McpServerCredentialsRequest'
       responses:
         '200':
           description: Credentials stored
@@ -66430,9 +66025,6 @@ paths:
               $ref: '#/components/schemas/McpServerCredentialsRequest'
             example:
               apiToken: <token issued by the MCP server>
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/McpServerCredentialsRequest'
       responses:
         '200':
           description: Credentials stored

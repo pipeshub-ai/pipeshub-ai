@@ -13,6 +13,7 @@ from collections.abc import Iterator
 
 import pytest
 from global_audit_support import (
+    DUMMY_OBJECT_ID,
     FORM,
     FORM_HEADERS,
     FORM_PARAMETER_LIMIT,
@@ -41,6 +42,7 @@ TOO_MANY_FIELDS = "&".join(f"f{i}=1" for i in range(FORM_PARAMETER_LIMIT + 1))
 OVER_100_KB = "f=" + "x" * (100 * 1024)
 TEAMS_ROUTE = "/api/v1/teams"
 SMTP_ROUTE = "/api/v1/configurationManager/smtpConfig"
+KB_ROUTE = "/api/v1/knowledgeBase"
 
 
 @pytest.mark.parametrize("op", params_for(WITH_FORM_BODY))
@@ -87,17 +89,17 @@ def created_team_ids(teams_client: TeamsClient) -> Iterator[list[str]]:
         teams_client.delete_team(team_id)
 
 
-def test_a_route_with_an_all_text_body_accepts_it_form_encoded(
-    teams_client: TeamsClient, created_team_ids: list[str]
-) -> None:
-    assert FORM in find("post", "/teams").media_types
+def test_a_route_with_an_all_text_body_accepts_it_form_encoded(pipeshub_client: PipeshubClient) -> None:
+    assert FORM in find("post", "/knowledgeBase").media_types
     name = f"spec-audit-global-form-{uuid.uuid4().hex[:10]}"
-    resp = teams_client.post("", headers=FORM_HEADERS, data={"name": name, "description": "sent as a form"})
-    assert resp.status_code == 201, resp.text[:500]
-    assert_strict_openapi_exchange(resp, TEAMS_ROUTE)
-    team = resp.json()["data"]
-    created_team_ids.append(team["id"])
-    assert (team["name"], team["description"]) == (name, "sent as a form")
+    resp = pipeshub_client.request("POST", KB_ROUTE, headers=FORM_HEADERS, data={"kbName": name})
+    try:
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, KB_ROUTE)
+        assert resp.json()["name"] == name, resp.text[:500]
+    finally:
+        if resp.status_code == 201:
+            pipeshub_client.request("DELETE", f"{KB_ROUTE}/{resp.json()['id']}")
 
 
 def test_a_number_field_sent_form_encoded_is_refused_and_the_spec_lists_no_form_body(
@@ -114,3 +116,18 @@ def test_a_number_field_sent_form_encoded_is_refused_and_the_spec_lists_no_form_
     assert "body.port" in {e.get("field") for e in error["metadata"]["errors"]}, resp.text[:500]
     assert FORM not in find("post", "/configurationManager/smtpConfig").media_types
     assert_strict_openapi_exchange(resp, SMTP_ROUTE)
+
+
+def test_a_list_field_sent_once_form_encoded_is_refused_and_the_spec_lists_no_form_body(
+    pipeshub_client: PipeshubClient,
+) -> None:
+    # qs turns a key sent once into a string, never a one-item list.
+    resp = pipeshub_client.request(
+        "POST", "/api/v1/users/by-ids", headers=FORM_HEADERS, data={"userIds": DUMMY_OBJECT_ID}
+    )
+    assert resp.status_code == 400, resp.text[:500]
+    error = error_of(resp)
+    assert error["code"] == "VALIDATION_ERROR", resp.text[:500]
+    assert "body.userIds" in {e.get("field") for e in error["metadata"]["errors"]}, resp.text[:500]
+    assert FORM not in find("post", "/users/by-ids").media_types
+    assert_strict_openapi_exchange(resp, "/api/v1/users/by-ids")
