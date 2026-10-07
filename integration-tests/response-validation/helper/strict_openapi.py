@@ -114,8 +114,11 @@ def _undocumented(
             is_open = True
             if additional and additional is not True:
                 extra.append(additional)
-    if not properties and not is_open:
+    unconstrained = not any(part.get("type") or part.get("properties") for part in parts)
+    if not properties and not is_open and not unconstrained:
         _add(out, f"{where}: object is {what} with fields {sorted(instance)[:8]} but the spec describes none")
+        return
+    if unconstrained and not properties:
         return
     for key, value in instance.items():
         if key in properties:

@@ -197,3 +197,24 @@ def test_express_page_for_a_method_no_route_handles_is_not_an_undocumented_opera
     assert _problems(None, method="POST", status=404, content_type="text/html; charset=utf-8") != []
     assert strict_response_problems(_DOC, _REGISTRY, "POST", "/api/v1/teams/x", 404, "text/html; charset=utf-8", page) == []
     assert strict_response_problems(_DOC, _REGISTRY, "GET", "/api/v1/nowhere", 200, "text/html", page) != []
+
+
+def test_a_field_named_like_an_openapi_keyword_is_still_a_field() -> None:
+    doc = adapt_document({
+        "paths": {"/x": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"examples": {"type": "array"}}, "example": {"examples": []},
+        }}}}}}}},
+    })
+    ok = json.dumps({"examples": []}).encode()
+    bad = json.dumps({"examples": "x"}).encode()
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 200, "application/json", ok) == []
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 200, "application/json", bad) != []
+
+
+def test_a_schema_that_allows_any_value_allows_any_object() -> None:
+    doc = adapt_document({"paths": {"/x": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {
+        "type": "object", "properties": {"example": {"description": "any value"}},
+    }}}}}}}}})
+    body = json.dumps({"example": {"a": 1}}).encode()
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 200, "application/json", body) == []

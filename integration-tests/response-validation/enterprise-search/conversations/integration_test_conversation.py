@@ -955,7 +955,6 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         resp = self.conversations.share_conversation(
             conversation_id,
             userIds=[SHARE_TARGET_USER_ID],
-            accessLevel="read",
             timeout=self.timeout,
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -1042,7 +1041,6 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         share_resp = self.conversations.share_conversation(
             conversation_id,
             userIds=[SHARE_TARGET_USER_ID],
-            accessLevel="read",
             timeout=self.timeout,
         )
         assert share_resp.status_code == 200, (
