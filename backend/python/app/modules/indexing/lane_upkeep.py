@@ -369,13 +369,18 @@ async def _upgrade_fix_up(
                 continue
             entry = entries[connector_id]
             if entry.lane == lane:
+                held = {lane} if entries[keeper].lane != lane else set()
+                if not await _a_lane_is_free(assignments, held | {lane}):
+                    # Every other lane already has a large connector: moving
+                    # would only make another pair. It stays, decided.
+                    continue
                 try:
                     entry = await assignments.move(
                         connector_id,
                         LaneRequestReason.UPGRADE,
                         org_id=apps[connector_id].org_id,
                         # A keeper that already moved off still has its backlog here.
-                        still_held=(lane,) if entries[keeper].lane != lane else (),
+                        still_held=tuple(held),
                     )
                 except Exception as e:
                     # Still settling an earlier move, or Redis said no: next pass.
@@ -391,10 +396,19 @@ async def _upgrade_fix_up(
                     )
                     continue
                 if entry.lane == lane:
-                    # Every lane already has a large connector; it stays.
+                    # The rule kept it where it is; it stays, decided.
+                    continue
+                entries[connector_id] = large[connector_id] = entry
+                if any(
+                    other != connector_id and other_entry.lane == entry.lane
+                    for other, other_entry in large.items()
+                ):
+                    # It landed beside another large connector after all (an
+                    # edition rule may choose so): that pair is decided on a
+                    # later pass, before anything is re-sent there.
+                    finished = False
                     continue
                 moved += 1
-                entries[connector_id] = large[connector_id] = entry
                 await assignments.note_fix_up_progress(connector_id, "moved")
             elif any(
                 other != connector_id and other_entry.lane == entry.lane
@@ -428,6 +442,21 @@ async def _org_of(
     """The connector's org: knowledge bases carry ``orgId``; connectors created
     before it was stored on the document have only the org-app edge."""
     return app.org_id or await org_id_from_app_edge(graph_provider, connector_id)
+
+
+async def _a_lane_is_free(assignments: LaneAssignments, taken: set[int]) -> bool:
+    """Whether some lane outside ``taken`` has no large connector."""
+    meta = await assignments.read_meta()
+
+    def large_on(lane: int) -> int:
+        try:
+            return int(meta.get(f"large:{lane}", "0"))
+        except ValueError:
+            return 0
+
+    return any(
+        large_on(lane) == 0 for lane in range(assignments.lane_count) if lane not in taken
+    )
 
 
 async def _queued(
