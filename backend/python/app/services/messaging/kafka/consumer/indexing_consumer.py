@@ -293,6 +293,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Partitions that returned records on the most recent poll; see
         # __other_lane_is_readable.
         self._partitions_with_data: set[TopicPartition] = set()
+        # Partitions revoked since the last poll; see __read_phase.
+        self._revoked_since_poll: set[TopicPartition] = set()
         self._deferred_messages: deque[
             tuple[TopicPartition, ConsumerRecord, StreamMessage, FairnessKey]
         ] = deque()
@@ -725,6 +727,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         revoked_set = set(revoked)
         if not revoked_set:
             return
+        self._revoked_since_poll.update(revoked_set)
 
         purged = self._scheduler.purge(lambda item: item[0] in revoked_set)
         for tp in revoked_set:
@@ -1114,6 +1117,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 max_records,
                 min(_READ_PAST_BATCH, remembered.budget - remembered.total),
             )
+        self._revoked_since_poll.clear()
         message_batch = await self.consumer.getmany(
             timeout_ms=poll_timeout_ms,
             max_records=max_records,
@@ -1127,12 +1131,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         pre_parsed = await self.__parse_batch(message_batch)
         settled = await self.__settle_connector_off(pre_parsed)
         settled_reached: list[tuple[TopicPartition, int]] = []
-        # The filter awaits the graph, and a rebalance can revoke a partition
-        # meanwhile. Its messages belong to the new owner, which reads them
-        # from the last commit; none of them is tracked, buffered or committed.
-        assigned = self.consumer.assignment()
         for tp, messages in message_batch.items():
-            if tp not in assigned:
+            # The filter awaits the graph, and a rebalance can revoke a
+            # partition meanwhile. Its messages belong to the new owner, which
+            # reads them from the last commit; none is tracked, buffered or
+            # committed here.
+            if tp in self._revoked_since_poll:
                 continue
             # Every partition in the batch is drained or explicitly seeked
             # back. Returning early from the outer loop would abandon
@@ -1621,17 +1625,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         scheduler = self._scheduler
         if remembered is None or scheduler is None:
             return
-        # Positions are looked up afresh: a rebalance during the fetch may have
-        # forgotten some of them.
-        assigned = self.consumer.assignment() if self.consumer is not None else set()
+        # Positions are looked up afresh: a rebalance during the fetch forgets
+        # those of revoked partitions, and only what is still remembered, from
+        # the head, is buffered. A record at an offset never changes, so one
+        # remembered again after a reassignment is the same message.
         settled_gone: list[tuple[TopicPartition, int]] = []
         fetched: list[tuple[FairnessKey, TopicPartition, ConsumerRecord]] = []
         for entity in plan:
             for _ in range(len(plan[entity])):
                 position = remembered.head(entity)
                 if position is None or position not in found and position not in gone:
-                    break
-                if position[0] not in assigned:
                     break
                 remembered.pop(entity)
                 if position in gone:
