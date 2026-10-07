@@ -47,15 +47,29 @@ class _Graph:
         self.hidden_from_scan: set[str] = set()
         self.fail_reads = False
         self.fail_stats: set[str] = set()
+        self.org_edges: dict[str, str] = {}
 
-    def add(self, connector_id: str, *, queued: int = 0, scope: str = "team", kind: str = "SLACK") -> None:
+    def add(
+        self,
+        connector_id: str,
+        *,
+        queued: int = 0,
+        scope: str = "team",
+        kind: str = "SLACK",
+        org_on_document: bool = True,
+        org_edge: bool = True,
+    ) -> None:
+        """``org_on_document=False``: a connector from before ``orgId`` was
+        stored on its document, whose org is only the org-app edge."""
         self.apps[connector_id] = {
             "_key": connector_id,
             "name": connector_id.title(),
             "type": kind,
             "scope": scope,
-            "orgId": "org-1",
+            **({"orgId": "org-1"} if org_on_document else {}),
         }
+        if org_edge:
+            self.org_edges[connector_id] = "org-1"
         self.queued[connector_id] = [
             {
                 "_key": f"{connector_id}-r{i}",
@@ -81,7 +95,11 @@ class _Graph:
                 key=lambda d: d["_key"],
             )
         else:
-            rows = list(self.queued.get(filters["connectorId"], []))
+            rows = [
+                r
+                for r in self.queued.get(filters["connectorId"], [])
+                if r["indexingStatus"] == filters["indexingStatus"]
+            ]
             rows.sort(key=lambda r: r[sort_field])
         return rows[skip : skip + limit]
 
@@ -94,8 +112,18 @@ class _Graph:
         if connector_id in self.fail_stats:
             # What both providers return when the aggregation fails.
             return {"success": False, "data": None}
-        queued = len(self.queued.get(connector_id, []))
+        # The providers count only records of the org they are given, so an
+        # unknown org answers with zeros, not an error.
+        queued = sum(
+            r["orgId"] == org_id and r["indexingStatus"] == "QUEUED"
+            for r in self.queued.get(connector_id, [])
+        )
         return {"success": True, "data": {"stats": {"indexingStatus": {"QUEUED": queued}}}}
+
+    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> list[dict[str, Any]]:
+        connector_id = node_id.rsplit("/", 1)[-1]
+        org = self.org_edges.get(connector_id)
+        return [{"from_id": org, "to_id": connector_id}] if org else []
 
 
 @pytest.fixture
@@ -379,6 +407,64 @@ class TestTheFixUpFinishesOnlyWhenItHasSeparatedThem:
         entries = await _map(provider)
         assert (entries[GITLAB].lane, entries[SLACK].lane) == (SHARED, slack_lane)
         assert {t for t, *_ in producer.events} == {f"{TOPIC}.{slack_lane}"}
+
+
+class TestConnectorsFromBeforeOrgWasOnTheDocument:
+    async def test_the_org_comes_from_the_edge_so_the_backlog_keeps_the_lane(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        # The backlog is on the connector whose id sorts last, so a tie of
+        # zeros (an unread org) would give the lane to the other one.
+        keeper, mover = max(GITLAB, SLACK), min(GITLAB, SLACK)
+        graph.add(keeper, queued=40, org_on_document=False)
+        graph.add(mover, queued=6, org_on_document=False)
+
+        report = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert entries[keeper].lane == SHARED
+        assert entries[mover].lane != SHARED
+        assert report.migrated_at_ms is not None
+
+    async def test_with_no_org_to_be_found_nobody_moves_and_it_tries_again_later(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        graph.add(GITLAB, queued=40, org_on_document=False, org_edge=False)
+        graph.add(SLACK, queued=6, org_on_document=False, org_edge=False)
+
+        report = await _upkeep(provider, graph, producer)
+
+        assert {e.lane for e in (await _map(provider)).values()} == {SHARED}
+        assert producer.events == []
+        assert report.migrated_at_ms is None
+
+
+class TestTheReSendMissesNothingWhileTheConsumerWorks:
+    async def test_a_record_that_slid_into_a_page_already_read_is_still_re_sent(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """Offset paging while records leave QUEUED: one finishing in the first
+        page moves the first record of the second page into the first."""
+        graph.add(GITLAB, queued=2_000)
+        graph.add(SLACK, queued=1_000)
+        send = producer.send_event
+        sends = 0
+
+        async def a_record_finishes_meanwhile(**kwargs: object) -> bool:
+            nonlocal sends
+            sends += 1
+            if sends == 5:
+                graph.queued[SLACK][2]["indexingStatus"] = "COMPLETED"
+            return await send(**kwargs)
+
+        producer.send_event = a_record_finishes_meanwhile  # type: ignore[method-assign]
+
+        report = await _upkeep(provider, graph, producer)
+
+        re_sent = {payload["recordId"] for _t, _e, payload, _k in producer.events}
+        assert re_sent >= {f"{SLACK}-r{i}" for i in range(1_000) if i != 2}
+        assert len(producer.events) == len(re_sent), "nothing sent twice"
+        assert report.migrated_at_ms is not None
 
 
 class TestKeepingTheMapInStepWithTheGraph:
