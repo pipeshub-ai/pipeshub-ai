@@ -18,7 +18,7 @@ from connectors_audit_support import (
     request_as,
 )
 from helper.second_user import SecondUser
-from strict_openapi import assert_spec_forbids_request, assert_strict_openapi_exchange
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -75,6 +75,8 @@ def test_group_paths_and_cursor_are_accepted_by_every_connector(
         pytest.param({"page": "1.5"}, id="page-fraction"),
         pytest.param({"page": ""}, id="page-empty"),
         pytest.param({"limit": 0}, id="limit-zero"),
+        pytest.param({"limit": 101}, id="limit-above-100"),
+        pytest.param({"limit": 200}, id="limit-200"),
         pytest.param({"limit": 201}, id="limit-above-200"),
         pytest.param({"limit": ""}, id="limit-empty"),
         pytest.param([("page", 1), ("page", 2)], id="page-repeated"),
@@ -88,16 +90,6 @@ def test_options_query_refused_by_the_validator(
     assert resp.status_code == 400, resp.text[:500]
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
     assert_strict_openapi_exchange(resp, ROUTE)
-
-
-@pytest.mark.parametrize("limit", [101, 200])
-def test_limit_the_gateway_allows_but_the_connector_service_refuses(
-    connectors_client: ConnectorsAuditClient, bookstack_connector: str, limit: int
-) -> None:
-    resp = connectors_client.get(_path(bookstack_connector), params={"limit": limit})
-    assert resp.status_code == 422, resp.text[:500]
-    assert_strict_openapi_exchange(resp, ROUTE)
-    assert_spec_forbids_request(resp, ROUTE)
 
 
 def test_options_of_a_filter_without_dynamic_options_is_400(

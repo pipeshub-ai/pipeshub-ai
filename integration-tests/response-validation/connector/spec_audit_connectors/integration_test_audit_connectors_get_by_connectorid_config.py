@@ -7,6 +7,7 @@ from connectors_audit_support import (
     MALFORMED_CONNECTOR_ID,
     MEMBER_TOKEN_AUTH,
     MISSING_CONNECTOR_ID,
+    REDACTED_PLACEHOLDER,
     SEED_CONNECTOR_AUTH_TYPE,
     SEED_CONNECTOR_SCOPE,
     SEED_CONNECTOR_TYPE,
@@ -52,8 +53,11 @@ def test_member_reads_the_saved_auth_of_own_personal_connector(
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
     auth = resp.json()["config"]["config"]["auth"]
-    # The saved form values come back for editing, the token included.
-    assert {k: auth[k] for k in MEMBER_TOKEN_AUTH} == MEMBER_TOKEN_AUTH, auth
+    # The saved form values come back for editing; the secret token only as the mask.
+    assert {k: auth[k] for k in MEMBER_TOKEN_AUTH} == {
+        **MEMBER_TOKEN_AUTH,
+        "apiToken": REDACTED_PLACEHOLDER,
+    }, auth
     assert auth["connectorScope"] == "personal", auth
 
 

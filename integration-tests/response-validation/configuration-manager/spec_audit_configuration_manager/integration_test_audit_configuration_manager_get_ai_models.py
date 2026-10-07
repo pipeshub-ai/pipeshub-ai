@@ -37,7 +37,9 @@ def test_admin_lists_every_model_type_without_provider_secrets(config_client: Co
     for model_type in MODEL_TYPES:
         for entry in models[model_type]:
             assert set(entry["configuration"]) <= PUBLIC_CONFIGURATION_KEYS, entry
-            assert isinstance(entry["modelKey"], str) and entry["modelKey"], entry
+    # POST /aiModelsConfig keys only llm and embedding entries, so other types may lack modelKey.
+    for entry in models["llm"] + models["embedding"]:
+        assert isinstance(entry["modelKey"], str) and entry["modelKey"], entry
 
 
 def test_the_stored_entries_are_the_same_as_in_ai_models_config(config_client: ConfigClient) -> None:

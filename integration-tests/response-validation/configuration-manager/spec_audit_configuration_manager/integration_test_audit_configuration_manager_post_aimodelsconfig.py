@@ -16,8 +16,11 @@ from typing import Any
 import pytest
 from configuration_manager_audit_support import (
     INVALID_BEARER_HEADERS,
+    KV_AI_MODELS,
     assert_validation_error,
+    read_stored_value,
     request_as,
+    write_stored_value,
 )
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
@@ -30,6 +33,7 @@ from strict_openapi import (
 pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/api/v1/configurationManager/aiModelsConfig"
+AVAILABLE_ROUTE = "/api/v1/configurationManager/ai-models/available/:modelType"
 PATH = "/aiModelsConfig"
 
 UNKNOWN_PROVIDER_ENTRY: dict[str, Any] = {
@@ -78,25 +82,39 @@ def test_a_model_that_fails_its_health_check_is_an_internal_error_and_nothing_is
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "model_type"),
     [
-        pytest.param({"ocr": [UNKNOWN_PROVIDER_ENTRY]}, id="only-ocr"),
-        pytest.param({"slm": [UNKNOWN_PROVIDER_ENTRY], "llm": []}, id="no-embedding-key"),
+        pytest.param({"ocr": [UNKNOWN_PROVIDER_ENTRY]}, "ocr", id="only-ocr"),
+        pytest.param({"slm": [UNKNOWN_PROVIDER_ENTRY], "llm": []}, "slm", id="no-embedding-key"),
     ],
 )
-def test_a_body_without_both_llm_and_embedding_lists_crashes_the_handler(
-    config_client: ConfigClient, body: dict[str, Any]
+def test_a_body_without_llm_or_embedding_replaces_the_whole_stored_config(
+    config_client: ConfigClient, body: dict[str, Any], model_type: str
 ) -> None:
-    # API bug: the validator accepts any one model type, but the handler reads
-    # aiConfig.llm.length and aiConfig.embedding.length unconditionally.
-    before = _stored(config_client)
+    # The validator accepts any one model type, and the stored config is replaced
+    # as a whole: the chat and embedding models the body leaves out are dropped.
+    raw = read_stored_value(KV_AI_MODELS)
+    # The embedding guard refuses to put a dropped embedding model back through
+    # the API while the vector store holds its vectors, so restore the stored bytes.
+    try:
+        resp = config_client.post(PATH, json=body)
 
-    resp = config_client.post(PATH, json=body)
+        assert resp.status_code == 200, resp.text[:500]
+        assert resp.json() == {"message": "AI config created successfully"}
+        assert_strict_openapi_exchange(resp, ROUTE)
+        stored = _stored(config_client)
+        assert not stored.get("llm") and not stored.get("embedding"), stored
 
-    assert resp.status_code == 500, resp.text[:500]
-    assert resp.json()["error"]["code"] == "INTERNAL_ERROR", resp.text[:500]
-    assert_strict_openapi_exchange(resp, ROUTE)
-    assert _stored(config_client) == before
+        # Only llm and embedding entries are given a modelKey on this route.
+        available = config_client.get(f"/ai-models/available/{model_type}")
+        assert available.status_code == 200, available.text[:500]
+        assert_strict_openapi_exchange(available, AVAILABLE_ROUTE)
+        models = available.json()["models"]
+        assert [m["provider"] for m in models] == [UNKNOWN_PROVIDER_ENTRY["provider"]], models
+        assert "modelKey" not in models[0], models
+    finally:
+        if raw is not None and read_stored_value(KV_AI_MODELS) != raw:
+            write_stored_value(KV_AI_MODELS, raw)
 
 
 def test_unknown_configuration_keys_pass_the_validator(config_client: ConfigClient) -> None:

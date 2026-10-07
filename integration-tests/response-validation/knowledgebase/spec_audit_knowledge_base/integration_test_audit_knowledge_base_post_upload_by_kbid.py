@@ -31,7 +31,9 @@ from knowledge_base_audit_support import (
     UNSAFE_ID_MESSAGE,
     MakeKb,
     multipart_spec_problems,
+    oauth_token_with_scopes,
     sse_events,
+    unique_name,
     upload_event_problems,
     wait_for_record,
 )
@@ -389,4 +391,46 @@ def test_upload_with_a_token_lacking_kb_upload_is_forbidden(
     resp = _upload(headers, pipeshub_client.base_url, MISSING_RECORD_ID, [_file()])
     assert resp.status_code == 403, resp.text[:500]
     assert resp.json()["error"]["message"] == "Insufficient scope. Required: kb:upload"
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_upload_with_kb_upload_but_not_kb_read_is_forbidden(
+    pipeshub_client: PipeshubClient, make_kb: MakeKb
+) -> None:
+    kb_id = make_kb()
+    # requireScopes passes on kb:upload; the knowledge base lookup before the upload needs kb:read.
+    with oauth_token_with_scopes(pipeshub_client.base_url, ["kb:upload"], pipeshub_client.timeout_seconds) as token:
+        resp = _upload({"Authorization": f"Bearer {token}"}, pipeshub_client.base_url, kb_id, [_file()])
+    assert resp.status_code == 403, resp.text[:500]
+    assert resp.json()["error"]["message"] == "You do not have permission to upload to this knowledge base"
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_upload_with_kb_upload_and_kb_read_succeeds(pipeshub_client: PipeshubClient, make_kb: MakeKb) -> None:
+    kb_id = make_kb()
+    with oauth_token_with_scopes(
+        pipeshub_client.base_url, ["kb:upload", "kb:read"], pipeshub_client.timeout_seconds
+    ) as token:
+        resp = _upload({"Authorization": f"Bearer {token}"}, pipeshub_client.base_url, kb_id, [_file()])
+        events = sse_events(resp.text)
+    assert resp.status_code == 200, resp.text[:500]
+    assert [event for event, _ in events][-1] == "done", events
+    assert any(event == "file:succeeded" for event, _ in events), events
+    assert [problem for event, data in events for problem in upload_event_problems(event, data)] == []
+
+
+def test_upload_into_a_folder_in_the_trash_is_a_conflict(
+    upload: Any, kb_client: KBClient, make_kb: MakeKb, trash_on: None
+) -> None:
+    kb_id = make_kb()
+    name = unique_name("trashed")
+    folder_id = kb_client.create_folder(kb_id, name)["id"]
+    deleted = kb_client.delete(f"/record/{folder_id}")
+    assert deleted.status_code == 200 and deleted.json()["softDeleted"] is True, deleted.text[:500]
+    resp = upload(kb_id, [_file()], params={"folderId": folder_id})
+    assert resp.status_code == 409, resp.text[:500]
+    assert resp.json()["error"]["message"] == (
+        f"'{name}' is in Recently deleted, so you can't upload files to it. "
+        "Restore it first, or choose another folder."
+    )
     assert_strict_openapi_exchange(resp, ROUTE)

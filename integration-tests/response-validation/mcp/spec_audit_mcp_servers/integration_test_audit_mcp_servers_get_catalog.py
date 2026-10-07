@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 from helper.second_user import SecondUser
-from mcp_servers_audit_support import McpServersClient, request_as
+from mcp_servers_audit_support import CATALOG_STDIO_TYPE_ID, McpServersClient, request_as
 from strict_openapi import (
     assert_spec_forbids_request,
     assert_strict_openapi_exchange,
@@ -31,7 +31,19 @@ def test_catalog_pages_and_filters_templates(mcp_servers_client: McpServersClien
     miss = mcp_servers_client.get("/catalog", params={"search": f"no-such-{uuid.uuid4().hex}"})
     assert miss.status_code == 200, miss.text[:500]
     assert_strict_openapi_exchange(miss, ROUTE)
-    assert miss.json() == {"templates": [], "total": 0, "page": 1, "limit": 50}
+    assert miss.json() == {"templates": [], "total": 0, "page": 1, "limit": 50, "customStdioAllowed": False}
+
+
+def test_catalog_reports_custom_stdio_servers_are_off_by_default(mcp_servers_client: McpServersClient) -> None:
+    # MCP_ALLOW_CUSTOM_STDIO is an operator opt-in in the service environment; this stack keeps the default.
+    resp = mcp_servers_client.get("/catalog", params={"search": CATALOG_STDIO_TYPE_ID})
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    body = resp.json()
+    assert body["customStdioAllowed"] is False
+    template = next(t for t in body["templates"] if t["typeId"] == CATALOG_STDIO_TYPE_ID)
+    assert template["transport"] == "stdio"
+    assert template["command"]
 
 
 def test_catalog_at_the_largest_page_holds_every_template(mcp_servers_client: McpServersClient) -> None:

@@ -304,15 +304,6 @@ tags:
   - name: Toolset OAuth
     description: OAuth 2.0 authorization flow for toolsets requiring user consent
 
-  - name: MCP Servers
-    description: |
-      Catalog and org-scoped instances of external MCP servers that agents can call.
-
-      Catalog servers always run the command, arguments and transport from the
-      PipesHub catalog. Custom servers using the `stdio` transport run a command on
-      the PipesHub server itself, so they are available only when the deployment
-      operator sets `MCP_ALLOW_CUSTOM_STDIO=true` (Helm: `config.mcpAllowCustomStdio`).
-
   # Configuration Manager
   - name: Storage Configuration
     description: Configure storage backend for file uploads and documents. Supports AWS S3, Azure Blob Storage, or local filesystem.
@@ -377,6 +368,11 @@ tags:
       Manage the external Model Context Protocol (MCP) servers that PipesHub agents can call tools on.
 
       Not to be confused with the **MCP** tag, which is the MCP server PipesHub itself exposes.
+
+      Catalog servers always run the command, arguments and transport from the
+      PipesHub catalog. Custom servers using the `stdio` transport run a command on
+      the PipesHub server itself, so they are available only when the deployment
+      operator sets `MCP_ALLOW_CUSTOM_STDIO=true` (Helm: `config.mcpAllowCustomStdio`).
 
       **How it fits together:**
       - The **catalog** lists built-in templates for well-known MCP servers.
@@ -11329,182 +11325,6 @@ components:
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
 
-    McpTransport:
-      type: string
-      enum: [stdio, sse, streamable_http]
-
-    McpAuthMode:
-      type: string
-      enum: [none, api_token, oauth, headers]
-
-    McpCatalogTemplate:
-      type: object
-      additionalProperties: true
-      description: A catalog entry. Pure metadata; never carries credentials.
-      required: [typeId, displayName, description, transport, defaultAuthMode]
-      properties:
-        typeId:
-          type: string
-          example: slack
-        displayName:
-          type: string
-        description:
-          type: string
-        icon:
-          type: string
-          nullable: true
-        transport:
-          $ref: '#/components/schemas/McpTransport'
-        defaultAuthMode:
-          $ref: '#/components/schemas/McpAuthMode'
-        supportedAuthModes:
-          type: array
-          items:
-            $ref: '#/components/schemas/McpAuthMode'
-        command:
-          type: string
-          nullable: true
-          description: STDIO only. Always the command an instance of this server runs.
-        args:
-          type: array
-          items:
-            type: string
-        requiredEnv:
-          type: array
-          items:
-            type: string
-        optionalEnv:
-          type: array
-          items:
-            type: string
-        defaultUrl:
-          type: string
-          nullable: true
-
-    McpServerInstanceRequest:
-      type: object
-      additionalProperties: true
-      description: |
-        Create/update body. With `typeId`, `transport` must match the catalog
-        server's and `command`/`args` must be omitted or equal the catalog values
-        (otherwise 400). Without `typeId` and with `transport: stdio`, the request
-        is refused with 403 unless the operator set `MCP_ALLOW_CUSTOM_STDIO=true`.
-        Env var names (`requiredEnv`, keys of `env`) must match
-        `^[A-Z][A-Z0-9_]{0,63}$` and may not be loader/runtime variables such as
-        `PATH`, `LD_*`, `NODE_*` or `PYTHON*` (otherwise 400).
-      required: [name, transport, authMode]
-      properties:
-        name:
-          type: string
-        typeId:
-          type: string
-          nullable: true
-        transport:
-          $ref: '#/components/schemas/McpTransport'
-        authMode:
-          $ref: '#/components/schemas/McpAuthMode'
-        useAdminAuth:
-          type: boolean
-        description:
-          type: string
-          nullable: true
-        command:
-          type: string
-          nullable: true
-        args:
-          type: array
-          items:
-            type: string
-        requiredEnv:
-          type: array
-          items:
-            type: string
-        env:
-          type: object
-          additionalProperties:
-            type: string
-        url:
-          type: string
-          nullable: true
-        headerName:
-          type: string
-          nullable: true
-        authorizationUrl:
-          type: string
-          nullable: true
-        tokenUrl:
-          type: string
-          nullable: true
-        scopes:
-          type: array
-          items:
-            type: string
-
-    McpServerInstance:
-      type: object
-      additionalProperties: true
-      description: Stored instance metadata. No secrets.
-      required: [_id, orgId, createdBy, name, transport, authMode, isCustom]
-      properties:
-        _id:
-          type: string
-        orgId:
-          type: string
-        createdBy:
-          type: string
-        name:
-          type: string
-        typeId:
-          type: string
-          nullable: true
-        transport:
-          $ref: '#/components/schemas/McpTransport'
-        authMode:
-          $ref: '#/components/schemas/McpAuthMode'
-        useAdminAuth:
-          type: boolean
-        description:
-          type: string
-          nullable: true
-        command:
-          type: string
-          nullable: true
-        args:
-          type: array
-          items:
-            type: string
-        requiredEnv:
-          type: array
-          items:
-            type: string
-        optionalEnv:
-          type: array
-          items:
-            type: string
-        url:
-          type: string
-          nullable: true
-        isCustom:
-          type: boolean
-        createdAt:
-          type: integer
-          format: int64
-        updatedAt:
-          type: integer
-          format: int64
-        hasOAuthClientConfig:
-          type: boolean
-          description: Set on list/get responses only.
-        disabledReason:
-          type: string
-          nullable: true
-          enum: [custom_stdio_disabled, null]
-          description: |
-            Set on list/get responses only. `custom_stdio_disabled` means this is a
-            custom STDIO server and the deployment does not allow those
-            (`MCP_ALLOW_CUSTOM_STDIO` is not `true`): it will not connect, and its
-            tools are not offered to agents, until the operator enables the flag.
-
     McpServer:
       type: object
       additionalProperties: false
@@ -14573,6 +14393,11 @@ components:
         inside each section depend on the connector type: they are the field
         names of its setup form
         (`GET /connectors/registry/{connectorType}/schema`).
+
+        The stored OAuth tokens (`credentials`) and OAuth flow state (`oauth`)
+        are never part of a response. Each `auth` value the connector type's
+        schema marks secret (an `isSecret` or `PASSWORD` field), and a legacy
+        `private_key`, comes back as `••••••••`.
       properties:
         auth:
           type: object
@@ -14624,18 +14449,6 @@ components:
               type: object
               additionalProperties: true
               description: Which fetched records to index. Selections are under `values`, keyed by filter name.
-        credentials:
-          type: object
-          nullable: true
-          description: |
-            Only in the response to a save that included `auth`, where it is
-            `null`: saving authentication clears the stored credentials.
-        oauth:
-          type: object
-          nullable: true
-          description: |
-            Only in the response to a save that included `auth`, where it is
-            `null`: saving authentication clears the stored OAuth state.
 
     ConnectorConfig:
       type: object
@@ -19599,6 +19412,18 @@ components:
         the template; a custom instance leaves `typeId` out and must send `command`
         (STDIO) or `url` (SSE / Streamable HTTP). Unknown fields are ignored. Every field is
         also read under its snake_case name (for example `auth_mode` for `authMode`).
+
+        STDIO policy (create and update):
+        - A catalog instance always runs the template's transport, command and args:
+          a different `transport`, or a `command` / `args` that is sent and differs
+          from the template, is refused with 400. `env` keys must be among the
+          template's `requiredEnv` / `optionalEnv` (400 otherwise).
+        - A custom server with `transport: stdio` is refused with 403 unless the
+          operator set `MCP_ALLOW_CUSTOM_STDIO=true` (see `customStdioAllowed` on the
+          catalog). Before that check, its `requiredEnv` names and `env` keys must match
+          `^[A-Z][A-Z0-9_]{0,63}$` and must not be a loader or runtime variable (`PATH`,
+          `HOME`, `SHELL`, `LD_*`, `DYLD_*`, `NODE_*`, `NPM_CONFIG_*`, `PYTHON*`, `JAVA_*`,
+          ...), otherwise 400.
       required: [name, transport, authMode]
       properties:
         name:
@@ -19758,11 +19583,22 @@ components:
       allOf:
         - $ref: '#/components/schemas/McpServerInstance'
         - type: object
-          required: [hasOAuthClientConfig]
+          required: [hasOAuthClientConfig, disabledReason]
           properties:
             hasOAuthClientConfig:
               type: boolean
               description: True when an administrator has stored a static OAuth client for this instance.
+            disabledReason:
+              type: string
+              nullable: true
+              enum: [custom_stdio_disabled, null]
+              description: |
+                Null when the instance can run on this deployment. `custom_stdio_disabled`
+                means it is a custom STDIO server (no `typeId`) and the operator has not set
+                `MCP_ALLOW_CUSTOM_STDIO=true`: it is not started, its tools are not offered to
+                agents, and it cannot be saved again until the operator enables the flag.
+                Such an instance can only exist if it was stored before the flag existed or
+                while it was on.
 
     McpServerTool:
       type: object
@@ -35232,6 +35068,9 @@ paths:
         purge. The response then carries `softDeleted: true` and the `batchId`, and the
         record can be brought back with `POST /knowledgeBase/record/{recordId}/restore`.
         With the setting off, the delete is immediate and cannot be undone.
+        A folder sent to the trash this way goes alone: the records inside it stay live and
+        readable. `DELETE /knowledgeBase/{kbId}/folder/{folderId}` trashes a folder with its
+        contents.
       operationId: deleteRecord
       x-pipeshub-sdk: true
       security:
@@ -35491,7 +35330,11 @@ paths:
         newest first. Each item is what one delete removed, as a restore brings it back
         whole: a folder deleted with its contents is one item, and so is a multi-select
         delete (`rootCount` items selected, some named in `otherRootNames`). `itemCount`
-        says how many records it holds.
+        says how many records it holds, the folder included.
+
+        A folder deleted with `DELETE /knowledgeBase/{kbId}/folder/{folderId}` takes its
+        contents along. A folder deleted with `DELETE /knowledgeBase/record/{recordId}`
+        goes to the trash alone (`itemCount` 1): the records inside it stay live.
         Restore an item with `POST /knowledgeBase/record/{recordId}/restore`, using its `id`.
 
         Needs "Move Deleted Records to the Trash" on in Labs.
@@ -35507,6 +35350,9 @@ paths:
 
         An item whose folder is also in the trash (`parentInTrash`) can only be
         restored after that folder.
+
+        **Request:** query parameters other than `page` and `limit` are ignored. A page past
+        the last one is answered `200` with no items.
       operationId: listTrash
       x-pipeshub-sdk: true
       security:
@@ -35542,7 +35388,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ListTrashResponseSchema'
         '400':
-          description: page or limit is not a whole number in range. Ask for a page from 1 up, with 1 to 100 items per page.
+          description: |
+            page or limit is not a whole number in range, or is sent more than once (`VALIDATION_ERROR`
+            naming `query.page` or `query.limit`, for example "Page must be 1 or more." or "Limit must be
+            between 1 and 100."). Ask for a page from 1 up, with 1 to 100 items per page.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a `<script`, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded `<script` (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.").
           content:
             application/json:
               schema:
@@ -35570,7 +35421,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Internal server error while listing deleted items
+          description: |
+            Internal server error while listing deleted items.
+            A request body that is not valid JSON is also answered `500` (`INTERNAL_ERROR`), before authentication.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
           content:
             application/json:
               schema:
@@ -36344,7 +36199,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            - OAuth token lacks the `kb:upload` scope
+            - OAuth token lacks the `kb:upload` scope (`Insufficient scope. Required: kb:upload`)
+            - OAuth token holds `kb:upload` but not `kb:read`: the knowledge base lookup that
+              precedes the upload needs `kb:read`, so the caller gets
+              `You do not have permission to upload to this knowledge base`
             - Caller is `READER`: `You do not have permission to upload to this knowledge base`
           content:
             application/json:
@@ -36355,6 +36213,15 @@ paths:
             - `Knowledge base <kbId> not found`: unknown knowledge base, or the caller holds no
               role on it
             - `Folder <folderId> was not found in knowledge base '<name>' (<kbId>). ...`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The `folderId` folder is in Recently deleted (`'<folder>' is in Recently deleted, so you
+            can't upload files to it. Restore it first, or choose another folder.`), answered before
+            the stream starts. Restore the folder first, or choose another folder.
           content:
             application/json:
               schema:
@@ -36976,16 +36843,16 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
-            The target already holds a record of the same name: `Folder '<name>' already exists
-            in this folder` for a folder, `A file named '<name>' already exists in this folder`
-            for a file (the name is given without its extension). At the root the location reads
-            `collection root` or `this location`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '409':
-          description: The target folder is in Recently deleted; restore it first, or choose another folder
+            Conflict. Possible reasons:
+
+            - The target already holds a record of the same name: `Folder '<name>' already exists
+              in this folder` for a folder, `A file named '<name>' already exists in this folder`
+              for a file (the name is given without its extension). At the root the location reads
+              `collection root` or `this location`.
+            - The target folder is in Recently deleted: `'<folder>' is in Recently deleted, so you
+              can't move items into it. Restore it first, or choose another folder.` This is checked
+              before the already-there check, so it is answered even when the item is already in
+              that folder.
           content:
             application/json:
               schema:
@@ -49214,14 +49081,10 @@ paths:
         Unlike the other connector lists, the page is nested one level down:
         the instances are at <code>connectors.connectors</code> and the paging
         information at <code>connectors.pagination</code>.<br><br>
-        <b>Paging is unreliable:</b><br>
-        The service fetches page <code>page</code> of size
-        2&nbsp;&times;&nbsp;<code>limit</code>, keeps the configured instances
-        of that window and pages through them again. As a result
-        <code>totalCount</code> never exceeds 2&nbsp;&times;&nbsp;<code>limit</code>
-        and pages after the first skip instances. To read every configured
-        instance, request one page with a <code>limit</code> large enough to
-        hold them all.
+        <b>Paging:</b><br>
+        The page and <code>totalCount</code> cover only the configured
+        instances, newest first (by creation time, ties broken by ID), so
+        walking the pages returns each matching instance once.
       operationId: listConfiguredConnectors
       security:
         - bearerAuth: []
@@ -49236,7 +49099,7 @@ paths:
             default: team
         - name: page
           in: query
-          description: Page number, 1-based. See the note on paging above.
+          description: Page number, 1-based
           schema:
             type: integer
             minimum: 1
@@ -49665,9 +49528,11 @@ paths:
         accepted too (a knowledge base is stored as a connector instance of type
         <code>KB</code>); its stats report <code>origin: COLLECTION</code>.<br><br>
         <b>Who can read them:</b> the creator of the instance and, for a team
-        instance, org admins. Anyone else gets <code>403</code> (unlike
-        <code>GET /connectors/{connectorId}</code>, which answers <code>404</code>);
-        an admin reading another user's personal instance gets <code>403</code> too.
+        instance, org admins. Stats use the same read gate as
+        <code>GET /connectors/{connectorId}</code>: anyone else, including an
+        admin reading another user's personal instance, gets <code>404</code>
+        ("This connector was removed, or you no longer have access. ..."), so
+        the instance's existence is not confirmed.
       operationId: getConnectorStats
       security:
         - bearerAuth: []
@@ -49708,14 +49573,18 @@ paths:
         '403':
           description: |
             The OAuth client's token lacks the `connector:read` or `kb:read`
-            scope, or the caller may not read this instance's stats (not its
-            creator, and not an admin of a team instance).
+            scope, or the ID is a knowledge base on which the caller has a role
+            other than OWNER, WRITER or READER.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No connector instance or knowledge base has this ID
+          description: |
+            No connector instance or knowledge base has this ID, or the caller
+            cannot open it (not the creator, and not an admin of a team
+            instance; another user's personal instance is not found for admins
+            either; a knowledge base the caller has no role on).
           content:
             application/json:
               schema:
@@ -50573,13 +50442,22 @@ paths:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
         '500':
           description: |
-            The active connector list or the connector could not be read, or the
-            event could not be published. Also returned, before the token is
-            checked, when the request carries a body that is not valid JSON: the
-            body parser fails and the failure is reported with code
-            `INTERNAL_ERROR`, not as a `400`.
+            The active connector list or the connector could not be read. Also
+            returned, before the token is checked, when the request carries a
+            body that is not valid JSON: the body parser fails and the failure
+            is reported with code `INTERNAL_ERROR`, not as a `400`.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The sync event could not be published to the message broker, so
+            nothing was queued or synced ("We couldn't start this sync because
+            PipesHub couldn't queue it. Nothing was synced. Try again in a
+            minute; ...").
           content:
             application/json:
               schema:
@@ -50805,7 +50683,10 @@ paths:
         <b>Security:</b><br>
         Stored credentials and OAuth tokens (<code>credentials</code>, <code>oauth</code>)
         are never returned. The saved <code>auth</code> values are returned so the
-        form can be edited. A personal connector's configuration is only
+        form can be edited, except that each secret (an <code>isSecret</code> or
+        <code>PASSWORD</code> field of the connector type's auth schema, and a
+        legacy <code>private_key</code>) comes back as <code>••••••••</code>.
+        Sending that mask back on a save keeps the stored value. A personal connector's configuration is only
         readable by its creator: to anyone else, admins included, it is
         answered `404` as if it did not exist. A team connector of another
         user is answered `404` to a member.
@@ -51058,8 +50939,9 @@ paths:
                     allOf:
                       - $ref: '#/components/schemas/ConnectorStoredConfig'
                     description: |
-                      The configuration as stored after the update. `credentials`
-                      and `oauth` are `null`: the instance must authenticate again.
+                      The configuration as stored after the update, with secrets
+                      masked and without `credentials` and `oauth` (saving
+                      authentication clears them: the instance must authenticate again).
                   message:
                     type: string
                     example: "Authentication configuration saved successfully."
@@ -51274,10 +51156,10 @@ paths:
         <li>Personal scope: Only creator can toggle</li>
         </ul>
         A connector the caller may not see (another user's personal connector,
-        or another user's team connector for a member) is answered `404` for
-        an `agent` toggle and `500` for a `sync` toggle: for `sync` the gateway
-        reads the connector first and reports a failed read as its own error.
-        The same `500` is the answer for an unknown connector ID.<br><br>
+        or another user's team connector for a member) and an unknown connector
+        ID are answered `404`, for both toggle types. For `sync` the gateway
+        reads the connector first and passes the connector service's refusal
+        through ("This connector was removed, or you no longer have access. ...").<br><br>
         Each call flips the current state: enabling sync starts a sync at once,
         disabling it stops scheduling.
       operationId: toggleConnector
@@ -51346,16 +51228,17 @@ paths:
             Also returned for an instance of a beta connector type (Calendar, Meet,
             Forms, Slides, Docs, Zendesk, Airtable) while the platform feature flag
             `ENABLE_BETA_CONNECTORS` is off (the default), with the message
-            `Beta connectors are not enabled. The connector '<type>' is a beta connector and cannot be accessed. ...`
-            This is seen for `type: agent`; a `type: sync` toggle of such an instance
-            is a `500` instead (see there).
+            `Beta connectors are not enabled. The connector '<type>' is a beta connector and cannot be accessed. ...`,
+            for both `type: agent` and `type: sync`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            `agent` toggle only: connector not found, or not visible to the caller
+            Connector not found, or not visible to the caller (another user's
+            personal connector, admins included; another user's team connector
+            for a member). Same answer for `agent` and `sync` toggles.
           content:
             application/json:
               schema:
@@ -51377,11 +51260,9 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            API bug: a `sync` toggle of an unknown connector, of one the
-            caller may not see, or of a beta-type instance while
-            `ENABLE_BETA_CONNECTORS` is off, answers `500` ("Failed to fetch
-            connector &lt;id&gt; state") instead of `404` or `403`. Also returned when the change
-            could not be saved or announced, and, before the token is checked,
+            The change could not be saved or announced, or (for `sync`) the
+            connector service answered the gateway's pre-read with no connector
+            ("Failed to fetch connector &lt;id&gt; state"). Also returned, before the token is checked,
             when the request carries a body that is not valid JSON: the body
             parser fails and the failure is reported with code
             `INTERNAL_ERROR`, not as a `400`.
@@ -51901,8 +51782,8 @@ paths:
         - name: limit
           in: query
           description: |
-            Page size. The gateway accepts up to 200, but the connector service
-            refuses anything above 100 with `422`. An empty value is refused.
+            Page size, 1 to 100. A value above 100 or an empty value is refused
+            by the gateway's validator ("Limit must be between 1 and 100.").
           schema:
             type: integer
             minimum: 1
@@ -51987,7 +51868,7 @@ paths:
           description: |
             Refused. Possible reasons:<br>
             <ul>
-            <li><code>VALIDATION_ERROR</code> - <code>page</code> or <code>limit</code> is not a positive whole number (or <code>limit</code> is above 200), is empty, or a parameter is repeated where one value is expected</li>
+            <li><code>VALIDATION_ERROR</code> - <code>page</code> or <code>limit</code> is not a positive whole number (or <code>limit</code> is above 100), is empty, or a parameter is repeated where one value is expected</li>
             <li>The filter field does not have dynamic options</li>
             <li>An OAuth connector has not been authenticated yet</li>
             <li>The connector cannot be started with its saved credentials</li>
@@ -52021,14 +51902,6 @@ paths:
             Connector not found or not visible to the caller (another user's
             personal connector, or another user's team connector for a member),
             or the connector type has no filter field with this key
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: |
-            `limit` is between 101 and 200: the gateway lets it through and the
-            connector service refuses it (`HTTP_UNPROCESSABLE_ENTITY`).
           content:
             application/json:
               schema:
@@ -59995,7 +59868,6 @@ paths:
                         - modelType
                         - provider
                         - modelName
-                        - modelKey
                         - isMultimodal
                         - isReasoning
                         - isDefault
@@ -60025,6 +59897,11 @@ paths:
                             UUID that uniquely identifies the provider
                             configuration entry this model was expanded from.
                             Use this key when calling update/delete endpoints.
+                            Absent for an entry of a type other than `llm` or
+                            `embedding` that was saved through
+                            POST /configurationManager/aiModelsConfig, which
+                            gives a key only to `llm` and `embedding` entries;
+                            such an entry cannot be updated or deleted by key.
                           example: f3a4b5b6-5b6c-4e85-9097-3202cfe696fc
                         isMultimodal:
                           type: boolean
@@ -65403,246 +65280,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /mcp-servers/catalog:
-    get:
-      tags:
-        - MCP Servers
-      summary: List MCP server catalog
-      operationId: listMcpCatalog
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-            default: 50
-        - name: search
-          in: query
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Catalog page
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [templates, total, page, limit, customStdioAllowed]
-                properties:
-                  templates:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/McpCatalogTemplate'
-                  total:
-                    type: integer
-                  page:
-                    type: integer
-                  limit:
-                    type: integer
-                  customStdioAllowed:
-                    type: boolean
-                    description: |
-                      Whether this deployment accepts custom servers with the `stdio`
-                      transport (operator setting `MCP_ALLOW_CUSTOM_STDIO`).
-        '401':
-          description: Unauthorized
-        '403':
-          description: MCP is disabled for this organization
-
-  /mcp-servers/instances:
-    get:
-      tags:
-        - MCP Servers
-      summary: List MCP server instances
-      description: List the organization's MCP server instances (admin only).
-      operationId: listMcpInstances
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Instances
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  instances:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/McpServerInstance'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Not an administrator, or MCP is disabled for this organization
-    post:
-      tags:
-        - MCP Servers
-      summary: Create MCP server instance
-      description: Create an MCP server instance (admin only).
-      operationId: createMcpInstance
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/McpServerInstanceRequest'
-      responses:
-        '201':
-          description: Instance created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpServerInstance'
-        '400':
-          description: |
-            Invalid request: unknown `typeId`, a catalog server's transport,
-            command or args overridden, a missing command/url, or a disallowed
-            env var name.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized
-        '403':
-          description: |
-            Not an administrator, MCP is disabled for this organization, or a
-            custom `stdio` server was requested and the deployment does not allow
-            them (`MCP_ALLOW_CUSTOM_STDIO`).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /mcp-servers/instances/{instanceId}:
-    get:
-      tags:
-        - MCP Servers
-      summary: Get MCP server instance
-      operationId: getMcpInstance
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: instanceId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Instance
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpServerInstance'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Not an administrator, or MCP is disabled for this organization
-        '404':
-          description: Instance not found
-    put:
-      tags:
-        - MCP Servers
-      summary: Update MCP server instance
-      description: Replace an MCP server instance's configuration (admin only). Same rules as create.
-      operationId: updateMcpInstance
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: instanceId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/McpServerInstanceRequest'
-      responses:
-        '200':
-          description: Instance updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpServerInstance'
-        '400':
-          description: Invalid request (see create)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized
-        '403':
-          description: |
-            Not an administrator, MCP is disabled for this organization, or a
-            custom `stdio` server was requested and the deployment does not allow them.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Instance not found
-
-  /mcp-servers/my-mcp-servers:
-    get:
-      tags:
-        - MCP Servers
-      summary: List MCP servers for the current user
-      description: Org MCP server instances merged with the caller's auth status and, optionally, live tools.
-      operationId: getMyMcpServers
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: includeTools
-          in: query
-          schema:
-            type: boolean
-            default: true
-      responses:
-        '200':
-          description: Instances with the caller's status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  instances:
-                    type: array
-                    items:
-                      allOf:
-                        - $ref: '#/components/schemas/McpServerInstance'
-                        - type: object
-                          properties:
-                            isAuthenticated:
-                              type: boolean
-                            tools:
-                              type: array
-                              items:
-                                type: object
-                                additionalProperties: true
-                            toolsError:
-                              type: string
-                              nullable: true
-        '401':
-          description: Unauthorized
-        '403':
-          description: MCP is disabled for this organization
-
   # ── MCP (Model Context Protocol) ──────────────────────────────────
   # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
   # Use the root server URL: {instance_url}/mcp
@@ -65885,7 +65522,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [templates, total, page, limit]
+                required: [templates, total, page, limit, customStdioAllowed]
                 properties:
                   templates:
                     type: array
@@ -65898,6 +65535,13 @@ paths:
                     type: integer
                   limit:
                     type: integer
+                  customStdioAllowed:
+                    type: boolean
+                    description: |
+                      Whether this deployment accepts custom servers with the `stdio`
+                      transport (operator setting `MCP_ALLOW_CUSTOM_STDIO=true` in the
+                      service environment; an org admin cannot change it). Catalog STDIO
+                      servers are always accepted.
         '400':
           $ref: '#/components/responses/XssRejected'
         '401':
@@ -66360,9 +66004,16 @@ paths:
           description: |
             Bad request — one of:
             - `typeId` is not a catalog template
-            - a custom STDIO server has no `command`
+            - `typeId` is a catalog template and `transport` differs from the template's, or
+              `command` / `args` is sent and differs from the template's
+            - a custom STDIO server's `requiredEnv` or `env` names a variable that is not
+              upper-case letters, digits and underscores, or that changes how the process
+              is loaded (`PATH`, `LD_*`, `NODE_*`, `PYTHON*`, ...); checked before the 403 below
+            - a custom STDIO server has no `command` (only reachable when custom STDIO
+              servers are allowed)
             - a custom SSE / Streamable HTTP server has no `url`
-            - `env` names a variable this server type does not allow
+            - `env` names a variable this server type does not allow (for a custom STDIO
+              server, one not in `requiredEnv`)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a `<script`, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded `<script` (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.").
           content:
@@ -66381,6 +66032,8 @@ paths:
             - the caller is not an administrator
             - the OAuth token lacks the `mcp:write` scope
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+            - a custom STDIO server (`transport: stdio` and no `typeId`) was sent and the
+              operator has not set `MCP_ALLOW_CUSTOM_STDIO=true`
           content:
             application/json:
               schema:
@@ -66514,8 +66167,15 @@ paths:
           description: |
             Bad request — one of:
             - `typeId` is not a catalog template
-            - a custom STDIO server has no `command`
+            - `typeId` is a catalog template and `transport` differs from the template's, or
+              `command` / `args` is sent and differs from the template's
+            - a custom STDIO server's `requiredEnv` or `env` names a variable that is not
+              upper-case letters, digits and underscores, or that changes how the process
+              is loaded (`PATH`, `LD_*`, `NODE_*`, `PYTHON*`, ...); checked before the 403 below
+            - a custom STDIO server has no `command` (only reachable when custom STDIO
+              servers are allowed)
             - a custom SSE / Streamable HTTP server has no `url`
+            - `env` names a variable this server type does not allow
             - a path id contains characters that are not allowed in an id (for example `/`, `?`, `#`, `%`). This check runs before authentication
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a `<script`, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded `<script` (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.").
@@ -66535,6 +66195,8 @@ paths:
             - the caller is not an administrator
             - the OAuth token lacks the `mcp:write` scope
             - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+            - a custom STDIO server (`transport: stdio` and no `typeId`) was sent and the
+              operator has not set `MCP_ALLOW_CUSTOM_STDIO=true`
           content:
             application/json:
               schema:

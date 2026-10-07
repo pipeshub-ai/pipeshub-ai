@@ -104,22 +104,29 @@ def test_stats_with_neither_read_scope_is_forbidden(
     assert_strict_openapi_exchange(resp, ROUTE)
 
 
+NOT_OPENABLE_MESSAGE = (
+    "This connector was removed, or you no longer have access. Refresh the page and try again."
+)
+
+
 def test_member_is_refused_stats_of_admin_owned_team_connector(
     second_user: SecondUser, connector_id: str
 ) -> None:
-    # Listing a team connector is open to members; its stats are creator/admin only,
-    # and here the refusal is a 403 where GET /connectors/{connectorId} says 404.
+    # Stats share the read gate of GET /connectors/{connectorId}: a connector the
+    # caller cannot open is not found, so its existence is not confirmed.
     resp = request_as(second_user, "GET", f"/{connector_id}/stats")
-    assert resp.status_code == 403, resp.text[:500]
+    assert resp.status_code == 404, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["error"]["message"] == NOT_OPENABLE_MESSAGE
 
 
 def test_admin_stats_of_a_members_personal_connector(
     connectors_client: ConnectorsAuditClient, member_connector: SeedConnector
 ) -> None:
     resp = connectors_client.get(f"/{member_connector()}/stats")
-    assert resp.status_code == 403, resp.text[:500]
+    assert resp.status_code == 404, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["error"]["message"] == NOT_OPENABLE_MESSAGE
 
 
 @pytest.mark.parametrize(

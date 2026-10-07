@@ -52,7 +52,7 @@ def test_saving_auth_clears_credentials_and_oauth_state(
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
     config = resp.json()["config"]
-    assert config["credentials"] is None and config["oauth"] is None, config
+    assert not {"credentials", "oauth"} & config.keys(), config
     assert config["auth"]["connectorType"] == "Demo", config
     assert config["sync"] == {"selectedStrategy": "MANUAL"}, config
 

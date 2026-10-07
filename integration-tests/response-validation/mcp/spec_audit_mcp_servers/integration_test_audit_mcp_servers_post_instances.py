@@ -8,10 +8,13 @@ import pytest
 import requests
 from helper.second_user import SecondUser
 from mcp_servers_audit_support import (
+    CATALOG_STDIO_ENV,
+    CATALOG_STDIO_TYPE_ID,
     MISSING_TYPE_ID,
     UNREACHABLE_MCP_URL,
     JsonObject,
     McpServersClient,
+    custom_stdio_allowed,
     instance_body,
     request_as,
 )
@@ -79,26 +82,29 @@ def test_admin_creates_instance_from_a_catalog_template(
     assert record["scopes"] == template["defaultScopes"]
 
 
-def test_admin_creates_custom_stdio_instance_with_allowed_env(create: Create) -> None:
+def test_admin_creates_catalog_stdio_instance_pinned_to_the_catalog_command(
+    create: Create, mcp_servers_client: McpServersClient
+) -> None:
+    template = mcp_servers_client.get(f"/catalog/{CATALOG_STDIO_TYPE_ID}").json()
     # Stored only: the command is never run by this call.
     body = instance_body(
+        typeId=CATALOG_STDIO_TYPE_ID,
         transport="stdio",
         url=None,
-        command="spec-audit-not-a-binary",
-        args=["--flag"],
-        requiredEnv=["SPEC_AUDIT_TOKEN"],
-        env={"SPEC_AUDIT_TOKEN": "x"},
+        command=template["command"],
+        args=template["args"],
+        env={CATALOG_STDIO_ENV: "x"},
         authMode="api_token",
-        useAdminAuth=True,
     )
     resp = create(body)
     assert resp.status_code == 201, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
     record = resp.json()
-    assert record["command"] == "spec-audit-not-a-binary"
-    assert record["args"] == ["--flag"]
-    assert record["requiredEnv"] == ["SPEC_AUDIT_TOKEN"]
-    assert record["useAdminAuth"] is True
+    assert record["transport"] == "stdio"
+    assert record["command"] == template["command"]
+    assert record["args"] == template["args"]
+    assert record["requiredEnv"] == [CATALOG_STDIO_ENV]
+    assert record["isCustom"] is False
     # env is only checked against the allowlist, never stored on the instance.
     assert "env" not in record
 
@@ -106,12 +112,56 @@ def test_admin_creates_custom_stdio_instance_with_allowed_env(create: Create) ->
 @pytest.mark.parametrize(
     "overrides",
     [
+        pytest.param({}, id="with-command"),
+        pytest.param({"command": None}, id="without-command"),
+        pytest.param({"requiredEnv": ["A"], "env": {"B": "x"}}, id="env-not-in-required-env"),
+    ],
+)
+def test_custom_stdio_instance_is_refused_without_the_operator_opt_in(
+    create: Create, mcp_servers_client: McpServersClient, overrides: JsonObject
+) -> None:
+    if custom_stdio_allowed(mcp_servers_client):
+        pytest.fail("this deployment sets MCP_ALLOW_CUSTOM_STDIO=true; the suite expects the default (off)")
+    body = instance_body(transport="stdio", url=None, command="spec-audit-not-a-binary", authMode="api_token")
+    body.update(overrides)
+
+    resp = create(body)
+    assert resp.status_code == 403, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert "MCP_ALLOW_CUSTOM_STDIO=true" in resp.json()["error"]["message"]
+    listed = mcp_servers_client.list_instances().json()["instances"]
+    assert all(i["name"] != body["name"] for i in listed)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
         pytest.param({"typeId": MISSING_TYPE_ID}, id="unknown-catalog-type"),
         pytest.param({"url": None}, id="custom-http-without-url"),
-        pytest.param({"transport": "stdio", "url": None}, id="custom-stdio-without-command"),
+        # Env names are checked before the operator opt-in, so these are 400 even when it is off.
         pytest.param(
-            {"transport": "stdio", "command": "x", "requiredEnv": ["A"], "env": {"B": "x"}},
-            id="env-not-allowed",
+            {"transport": "stdio", "url": None, "command": "x", "env": {"LD_PRELOAD": "x"}},
+            id="custom-stdio-loader-env-name",
+        ),
+        pytest.param(
+            {"transport": "stdio", "url": None, "command": "x", "requiredEnv": ["lower_case"]},
+            id="custom-stdio-lowercase-required-env",
+        ),
+        pytest.param(
+            {"typeId": CATALOG_STDIO_TYPE_ID, "transport": "streamable_http"},
+            id="catalog-transport-changed",
+        ),
+        pytest.param(
+            {"typeId": CATALOG_STDIO_TYPE_ID, "transport": "stdio", "url": None, "command": "/bin/sh"},
+            id="catalog-command-overridden",
+        ),
+        pytest.param(
+            {"typeId": CATALOG_STDIO_TYPE_ID, "transport": "stdio", "url": None, "args": ["-c", "id"]},
+            id="catalog-args-overridden",
+        ),
+        pytest.param(
+            {"typeId": CATALOG_STDIO_TYPE_ID, "transport": "stdio", "url": None, "env": {"OTHER_KEY": "x"}},
+            id="catalog-env-not-allowed",
         ),
     ],
 )

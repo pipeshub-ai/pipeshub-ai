@@ -9,6 +9,7 @@ from connectors_audit_support import (
     MALFORMED_CONNECTOR_ID,
     MEMBER_TOKEN_AUTH,
     MISSING_CONNECTOR_ID,
+    REDACTED_PLACEHOLDER,
     UNSAFE_CONNECTOR_ID,
     ConnectorsAuditClient,
     SeedConnector,
@@ -46,8 +47,8 @@ def test_admin_saves_auth_config_of_inactive_connector(
         "connectorType": "Demo",
         "connectorScope": "team",
     }
-    assert body["config"]["credentials"] is None
-    assert body["config"]["oauth"] is None
+    # The owner's tokens and OAuth flow state are never part of a config response.
+    assert not {"credentials", "oauth"} & body["config"].keys(), body["config"]
 
 
 def test_member_saves_api_token_credentials_of_own_connector(
@@ -60,8 +61,34 @@ def test_member_saves_api_token_credentials_of_own_connector(
     assert_strict_openapi_exchange(resp, ROUTE)
     auth = resp.json()["config"]["auth"]
     assert auth["email"] == "padded@example.com", auth
-    assert auth["apiToken"] == MEMBER_TOKEN_AUTH["apiToken"], auth
+    # A field the connector's auth schema marks secret comes back masked.
+    assert auth["apiToken"] == REDACTED_PLACEHOLDER, auth
     assert auth["connectorScope"] == "personal", auth
+
+
+def test_member_sends_the_masked_token_back_unchanged(
+    second_user: SecondUser, member_configured_connector: str
+) -> None:
+    # The settings form round-trips the config it read; the mask means "keep the stored token".
+    read = request_as(second_user, "GET", f"/{member_configured_connector}/config")
+    assert read.status_code == 200, read.text[:500]
+    assert_strict_openapi_exchange(read, "/api/v1/connectors/:connectorId/config")
+    saved_auth = read.json()["config"]["config"]["auth"]
+    assert saved_auth["apiToken"] == REDACTED_PLACEHOLDER, saved_auth
+
+    resp = request_as(
+        second_user,
+        "PUT",
+        _path(member_configured_connector),
+        json={"auth": {key: saved_auth[key] for key in MEMBER_TOKEN_AUTH}},
+    )
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    auth = resp.json()["config"]["auth"]
+    assert {key: auth[key] for key in MEMBER_TOKEN_AUTH} == {
+        **MEMBER_TOKEN_AUTH,
+        "apiToken": REDACTED_PLACEHOLDER,
+    }, auth
 
 
 def test_admin_oauth_credentials_update_the_linked_oauth_app(

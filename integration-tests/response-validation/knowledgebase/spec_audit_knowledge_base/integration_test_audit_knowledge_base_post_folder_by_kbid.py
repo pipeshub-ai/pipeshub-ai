@@ -140,6 +140,23 @@ def test_create_a_name_already_used_in_a_subfolder_is_a_conflict(kb_client: KBCl
     assert_strict_openapi_exchange(resp, ROUTE)
 
 
+def test_create_in_a_folder_in_the_trash_is_a_conflict(
+    kb_client: KBClient, make_kb: MakeKb, trash_on: None
+) -> None:
+    kb_id = make_kb()
+    name = unique_name("trashed")
+    parent = _create(kb_client, kb_id, name)
+    deleted = kb_client.delete(f"/record/{parent}")
+    assert deleted.status_code == 200 and deleted.json()["softDeleted"] is True, deleted.text[:500]
+    resp = kb_client.post(f"/{kb_id}/folder", params={"folderId": parent}, json={"folderName": "child"})
+    assert resp.status_code == 409, resp.text[:500]
+    assert resp.json()["error"]["message"] == (
+        f"'{name}' is in Recently deleted, so you can't create a folder in it. "
+        "Restore it first, or choose another folder."
+    )
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
 def test_create_below_the_deepest_level_is_bad_request(kb_client: KBClient, make_kb: MakeKb) -> None:
     kb_id = make_kb()
     deepest = None

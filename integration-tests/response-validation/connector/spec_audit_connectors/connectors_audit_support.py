@@ -214,6 +214,9 @@ STATUS_POLL_INTERVAL_SEC = 0.5
 
 # A personal type whose API_TOKEN form needs no reachable source to be saved,
 # so a member can own a configured instance.
+# What a config response shows in place of a stored secret (app.config.redaction).
+REDACTED_PLACEHOLDER = "\u2022" * 8
+
 MEMBER_TOKEN_AUTH: dict[str, Any] = {
     "baseUrl": "https://spec-audit.invalid",
     "email": "spec-audit@example.com",

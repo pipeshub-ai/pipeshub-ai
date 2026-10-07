@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from mcp_servers_audit_support import (
+    CATALOG_STDIO_TYPE_ID,
     MISSING_INSTANCE_ID,
     UNREACHABLE_MCP_URL,
     UNSAFE_PATH_ID,
@@ -35,8 +36,24 @@ def test_admin_reads_seeded_instance(
     assert body["name"] == seeded["name"]
     assert body["url"] == UNREACHABLE_MCP_URL
     assert body["authMode"] == "none"
-    # Added by this handler only; the create response does not carry it.
+    # Added by this handler only; the create response does not carry them.
     assert body["hasOAuthClientConfig"] is False
+    assert body["disabledReason"] is None
+    assert "disabledReason" not in seeded
+
+
+def test_catalog_stdio_instance_is_not_disabled(
+    mcp_servers_client: McpServersClient,
+    seed_mcp_instance: SeedMcpInstance,
+) -> None:
+    # Only custom STDIO servers depend on MCP_ALLOW_CUSTOM_STDIO; catalog ones always run.
+    seeded = seed_mcp_instance(typeId=CATALOG_STDIO_TYPE_ID, transport="stdio", url=None, authMode="api_token")
+
+    resp = mcp_servers_client.get_instance(seeded["_id"])
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["transport"] == "stdio"
+    assert resp.json()["disabledReason"] is None
 
 
 def test_admin_sees_a_stored_oauth_client_flagged(
