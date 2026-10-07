@@ -20,13 +20,12 @@ def stable_lane(lane_key: str, lane_count: int) -> int:
     hashing per process, so two producer replicas would place the same key on
     different lanes and a consumer's per-lane view would be meaningless.
 
-    SHA-256 rather than BLAKE2b for the same reason one step further out: the
-    Node producer has to land a given connector on the same lane as this one,
-    and Node's crypto cannot produce BLAKE2b at an 8-byte digest (the digest
-    length is mixed into BLAKE2b's IV, so truncating blake2b512 gives a
-    different value). Both runtimes compute SHA-256 natively and agree
-    byte-for-byte. See laneStreamFor in the Node lane utils; the two must
-    stay in step.
+    With assigned lanes on, this is a connector's hash lane: where producers
+    put it before the lane map existed and whenever a lookup falls back, and
+    so one of the lanes the stranded-record sweep counts for it. It must not
+    change between releases, or the sweep would stop looking where older
+    events are. SHA-256 because the Node service used to compute the same
+    hash; it no longer publishes record events.
     """
     if lane_count <= 1:
         return 0

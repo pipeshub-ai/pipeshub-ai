@@ -463,3 +463,23 @@ class TestIndexingConsumerAndTheLaneMap:
         await consumer._requeue_message("entity-events.2", message, "stable-1")
 
         assert consumer.producer.send_event.await_args.kwargs["topic"] == "entity-events.2"
+
+    async def test_after_switching_back_to_hashing_assigned_lanes_still_count(
+        self,
+        provider: FakeRedisConnectionProvider,
+        consumer: IndexingRedisStreamsConsumer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A rollback must not make the sweep re-send records whose events
+        still wait on the lanes they were assigned."""
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_ASSIGNMENT", "hash")
+        assigned = _another_lane(BUSY)
+        client = provider.get_client()
+        await client.hset(
+            "{record-events}:lane-map", BUSY, f"v1|{assigned.rsplit('.', 1)[1]}|team|live|||"
+        )
+        await _add(client, 1000, stream=assigned)
+
+        backlog = await consumer.lane_backlog(TOPIC)
+
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) == 1000.0

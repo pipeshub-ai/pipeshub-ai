@@ -162,7 +162,7 @@ The tier also decides two things at the dispatch layer (added by the fix in sect
 5. **Which read-ahead bucket** a spawned task counts in: `GateWaiters` keeps one count per tier, and `DispatchBudget` gives heavy its own ceiling (2× the current `INDEX_HEAVY` limit, at least 8) under the shared total.
 6. **Which leaf of the fairness tree** the message is buffered in: the fairness key is `(orgId, connectorId, tier)`, so a connector's heavy and light records are sibling queues and DRR can pass over a blocked heavy head.
 
-The tier does not influence the lane a message lands in (lanes stay keyed by `connectorId`) or the read-phase read-ahead, which is bounded by buffer room.
+The tier does not influence the lane a message lands in (a lane belongs to a connector, section 4.9) or the read-phase read-ahead, which is bounded by buffer room.
 
 ---
 
@@ -193,7 +193,7 @@ flowchart TD
 Key structures:
 
 - **`DRRScheduler`** (`scheduling/drr_scheduler.py`): hierarchical deficit round robin over `(orgId, connectorId, tier)`; the tier level is appended by `TieredKeyExtractor` and enabled by `FairSchedulerConfig.tier_level` (on by default). Each leaf is a FIFO. `try_pop` only inspects the *head* of each leaf; a head that is not eligible is skipped without spending deficit, which is what lets a connector's light leaf proceed while its heavy leaf is blocked. Buffer bounded by `FAIR_SCHEDULING_MAX_BUFFER` (2000) and `FAIR_SCHEDULING_MAX_PER_ENTITY` (500 per connector across both tiers; `entity_key()` gives the prefix the cap applies to).
-- **Lanes**: `record-events.0..7` streams (or Kafka partitions), chosen by hash of `connectorId`. A lane whose entries are parked for lack of buffer room is skipped while another lane is producing.
+- **Lanes**: `record-events.0..7` streams (or Kafka partitions). On Redis each connector is given one lane, the least busy, and the choice is recorded in Redis (section 4.9); on Kafka the partition is a hash of `connectorId`. A lane whose entries are parked for lack of buffer room is skipped while another lane is producing.
 - **Held entries / PEL**: buffered entries stay un-ACKed; ownership is refreshed with `XCLAIM JUSTID` so they are neither stolen nor counted as failed deliveries. Idle drains (`_drain_pending`) run only after 3 consecutive empty polls.
 - **Retry counters** (`RetryManager`, Redis): `messaging:retry:<stable id>` counts processing failures; `messaging:deliveries:<stable id>` counts hand-backs. Both are separate from Redis's own `times_delivered`, which is only a poison-message backstop (`REDIS_MAX_DELIVERIES`, 10).
 
@@ -273,7 +273,7 @@ Responsibilities by layer:
 | --- | --- | --- |
 | `ResourceGovernor.run` | 15s ± 1s | sample cgroup/CPU/memory, adjust pool limits |
 | `LeaseRenewer` (worker loop) | 30s | renew every held Redis lease in one pipeline; marks holders lost after ~90s of failures |
-| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS for longer than `RECORD_PROCESSING_TIMEOUT + lease` (~32 min); park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
+| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS for longer than `RECORD_PROCESSING_TIMEOUT + lease` (~32 min); park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); keep the Redis lane map in step and, once, separate connectors that share a lane (section 4.9); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
 | `run_vector_membership_backfill_loop` | 30s | repair `connectorIds`/`recordGroupIds` on vector points |
 | `run_entity_index_rebuild_loop` | 2s while working, 60s idle, after a 60s startup grace | project the graph into the `entities` collection, one page per tick under its own Redis leader key; see `docs/entity-resolution.md` (Entity index rebuild) |
 
@@ -299,13 +299,13 @@ The claim (`lastRepublishedAt`, `republishCount`) is written before the send and
 
 The broker is read once per pass, and only if some record got as far as step 4, so an idle system never asks. The Redis group `lag` field is not used: it is absent before Redis 7.0, null after deletions, and has been wrong in several releases.
 
-**Which lanes a record's event could be on.** On Redis: its own lane (`stable_lane(connectorId)`), the base stream (anything published before lanes were enabled or by a producer that is not laned, which the consumer still drains), the shared default lane (events published without `connectorId`, such as the stale-recovery requeue), and any lane outside the configured range that the consumer adopted after a lane-count reduction. Another connector's backlog on another lane does not hold a record back. On Kafka the broker's partitioner places each message and nothing in this codebase recomputes it (see `lanes/interface.py`), so every partition counts: a record is re-sent once the whole topic has been consumed past its queue time.
+**Which lanes a record's event could be on.** On Redis: its assigned lane and, while a move settles, the lane it moved off (both from one read of the lane map per pass, section 4.9); its hash lane (`stable_lane(connectorId)`, where events published before the lane map, by a producer with assignment switched off, or during a lookup fallback go); the base stream (anything published before lanes were enabled or by a producer that is not laned, which the consumer still drains); the shared default lane (events published without `connectorId`, such as bulk deletes), assigned or hashed; and any lane outside the configured range that the consumer adopted after a lane-count reduction. If the lane map cannot be read, every lane counts, which can only make the sweep wait longer. Another connector's backlog on another lane does not hold a record back. On Kafka the broker's partitioner places each message and nothing in this codebase recomputes it (see `lanes/interface.py`), so every partition counts: a record is re-sent once the whole topic has been consumed past its queue time.
 
 **Clocks.** Queue times come from the application host and event timestamps from the broker (Redis) or the producing host (Kafka), and a record is stamped before its event is sent. An event up to 5 minutes newer than the record's queue time (`STRANDED_QUEUE_CLOCK_ALLOWANCE_MS`) is therefore still treated as possibly the record's own. Skew beyond that costs at most one early re-send per record, after which the back-off applies.
 
 **When the broker cannot be read** (unreachable, timed out, a stream or group missing) the pass logs one warning and decides on steps 1–3 alone.
 
-**Known limits.** Raising the Redis lane count moves a connector to a different lane while its older events are still on the previous one, which is inside the configured range and so indistinguishable from any other lane; such a record can be re-sent once before the back-off takes over. The re-sent event is idempotent either way: the handler skips a record that is already COMPLETED and the per-record lease stops two deliveries running at once.
+**Known limits.** With assignment switched off (`FAIR_SCHEDULING_LANE_ASSIGNMENT=hash`), raising the Redis lane count moves a connector to a different hash lane while its older events are still on the previous one, which is inside the configured range and so indistinguishable from any other lane; such a record can be re-sent once before the back-off takes over. With assignment on, raising the count moves no one. The re-sent event is idempotent either way: the handler skips a record that is already COMPLETED and the per-record lease stops two deliveries running at once.
 
 **Log line.** One per pass, at INFO when any record was considered: `Stranded-record sweep: N considered, N left alone because their queue still holds older work, N re-published, N waiting out a back-off`, with `(queue not readable; decided on age alone)` appended on a fallback pass. A steadily high "left alone" count is a backlog, not a fault.
 
@@ -349,6 +349,36 @@ Before this, a file with no grammar was parsed whole as Markdown whatever it was
 A skipped file's status write also takes `parsingStatus` off `IN_PROGRESS` (`Processor._mark_record`). The parsing-service path sets it before dispatch, and a record left there with `processingStartedAt` cleared reads as a crashed parse that stale recovery republishes on every pass.
 
 The reason on an oversized repository file ends "…ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then choose Index all on the repository", because a **File Type Not Supported** record has no Reindex action of its own and a sync skips a repository whose head has not moved. **Index all** is the action on the repository's *Code repository* row: record groups carry no indexing status, so the row offers "Index all" rather than "Re-index all", and it is the unfiltered action ("Re-index failed" only retries `FAILED` records). The GitLab connector already leaves generated files out when it lists a repository, and the GitHub connector already switches content indexing off for files over its own fixed 5 MB when it knows the size; this is the same decision made again at parse time, where every connector and the size-unknown incremental path pass through.
+
+
+### 4.9 Assigned lanes (Redis Streams)
+
+Hashing a connector id onto eight lanes ignores which lanes are already in use, so connectors share a lane far more often than intuition suggests: about one install in three with three connectors, four in five with five, almost every install with eight. Because the consumer reads each lane oldest first and can only reorder what is in its 2,000-message buffer, a connector behind another's backlog on the same lane waits for all of it. A community user's Slack connector waited behind about 200,000 GitLab events this way while seven lanes sat empty.
+
+So on Redis each connector is given one lane, once, and the choice is recorded next to the lanes:
+
+| Key | Field | Value |
+| --- | --- | --- |
+| `{record-events}:lane-map` | connector id, or `__default__` for events without one | `v1\|lane\|class\|state\|prevLane\|movedAtMs\|fenceMs`. Class is `team` (large), `personal`, `kb` or `system` (small); state is `live` or `deleted` |
+| `{record-events}:lane-meta` | `laneCount`, `version`, `large:N`, `small:N`, `busy:N`, `busyAt`, `migratedAt` | the lane count the indexing consumer reads (written at its startup), a version bumped by every write a placement depends on, per-lane counts, a per-lane busy reading, and when the one-time upgrade fix-up ran |
+
+Both keys carry the `{record-events}` hash tag, so on Redis Cluster one script can update both. An operator can read the map with `redis-cli HGETALL "{record-events}:lane-map"`.
+
+**Choosing a lane.** `choose_connector_lane(request, snapshot)` in `lanes/assignment_policy.py`, exposed through `app/edition_services.py` so an edition can replace it, picks the lane with the fewest large connectors, then one that is not busy (oldest unfinished event over five minutes old, by a reading under five minutes old), then the fewest small connectors, then the lowest number; if the connector's hash lane ties for best on the first three, it keeps it, so connectors that never collided never move. The rule runs in Python on a snapshot of the meta hash; the commit is a Lua script that refuses to write if the version moved since the snapshot and hands back a fresh one, so two placements at once cannot take the same free lane. `admin_lane_move_allowed` (always false here) gates administrator moves.
+
+**Producers.** `LaneAwareProducer` asks `AssignedRedisLaneRouter.place`, which looks the connector up through a per-process cache shared by every producer (`FAIR_SCHEDULING_LANE_CACHE_SECONDS`, 60). A hit is a dictionary read; a miss is one script call; only the first sight of a connector runs the rule. A first publish places an unknown connector as large unless its event is an upload (`kb`). Connectors and knowledge bases are placed at creation as well (`lanes/lifecycle.py`, from `ConnectorRegistry._create_connector_instance` and `kb_service.create_knowledge_base`), where their class is known. If Redis cannot answer, a cached lane is used even if old; with nothing cached the event goes to the hash lane, with one warning per connector per minute and `pipeshub_lane_assignment_fallbacks_total{reason}`. Retries go back to `record-events` so the router places them.
+
+**When a connector moves.** Only in the one-time upgrade fix-up and when the lane count is lowered (an entry outside the new count is given a new lane on its next lookup). A moved entry keeps its old lane as `prevLane`. Producers may keep using a cached lane for one cache lifetime, so upkeep writes `fenceMs` from Redis's clock 30 seconds after that, and clears `prevLane` once the old lane's oldest unfinished event is newer than the fence, or it has none. Until then the stranded sweep counts both lanes (section 4.6). A turned-off connector keeps its lane. A deleted one is marked `deleted` and stops counting at once, after its delete events are sent (`event_service._handle_delete`, `kb_service.delete_knowledge_base`); late events still go to its lane, and upkeep removes the entry once that lane has finished past the fence.
+
+**Upkeep** (`modules/indexing/lane_upkeep.py`) runs in every stale-recovery pass, under the recovery lock, from the same backlog read the sweep uses. One atomic script writes fences, clears settled moves, removes drained deleted entries, rebuilds the counts from the map and writes the busy flags. Then, from the graph: classes guessed on a first publish are corrected, and entries whose connector no longer exists are released.
+
+**The upgrade fix-up** runs once, guarded by `migratedAt`. Every connector without an entry is recorded at its hash lane. For each lane, the large connectors that may have events there are its occupants and any that moved off it on their first publish after the upgrade. If there are two or more, the one with the most records QUEUED keeps the lane; every other occupant is moved by the rule, and every other connector has up to 20,000 of its QUEUED records re-sent to its new lane, oldest first, so they stop waiting behind the one that stayed. The copies left behind are harmless: the handler skips a record that is already complete, and the record lease stops two copies running at once.
+
+**Visibility.** `GET /health` on the replica that ran the last upkeep has a `lanes` section: per lane its stream, the connectors on it (id, name, class, state; at most 50 listed), connectors moving onto or off it, the age of its oldest unfinished event and its pending-list size. Metrics, by lane and never by connector: `pipeshub_indexing_lane_connectors{lane,size}`, `pipeshub_indexing_lane_oldest_waiting_seconds{lane}`.
+
+**Switching it off.** `FAIR_SCHEDULING_LANE_ASSIGNMENT=hash` on every service puts producers back on hash lanes at once. The sweep keeps reading the map and counts assigned lanes until they drain, so a rollback never causes early re-sends. The two keys can be deleted afterwards. Kafka places by key whatever the setting says.
+
+**Node.** The Node service publishes no record events. It uses `FAIR_SCHEDULING_LANE_COUNT` (default 8, like Python) only to pre-create the lane streams.
 
 ---
 
@@ -482,6 +512,8 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | Env knobs, retry backoff, event models | `backend/python/app/services/messaging/config.py` |
 | DRR scheduler, lanes, Kafka offset tracker | `backend/python/app/services/messaging/scheduling/`, `lanes/` |
 | Lane backlog (what the stranded sweep asks the broker) | `lanes/backlog.py`, `redis_streams/backlog.py`, `kafka/consumer/backlog.py` |
+| Lane map: scripts, cache, router; the lane rule (edition hook); creation and delete | `lanes/assignment.py`, `lanes/assignment_policy.py`, `lanes/lifecycle.py` |
+| Lane upkeep, upgrade fix-up, `/health` lane view | `backend/python/app/modules/indexing/lane_upkeep.py` |
 | Distributed leases, renewer, retry counters | `distributed_concurrency.py`, `lease.py`, `retry_manager.py` |
 | 429 backpressure, HTTP retry/circuit breaker | `messaging/backpressure.py`, `services/base_client.py` |
 | Tiers, gates, control law, probe, feedback | `backend/python/app/services/resource_governor/` |
@@ -503,7 +535,9 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `MAX_CONCURRENT_INDEXING` | derived (`6 × cpus`, 24–96) | total in-flight budget across both index tiers |
 | `MAX_PENDING_INDEXING_TASKS` | derived (`2 × index limits`, 64–256) | total dispatch budget; the heavy tier's ceiling is derived under it (see 4.2 layer 2) |
 | `RECORD_PROCESSING_TIMEOUT` | 1800s | active-processing budget and parse-slot wait bound |
-| `FAIR_SCHEDULING_ENABLED` / `_MAX_BUFFER` / `_MAX_PER_ENTITY` / `_LANE_COUNT` | true / 2000 / 500 / 8 | consumer buffering and lane routing |
+| `FAIR_SCHEDULING_ENABLED` / `_MAX_BUFFER` / `_MAX_PER_ENTITY` / `_LANE_COUNT` | true / 2000 / 500 / 8 | consumer buffering and lane routing; the Node service uses the same lane count to pre-create the lane streams |
+| `FAIR_SCHEDULING_LANE_ASSIGNMENT` | `assigned` | Redis only. `hash` puts every producer back on hashed lanes; set it on every service (section 4.9) |
+| `FAIR_SCHEDULING_LANE_CACHE_SECONDS` | 60 | how long a producer trusts a looked-up lane; a move is fenced this long plus 30s after it is made |
 | `GOVERNOR_MEM_SOFT` / `GOVERNOR_MEM_HARD` | 0.70 / 0.80 | memory brakes on raw cgroup occupancy |
 | `GOVERNOR_HEAVY_PARSE_WORKING_SET_GB` | 1.5 | sizes `heavy_memory_cap` |
 | `GOVERNOR_EMBEDDING_CPU_RESERVATION` | 2 (≤ 25% of quota) | CPUs withheld from heavy parse when embeddings are local |

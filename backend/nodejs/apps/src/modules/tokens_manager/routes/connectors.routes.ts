@@ -62,7 +62,6 @@ import {
   stopConnectorSync,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
-import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
@@ -448,13 +447,9 @@ export function createConnectorRouter(
   const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
   );
-  const recordsEventProducer = container.get<RecordsEventProducer>(
-    'RecordsEventProducer',
-  );
   const syncEventProducer =
     container.get<SyncEventProducer>('SyncEventProducer');
   const recordRelationService = new RecordRelationService(
-    recordsEventProducer,
     syncEventProducer,
     config.storage,
   );
