@@ -2647,6 +2647,11 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             parent_index = block.get("parent_index")
 
             target_index = parent_index
+            # Every item of a list expands to the whole list, so hits on two of
+            # its items would otherwise take two ranked slots with one unit.
+            group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
+            if group_chunk_id in seen_chunks:
+                continue
 
             fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
             group_text_result = get_group_label_n_first_child(block_groups, target_index)
@@ -2661,6 +2666,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
             if not group_text_result or not group_blocks:
                 continue
+            seen_chunks.add(group_chunk_id)
 
             label, first_child_block_index = group_text_result
             result["content"] = ("", group_blocks)
