@@ -410,6 +410,8 @@ class SnowflakeConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             SnowflakeApp(connector_id),
@@ -418,6 +420,8 @@ class SnowflakeConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
         self.connector_id = connector_id
         self.connector_name = Connectors.SNOWFLAKE
@@ -437,8 +441,6 @@ class SnowflakeConnector(BaseConnector):
         self.account_identifier: Optional[str] = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(25, 1)
-        self.connector_scope: Optional[str] = None
-        self.created_by: Optional[str] = None
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
         self._record_id_cache: Dict[str, str] = {}
@@ -499,8 +501,10 @@ class SnowflakeConnector(BaseConnector):
                 self.logger.error("Missing accountIdentifier in configuration")
                 return False
 
-            self.connector_scope = config.get("scope", ConnectorScope.PERSONAL.value)
-            self.created_by = config.get("created_by")
+            # The factory supplies these values because they drive connector
+            # permissions. Preserve them when the persisted config omits them.
+            self.scope = config.get("scope") or self.scope
+            self.created_by = config.get("created_by") or self.created_by
 
             # Determine authentication method
             pat_token = auth_config.get("patToken")
@@ -3132,6 +3136,8 @@ class SnowflakeConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
         data_entities_processor,
         **kwargs,
     ) -> "SnowflakeConnector":
@@ -3141,4 +3147,6 @@ class SnowflakeConnector(BaseConnector):
             data_store_provider,
             config_service,
             connector_id,
+            scope,
+            created_by,
         )
