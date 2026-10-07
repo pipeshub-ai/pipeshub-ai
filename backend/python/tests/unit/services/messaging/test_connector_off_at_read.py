@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from aiokafka.structs import TopicPartition
 
 pytest.importorskip("fakeredis.aioredis")
 
@@ -451,34 +452,73 @@ class TestKafka:
         assert handler.seen == []
         assert graph.batch_updates == []
 
-    async def test_a_partition_revoked_while_the_filter_runs_is_left_to_its_new_owner(
+    async def test_a_partition_revoked_while_the_filter_runs_is_left_to_its_next_owner(
         self, kafka_harness: KafkaHarness
     ) -> None:
+        """The batch read before the revoke is stale: the revocation dropped
+        its tracked offsets, and the next owner, here this consumer again,
+        starts from the committed offset. Buffering it as well would run
+        on-0 twice."""
         graph = _graph(off_records=10)
         kafka_harness.produce(*(_envelope(f"off-{i}", OFF) for i in range(10)))
         kafka_harness.produce(_envelope("on-0", ON))
         consumer = kafka_harness.build(graph)
         inner = consumer.connector_off_filter
+        revoked_once: list[bool] = []
 
         class RevokingFilter:
             async def settle(self, messages):  # noqa: ANN202
                 result = await inner.settle(messages)
-                fake = kafka_harness.broker.consumers[0]
-                revoked = list(fake.assignment())
-                fake.assigned_by_hand = []
-                await consumer._on_partitions_revoked(revoked)
+                if not revoked_once:
+                    revoked_once.append(True)
+                    await consumer._on_partitions_revoked([TopicPartition(TOPIC, 0)])
                 return result
 
         consumer.connector_off_filter = RevokingFilter()
         handler = Handler()
         await consumer.start(handler)
 
-        await _until(lambda: graph.calls["batch_update_nodes:records"] == 1)
+        await _until(lambda: graph.calls["compare_and_set_indexing_status"] >= 1)
         await asyncio.sleep(0.2)
-
-        assert kafka_harness.committed() == 0
-        assert kafka_harness.broker.consumers[0].commit_calls == []
         assert handler.seen == []
+        assert kafka_harness.broker.consumers[0].commit_calls == []
+
+        # Given back: as aiokafka does, the position restarts at the commit.
+        await consumer._on_partitions_assigned([TopicPartition(TOPIC, 0)])
+        kafka_harness.broker.consumers[0].position.pop(TopicPartition(TOPIC, 0), None)
+        await _until(lambda: kafka_harness.committed() == 11)
+
+        assert handler.seen == ["on-0"]
+
+    async def test_a_rebalance_inside_the_poll_does_not_drop_what_the_poll_returns(
+        self, kafka_harness: KafkaHarness
+    ) -> None:
+        """aiokafka runs the rebalance inside getmany() and hands back the new
+        assignment's records; those are this consumer's to process."""
+        graph = _graph(off_records=10)
+        kafka_harness.produce(*(_envelope(f"off-{i}", OFF) for i in range(10)))
+        kafka_harness.produce(_envelope("on-0", ON))
+        consumer = kafka_harness.build(graph)
+        handler = Handler()
+        await consumer.start(handler)
+        fake = kafka_harness.broker.consumers[0]
+        getmany = fake.getmany
+        rebalanced: list[bool] = []
+
+        async def getmany_with_a_rebalance(*args, **kwargs):  # noqa: ANN202
+            if not rebalanced:
+                rebalanced.append(True)
+                tp = TopicPartition(TOPIC, 0)
+                await consumer._on_partitions_revoked([tp])
+                await consumer._on_partitions_assigned([tp])
+                fake.position.pop(tp, None)
+            return await getmany(*args, **kwargs)
+
+        fake.getmany = getmany_with_a_rebalance
+
+        await _until(lambda: kafka_harness.committed() == 11)
+
+        assert handler.seen == ["on-0"]
 
 
 def _flip_to_in_progress_after_read(graph: FakeConnectorGraph, record_id: str) -> None:

@@ -1056,7 +1056,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if scheduler.pending_count
             else messaging_env.message_timeout_ms
         )
-        self._revoked_since_poll.clear()
         message_batch = await self.consumer.getmany(
             timeout_ms=poll_timeout_ms,
             max_records=max(
@@ -1070,6 +1069,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._partitions_with_data = {
             tp for tp, messages in (message_batch or {}).items() if messages
         }
+        # A rebalance that ran inside getmany() is already reflected in what it
+        # returned (aiokafka hands back only the new assignment's records), so
+        # only a revocation from here on makes a partition's batch stale.
+        self._revoked_since_poll.clear()
         if not message_batch:
             return
 
@@ -1077,10 +1080,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         settled = await self.__settle_connector_off(pre_parsed)
         settled_reached: list[tuple[TopicPartition, int]] = []
         for tp, messages in message_batch.items():
-            # The filter awaits the graph, and a rebalance can revoke a
-            # partition meanwhile. Its messages belong to the new owner, which
-            # reads them from the last commit; none is tracked, buffered or
-            # committed here.
+            # The filter (and the enqueue below) await, and a rebalance can
+            # revoke a partition meanwhile. Its messages belong to whoever owns
+            # it next, which reads them from the last commit: the revocation
+            # dropped this batch's buffered and tracked offsets, and an owner,
+            # this consumer included, starts again from the committed offset.
+            # None of the rest is tracked, buffered or committed here.
             if tp in self._revoked_since_poll:
                 continue
             # Every partition in the batch is drained or explicitly seeked
@@ -1092,6 +1097,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             for message in messages:
                 if not self.running:
                     self.__seek_back(tp, message.offset)
+                    break
+                if tp in self._revoked_since_poll:
                     break
                 position = (tp, message.offset)
                 if position in settled:
@@ -1192,6 +1199,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         again, and settling them again writes the same status.
         """
         offset_tracker = self._offset_tracker
+        reached = [p for p in reached if p[0] not in self._revoked_since_poll]
         if not reached or offset_tracker is None or self.consumer is None:
             return
         commits: dict[TopicPartition, int] = {}
