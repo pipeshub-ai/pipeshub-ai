@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from helper.pipeshub_client import PipeshubClient
-from oauth2_audit_support import assert_form_schema_refuses, DCR_REDIRECT_URI, OAuth2Client, delete_dynamic_client
+from oauth2_audit_support import DCR_REDIRECT_URI, OAuth2Client, delete_dynamic_client
 from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
@@ -130,13 +130,15 @@ def test_register_refuses_metadata_the_service_does_not_allow(
 def test_form_encoded_metadata_gets_past_validation(
     oauth2_client: OAuth2Client, dcr_enabled: bool
 ) -> None:
-    # A form list needs the key twice; a single value parses as a string (see the next test).
-    resp = oauth2_client.register(
-        form=True,
-        client_name="spec-audit-dcr-form",
-        redirect_uris=[DCR_REDIRECT_URI, f"{DCR_REDIRECT_URI}/2"],
-        token_endpoint_auth_method="none",
-    )
+    # A form list needs the key twice; a single value parses as a string (see the next test). The
+    # spec lists no form body here because a one-item list cannot be sent that way.
+    with outside_request_contract("a form body is not documented for a body with a list field"):
+        resp = oauth2_client.register(
+            form=True,
+            client_name="spec-audit-dcr-form",
+            redirect_uris=[DCR_REDIRECT_URI, f"{DCR_REDIRECT_URI}/2"],
+            token_endpoint_auth_method="none",
+        )
     try:
         assert resp.status_code == (201 if dcr_enabled else 403), resp.text[:500]
         assert resp.request.headers["Content-Type"] == "application/x-www-form-urlencoded"
@@ -162,13 +164,9 @@ def test_form_encoded_metadata_gets_past_validation(
 def test_form_encoded_metadata_is_validated(
     oauth2_client: OAuth2Client, metadata: dict[str, Any], field: str
 ) -> None:
-    with outside_request_contract(
-        "the gate does not read form bodies; assert_form_schema_refuses checks the request instead"
-    ):
-        resp = oauth2_client.register(form=True, **metadata)
-        assert resp.status_code == 400, resp.text[:500]
-        assert_strict_openapi_exchange(resp, ROUTE)
-    assert_form_schema_refuses(resp, SPEC_PATH)
+    resp = oauth2_client.register(form=True, **metadata)
+    assert resp.status_code == 400, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
     error = resp.json()["error"]
     assert error["code"] == "VALIDATION_ERROR"
     assert [e["field"] for e in error["metadata"]["errors"]] == [field]

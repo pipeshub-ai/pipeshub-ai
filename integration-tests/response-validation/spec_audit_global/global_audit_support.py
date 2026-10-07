@@ -147,8 +147,8 @@ _TEXT, _NON_TEXT, _NEUTRAL = "text", "non-text", "neutral"
 def text_only_problem(schema: Any) -> str | None:
     """Where a body schema admits a value that is not a string, or None when every leaf is a string.
 
-    A form body arrives as strings (qs nests `a[b]` and `a[]` into objects and arrays), so only an
-    all-text schema can describe one.
+    A form body arrives as flat strings: qs makes a list only for a repeated key and an object only for
+    bracketed keys, and cannot send an empty list, so only a body of flat text fields describes one.
     """
     verdict, where = _text_verdict(schema, overlay=False, at="body")
     return None if verdict == _TEXT else (where or "body: no typed value")
@@ -174,6 +174,12 @@ def _text_verdict(schema: Any, *, overlay: bool, at: str) -> tuple[str, str | No
     if any(not isinstance(v, str) for v in schema.get("enum") or [] if v is not None):
         return _NON_TEXT, f"{at}: enum with a value that is not a string"
     found = "string" in types or "enum" in schema
+    # qs (express.urlencoded extended) gives a list only for a repeated key and an object only for
+    # bracketed keys, and cannot send an empty list: only flat text fields describe a form body.
+    if "array" in types:
+        return _NON_TEXT, f"{at}: array"
+    if "object" in types and not re.fullmatch(r"body(<[^>]+>)*", at):
+        return _NON_TEXT, f"{at}: nested object"
     if "object" in types:
         properties = schema.get("properties") or {}
         for name, sub in properties.items():
