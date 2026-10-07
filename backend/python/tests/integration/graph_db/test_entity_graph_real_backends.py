@@ -709,6 +709,38 @@ async def _assert_fenced_clear(provider: Neo4jProvider | ArangoHTTPProvider, key
     ) is True
 
 
+class TestFieldsIfMatchUnderConcurrentWrite:
+    async def test_neo4j_reads_a_write_that_commits_while_it_waits(self, neo4j) -> None:
+        """Another writer changes the record and holds its lock until after this
+        write has read it; the change must survive, not be overwritten."""
+        provider, org_id = neo4j
+        key = f"{org_id}-fenced"
+        records = CollectionNames.RECORDS.value
+        await provider.client.execute_query(
+            "CREATE (r:Record) SET r = $row",
+            parameters={"row": {"id": key, "orgId": org_id,
+                                "duplicateReconcilePending": True, "duplicateReconcileDueAt": 1000}},
+        )
+        session = provider.client.driver.session(database="neo4j")
+        tx = await session.begin_transaction()
+        try:
+            await tx.run("MATCH (r:Record {id: $id}) SET r.duplicateReconcileDueAt = 2000", id=key)
+            write = asyncio.create_task(provider.update_node_fields_if_match(
+                key, records, {"duplicateReconcilePending": False, "duplicateReconcileDueAt": None},
+                {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 1000},
+            ))
+            await asyncio.sleep(HOLD_SECONDS)
+            assert not write.done()
+            await tx.commit()
+        finally:
+            await session.close()
+        assert await write is False
+        stored = await provider.get_document(key, records)
+        assert stored["duplicateReconcilePending"] is True
+        assert stored["duplicateReconcileDueAt"] == 2000
+        assert "matchLock" not in stored
+
+
 class TestPendingDuplicateReconcile:
     """The retry sweep's query, and the attempt counter on ArangoDB's strict
     records schema (KG-51)."""
