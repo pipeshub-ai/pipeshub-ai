@@ -633,10 +633,16 @@ class LaneAssignments:
     ) -> int:
         lock = self._placement_lock()
         async with lock:
-            # A placement this process made while we waited is the answer.
+            # A placement this process made while we waited is the answer,
+            # unless this caller knows the class: then the commit below runs,
+            # and corrects the class that placement guessed.
             with self._lock:
                 cached = self._cache.get(connector_id)
-            if cached is not None and time.monotonic() - cached.fetched_at < self._cache_seconds:
+            if (
+                not class_is_known
+                and cached is not None
+                and time.monotonic() - cached.fetched_at < self._cache_seconds
+            ):
                 return cached.lane
             # An event says its class only for an upload, so a repaired entry
             # keeps the class it already has unless the caller knows better.
