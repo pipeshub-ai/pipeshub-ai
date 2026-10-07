@@ -72,6 +72,8 @@ class ClusterRedisProvider(IRedisConnectionProvider):
             "socket_connect_timeout": options.socket_connect_timeout_seconds,
             "read_from_replicas": self._config.scale_reads in ("slave", "all"),
             "require_full_coverage": True,
+            "cluster_error_retry_attempts": max(0, options.retry_attempts),
+            "connection_error_retry_attempts": max(0, options.retry_attempts),
         }
         if self._config.username:
             kwargs["username"] = self._config.username
@@ -155,6 +157,8 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         kwargs.pop("read_from_replicas", None)
         kwargs.pop("require_full_coverage", None)
         kwargs.pop("address_remap", None)
+        kwargs.pop("cluster_error_retry_attempts", None)
+        kwargs.pop("connection_error_retry_attempts", None)
         # A subscriber sits idle waiting for messages; any finite
         # socket_timeout kills the connection during that wait.
         kwargs["socket_timeout"] = None

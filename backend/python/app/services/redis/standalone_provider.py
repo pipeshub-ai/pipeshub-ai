@@ -76,10 +76,10 @@ class StandaloneRedisProvider(IRedisConnectionProvider):
                 "instead of disabling verification."
             )
 
-    def _retry_policy(self) -> Retry:
+    def _retry_policy(self, attempts: int = 3) -> Retry:
         return Retry(
             ExponentialBackoff(cap=_RETRY_MAX_DELAY, base=_RETRY_BASE_DELAY),
-            retries=3,
+            retries=max(0, attempts),
         )
 
     def _connection_kwargs(self, options: ClientOptions) -> dict:
@@ -91,7 +91,7 @@ class StandaloneRedisProvider(IRedisConnectionProvider):
             "socket_timeout": options.socket_timeout_seconds,
             "socket_connect_timeout": options.socket_connect_timeout_seconds,
             "health_check_interval": options.health_check_interval_seconds,
-            "retry": self._retry_policy(),
+            "retry": self._retry_policy(options.retry_attempts),
             "retry_on_error": [RedisConnectionError, RedisTimeoutError, OSError],
         }
         if self._config.username:
