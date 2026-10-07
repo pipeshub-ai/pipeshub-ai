@@ -94,7 +94,7 @@ def _same_source_refusal(record_id: str, external_id: str) -> RestoreRefused:
         409,
         "Two of the items being restored came from the same source item, so only one of them "
         "can come back. Restore them one at a time, starting with the one you want to keep.",
-        record_id=record_id,
+        blockedRecordId=record_id,
         external_id=external_id,
     )
 
@@ -2433,7 +2433,7 @@ class DataSourceEntitiesProcessor:
                     f"'{name}' can't be restored because '{holder.record_name}' has taken its place. "
                     "That usually means the same item was added again after this one was deleted. "
                     f"To restore this one, delete '{holder.record_name}' first, then try again.",
-                    record_id=item["id"],
+                    blockedRecordId=item["id"],
                     conflicting_record_id=holder.id,
                     conflicting_record_name=holder.record_name,
                 )

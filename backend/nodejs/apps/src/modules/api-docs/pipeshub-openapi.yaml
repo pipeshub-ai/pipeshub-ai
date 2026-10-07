@@ -5489,7 +5489,7 @@ components:
           description: Items restored under a name another item next to them has; rename them
         renamePendingReason:
           type: string
-        record_id:
+        blockedRecordId:
           type: string
           description: The item a refusal is about
         external_id:
