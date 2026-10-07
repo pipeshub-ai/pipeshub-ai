@@ -1184,6 +1184,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         offset_tracker = self._offset_tracker
         if not reached or offset_tracker is None or self.consumer is None:
             return
+        # A partition revoked while the filter was reading the graph belongs to
+        # its new owner, which re-reads these from the committed offset.
+        assigned = self.consumer.assignment()
+        reached = [position for position in reached if position[0] in assigned]
+        if not reached:
+            return
         commits: dict[TopicPartition, int] = {}
         for tp, offset in reached:
             offset_tracker.track(tp, offset)

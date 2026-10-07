@@ -450,3 +450,31 @@ class TestKafka:
 
         assert handler.seen == []
         assert graph.batch_updates == []
+
+    async def test_a_partition_revoked_while_the_filter_runs_is_left_to_its_new_owner(
+        self, kafka_harness: KafkaHarness
+    ) -> None:
+        graph = _graph(off_records=10)
+        kafka_harness.produce(*(_envelope(f"off-{i}", OFF) for i in range(10)))
+        consumer = kafka_harness.build(graph)
+        inner = consumer.connector_off_filter
+
+        class RevokingFilter:
+            async def settle(self, messages):  # noqa: ANN202
+                result = await inner.settle(messages)
+                fake = kafka_harness.broker.consumers[0]
+                revoked = list(fake.assignment())
+                fake.assigned_by_hand = []
+                await consumer._on_partitions_revoked(revoked)
+                return result
+
+        consumer.connector_off_filter = RevokingFilter()
+        handler = Handler()
+        await consumer.start(handler)
+
+        await _until(lambda: graph.calls["batch_update_nodes:records"] == 1)
+        await asyncio.sleep(0.2)
+
+        assert kafka_harness.committed() == 0
+        assert kafka_harness.broker.consumers[0].commit_calls == []
+        assert handler.seen == []
