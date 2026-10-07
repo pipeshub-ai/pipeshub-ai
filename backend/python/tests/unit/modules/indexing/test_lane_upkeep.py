@@ -23,6 +23,8 @@ from app.modules.indexing.lane_upkeep import (
 from app.services.messaging.lanes.assignment import (
     LaneAssignments,
     LaneEntry,
+    lane_map_key,
+    lane_meta_key,
     read_lane_map,
 )
 from app.services.messaging.lanes.backlog import LaneBacklog
@@ -153,9 +155,10 @@ async def _upkeep(
     producer: _RecordingProducer,
     backlog: LaneBacklog | None = None,
     rescue_cap: int = 20_000,
+    assignments: LaneAssignments | None = None,
 ) -> LaneReport:
     return await run_lane_upkeep(
-        assignments=_assignments(provider),
+        assignments=assignments or _assignments(provider),
         graph_provider=graph,  # type: ignore[arg-type]
         producer=producer,  # type: ignore[arg-type]
         backlog=backlog if backlog is not None else LaneBacklog(TOPIC, {}),
@@ -407,6 +410,65 @@ class TestTheFixUpFinishesOnlyWhenItHasSeparatedThem:
         entries = await _map(provider)
         assert (entries[GITLAB].lane, entries[SLACK].lane) == (SHARED, slack_lane)
         assert {t for t, *_ in producer.events} == {f"{TOPIC}.{slack_lane}"}
+
+
+class TestAMoveIsOnlyMadeToALaneOfItsOwn:
+    async def _eight_lanes_each_with_a_team_connector(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph
+    ) -> tuple[str, str, int]:
+        """Slack hashes to lane 0 but sits on lane 1 with GitLab; every lane
+        already has a large connector."""
+        client = provider.get_client()
+        slack = next(c for c in (f"slack-{i}" for i in range(500)) if stable_lane(c, LANES) == 0)
+        gitlab = "gitlab-big"
+        mapping = {slack: LaneEntry(1, "team").encode(), gitlab: LaneEntry(1, "team").encode()}
+        graph.add(slack, queued=50)
+        graph.add(gitlab, queued=200)
+        for lane in (0, *range(2, LANES)):
+            other = f"team-on-{lane}"
+            mapping[other] = LaneEntry(lane, "team").encode()
+            graph.add(other, queued=10)
+        await client.hset(lane_map_key(TOPIC), mapping=mapping)
+        counts = {f"large:{lane}": "1" for lane in range(LANES)} | {"large:1": "2", "laneCount": str(LANES)}
+        await client.hset(lane_meta_key(TOPIC), mapping=counts)
+        return slack, gitlab, 1
+
+    async def test_with_no_lane_free_the_connector_stays_and_the_fix_up_is_done(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        slack, _gitlab, shared = await self._eight_lanes_each_with_a_team_connector(provider, graph)
+
+        report = await _upkeep(provider, graph, producer)
+
+        assert (await _map(provider))[slack] == LaneEntry(shared, "team")
+        assert producer.events == []
+        assert report.migrated_at_ms is not None
+
+    async def test_a_move_that_still_lands_beside_a_large_connector_is_not_counted_done(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """An edition rule may choose a lane that is taken; that pair is
+        decided on a later pass before anything is re-sent there."""
+        await provider.get_client().hset(lane_meta_key(TOPIC), "laneCount", str(LANES))
+        graph.add(GITLAB, queued=40)
+        graph.add(SLACK, queued=6)
+        graph.add("drive-1", queued=3)
+        await _assignments(provider).record_at_hash_lane("drive-1", "team")
+        drive_lane = stable_lane("drive-1", LANES)
+        assert drive_lane != SHARED
+        onto_drive = LaneAssignments(
+            logging.getLogger("t"),
+            provider,
+            topic=TOPIC,
+            fallback_lane_count=LANES,
+            choose=lambda _request, _snapshot: drive_lane,
+        )
+
+        report = await _upkeep(provider, graph, producer, assignments=onto_drive)
+
+        assert (await _map(provider))[SLACK].lane == drive_lane
+        assert producer.events == []
+        assert report.migrated_at_ms is None
 
 
 class TestConnectorsFromBeforeOrgWasOnTheDocument:

@@ -153,14 +153,20 @@ def choose_connector_lane(request: LaneRequest, snapshot: LaneSnapshot) -> LaneC
 
     Lanes are compared on the number of large connectors already on them,
     then whether they are busy, then the number of small connectors, then
-    the lane number so the answer is deterministic. If the connector's hash
-    lane ties for best on the first three, it keeps it: an install whose
+    the lane number so the answer is deterministic. A connector being moved
+    keeps its current lane when that ties for best; otherwise, if its hash
+    lane ties for best on the first three, it takes that: an install whose
     connectors never collided sees no lane change at all.
     """
     if not snapshot.lanes:
         return request.hash_lane
     best = min(snapshot.lanes, key=lambda load: (*_score(load), load.lane))
     by_lane = {load.lane: load for load in snapshot.lanes}
+    # A connector being moved stays put unless some lane is strictly better:
+    # a move splits its order for a while, and a tie gains nothing.
+    current = by_lane.get(request.current_lane) if request.current_lane is not None else None
+    if current is not None and _score(current) <= _score(best):
+        return current.lane
     hashed = by_lane.get(request.hash_lane)
     if hashed is not None and _score(hashed) == _score(best):
         return hashed.lane

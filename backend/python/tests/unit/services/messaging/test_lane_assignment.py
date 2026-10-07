@@ -374,6 +374,37 @@ class TestKnownClassAndLaneCount:
         assert meta.get(f"large:{moved.lane}", "0") == "0"
         assert await _assignments(provider).lane_for(second) == moved.lane
 
+    async def test_a_class_correction_after_a_move_caches_the_lane_it_moved_to(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        """Creation looked the row up; a move then committed elsewhere before
+        the correction ran. The process must not cache the lane it left."""
+        first, second = _colliding(2)
+        shared = stable_lane(first, LANES)
+        client = provider.get_client()
+        await client.hset(
+            lane_map_key(TOPIC),
+            mapping={first: LaneEntry(shared, "team").encode(), second: LaneEntry(shared, "team").encode()},
+        )
+        await client.hset(lane_meta_key(TOPIC), mapping={f"large:{shared}": "2", "laneCount": "8"})
+        creator = _assignments(provider)
+        mover = _assignments(provider)
+        real_eval = creator._eval
+        moved_to: list[int] = []
+
+        async def move_lands_between(body: str, *args: object) -> list:
+            if body == assignment_module._COMMIT_SCRIPT and not moved_to:
+                moved_to.append((await mover.move(second, LaneRequestReason.UPGRADE)).lane)
+            return await real_eval(body, *args)
+
+        creator._eval = move_lands_between  # type: ignore[method-assign]
+
+        await creator.assign(second, ConnectorClass.PERSONAL)
+
+        assert moved_to and moved_to[0] != shared
+        assert await creator.lane_for(second) == moved_to[0]
+        assert (await _map(provider))[second].connector_class == "personal"
+
     async def test_a_lowered_lane_count_seen_by_any_lookup_drops_cached_lanes_past_it(
         self, provider: FakeRedisConnectionProvider
     ) -> None:
