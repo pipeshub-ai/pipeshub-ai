@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -83,6 +84,13 @@ class Outcome:
 
 
 def configure(monkeypatch: pytest.MonkeyPatch, topic: str, assignment: str) -> None:
+    try:
+        lanes_assignment = importlib.import_module("app.services.messaging.lanes.assignment")
+    except ImportError:  # code from before the lane map, which only hashes
+        lanes_assignment = None
+    if lanes_assignment is not None:
+        # A fresh process's worth of lane maps: the map's cache is per process.
+        monkeypatch.setattr(lanes_assignment, "_shared", {})
     monkeypatch.setenv("FAIR_SCHEDULING_LANED_TOPICS", topic)
     monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", str(LANES))
     monkeypatch.setenv("FAIR_SCHEDULING_LANE_ASSIGNMENT", assignment)
