@@ -121,6 +121,17 @@ class TestReadTimeOutcome:
     def test_a_removed_connectors_record_whose_copies_would_be_released_is_not_settled(self, status: str) -> None:
         assert read_time_outcome(NEW, _payload(), _record(indexingStatus=status), REMOVED) is ReadTimeOutcome.PASS
 
+    @pytest.mark.parametrize(
+        "status",
+        [ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value, ProgressStatus.ENABLE_MULTIMODAL_MODELS.value],
+    )
+    def test_a_status_another_event_may_still_need_is_not_overwritten(self, status: str) -> None:
+        """A COMPLETED record's buffered newRecord releases its queued copies;
+        marking it off first would make that newRecord miss the guard."""
+        record = _record(indexingStatus=status)
+
+        assert read_time_outcome(UPDATE, _payload(), record, OFF) is ReadTimeOutcome.PASS
+
     def test_a_record_in_progress_is_left_to_the_delivery_that_may_hold_it(self) -> None:
         record = _record(indexingStatus=ProgressStatus.IN_PROGRESS.value)
 
@@ -257,6 +268,7 @@ class TestGraphConnectorOffFilter:
         assert graph.calls == {
             "get_nodes_by_field_in:apps": 1,
             "get_nodes_by_field_in:records": 1,
+            "compare_and_set_indexing_status": 1,
             "batch_update_nodes:records": 1,
         }
         assert {r["indexingStatus"] for k, r in graph.records.items()} == {ProgressStatus.AUTO_INDEX_OFF.value}
@@ -375,3 +387,53 @@ class TestGraphConnectorOffFilter:
         result = await settle_connector_off(broken, [_message()], logging.getLogger("t"))
 
         assert result.settled == frozenset()
+
+
+class TestNothingIsSettledThatTheHandlerStillNeeds:
+    async def test_a_completed_records_new_record_and_update_in_one_batch_both_reach_the_handler(self) -> None:
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=False)
+        graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value)
+
+        result = await _filter(graph).settle([_message(NEW), _message(UPDATE)])
+
+        assert result.settled == frozenset()
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+    async def test_no_event_of_a_record_is_settled_when_another_of_its_events_goes_to_the_handler(self) -> None:
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=False)
+        graph.add_record("r1", "conn-off")
+        graph.add_record("r2", "conn-off")
+
+        result = await _filter(graph).settle([
+            _message(DELETE),
+            _message(NEW),
+            _message(NEW, record_id="r2"),
+        ])
+
+        assert result.settled == frozenset({2})
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.QUEUED.value
+
+    async def test_a_record_another_delivery_moved_on_after_the_read_is_left_to_it(self) -> None:
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=False)
+        graph.add_record("r1", "conn-off")
+        graph.add_record("r2", "conn-off")
+        read = graph.get_nodes_by_field_in
+
+        async def read_then_another_delivery_starts(collection, *args, **kwargs):  # noqa: ANN202
+            docs = await read(collection, *args, **kwargs)
+            if collection == "records":
+                graph.records["r1"]["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+                graph.records["r1"]["processingStartedAt"] = 42
+            return docs
+
+        graph.get_nodes_by_field_in = read_then_another_delivery_starts
+
+        result = await _filter(graph).settle([_message(), _message(record_id="r2")])
+
+        assert result.settled == frozenset({1})
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
+        assert graph.records["r1"]["processingStartedAt"] == 42
+        assert graph.records["r2"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value

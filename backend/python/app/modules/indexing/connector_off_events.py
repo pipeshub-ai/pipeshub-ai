@@ -147,7 +147,8 @@ def read_time_outcome(
 
     The steps are the handler's own, in its order. An IN_PROGRESS record is
     left to the normal path: a delivery elsewhere may hold its lease, and only
-    the handler takes that lease before writing.
+    the handler takes that lease before writing. So is one whose status
+    another event of the same record may still depend on (see below).
     """
     if not connector_gated_event(event_type, payload):
         return ReadTimeOutcome.PASS
@@ -175,7 +176,15 @@ def read_time_outcome(
             if status in _STATUSES_THAT_RELEASE_COPIES
             else ReadTimeOutcome.SETTLE
         )
-    if status == ProgressStatus.IN_PROGRESS.value:
+    # An event of the same record still buffered here, or behind this one,
+    # may need the status as it is: a COMPLETED record's newRecord releases
+    # its queued copies. Overwriting it first would lose that, so only a status
+    # no other path keys on is overwritten here.
+    if (
+        not isinstance(status, str)
+        or status == ProgressStatus.IN_PROGRESS.value
+        or status in _STATUSES_THAT_RELEASE_COPIES
+    ):
         return ReadTimeOutcome.PASS
     return ReadTimeOutcome.SETTLE_CONNECTOR_OFF
 
@@ -187,7 +196,9 @@ class GraphConnectorOffFilter:
     what lets a batch of live connectors' events through with no graph call.
     Off or removed is read afresh for every batch that has such events, so
     turning a connector back on takes effect at once. Per batch with candidates
-    that is one connector read, one record read and at most one status write.
+    that is one connector read, one record read, and for the turned-off ones a
+    conditional status swap (one per distinct status read, usually one) plus
+    one write of the remaining fields.
 
     A failed or slow read settles nothing and pauses the filter for
     ``refresh_seconds`` (at least ``_MIN_PAUSE_SECONDS``), so an unreachable
@@ -318,28 +329,80 @@ class GraphConnectorOffFilter:
             if outcome is not ReadTimeOutcome.PASS:
                 outcomes[i] = outcome
 
-        updates: dict[str, dict[str, Any]] = {}
-        for i, outcome in outcomes.items():
-            if outcome is ReadTimeOutcome.SETTLE_CONNECTOR_OFF:
-                record_id = str(messages[i].payload["recordId"])
-                updates[record_id] = {"id": record_id, **connector_off_updates(records[record_id])}
-        if updates:
-            try:
-                await asyncio.wait_for(
-                    self._graph.batch_update_nodes(
-                        list(updates.values()), CollectionNames.RECORDS.value
-                    ),
-                    timeout=self._read_timeout_seconds,
-                )
-            except Exception as e:
-                self._pause("mark the records of turned-off connectors as not indexed", e)
-                outcomes = {
-                    i: o for i, o in outcomes.items()
-                    if o is not ReadTimeOutcome.SETTLE_CONNECTOR_OFF
-                }
+        # Every event of a record goes to the handler if any one of them does:
+        # the handler runs them in order, and settling one first would change
+        # what the other finds.
+        handled = {
+            str(message.payload.get("recordId"))
+            for i, message in enumerate(messages)
+            if i not in outcomes and message.payload.get("recordId")
+        }
+        outcomes = {
+            i: o for i, o in outcomes.items()
+            if str(messages[i].payload["recordId"]) not in handled
+        }
+
+        swapped = await self._mark_connector_off(
+            {
+                str(messages[i].payload["recordId"])
+                for i, o in outcomes.items()
+                if o is ReadTimeOutcome.SETTLE_CONNECTOR_OFF
+            },
+            records,
+        )
+        outcomes = {
+            i: o for i, o in outcomes.items()
+            if o is not ReadTimeOutcome.SETTLE_CONNECTOR_OFF
+            or str(messages[i].payload["recordId"]) in swapped
+        }
 
         by_connector: Counter[tuple[str, str]] = Counter()
         for i in outcomes:
             connector_id = str(messages[i].payload["connectorId"])
             by_connector[(connector_id, state_of(connector_id).value)] += 1
         return ConnectorOffResult(settled=frozenset(outcomes), by_connector=by_connector)
+
+    async def _mark_connector_off(
+        self, record_ids: set[str], records: Mapping[str, Mapping[str, Any]]
+    ) -> set[str]:
+        """Write AUTO_INDEX_OFF on the records that still hold the status read.
+
+        The status is swapped conditionally, from what the batch read saw, so a
+        record another delivery has moved on since (IN_PROGRESS, COMPLETED) is
+        left to that delivery: only the handler holds the record's lease. The
+        rest of the handler's fields are written on the swapped ones only.
+        Returns the ids marked; any other id goes through the normal path.
+        """
+        if not record_ids:
+            return set()
+        by_status: dict[str, list[str]] = {}
+        for record_id in sorted(record_ids):
+            by_status.setdefault(str(records[record_id]["indexingStatus"]), []).append(record_id)
+        swapped: set[str] = set()
+        try:
+            for status, ids in by_status.items():
+                swapped.update(
+                    await asyncio.wait_for(
+                        self._graph.compare_and_set_indexing_status(
+                            ids, status, ProgressStatus.AUTO_INDEX_OFF.value
+                        ),
+                        timeout=self._read_timeout_seconds,
+                    )
+                )
+            if swapped:
+                await asyncio.wait_for(
+                    self._graph.batch_update_nodes(
+                        [
+                            {"id": record_id, **connector_off_updates(records[record_id])}
+                            for record_id in sorted(swapped)
+                        ],
+                        CollectionNames.RECORDS.value,
+                    ),
+                    timeout=self._read_timeout_seconds,
+                )
+        except Exception as e:
+            # A record swapped but not completed keeps its message, and the
+            # handler writes the full status when it gets to it.
+            self._pause("mark the records of turned-off connectors as not indexed", e)
+            return set()
+        return swapped

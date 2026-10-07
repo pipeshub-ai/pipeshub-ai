@@ -127,6 +127,22 @@ class FakeConnectorGraph:
         self._apply(doc, node_updates)
         return True
 
+    async def compare_and_set_indexing_status(
+        self, record_ids: list[str], expected: str, new_status: str, transaction: str | None = None
+    ) -> list[str]:
+        """As both providers do: one conditional write, the ids it changed, and
+        an empty list rather than an error when the write fails."""
+        self.calls["compare_and_set_indexing_status"] += 1
+        if self.fail_writes:
+            return []
+        swapped = []
+        for record_id in dict.fromkeys(record_ids):
+            doc = self.records.get(record_id)
+            if doc is not None and doc.get("indexingStatus") == expected:
+                doc["indexingStatus"] = new_status
+                swapped.append(record_id)
+        return swapped
+
     async def batch_update_nodes(
         self, nodes: list[dict[str, Any]], collection: str, transaction: str | None = None
     ) -> bool:
