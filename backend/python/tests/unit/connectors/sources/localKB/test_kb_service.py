@@ -2517,6 +2517,20 @@ class TestMoveRecord:
         service.processor_for_kb.return_value.on_records_moved.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_folder_in_the_trash_is_refused_also_for_an_item_already_in_it(self, service) -> None:
+        _setup_writer(service)
+        graph = service.graph_provider
+        graph._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
+        graph.get_record_parent_info = AsyncMock(return_value={"id": "trashed-folder"})
+        graph.validate_folder_in_kb = _folder_in_trash()
+        graph.get_document = AsyncMock(return_value={"recordName": "Archive"})
+
+        result = await service.move_record("kb1", "rec1", "trashed-folder", "user1")
+
+        assert result == {"success": False, "code": 409, "reason": MOVE_INTO_ARCHIVE_REFUSED}
+        service.processor_for_kb.return_value.on_records_moved.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_folder_in_the_trash_whose_name_cannot_be_read_is_still_refused(self, service) -> None:
         _setup_writer(service)
         graph = service.graph_provider

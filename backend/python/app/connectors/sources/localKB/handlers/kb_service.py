@@ -3286,7 +3286,20 @@ class KnowledgeBaseService:
                 f"📍 Record {record_id} current parent: {current_parent_id or 'KB root'}"
             )
 
-            # ── 5. No-op check ───────────────────────────────────────────────
+            # ── 5. Validate target folder (if not moving to root) ────────────
+            # Before the no-op answer, so a folder in the trash is refused the same
+            # way whether or not the item is already in it.
+            if new_parent_id is not None and not await self.graph_provider.validate_folder_in_kb(
+                kb_id, new_parent_id
+            ):
+                return await self._destination_folder_refusal(
+                    kb_id,
+                    new_parent_id,
+                    MOVE_INTO_ACTION,
+                    f"Target folder {new_parent_id} not found in KB {kb_id}",
+                )
+
+            # ── 6. No-op check ───────────────────────────────────────────────
             if new_parent_id == current_parent_id:
                 self.logger.info(f"↩️  Record {record_id} already at {destination}, skipping")
                 return {
@@ -3296,16 +3309,7 @@ class KnowledgeBaseService:
                     "newParentId": new_parent_id,
                 }
 
-            # ── 6. Validate target folder (if not moving to root) ────────────
             if new_parent_id is not None:
-                if not await self.graph_provider.validate_folder_in_kb(kb_id, new_parent_id):
-                    return await self._destination_folder_refusal(
-                        kb_id,
-                        new_parent_id,
-                        MOVE_INTO_ACTION,
-                        f"Target folder {new_parent_id} not found in KB {kb_id}",
-                    )
-
                 # Circular-reference guard (only relevant when moving a folder)
                 if new_parent_id == record_id:
                     return {"success": False, "code": 400, "reason": "Cannot move a folder into itself"}
