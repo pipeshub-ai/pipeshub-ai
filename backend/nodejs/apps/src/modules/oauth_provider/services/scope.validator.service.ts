@@ -73,21 +73,24 @@ export class ScopeValidatorService {
     requestedScopes: string[],
     allowedScopes: string[],
   ): { granted: string[]; notGranted: string[] } {
-    this.validateRequestedScopes(requestedScopes)
+    // A scope repeated in the request would otherwise show twice on the
+    // consent page and be stored twice on the code.
+    const uniqueScopes = [...new Set(requestedScopes)]
+    this.validateRequestedScopes(uniqueScopes)
 
-    if (requestedScopes.length === 0) {
+    if (uniqueScopes.length === 0) {
       return { granted: [], notGranted: [] }
     }
 
-    const granted = this.getGrantedScopes(requestedScopes, allowedScopes)
+    const granted = this.getGrantedScopes(uniqueScopes, allowedScopes)
     if (granted.length === 0) {
       throw new InvalidScopeError(
         'None of the requested scopes are allowed for this app',
-        { disallowedScopes: requestedScopes },
+        { disallowedScopes: uniqueScopes },
       )
     }
 
-    const notGranted = requestedScopes.filter(
+    const notGranted = uniqueScopes.filter(
       (scope) => !allowedScopes.includes(scope),
     )
     return { granted, notGranted }

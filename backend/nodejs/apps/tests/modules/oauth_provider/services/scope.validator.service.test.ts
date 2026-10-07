@@ -191,6 +191,11 @@ describe('ScopeValidatorService', () => {
       expect(service.resolveGrantedScopes([], ['kb:read']))
         .to.deep.equal({ granted: [], notGranted: [] })
     })
+
+    it('lists a repeated scope once', () => {
+      expect(service.resolveGrantedScopes(['kb:read', 'openid', 'kb:read', 'openid'], ['kb:read']))
+        .to.deep.equal({ granted: ['kb:read'], notGranted: ['openid'] })
+    })
   })
 
   describe('getAllowedScopeNamesForRole', () => {
