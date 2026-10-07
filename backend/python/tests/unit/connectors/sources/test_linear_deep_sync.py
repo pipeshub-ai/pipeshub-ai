@@ -33,6 +33,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.graphql.response import GraphQLError, GraphQLResponse
 
 
 # ===========================================================================
@@ -492,6 +493,66 @@ class TestSyncIssuesForTeams:
 
 
 class TestFetchIssuesForTeamBatch:
+
+    @staticmethod
+    def _connector_with_issue_pages(*responses: GraphQLResponse) -> tuple[LinearConnector, MagicMock]:
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        ds = MagicMock()
+        ds.issues = AsyncMock(side_effect=list(responses))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._transform_issue_to_ticket_record = MagicMock(return_value=MagicMock(
+            spec=TicketRecord, id="rec-1", weburl="url", indexing_status=None,
+            source_updated_at=1700000000000,
+        ))
+        connector._extract_files_from_markdown = AsyncMock(return_value=([], []))
+        return connector, ds
+
+    @staticmethod
+    def _issues_page() -> GraphQLResponse:
+        return GraphQLResponse(success=True, data={
+            "issues": {"nodes": [_make_issue_data()], "pageInfo": {"hasNextPage": False}},
+        }, status_code=200)
+
+    async def _batches(self, connector: LinearConnector) -> list:
+        with patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock()):
+            return [b async for b in connector._fetch_issues_for_team_batch(team_id="t1", team_key="FRO")]
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_timed_out_is_fetched_again(self) -> None:
+        """The 10/07 nightly lost team FRO's issues to one 30s read timeout."""
+        timed_out = GraphQLResponse(success=False, message="Failed to execute query issues: ")
+        connector, ds = self._connector_with_issue_pages(timed_out, self._issues_page())
+
+        batches = await self._batches(connector)
+
+        assert ds.issues.await_count == 2
+        assert len(batches) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limited_page_is_fetched_again(self) -> None:
+        limited = GraphQLResponse(success=False, message="Rate limit exceeded", status_code=400, errors=[
+            GraphQLError(message="Rate limit exceeded", extensions={"code": "RATELIMITED"}),
+        ])
+        connector, ds = self._connector_with_issue_pages(limited, self._issues_page())
+
+        batches = await self._batches(connector)
+
+        assert ds.issues.await_count == 2
+        assert len(batches) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_refused_query_is_not_fetched_again(self) -> None:
+        refused = GraphQLResponse(success=False, message="Argument Validation Error", status_code=200, errors=[
+            GraphQLError(message="Argument Validation Error", extensions={"code": "GRAPHQL_VALIDATION_FAILED"}),
+        ])
+        connector, ds = self._connector_with_issue_pages(refused, self._issues_page())
+
+        batches = await self._batches(connector)
+
+        assert ds.issues.await_count == 1
+        assert batches == []
 
     @pytest.mark.asyncio
     async def test_single_page(self):
