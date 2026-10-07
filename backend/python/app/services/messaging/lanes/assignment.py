@@ -515,9 +515,6 @@ def _without(snapshot: LaneSnapshot, entry: LaneEntry) -> LaneSnapshot:
     return replace(snapshot, lanes=lanes)
 
 
-_FIX_UP_FIELD_PREFIX = "fixUp:"
-
-
 def _with_large_on(snapshot: LaneSnapshot, lanes: Collection[int]) -> LaneSnapshot:
     held = set(lanes)
     return replace(
@@ -842,22 +839,6 @@ class LaneAssignments:
             cleared=int(reply[1]),
             removed=int(reply[2]),
             now_ms=int(reply[3]),
-        )
-
-    async def fix_up_progress(self) -> dict[str, str]:
-        """Per connector, how far the upgrade fix-up got: ``moved`` once it was
-        moved off a shared lane, ``rescued`` once its queued records followed."""
-        prefix = _FIX_UP_FIELD_PREFIX
-        return {
-            name[len(prefix) :]: value
-            for name, value in (await self.read_meta()).items()
-            if name.startswith(prefix)
-        }
-
-    async def note_fix_up_progress(self, connector_id: str, step: str) -> None:
-        # Not a placement input, so the meta version is left alone.
-        await self._client().hset(  # type: ignore[misc]
-            self._meta, f"{_FIX_UP_FIELD_PREFIX}{connector_id}", step
         )
 
     async def mark_migrated(self) -> int:

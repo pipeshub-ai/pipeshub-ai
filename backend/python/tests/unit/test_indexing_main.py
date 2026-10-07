@@ -3096,8 +3096,7 @@ class TestLaneUpkeepInTheRecoveryPass:
         with patch("app.indexing_main.lane_assignments_in_use", return_value=None), \
              patch("app.indexing_main.run_lane_upkeep", new_callable=AsyncMock) as upkeep:
             await _upkeep_lanes(
-                graph_provider=MagicMock(), producer=MagicMock(), read_backlog=read,
-                run_coordination=lambda coro: coro, logger=MagicMock(),
+                graph_provider=MagicMock(), read_backlog=read, logger=MagicMock(),
             )
 
         upkeep.assert_not_awaited()
@@ -3115,9 +3114,9 @@ class TestLaneUpkeepInTheRecoveryPass:
                  side_effect=RuntimeError("redis gone"),
              ) as upkeep:
             await _upkeep_lanes(
-                graph_provider=MagicMock(), producer=MagicMock(),
+                graph_provider=MagicMock(),
                 read_backlog=AsyncMock(side_effect=ConnectionError("broker down")),
-                run_coordination=lambda coro: coro, logger=logger,
+                logger=logger,
             )
 
         assert upkeep.await_args.kwargs["backlog"] is None
