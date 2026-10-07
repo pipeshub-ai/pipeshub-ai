@@ -7,6 +7,7 @@ import en from '@/lib/i18n/locales/en-US.json';
 
 const NOT_GRANTED_HEADING = en.oauthConsent.notGrantedHeading;
 const OFFLINE_ACCESS_WARNING = en.oauthConsent.notGrantedOfflineAccess;
+const OWNER_HINT = en.oauthConsent.notGrantedOwnerHint;
 
 const params = new URLSearchParams({
   client_id: 'cid',
@@ -62,12 +63,15 @@ import { OAuthAuthorizeView } from '../oauth-authorize-view';
 
 const h = React.createElement;
 
-function consentResponse(notGrantedScopes: { name: string; description: string; category: string }[]) {
+function consentResponse(
+  notGrantedScopes: { name: string; description: string; category: string }[],
+  isDynamic = false,
+) {
   return {
     data: {
       requiresConsent: true,
       consentData: {
-        app: { name: 'Claude', isDynamic: false },
+        app: { name: 'Claude', isDynamic },
         scopes: [{ name: 'kb:read', description: 'Read knowledge bases', category: 'Knowledge Base' }],
         notGrantedScopes,
         user: { email: 'u@e.com' },
@@ -100,6 +104,18 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
     expect(await screen.findByText(NOT_GRANTED_HEADING)).toBeTruthy();
     expect(screen.getByText('agent:read')).toBeTruthy();
     expect(screen.getByText(OFFLINE_ACCESS_WARNING)).toBeTruthy();
+    expect(screen.getByText(OWNER_HINT)).toBeTruthy();
+  });
+
+  it('does not tell users of a dynamically registered app to edit it, because nobody can', async () => {
+    get.mockResolvedValue(
+      consentResponse([{ name: 'agent:read', description: 'Read agents', category: 'Agents' }], true),
+    );
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(await screen.findByText(NOT_GRANTED_HEADING)).toBeTruthy();
+    expect(screen.queryByText(OWNER_HINT)).toBeNull();
   });
 
   it('shows no not-granted section when every requested scope is granted', async () => {

@@ -648,9 +648,12 @@ export function OAuthAuthorizeView() {
                   </Flex>
                 ))}
               </Box>
-              <Text as="p" size="2" color="gray">
-                {t('oauthConsent.notGrantedAdminHint')}
-              </Text>
+              {/* Dynamically registered apps are hidden from Developer Settings, so nobody can add scopes to them. */}
+              {consentData.app.isDynamic ? null : (
+                <Text as="p" size="2" color="gray">
+                  {t('oauthConsent.notGrantedOwnerHint')}
+                </Text>
+              )}
               {notGrantedScopes.some((s) => s.name === 'offline_access') ? (
                 <Text as="p" size="2" color="amber">
                   {t('oauthConsent.notGrantedOfflineAccess')}

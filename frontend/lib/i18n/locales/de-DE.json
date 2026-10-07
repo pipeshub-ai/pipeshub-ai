@@ -3999,7 +3999,7 @@
       "server_error": "Ein unerwarteter Serverfehler ist aufgetreten. Bitte versuchen Sie es später erneut."
     },
     "notGrantedHeading": "Diese Anwendung hat auch diese Berechtigungen angefordert. Die Einstellungen der Anwendung erlauben sie nicht, daher erhält sie sie nicht:",
-    "notGrantedAdminHint": "Ein Administrator kann sie der Anwendung in den Entwicklereinstellungen hinzufügen.",
+    "notGrantedOwnerHint": "Die Person, die diese Anwendung erstellt hat, kann sie unter Arbeitsbereich-Einstellungen → Entwicklereinstellungen → OAuth 2.0 Apps hinzufügen.",
     "notGrantedOfflineAccess": "Die Anwendung bleibt nicht angemeldet. Sie müssen sich erneut anmelden, wenn die Sitzung endet.",
     "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft."
   },
