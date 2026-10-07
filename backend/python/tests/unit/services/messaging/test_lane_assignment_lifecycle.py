@@ -185,25 +185,48 @@ class TestUpkeep:
 
         result = await assignments.upkeep(None, fence_delay_ms=0)
 
-        assert (result.cleared, result.removed) == (0, 0)
+        assert result.cleared == 0
         assert (await _map(provider))[moved].prev_lane == entry.prev_lane
         assert (await _meta(provider)).get("busyAt") == meta.get("busyAt")
 
-    async def test_a_deleted_entry_is_removed_once_its_lane_has_drained_past_the_fence(
+    async def test_a_deleted_entry_stays_so_a_late_event_keeps_its_lane_after_the_drain(
         self, provider: FakeRedisConnectionProvider
     ) -> None:
-        assignments = _assignments(provider)
+        """A cleanup retried or re-sent by a sweep can come long after the
+        delete. Were the entry removed once its lane drained, that event
+        would be given a new live lane, counting as a large connector until
+        the next pass released it, and steering a new connector meanwhile."""
+        assignments = _assignments(provider, cache_seconds=0)
         lane = await assignments.lane_for("gitlab-1")
         await assignments.release("gitlab-1")
         fence = (await assignments.upkeep({}, fence_delay_ms=0)).now_ms
 
-        kept = await assignments.upkeep({lane: fence - 10}, fence_delay_ms=0)
-        assert kept.removed == 0
-        assert "gitlab-1" in await _map(provider)
+        drained = await assignments.upkeep({lane: fence + 10}, fence_delay_ms=0)
 
-        gone = await assignments.upkeep({lane: fence + 10}, fence_delay_ms=0)
-        assert gone.removed == 1
-        assert "gitlab-1" not in await _map(provider)
+        assert drained.cleared == 0
+        entry = (await _map(provider))["gitlab-1"]
+        assert (entry.state, entry.lane, entry.fence_ms) == ("deleted", lane, fence)
+        assert await assignments.lane_for("gitlab-1") == lane
+        assert (await _map(provider))["gitlab-1"].state == "deleted"
+        assert (await _meta(provider))[f"large:{lane}"] == "0"
+
+    async def test_a_deleted_entry_lets_its_old_lane_go_once_that_has_drained(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        assignments, moved, entry = await self._moved(provider)
+        old = entry.prev_lane
+        assert old is not None
+        await assignments.release(moved)
+        fence = (await assignments.upkeep({}, fence_delay_ms=0)).now_ms
+
+        held = await assignments.upkeep({old: fence - 10}, fence_delay_ms=0)
+        assert held.cleared == 0
+        assert (await _map(provider))[moved].prev_lane == old
+
+        drained = await assignments.upkeep({old: fence + 10}, fence_delay_ms=0)
+        assert drained.cleared == 1
+        settled = (await _map(provider))[moved]
+        assert (settled.state, settled.lane, settled.prev_lane) == ("deleted", entry.lane, None)
 
     async def test_a_lane_whose_oldest_work_is_old_is_busy_until_the_reading_goes_stale(
         self, provider: FakeRedisConnectionProvider

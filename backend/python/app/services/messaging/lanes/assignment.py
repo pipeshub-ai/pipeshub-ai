@@ -350,9 +350,10 @@ return 1
 #
 # One pass over the map, in one step so no placement can land in between:
 # fences the moves and deletes whose producers' caches have run out, clears
-# a move once its old lane has finished everything up to the fence, removes a
-# deleted entry once its lanes have, rebuilds the per-lane counts, and writes
-# the busy flags. Nothing that needs the backlog is decided without it.
+# a move once its old lane has finished everything up to the fence, lets a
+# deleted entry's old lane go the same way (the entry itself stays, so a late
+# event keeps its lane), rebuilds the per-lane counts, and writes the busy
+# flags. Nothing that needs the backlog is decided without it.
 _UPKEEP_SCRIPT = _LUA_HELPERS + """
 local map, meta = KEYS[1], KEYS[2]
 local fence_delay, busy_after = tonumber(ARGV[1]), tonumber(ARGV[2])
@@ -369,13 +370,13 @@ local function finished_up_to(lane, fence)
 end
 
 local changed = false
-local fenced, cleared, removed = 0, 0, 0
+local fenced, cleared = 0, 0
 local counts = {}
 local entries = redis.call("HGETALL", map)
 for i = 1, #entries, 2 do
     local id, f = entries[i], split(entries[i + 1])
     if #f == 7 and f[1] == "v1" and tonumber(f[2]) then
-        local dirty, gone = false, false
+        local dirty = false
         local deleted = f[4] == "deleted"
         if deleted and f[6] == "" then
             f[6], dirty = tostring(now), true
@@ -388,20 +389,22 @@ for i = 1, #entries, 2 do
             else
                 local fence = tonumber(f[7])
                 if deleted then
-                    if finished_up_to(f[2], fence) and (f[5] == "" or finished_up_to(f[5], fence)) then
-                        redis.call("HDEL", map, id)
-                        gone, removed = true, removed + 1
+                    -- The row stays for good: a late event (a retried cleanup,
+                    -- a sweep) must find it and stay on this lane, not be given
+                    -- a new live one. Only its old lane is let go once drained.
+                    if f[5] ~= "" and finished_up_to(f[5], fence) then
+                        f[5], dirty, cleared = "", true, cleared + 1
                     end
                 elseif finished_up_to(f[5], fence) then
                     f[5], f[6], f[7], dirty, cleared = "", "", "", true, cleared + 1
                 end
             end
         end
-        if dirty and not gone then
+        if dirty then
             redis.call("HSET", map, id, table.concat(f, "|"))
             changed = true
         end
-        if not gone and f[4] == "live" then
+        if f[4] == "live" then
             local field = size_of(f[3]) .. f[2]
             counts[field] = (counts[field] or 0) + 1
         end
@@ -434,7 +437,7 @@ if known then
     redis.call("HSET", meta, "busyAt", now)
 end
 if changed then redis.call("HINCRBY", meta, "version", 1) end
-return {fenced, cleared, removed, now}
+return {fenced, cleared, now}
 """
 
 def _text(value: object) -> str:
@@ -509,7 +512,6 @@ def _without(snapshot: LaneSnapshot, entry: LaneEntry) -> LaneSnapshot:
 class UpkeepResult:
     fenced: int
     cleared: int
-    removed: int
     now_ms: int
 
 
@@ -767,8 +769,7 @@ class LaneAssignments:
         return UpkeepResult(
             fenced=int(reply[0]),
             cleared=int(reply[1]),
-            removed=int(reply[2]),
-            now_ms=int(reply[3]),
+            now_ms=int(reply[2]),
         )
 
     async def _lookup_or_place(

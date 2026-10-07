@@ -157,12 +157,13 @@ async def test_release_and_upkeep_on_the_real_lua_runtime(
     fenced = await assignments.upkeep({5: 1.0}, fence_delay_ms=0)
     assert fenced.fenced == 2
     held = await assignments.upkeep({5: 1.0}, fence_delay_ms=0)
-    assert (held.cleared, held.removed) == (0, 0)
+    assert held.cleared == 0
     drained = await assignments.upkeep({}, fence_delay_ms=0)
-    assert (drained.cleared, drained.removed) == (1, 1)
+    assert drained.cleared == 1
 
     entries = await read_lane_map(provider.get_client(), topic)
-    assert set(entries) == {same_lane[1]}
+    assert set(entries) == set(same_lane), "a deleted entry stays, so a late event keeps its lane"
+    assert (entries[same_lane[0]].state, entries[same_lane[0]].lane) == ("deleted", 5)
     assert entries[same_lane[1]].lane == moved.lane
     assert entries[same_lane[1]].prev_lane is None
     meta = await assignments.read_meta()
