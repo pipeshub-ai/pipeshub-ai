@@ -140,7 +140,7 @@ async def test_a_script_flushed_by_a_restart_is_loaded_again(
     await assignments.aclose()
 
 
-async def test_release_upkeep_and_the_upgrade_marker_on_the_real_lua_runtime(
+async def test_release_and_upkeep_on_the_real_lua_runtime(
     redis_available: tuple[str, int], topic: str
 ) -> None:
     host, port = redis_available
@@ -165,8 +165,6 @@ async def test_release_upkeep_and_the_upgrade_marker_on_the_real_lua_runtime(
     assert set(entries) == {same_lane[1]}
     assert entries[same_lane[1]].lane == moved.lane
     assert entries[same_lane[1]].prev_lane is None
-    first = await assignments.mark_migrated()
-    assert await assignments.mark_migrated() == first
     meta = await assignments.read_meta()
     assert meta[f"large:{moved.lane}"] == "1"
     assert meta["large:5"] == "0"

@@ -1426,7 +1426,6 @@ class TestIndexingHealthCheck:
             topic="record-events",
             updated_at_ms=5,
             lane_count=8,
-            migrated_at_ms=4,
             backlog_read=True,
             lanes=[{"lane": 0, "stream": "record-events.0"}],
         )

@@ -271,37 +271,6 @@ class TestClassCorrection:
         assert (await _map(provider))["gmail-1"].connector_class == "team"
 
 
-class TestRecordingWhereHashingPutIt:
-    async def test_connectors_are_recorded_on_their_hash_lanes_even_when_they_collide(
-        self, provider: FakeRedisConnectionProvider
-    ) -> None:
-        """The upgrade fix-up first records everyone as they are, then moves
-        only the connectors that need to."""
-        first, second = _colliding(2)
-        assignments = _assignments(provider)
-
-        lanes = [await assignments.record_at_hash_lane(c, "team") for c in (first, second)]
-
-        assert lanes == [stable_lane(first, LANES)] * 2
-        assert all(e.prev_lane is None for e in (await _map(provider)).values())
-
-    async def test_a_connector_with_a_lane_keeps_it(self, provider: FakeRedisConnectionProvider) -> None:
-        first, second = _colliding(2)
-        assignments = _assignments(provider)
-        await assignments.lane_for(first)
-        lane = await assignments.lane_for(second)
-
-        assert await assignments.record_at_hash_lane(second, "team") == lane
-
-    async def test_the_fix_up_is_recorded_once(self, provider: FakeRedisConnectionProvider) -> None:
-        assignments = _assignments(provider)
-
-        first = await assignments.mark_migrated()
-
-        assert await assignments.mark_migrated() == first
-        assert (await _meta(provider))["migratedAt"] == str(first)
-
-
 class TestLaneCountChanges:
     async def test_lowering_then_raising_the_lane_count(
         self, provider: FakeRedisConnectionProvider
@@ -414,18 +383,3 @@ async def test_a_connector_can_move_again_once_its_last_move_has_settled(
     moved = await mover.move(second, LaneRequestReason.UPGRADE)
 
     assert (moved.lane, moved.prev_lane) == (target, current)
-
-
-async def test_a_lane_still_holding_another_connectors_backlog_is_not_chosen(
-    provider: FakeRedisConnectionProvider,
-) -> None:
-    """The upgrade fix-up moving a connector off a lane whose keeper has itself
-    already moved off: the map no longer counts the keeper there, but its
-    backlog is."""
-    assignments = _assignments(provider)
-    lane = await assignments.record_at_hash_lane("slack-1", "team")
-
-    moved = await assignments.move("slack-1", LaneRequestReason.UPGRADE, still_held=(lane,))
-
-    assert moved.lane != lane
-    assert moved.prev_lane == lane
