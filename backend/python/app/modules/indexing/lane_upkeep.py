@@ -249,10 +249,12 @@ async def _upgrade_fix_up(
 
     Every connector without an entry is first recorded where hashing has
     always put it. On a lane with two or more large connectors, the one with
-    the most records waiting keeps it, since its backlog is already there.
-    Of the others, the one with the most waiting is moved by the edition's
-    rule, but only onto a lane that is truly empty: no large connector on it
-    and no move still settling off it. Nothing is re-sent: records already
+    the most records waiting keeps it, since its backlog is already there. A
+    connector a first publish already moved off a lane still counts there,
+    as its queued events are still there, but only one still on the lane is
+    ever moved. Of those, the one with the most waiting is moved by the
+    edition's rule, but only onto a lane that is truly empty: no large
+    connector on it and no move still settling off it. Nothing is re-sent: records already
     queued are worked off where they are, and the stranded-record sweep keeps
     counting a moved connector's old lane until it has drained.
 
@@ -294,13 +296,17 @@ async def _upgrade_fix_up(
     on_lane: dict[int, list[str]] = {}
     for connector_id, entry in large.items():
         on_lane.setdefault(entry.lane, []).append(connector_id)
+        if entry.prev_lane is not None and entry.prev_lane != entry.lane:
+            on_lane.setdefault(entry.prev_lane, []).append(connector_id)
 
     waiting: dict[str, int] = {}
     movers: list[str] = []
-    for _lane, connectors in sorted(on_lane.items()):
+    for lane, connectors in sorted(on_lane.items()):
         if len(connectors) < 2:
             continue
         for connector_id in connectors:
+            if connector_id in waiting:
+                continue
             app = apps.get(connector_id)
             count = (
                 None
@@ -314,8 +320,8 @@ async def _upgrade_fix_up(
             # that holds the lane's backlog is the one most likely to time out.
             finished = False
             continue
-        keeper = min(connectors, key=lambda c: (-waiting[c], c))
-        movers.extend(c for c in connectors if c != keeper)
+        keeper = min(connectors, key=lambda c, lane=lane: (-waiting[c], large[c].lane != lane, c))
+        movers.extend(c for c in connectors if c != keeper and large[c].lane == lane)
     if not movers:
         return 0, finished
 
