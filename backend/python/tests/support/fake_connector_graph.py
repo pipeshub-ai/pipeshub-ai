@@ -170,6 +170,28 @@ class FakeConnectorGraph:
                 promoted += 1
         return promoted
 
+    async def update_nodes_fields_if_match(
+        self,
+        collection: str,
+        rows: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """As both providers do: one conditional statement; a null expectation
+        means the field is absent; returns the keys written."""
+        self.calls[f"update_nodes_fields_if_match:{collection}"] += 1
+        if self.fail_writes:
+            raise ConnectionError("graph unavailable writing")
+        self.batch_updates.append([{"id": key, **updates} for key, updates, _e in rows])
+        store = self._collection(collection)
+        applied = []
+        for key, updates, expected in rows:
+            doc = store.get(key)
+            if doc is None or any(doc.get(f) != v for f, v in expected.items()):
+                continue
+            self._apply(doc, updates)
+            applied.append(key)
+        return applied
+
     async def batch_update_nodes(
         self, nodes: list[dict[str, Any]], collection: str, transaction: str | None = None
     ) -> bool:

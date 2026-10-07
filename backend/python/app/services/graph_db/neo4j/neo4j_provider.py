@@ -3119,6 +3119,46 @@ class Neo4jProvider(IGraphDBProvider):
         )
         return bool(rows)
 
+    async def update_nodes_fields_if_match(
+        self,
+        collection: str,
+        rows: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.update_nodes_fields_if_match`. One statement."""
+        if not rows:
+            return []
+        label = collection_to_label(collection)
+        params = []
+        for key, updates, expected in rows:
+            if not expected:
+                raise ValueError("update_nodes_fields_if_match needs an expectation per row")
+            neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+            self.validator.validate_node_update(collection, neo4j_updates)
+            params.append({
+                "key": key,
+                "updates": neo4j_updates,
+                "fields": list(expected),
+                "values": list(expected.values()),
+            })
+        # Expected values travel as parallel lists: a null inside a map
+        # parameter means "absent" here, and a list keeps it addressable.
+        result = await self.client.execute_query(
+            f"""
+            UNWIND $rows AS row
+            MATCH (n:{label} {{id: row.key}})
+            WHERE all(i IN range(0, size(row.fields) - 1) WHERE
+                CASE WHEN row.values[i] IS NULL
+                     THEN n[row.fields[i]] IS NULL
+                     ELSE n[row.fields[i]] = row.values[i] END)
+            SET n += row.updates
+            RETURN n.id AS id
+            """,
+            parameters={"rows": params},
+            txn_id=transaction,
+        )
+        return [r["id"] for r in result or [] if r.get("id")]
+
     async def get_records_pending_duplicate_reconcile(
         self,
         due_before_ms: int,

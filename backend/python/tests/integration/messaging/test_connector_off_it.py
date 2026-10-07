@@ -113,7 +113,7 @@ def _assert_settled(graph: FakeConnectorGraph, seen: list[str]) -> None:
     assert sorted(seen) == [f"on-{i}" for i in range(_ON)]
     off = {r["indexingStatus"] for k, r in graph.records.items() if k.startswith("off-")}
     assert off == {ProgressStatus.AUTO_INDEX_OFF.value}
-    assert graph.calls["batch_update_nodes:records"] < _OFF_BACKLOG // 5
+    assert graph.calls["update_nodes_fields_if_match:records"] < _OFF_BACKLOG // 5
 
 
 async def test_redis_settles_a_turned_off_connectors_backlog_on_the_broker(

@@ -4424,6 +4424,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
         return bool(rows)
 
+    async def update_nodes_fields_if_match(
+        self,
+        collection: str,
+        rows: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.update_nodes_fields_if_match`. One statement."""
+        if not rows:
+            return []
+        params = []
+        for key, updates, expected in rows:
+            if not expected:
+                raise ValueError("update_nodes_fields_if_match needs an expectation per row")
+            params.append({
+                "key": key,
+                "updates": dict(updates),
+                "fields": list(expected),
+                "values": list(expected.values()),
+            })
+        updated = await self.http_client.execute_aql(
+            """
+            FOR row IN @rows
+                LET doc = DOCUMENT(@@collection, row.key)
+                FILTER doc != null
+                FILTER LENGTH(
+                    FOR i IN 0..(LENGTH(row.fields) - 1)
+                        FILTER doc[row.fields[i]] != row.values[i]
+                        RETURN 1
+                ) == 0
+                UPDATE doc WITH row.updates IN @@collection
+                RETURN NEW._key
+            """,
+            bind_vars={"@collection": collection, "rows": params},
+            txn_id=transaction,
+        )
+        return [k for k in (updated or []) if isinstance(k, str)]
+
     async def get_records_pending_duplicate_reconcile(
         self,
         due_before_ms: int,

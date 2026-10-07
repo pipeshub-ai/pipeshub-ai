@@ -196,9 +196,8 @@ class GraphConnectorOffFilter:
     what lets a batch of live connectors' events through with no graph call.
     Off or removed is read afresh for every batch that has such events, so
     turning a connector back on takes effect at once. Per batch with candidates
-    that is one connector read, one record read, and for the turned-off ones a
-    conditional status swap (one per distinct status read, usually one) plus
-    one write of the remaining fields.
+    that is one connector read, one record read, and for the turned-off ones
+    one conditional write.
 
     A failed or slow read settles nothing and pauses the filter for
     ``refresh_seconds`` (at least ``_MIN_PAUSE_SECONDS``), so an unreachable
@@ -365,46 +364,32 @@ class GraphConnectorOffFilter:
     async def _mark_connector_off(
         self, record_ids: set[str], records: Mapping[str, Mapping[str, Any]]
     ) -> set[str]:
-        """Write AUTO_INDEX_OFF on the records that still hold the status read.
+        """Write the handler's connector-off fields on the records that still
+        hold the status the batch read saw, in one conditional statement.
 
-        The status is swapped conditionally, from what the batch read saw, so a
-        record another delivery has moved on since (IN_PROGRESS, COMPLETED) is
-        left to that delivery: only the handler holds the record's lease. The
-        rest of the handler's fields are written on the swapped ones only.
-        Returns the ids marked; any other id goes through the normal path.
+        The filter does not hold the record's lease, so a record another
+        delivery has moved on since (IN_PROGRESS, COMPLETED) is left exactly as
+        that delivery left it. Returns the ids written; any other id goes
+        through the normal path.
         """
         if not record_ids:
             return set()
-        by_status: dict[str, list[str]] = {}
-        for record_id in sorted(record_ids):
-            by_status.setdefault(str(records[record_id]["indexingStatus"]), []).append(record_id)
-        swapped: set[str] = set()
+        rows = [
+            (
+                record_id,
+                connector_off_updates(records[record_id]),
+                {"indexingStatus": records[record_id]["indexingStatus"]},
+            )
+            for record_id in sorted(record_ids)
+        ]
         try:
-            for status, ids in by_status.items():
-                swapped.update(
-                    await asyncio.wait_for(
-                        self._graph.compare_and_set_indexing_status(
-                            ids, status, ProgressStatus.AUTO_INDEX_OFF.value
-                        ),
-                        timeout=self._read_timeout_seconds,
-                    )
-                )
-            if swapped:
-                written = await asyncio.wait_for(
-                    self._graph.batch_update_nodes(
-                        [
-                            {"id": record_id, **connector_off_updates(records[record_id])}
-                            for record_id in sorted(swapped)
-                        ],
-                        CollectionNames.RECORDS.value,
-                    ),
-                    timeout=self._read_timeout_seconds,
-                )
-                if written is False:
-                    raise RuntimeError("not every swapped record took the rest of its status")
+            written = await asyncio.wait_for(
+                self._graph.update_nodes_fields_if_match(
+                    CollectionNames.RECORDS.value, rows
+                ),
+                timeout=self._read_timeout_seconds,
+            )
         except Exception as e:
-            # A record swapped but not completed keeps its message, and the
-            # handler writes the full status when it gets to it.
             self._pause("mark the records of turned-off connectors as not indexed", e)
             return set()
-        return swapped
+        return set(written) & record_ids
