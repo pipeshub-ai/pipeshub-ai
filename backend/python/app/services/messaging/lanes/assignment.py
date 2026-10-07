@@ -311,10 +311,10 @@ return 1
 
 
 # KEYS: map, meta. ARGV: connector id.
-# A deleted connector's entry stays, so its late events still go to the same
-# lane, but it stops counting at once so the lane can go to the next
-# connector. Its delete time is kept where a move keeps its time, and upkeep
-# fences and removes it the same way it settles a move.
+# A deleted connector's entry stays for good, so its late events still go to
+# the same lane, but it stops counting at once so the lane can go to the next
+# connector. Its delete time is kept where a move keeps its time; upkeep
+# fences it like a move and lets its old lane go, but never deletes the row.
 _RELEASE_SCRIPT = _LUA_HELPERS + """
 local raw = redis.call("HGET", KEYS[1], ARGV[1])
 if not raw then return 0 end
@@ -717,9 +717,9 @@ class LaneAssignments:
     async def release(self, connector_id: str) -> bool:
         """Take a deleted connector off its lane's count at once.
 
-        Its entry stays, so a late event still goes to the same lane, until
-        upkeep sees that lane finished past the delete. True if it had a live
-        entry. The shared ``__default__`` entry is never released.
+        Its entry stays for good, so a late event still goes to the same
+        lane, however late. True if it had a live entry. The shared
+        ``__default__`` entry is never released.
         """
         if connector_id == DEFAULT_LANE_KEY:
             return False
