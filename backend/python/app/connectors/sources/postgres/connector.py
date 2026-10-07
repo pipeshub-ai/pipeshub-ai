@@ -34,6 +34,7 @@ from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
+    ConnectorInitError,
 )
 from app.connectors.core.base.error.sql_stream_errors import (
     to_sql_response_error,
@@ -98,7 +99,7 @@ from app.sources.external.postgres.postgres_ import (
 )
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.url_fetcher import host_refusal_reason
+from app.utils.url_fetcher import HostCheckError
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -181,6 +182,9 @@ def describe_connection_error(
 ) -> str:
     """A message for the setup form saying why a connection attempt failed."""
     firewall_hint = "that the database's firewall allows connections from PipesHub's IP address"
+    # Raised before anything is dialled; its message is already written for the user.
+    if isinstance(error, HostCheckError):
+        return str(error)
     # Subclass of InvalidAuthorizationSpecificationError, so it goes first. The
     # server sends it for an unknown user too, so it can't say which was wrong.
     if isinstance(error, asyncpg.InvalidPasswordError):
@@ -649,7 +653,12 @@ class PostgreSQLConnector(BaseConnector):
                 **pg_config_kwargs,
             )
             client = pg_config.create_client()
-            await client.connect()
+            try:
+                await client.connect()
+            except ConnectionError as e:
+                if isinstance(e.__cause__, HostCheckError):
+                    raise ConnectorInitError(str(e.__cause__)) from e
+                raise
 
             self.data_source = PostgreSQLDataSource(client)
 
@@ -657,6 +666,8 @@ class PostgreSQLConnector(BaseConnector):
             self.logger.info("PostgreSQL connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to initialize PostgreSQL connector: {e}", exc_info=True)
             return False
@@ -1188,12 +1199,6 @@ class PostgreSQLConnector(BaseConnector):
             return ConnectionCheckResult(success=False, message=str(e))
 
         host, port, database, user = kwargs["host"], kwargs["port"], kwargs["database"], kwargs["user"]
-        # Without this a shared deployment's setup form maps its own network:
-        # refused, timed out and "not PostgreSQL" each come back as a different message.
-        refusal = await host_refusal_reason(host)
-        if refusal:
-            return ConnectionCheckResult(success=False, message=refusal)
-
         response, cause = await cls._try_connection(kwargs)
         if cause is not None and _is_ssl_only_server_refusal(cause, kwargs["sslmode"]):
             ssl_response, ssl_cause = await cls._try_connection({**kwargs, "sslmode": "require"})

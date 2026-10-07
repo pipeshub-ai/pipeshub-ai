@@ -263,14 +263,23 @@ def resolve_public_http_target(url: str, *, block_non_global: bool = True) -> Pu
     return PublicTarget(parsed.scheme, hostname, port, tuple(addresses))
 
 
-async def host_refusal_reason(host: str, *, lookup_timeout_s: float = 5.0) -> str | None:
-    """Why a host a user typed (a database server, say) must not be connected to, or None.
+class HostCheckError(ValueError):
+    """A host a user typed may not be connected to. The message is written for that user."""
 
-    The rule model endpoints follow (``model_egress.address_refusal``): link-local and cloud
+
+async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[IPAddress]:
+    """The addresses to connect to for ``host`` (a database server, say), looked up once.
+
+    Connect to these, not to ``host``: a second lookup could answer differently. The rule
+    model endpoints follow (``model_egress.address_refusal``) applies: link-local and cloud
     metadata addresses never, private or internal ones not while
-    PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. The reason does not say what the name resolves
-    to, which would describe the deployment's network. A name that does not resolve is left
-    to fail on its own.
+    PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. Empty for a Unix socket path the deployment
+    allows, which has nothing to look up.
+
+    Raises:
+        HostCheckError: the host is refused, doesn't resolve, or its lookup timed out. The
+            message does not say what a name resolves to, which would describe the
+            deployment's network.
     """
     # model_egress imports this module.
     from app.utils.model_egress import address_refusal, parse_answers
@@ -282,11 +291,13 @@ async def host_refusal_reason(host: str, *, lookup_timeout_s: float = 5.0) -> st
     )
     # Database drivers read a path as a local Unix socket.
     if host.startswith("/"):
-        return None if allow_private else private_reason
+        if not allow_private:
+            raise HostCheckError(private_reason)
+        return []
     if host.lower().removesuffix(".") == "metadata.google.internal":
-        return f'"{host}" is a cloud metadata address, which is never allowed.'
+        raise HostCheckError(f'"{host}" is a cloud metadata address, which is never allowed.')
     if not allow_private and _hostname_is_blocked(host):
-        return private_reason
+        raise HostCheckError(private_reason)
 
     ip = literal_ip(host)
     if ip is not None:
@@ -297,15 +308,17 @@ async def host_refusal_reason(host: str, *, lookup_timeout_s: float = 5.0) -> st
                 asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM),
                 lookup_timeout_s,
             )
-            addresses = parse_answers(infos)
-        except (socket.gaierror, UnicodeError):
-            addresses = []
-        except TimeoutError:
-            if not allow_private:
-                return f'"{host}" could not be looked up in time to check that it is a public address.'
-            addresses = []
+        except (socket.gaierror, UnicodeError) as e:
+            raise HostCheckError(f'Could not find a server named "{host}". Check the host name.') from e
+        except TimeoutError as e:
+            raise HostCheckError(f'Looking up "{host}" timed out. Check the host name.') from e
+        addresses = parse_answers(infos)
+        if not addresses:
+            raise HostCheckError(f'Could not find a server named "{host}". Check the host name.')
     reason = address_refusal(addresses, allow_private=allow_private)
-    return f'"{host}" is {reason}.' if reason else None
+    if reason is not None:
+        raise HostCheckError(f'"{host}" is {reason}.')
+    return addresses
 
 
 def validate_public_http_url(url: str, *, block_non_global: bool = True) -> None:

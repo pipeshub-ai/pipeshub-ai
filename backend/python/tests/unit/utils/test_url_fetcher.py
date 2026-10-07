@@ -13,6 +13,7 @@ from app.utils.url_fetcher import (
     _MAX_REDIRECTS,
     FetchError,
     FetchResult,
+    HostCheckError,
     PublicTarget,
     _build_headers,
     _curl_pinned_request,
@@ -23,9 +24,9 @@ from app.utils.url_fetcher import (
     _try_curl_cffi,
     _try_requests,
     fetch_url,
-    host_refusal_reason,
     resolve_public_http_target,
     validate_public_http_url,
+    vetted_addresses,
 )
 
 # The autouse stub below replaces DNS; the loopback socket tests need the real resolver back.
@@ -1381,52 +1382,57 @@ class TestPinnedTransportsOnTheWire:
         assert hosts == [f"pinned.invalid:{port}"]
 
 
-class TestHostRefusalReason:
-    """Hosts users type for a database connection, checked before anything dials them."""
+class TestVettedAddresses:
+    """Hosts users type for a database connection, looked up once and checked before anything dials them."""
 
     @pytest.mark.parametrize("host", ["169.254.169.254", "metadata.google.internal", "fd00:ec2::254"])
     async def test_metadata_addresses_are_always_refused(self, host, monkeypatch):
         monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
-        assert "never allowed" in await host_refusal_reason(host)
+        with pytest.raises(HostCheckError, match="never allowed"):
+            await vetted_addresses(host)
 
     @pytest.mark.parametrize("host", ["10.0.0.5", "127.0.0.1", "localhost", "100.64.1.1"])
     async def test_private_addresses_are_allowed_unless_the_switch_is_on(self, host, monkeypatch):
         monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
-        assert await host_refusal_reason(host) is None
+        assert await vetted_addresses(host)
         monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
-        reason = await host_refusal_reason(host)
-        assert "private or internal address" in reason
+        with pytest.raises(HostCheckError, match="private or internal address"):
+            await vetted_addresses(host)
 
     async def test_a_name_resolving_inside_the_network_is_refused_without_saying_where(self, monkeypatch):
         monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
         monkeypatch.setattr(
             socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 0))]
         )
-        reason = await host_refusal_reason("db.corp.example")
-        assert "private or internal address" in reason
-        assert "10.1.2.3" not in reason
+        with pytest.raises(HostCheckError) as exc:
+            await vetted_addresses("db.corp.example")
+        assert "private or internal address" in str(exc.value)
+        assert "10.1.2.3" not in str(exc.value)
 
     async def test_a_socket_path_counts_as_local(self, monkeypatch):
         monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
-        assert await host_refusal_reason("/var/run/postgresql") is None
+        assert await vetted_addresses("/var/run/postgresql") == []
         monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
-        assert "private or internal address" in await host_refusal_reason("/var/run/postgresql")
+        with pytest.raises(HostCheckError, match="private or internal address"):
+            await vetted_addresses("/var/run/postgresql")
 
-    async def test_a_lookup_that_hangs_is_refused_only_while_private_addresses_are_blocked(self, monkeypatch):
+    @pytest.mark.parametrize("switch", ["", "true"])
+    async def test_a_lookup_that_fails_or_hangs_is_refused_in_every_mode(self, switch, monkeypatch):
         import time
 
-        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: time.sleep(0.5) or [])
-        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
-        assert await host_refusal_reason("slow.example", lookup_timeout_s=0.05) is None
-        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
-        assert "could not be looked up in time" in await host_refusal_reason("slow.example", lookup_timeout_s=0.05)
-
-    async def test_public_and_unresolvable_names_pass(self, monkeypatch):
-        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
-        assert await host_refusal_reason("db.example.com") is None  # stubbed to 8.8.8.8
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", switch)
 
         def no_such_host(*a, **k):
             raise socket.gaierror(11001, "getaddrinfo failed")
 
         monkeypatch.setattr(socket, "getaddrinfo", no_such_host)
-        assert await host_refusal_reason("no-such-host.invalid") is None
+        with pytest.raises(HostCheckError, match="Could not find a server"):
+            await vetted_addresses("no-such-host.invalid")
+
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: time.sleep(0.5) or [])
+        with pytest.raises(HostCheckError, match="timed out"):
+            await vetted_addresses("slow.example", lookup_timeout_s=0.05)
+
+    async def test_a_public_name_returns_what_it_resolved_to(self, monkeypatch):
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        assert [str(ip) for ip in await vetted_addresses("db.example.com")] == ["8.8.8.8"]  # stubbed DNS

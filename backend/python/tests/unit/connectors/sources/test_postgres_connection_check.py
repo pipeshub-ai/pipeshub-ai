@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from app.connectors.core.base.connector.connector_service import BaseConnector
+import app.sources.client.postgres.postgres as pg_client
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.sources.postgres.connector import (
     CONNECTION_CHECK_TIMEOUT_S,
     PostgreSQLConnector,
@@ -16,6 +17,7 @@ from app.connectors.sources.postgres.connector import (
     describe_connection_error,
 )
 from app.sources.client.postgres.postgres import PostgreSQLResponse
+from app.utils.url_fetcher import HostCheckError
 
 _MODULE = "app.connectors.sources.postgres.connector"
 _LOGGER = logging.getLogger("test.postgres.check")
@@ -140,19 +142,14 @@ def _fake_client(connect_error: BaseException | None = None):
 
 
 class TestCheckConnection:
-    @pytest.fixture(autouse=True)
-    def _allowed_host(self):
-        with patch(f"{_MODULE}.host_refusal_reason", AsyncMock(return_value=None)) as refusal:
-            yield refusal
-
-    async def test_a_refused_host_is_never_dialled(self, _allowed_host):
-        _allowed_host.return_value = '"10.0.0.5" is a private or internal address.'
-        with patch(f"{_MODULE}.PostgreSQLConfig") as config_cls:
+    async def test_a_refused_host_reports_the_refusal_and_is_not_retried(self):
+        refused = HostCheckError('"10.0.0.5" is a private or internal address.')
+        attempts = AsyncMock(return_value=(None, refused))
+        with patch.object(PostgreSQLConnector, "_try_connection", attempts):
             result = await PostgreSQLConnector.check_connection(BASIC, _LOGGER)
         assert result.success is False
         assert result.message == '"10.0.0.5" is a private or internal address.'
-        _allowed_host.assert_awaited_once_with("db.example.com")
-        config_cls.assert_not_called()
+        attempts.assert_awaited_once()
 
     async def test_invalid_settings_fail_without_connecting(self):
         with patch(f"{_MODULE}.PostgreSQLConfig") as config_cls:
@@ -248,3 +245,58 @@ class TestSupportsConnectionCheck:
             pass
 
         assert NoCheck.supports_connection_check() is False
+
+
+class TestEveryConnectionGoesThroughTheAddressPolicy:
+    """The setup check and the sync both open connections through the client's checked dial."""
+
+    @pytest.fixture
+    def driver_connect(self, monkeypatch):
+        connect = AsyncMock(side_effect=AssertionError("asyncpg.connect must not be called"))
+        monkeypatch.setattr(pg_client, "asyncpg", asyncpg)
+        monkeypatch.setattr(asyncpg, "connect", connect)
+        return connect
+
+    @staticmethod
+    def _connector(host: str) -> PostgreSQLConnector:
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value={"auth": {**BASIC, "host": host}})
+        return PostgreSQLConnector(
+            logger=_LOGGER,
+            data_entities_processor=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=config_service,
+            connector_id="conn-pg-policy",
+        )
+
+    async def test_sync_refuses_a_private_host_while_the_switch_is_on(self, driver_connect, monkeypatch):
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        connector = self._connector("10.0.0.1")
+        with pytest.raises(ConnectorInitError, match="private or internal address"):
+            await connector.init()
+        driver_connect.assert_not_called()
+        assert connector.data_source is None
+
+    async def test_sync_refuses_a_metadata_host_in_every_mode(self, driver_connect, monkeypatch):
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
+        with pytest.raises(ConnectorInitError, match="cloud metadata"):
+            await self._connector("169.254.169.254").init()
+        driver_connect.assert_not_called()
+
+    async def test_the_setup_check_refuses_a_private_host_while_the_switch_is_on(self, driver_connect, monkeypatch):
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        result = await PostgreSQLConnector.check_connection({**BASIC, "host": "10.0.0.1"}, _LOGGER)
+        assert result.success is False
+        assert "private or internal address" in result.message
+        driver_connect.assert_not_called()
+
+    async def test_a_name_that_does_not_resolve_is_reported_without_a_second_lookup(self, driver_connect, monkeypatch):
+        def no_such_host(*args, **kwargs):
+            raise socket.gaierror(11001, "getaddrinfo failed")
+
+        lookups = MagicMock(side_effect=no_such_host)
+        monkeypatch.setattr(socket, "getaddrinfo", lookups)
+        result = await PostgreSQLConnector.check_connection({**BASIC, "host": "db.example.invalid"}, _LOGGER)
+        assert result.message == 'Could not find a server named "db.example.invalid". Check the host name.'
+        lookups.assert_called_once()
+        driver_connect.assert_not_called()
