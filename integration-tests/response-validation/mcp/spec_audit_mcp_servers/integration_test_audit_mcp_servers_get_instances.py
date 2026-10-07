@@ -37,7 +37,7 @@ def test_list_returns_seeded_instance_as_stored(
 
     body = resp.json()
     assert set(body) == {"instances"}
-    assert _listed(body, record["_id"]) == {**record, "hasOAuthClientConfig": False}
+    assert _listed(body, record["_id"]) == {**record, "hasOAuthClientConfig": False, "disabledReason": None}
 
 
 def test_list_flags_instance_with_oauth_client_config(

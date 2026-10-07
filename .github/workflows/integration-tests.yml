@@ -612,8 +612,8 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
-      # The OAuth-client limiter keys on the admin user, and the serial audit
-      # below sends well over 1000 such calls a minute. The limiter is
+      # The serial audit below sends well over the default limits a minute (the
+      # global per-IP limit as well as the OAuth-client limit on the admin). The limiter is
       # in-process, so recreating only the app container with a higher limit
       # starts a fresh window; the main step above still ran at the default,
       # so its deliberate 429 tests got a real 429.
@@ -621,6 +621,7 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         env:
+          MAX_REQUESTS_PER_MINUTE: '100000'
           MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: '100000'
           MAX_AUTH_REQUESTS_PER_MINUTE: '100000'
         run: |
@@ -836,6 +837,7 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         env:
+          MAX_REQUESTS_PER_MINUTE: '100000'
           MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: '100000'
           MAX_AUTH_REQUESTS_PER_MINUTE: '100000'
         run: |

@@ -69,6 +69,7 @@ KV_GOOGLE_WORKSPACE_OAUTH = "/services/connectors/googleWorkspace/oauth/config"
 # The organization id is appended as one more path segment.
 KV_GOOGLE_WORKSPACE_BUSINESS = "/services/connectors/googleWorkspace/credentials/business"
 KV_SYSTEM_PROMPTS = "/services/systemPrompts"
+KV_AI_MODELS = "/services/aiModels"
 # Encrypted JSON; GET /metricsCollection returns it decrypted.
 KV_METRICS_COLLECTION = "/services/metricsCollection"
 # Plain JSON shared by the frontend and connector public URLs (and other endpoints).

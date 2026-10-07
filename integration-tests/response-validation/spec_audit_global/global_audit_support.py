@@ -62,6 +62,12 @@ XSS_EXEMPT_EXACT: tuple[tuple[str, frozenset[str]], ...] = (
     ("/api/v1/skills", frozenset({"POST", "PUT", "PATCH"})),
 )
 
+# Operations whose oauth2 entry lists more scopes than requireScopes checks; a later step needs the
+# rest (before an upload, the connector service's knowledge base lookup needs kb:read).
+GATE_SCOPES: dict[str, tuple[str, ...]] = {
+    "POST /knowledgeBase/{kbId}/upload": ("kb:upload",),
+}
+
 
 @dataclass(frozen=True)
 class Operation:
@@ -96,6 +102,11 @@ class Operation:
     @property
     def oauth_scopes(self) -> list[str]:
         return [s for entry in self.operation.get("security") or [] for s in entry.get("oauth2") or []]
+
+    @property
+    def gate_scopes(self) -> list[str]:
+        """The scopes requireScopes checks; any one of them passes it."""
+        return list(GATE_SCOPES.get(self.id, self.oauth_scopes))
 
 
 @lru_cache(maxsize=1)

@@ -30,6 +30,10 @@ MCP_FEATURE_FLAG = "ENABLE_MCP"
 MISSING_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
 MISSING_AGENT_KEY = "00000000-0000-4000-8000-000000000001"
 MISSING_TYPE_ID = "spec-audit-no-such-type"
+# A catalog STDIO server: allowed whatever MCP_ALLOW_CUSTOM_STDIO says, since it always runs
+# the catalog's own command. Creating or authenticating it never starts the process.
+CATALOG_STDIO_TYPE_ID = "exa"
+CATALOG_STDIO_ENV = "EXA_API_KEY"
 # Decodes to "bad%id", which guardPathParams refuses with a 400 before auth runs.
 UNSAFE_PATH_ID = "bad%25id"
 
@@ -100,6 +104,13 @@ class McpServersClient(APIClient):
 
     def delete_instance(self, instance_id: str, *, auth: bool = True, **kwargs: Any) -> requests.Response:
         return self.delete(f"/instances/{instance_id}", auth=auth, **kwargs)
+
+
+def custom_stdio_allowed(client: McpServersClient) -> bool:
+    """The deployment's MCP_ALLOW_CUSTOM_STDIO, as the catalog reports it."""
+    resp = client.get("/catalog")
+    assert resp.status_code == 200, resp.text[:300]
+    return bool(resp.json()["customStdioAllowed"])
 
 
 def agent_path(agent_key: str, instance_id: str | None = None, suffix: str = "") -> str:

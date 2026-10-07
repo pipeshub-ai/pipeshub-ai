@@ -155,6 +155,30 @@ def test_move_a_file_next_to_a_file_of_the_same_name_is_a_conflict(kb_client: KB
     assert_strict_openapi_exchange(resp, ROUTE)
 
 
+def _trash(kb_client: KBClient, record_id: str) -> None:
+    deleted = kb_client.delete(f"/record/{record_id}")
+    assert deleted.status_code == 200, deleted.text[:500]
+    assert deleted.json()["softDeleted"] is True, deleted.text[:500]
+
+
+@pytest.mark.parametrize("already_there", [False, True], ids=["from-the-root", "already-in-that-folder"])
+def test_move_into_a_folder_in_the_trash_is_a_conflict(
+    kb_client: KBClient, make_kb: MakeKb, trash_on: None, already_there: bool
+) -> None:
+    kb_id = make_kb()
+    name = unique_name("trashed")
+    target = _folder(kb_client, kb_id, name)
+    record_id = _file(kb_client, kb_id, folder_id=target if already_there else None)
+    _trash(kb_client, target)
+    resp = _move(kb_client, kb_id, record_id, {"newParentId": target})
+    assert resp.status_code == 409, resp.text[:500]
+    assert resp.json()["error"]["message"] == (
+        f"'{name}' is in Recently deleted, so you can't move items into it. "
+        "Restore it first, or choose another folder."
+    )
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
 def test_move_a_folder_into_itself_or_below_itself_is_bad_request(kb_client: KBClient, make_kb: MakeKb) -> None:
     kb_id = make_kb()
     parent = _folder(kb_client, kb_id, "parent")

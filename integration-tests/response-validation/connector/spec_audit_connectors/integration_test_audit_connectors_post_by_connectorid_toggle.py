@@ -143,39 +143,30 @@ def test_local_fs_sync_needs_its_desktop(
     assert refusal["details"] == {"code": code, "connectorId": local_fs_connector, "retryable": True}
 
 
-def test_agent_toggle_of_an_unknown_connector_is_404(
-    connectors_client: ConnectorsAuditClient,
+NOT_OPENABLE_MESSAGE = (
+    "This connector was removed, or you no longer have access. Refresh the page and try again."
+)
+
+
+@pytest.mark.parametrize("toggle_type", ["agent", "sync"])
+def test_toggle_of_an_unknown_connector_is_404(
+    connectors_client: ConnectorsAuditClient, toggle_type: str
 ) -> None:
-    resp = connectors_client.post(_path(MISSING_CONNECTOR_ID), json={"type": "agent"})
+    resp = connectors_client.post(_path(MISSING_CONNECTOR_ID), json={"type": toggle_type})
     assert resp.status_code == 404, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
 
 
-def test_sync_toggle_of_an_unknown_connector_is_500(
-    connectors_client: ConnectorsAuditClient,
-) -> None:
-    # API bug: the gateway reads the instance first for sync toggles and reports
-    # a missing one as its own failure instead of 404.
-    resp = connectors_client.post(_path(MISSING_CONNECTOR_ID), json={"type": "sync"})
-    assert resp.status_code == 500, resp.text[:500]
-    assert_strict_openapi_exchange(resp, ROUTE)
-    assert resp.json()["error"]["message"] == f"Failed to fetch connector {MISSING_CONNECTOR_ID} state"
-
-
-@pytest.mark.parametrize(
-    ("toggle_type", "expected_status"),
-    [
-        pytest.param("agent", 404, id="agent"),
-        # Same gateway pre-read as for an unknown id.
-        pytest.param("sync", 500, id="sync"),
-    ],
-)
+@pytest.mark.parametrize("toggle_type", ["agent", "sync"])
 def test_member_toggle_of_an_admin_team_connector(
-    second_user: SecondUser, connector_id: str, toggle_type: str, expected_status: int
+    second_user: SecondUser, connector_id: str, toggle_type: str
 ) -> None:
     resp = request_as(second_user, "POST", _path(connector_id), json={"type": toggle_type})
-    assert resp.status_code == expected_status, resp.text[:500]
+    assert resp.status_code == 404, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
+    if toggle_type == "sync":
+        # The gateway's pre-read for a sync toggle passes the connector service's refusal through.
+        assert resp.json()["error"]["message"] == NOT_OPENABLE_MESSAGE
 
 
 def test_toggle_with_an_unsafe_connector_id_is_400(

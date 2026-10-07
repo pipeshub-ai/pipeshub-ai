@@ -156,6 +156,7 @@ INSTANCE_CALLS: list[Any] = [
         {}, id="filter-options",
     ),
     pytest.param("POST", "/{id}/toggle", "/{connectorId}/toggle", {"json": {"type": "agent"}}, id="toggle-agent"),
+    pytest.param("POST", "/{id}/toggle", "/{connectorId}/toggle", {"json": {"type": "sync"}}, id="toggle-sync"),
     pytest.param("PUT", "/{id}/config", "/{connectorId}/config", {"json": {"baseUrl": "https://spec-audit.invalid"}}, id="put-config"),
     pytest.param("PUT", "/{id}/config/auth", "/{connectorId}/config/auth", {"json": {"auth": {}}}, id="put-config-auth"),
     pytest.param(
@@ -197,14 +198,3 @@ def test_callback_for_a_beta_instance_reports_a_server_error(
     assert body["success"] is False, body
     assert body["error"] == "server_error", body
     assert body["redirectUrl"] == f"{OAUTH_BASE_URL}/connectors/oauth/callback?oauth_error=server_error"
-
-
-def test_sync_toggle_of_a_beta_instance_is_a_server_error(
-    connectors_client: ConnectorsAuditClient, beta_instance: str
-) -> None:
-    # API bug: before a sync toggle Node reads the instance from Python and turns
-    # any refusal of that read, the beta 403 included, into a 500.
-    resp = connectors_client.post(f"/{beta_instance}/toggle", json={"type": "sync"})
-    assert resp.status_code == 500, resp.text[:500]
-    assert_strict_openapi_exchange(resp, f"{BASE}/{{connectorId}}/toggle")
-    assert _message(resp) == f"Failed to fetch connector {beta_instance} state"

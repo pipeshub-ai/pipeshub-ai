@@ -66,39 +66,43 @@ def test_admin_lists_configured_connectors(
     }
 
 
-def test_paging_counts_only_the_window_it_fetched(
+def test_pages_walk_every_matching_instance_newest_first(
     connectors_client: ConnectorsAuditClient, seed_connector: SeedConnector
 ) -> None:
-    # API bug: the handler asks the store for page `page` of size 2 x limit, filters that
-    # window and pages through it again. So totalCount never exceeds 2 x limit, and page 2
-    # skips 2 x limit instances and then drops the first `limit` of what is left.
     token = unique_name("spec-audit-window")
-    for index in range(3):
-        seed_connector(instanceName=f"{token} {index}")
+    names = [f"{token} {index}" for index in range(3)]
+    for name in names:
+        seed_connector(instanceName=name)
 
     everything = connectors_client.get("/configured", params={"search": token})
     assert everything.status_code == 200, everything.text[:500]
     assert_strict_openapi_exchange(everything, ROUTE)
-    assert len(_names(_page(everything.json()))) == 3
+    assert _names(_page(everything.json())) == names[::-1]
     assert _page(everything.json())["pagination"]["totalCount"] == 3
 
-    first = connectors_client.get("/configured", params={"search": token, "limit": 1, "page": 1})
-    assert first.status_code == 200, first.text[:500]
-    assert_strict_openapi_exchange(first, ROUTE)
-    first_page = _page(first.json())
-    assert len(first_page["connectors"]) == 1
-    assert first_page["pagination"]["totalCount"] == 2, "three match, two were fetched"
-    assert first_page["pagination"]["totalPages"] == 2
-    assert first_page["pagination"]["nextPage"] == 2
+    walked: list[str] = []
+    for page_number in (1, 2, 3):
+        resp = connectors_client.get(
+            "/configured", params={"search": token, "limit": 1, "page": page_number}
+        )
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+        page = _page(resp.json())
+        assert len(page["connectors"]) == 1, page
+        pagination = page["pagination"]
+        assert pagination["totalCount"] == 3
+        assert pagination["totalPages"] == 3
+        assert pagination["hasPrev"] is (page_number > 1)
+        assert pagination["hasNext"] is (page_number < 3)
+        assert pagination["nextPage"] == (page_number + 1 if page_number < 3 else None)
+        walked.extend(_names(page))
+    assert walked == names[::-1]
 
-    second = connectors_client.get("/configured", params={"search": token, "limit": 1, "page": 2})
-    assert second.status_code == 200, second.text[:500]
-    assert_strict_openapi_exchange(second, ROUTE)
-    second_page = _page(second.json())
-    assert second_page["connectors"] == [], "the page the first response pointed to is empty"
-    assert second_page["pagination"]["totalCount"] == 1
-    assert second_page["pagination"]["hasPrev"] is True
-    assert second_page["pagination"]["prevPage"] == 1
+    beyond = connectors_client.get("/configured", params={"search": token, "limit": 1, "page": 4})
+    assert beyond.status_code == 200, beyond.text[:500]
+    assert_strict_openapi_exchange(beyond, ROUTE)
+    assert _page(beyond.json())["connectors"] == []
+    assert _page(beyond.json())["pagination"]["totalCount"] == 3
 
 
 def test_member_lists_own_personal_configured_connectors(

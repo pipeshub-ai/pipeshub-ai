@@ -53,6 +53,7 @@ OPERATIONS = [
     ("GET", f"{KB}/permissions", "/:kbId/permissions"),
     ("PUT", f"{KB}/permissions", "/:kbId/permissions"),
     ("DELETE", f"{KB}/permissions", "/:kbId/permissions"),
+    ("GET", f"{KB}/trash", "/:kbId/trash"),
     ("PUT", f"{KB}{RECORD}/move", "/:kbId/record/:recordId/move"),
 ]
 

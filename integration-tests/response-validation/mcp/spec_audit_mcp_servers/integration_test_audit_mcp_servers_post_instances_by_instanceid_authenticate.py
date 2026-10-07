@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from helper.second_user import SecondUser
 from mcp_servers_audit_support import (
+    CATALOG_STDIO_ENV,
+    CATALOG_STDIO_TYPE_ID,
     MISSING_INSTANCE_ID,
     UNSAFE_PATH_ID,
     JsonObject,
@@ -63,11 +65,10 @@ def test_authenticate_stdio_server_with_its_required_env(
     seed_mcp_instance: SeedMcpInstance,
 ) -> None:
     instance_id = seed_mcp_instance(
-        transport="stdio", url=None, command="spec-audit-not-a-binary",
-        authMode="api_token", requiredEnv=["SPEC_AUDIT_TOKEN"],
+        typeId=CATALOG_STDIO_TYPE_ID, transport="stdio", url=None, authMode="api_token",
     )["_id"]
     resp = mcp_servers_client.post(
-        _authenticate(instance_id), json={"env": {"SPEC_AUDIT_TOKEN": "x", "NOT_ALLOWED": "dropped"}}
+        _authenticate(instance_id), json={"env": {CATALOG_STDIO_ENV: "x", "NOT_ALLOWED": "dropped"}}
     )
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
