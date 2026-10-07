@@ -218,3 +218,75 @@ def test_a_schema_that_allows_any_value_allows_any_object() -> None:
     }}}}}}}}})
     body = json.dumps({"example": {"a": 1}}).encode()
     assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 200, "application/json", body) == []
+
+
+_FORM = "application/x-www-form-urlencoded"
+_FORM_DOC = adapt_document({
+    "paths": {
+        "/teams": {
+            "post": {
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/NewTeam"}},
+                        _FORM: {"schema": {"$ref": "#/components/schemas/NewTeam"}},
+                    },
+                },
+                "responses": {"201": {"description": "created"}},
+            }
+        },
+        "/settings": {
+            "post": {
+                "requestBody": {
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Settings"}}},
+                },
+                "responses": {"200": {"description": "saved"}},
+            }
+        },
+    },
+    "components": {
+        "schemas": {
+            "NewTeam": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 2},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "Settings": {"type": "object", "properties": {"port": {"type": "number"}}},
+        }
+    },
+})
+_FORM_REGISTRY = _make_registry(_FORM_DOC)
+
+
+def _form_problems(path: str, body: str, *, status: int = 200, rejected: list[str] | None = None) -> list[str]:
+    response = b""
+    if rejected is not None:
+        errors = [{"field": f, "message": "Port must be a number."} for f in rejected]
+        response = json.dumps({"error": {"code": "VALIDATION_ERROR", "metadata": {"errors": errors}}}).encode()
+    return strict_request_problems(
+        _FORM_DOC, _FORM_REGISTRY, "POST", f"/api/v1{path}", "", f"{_FORM}; charset=utf-8", body.encode(), status, response
+    )
+
+
+def test_a_form_body_the_spec_documents_is_checked_against_its_schema() -> None:
+    assert _form_problems("/teams", "name=ab&tags=x&tags=y", status=201) == []
+    assert "body.name: 'a' is too short" in _form_problems("/teams", "name=a", status=201)[0]
+    assert "'name' is a required property" in _form_problems("/teams", "tags=x&tags=y", status=201)[0]
+    assert _form_problems("/teams", "name=ab&colour=red", status=201) == [
+        "POST /teams request, accepted with 201: body.colour: field is sent but is not in the spec"
+    ]
+
+
+def test_an_accepted_form_body_on_an_operation_without_one_is_reported() -> None:
+    assert _form_problems("/settings", "port=587") == [
+        "POST /settings request, accepted with 200: body: a form body is sent but the spec documents only "
+        "['application/json'] (the API accepted the request)"
+    ]
+
+
+def test_a_refused_form_body_on_an_operation_without_one_is_one_the_spec_forbids() -> None:
+    assert _form_problems("/settings", "port=587", status=400, rejected=["body.port"]) == []
+    assert _form_problems("/settings", "f0=1&f1=1", status=500) == []

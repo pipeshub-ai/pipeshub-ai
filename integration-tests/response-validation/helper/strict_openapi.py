@@ -246,6 +246,7 @@ def assert_strict_openapi_response(
 
 _SCALARS = {"string", "integer", "number", "boolean"}
 _JSON = "application/json"
+_FORM = "application/x-www-form-urlencoded"
 _VALIDATION_CODE = "VALIDATION_ERROR"
 
 
@@ -324,7 +325,11 @@ def _body_problems(
     doc: dict[str, Any], registry: Registry, spec_path: str, method: str, operation: dict[str, Any],
     content_type: str, body: bytes,
 ) -> tuple[list[str], list[str]]:
-    """Same pair as ``_query_problems`` for a JSON request body; other media types are not inspected."""
+    """Same pair as ``_query_problems`` for a JSON or form-encoded request body.
+
+    Other media types are not inspected. A form body is read the way ``parse_qs`` reads it: every
+    value a string, a field sent once as a single value; ``qs`` bracket nesting is not unfolded.
+    """
     pointer = f"#/paths/{_escape(spec_path)}/{method}/requestBody"
     request_body = operation.get("requestBody") or {}
     if isinstance(request_body.get("$ref"), str):
@@ -334,20 +339,31 @@ def _body_problems(
     media = content_type.split(";", 1)[0].strip().lower()
     if not body:
         return (["body: the spec says a request body is required"] if request_body.get("required") else []), []
-    if media != _JSON:
+    documented = f"only {sorted(content)}" if content else "no request body"
+    if media == _JSON:
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return ["body: is not valid JSON"], []
+        media_key = next((k for k in content if k.lower() == _JSON), None)
+        if media_key is None:
+            if data in ({}, [], None):
+                return [], []
+            return [], [f"body: a JSON body is sent but the spec documents {documented}"]
+    elif media == _FORM:
+        try:
+            fields = parse_qs(body.decode("utf-8"), keep_blank_values=True, strict_parsing=False)
+        except UnicodeDecodeError:
+            return ["body: is not valid UTF-8 form data"], []
+        data = {name: values[0] if len(values) == 1 else values for name, values in fields.items()}
+        media_key = next((k for k in content if k.lower() == _FORM), None)
+        if media_key is None:
+            return [f"body: a form body is sent but the spec documents {documented}"], []
+    else:
         return [], []
-    try:
-        data = json.loads(body)
-    except ValueError:
-        return ["body: is not valid JSON"], []
-    media_key = next((k for k in content if k.lower() == _JSON), None)
-    if media_key is None:
-        if data in ({}, [], None):
-            return [], []
-        return [], ["body: a JSON body is sent but the spec documents " + (f"only {sorted(content)}" if content else "no request body")]
     schema = content[media_key].get("schema") if isinstance(content[media_key], dict) else None
     if schema is None:
-        return [], ["body: the spec has no schema for the JSON request body"]
+        return [], [f"body: the spec has no schema for the {media_key} request body"]
     schema_pointer = f"{pointer}/content/{_escape(media_key)}/schema"
     undocumented: list[str] = []
     _undocumented(doc, data, schema, "body", undocumented, "sent")
