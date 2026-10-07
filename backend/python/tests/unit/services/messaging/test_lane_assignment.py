@@ -340,6 +340,40 @@ class TestKnownClassAndLaneCount:
         meta = await _meta(provider)
         assert (meta[f"large:{created}"], meta[f"small:{created}"]) == ("0", "1")
 
+    async def test_a_move_retried_after_a_class_correction_keeps_the_corrected_class(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        first, second = _colliding(2)
+        client = provider.get_client()
+        shared = stable_lane(first, LANES)
+        await client.hset(
+            lane_map_key(TOPIC),
+            mapping={first: LaneEntry(shared, "team").encode(), second: LaneEntry(shared, "team").encode()},
+        )
+        await client.hset(lane_meta_key(TOPIC), mapping={f"large:{shared}": "2", "laneCount": "8"})
+        mover = _assignments(provider)
+        creator = _assignments(provider)
+        real_eval = mover._eval
+        raced = False
+
+        async def correction_lands_first(body: str, *args: object) -> list:
+            nonlocal raced
+            if body == assignment_module._COMMIT_SCRIPT and not raced:
+                raced = True
+                await creator.assign(second, ConnectorClass.PERSONAL)
+            return await real_eval(body, *args)
+
+        mover._eval = correction_lands_first  # type: ignore[method-assign]
+
+        moved = await mover.move(second, LaneRequestReason.UPGRADE)
+
+        entry = (await _map(provider))[second]
+        assert (entry.lane, entry.connector_class) == (moved.lane, "personal")
+        meta = await _meta(provider)
+        assert meta[f"small:{moved.lane}"] == "1"
+        assert meta.get(f"large:{moved.lane}", "0") == "0"
+        assert await _assignments(provider).lane_for(second) == moved.lane
+
     async def test_a_lowered_lane_count_seen_by_any_lookup_drops_cached_lanes_past_it(
         self, provider: FakeRedisConnectionProvider
     ) -> None:
