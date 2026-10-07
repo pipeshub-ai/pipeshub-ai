@@ -143,6 +143,33 @@ class FakeConnectorGraph:
                 swapped.append(record_id)
         return swapped
 
+    async def update_queued_duplicates_status(
+        self,
+        record_id: str,
+        new_indexing_status: str,
+        virtual_record_id: str | None = None,
+        transaction: str | None = None,
+        reason: str | None = None,
+    ) -> int:
+        """Promote the QUEUED records with the same md5 in the same org."""
+        self.calls["update_queued_duplicates_status"] += 1
+        primary = self.records.get(record_id)
+        if primary is None or not primary.get("orgId"):
+            return 0
+        promoted = 0
+        for key, doc in self.records.items():
+            if (
+                key != record_id
+                and doc.get("indexingStatus") == ProgressStatus.QUEUED.value
+                and doc.get("md5Checksum") == primary.get("md5Checksum")
+                and doc.get("orgId") == primary.get("orgId")
+            ):
+                doc["indexingStatus"] = new_indexing_status
+                if virtual_record_id:
+                    doc["virtualRecordId"] = virtual_record_id
+                promoted += 1
+        return promoted
+
     async def batch_update_nodes(
         self, nodes: list[dict[str, Any]], collection: str, transaction: str | None = None
     ) -> bool:

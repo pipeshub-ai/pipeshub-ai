@@ -8,7 +8,7 @@ would have done instead, so the two cannot drift apart unnoticed.
 from __future__ import annotations
 
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,6 +22,7 @@ from app.modules.indexing.connector_off_events import (
 )
 from app.services.messaging.config import IndexingEvent, StreamMessage
 from app.services.messaging.connector_off import settle_connector_off
+from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
 from app.utils.user_errors import CONNECTOR_OFF
 from tests.support.fake_connector_graph import FakeConnectorGraph
@@ -437,3 +438,30 @@ class TestNothingIsSettledThatTheHandlerStillNeeds:
         assert graph.records["r1"]["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
         assert graph.records["r1"]["processingStartedAt"] == 42
         assert graph.records["r2"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+async def test_a_completed_records_queued_copy_is_still_promoted_when_its_update_shares_the_batch() -> None:
+    """The handler runs a record's events in order: the newRecord finds the
+    record COMPLETED and releases its queued copy, then the update is skipped.
+    Marking the record off at read time first made the newRecord miss that."""
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=False)
+    graph.add_record(
+        "r1", "conn-off",
+        indexingStatus=ProgressStatus.COMPLETED.value,
+        extractionStatus=ProgressStatus.COMPLETED.value,
+        md5Checksum="md5-a", virtualRecordId="vr-r1",
+    )
+    graph.add_record("copy", "conn-off", md5Checksum="md5-a")
+    batch = [_message(NEW), _message(UPDATE)]
+
+    result = await _filter(graph).settle(batch)
+    handler, _event_processor = _handler(graph)
+    handler._reconcile_pending_duplicates = AsyncMock()
+    with patch.object(record_module, "notify_record_indexed", AsyncMock()):
+        for i, message in enumerate(batch):
+            if i not in result.settled:
+                _ = [e async for e in handler.process_event(message.eventType, dict(message.payload))]
+
+    assert result.settled == frozenset()
+    assert graph.records["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value

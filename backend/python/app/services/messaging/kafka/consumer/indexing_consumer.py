@@ -1072,7 +1072,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         pre_parsed = await self.__parse_batch(message_batch)
         settled = await self.__settle_connector_off(pre_parsed)
         settled_reached: list[tuple[TopicPartition, int]] = []
+        # The filter awaits the graph, and a rebalance can revoke a partition
+        # meanwhile. Its messages belong to the new owner, which reads them
+        # from the last commit; none of them is tracked, buffered or committed.
+        assigned = self.consumer.assignment()
         for tp, messages in message_batch.items():
+            if tp not in assigned:
+                continue
             # Every partition in the batch is drained or explicitly seeked
             # back. Returning early from the outer loop would abandon
             # messages getmany() already handed us for the *other*
@@ -1183,12 +1189,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """
         offset_tracker = self._offset_tracker
         if not reached or offset_tracker is None or self.consumer is None:
-            return
-        # A partition revoked while the filter was reading the graph belongs to
-        # its new owner, which re-reads these from the committed offset.
-        assigned = self.consumer.assignment()
-        reached = [position for position in reached if position[0] in assigned]
-        if not reached:
             return
         commits: dict[TopicPartition, int] = {}
         for tp, offset in reached:

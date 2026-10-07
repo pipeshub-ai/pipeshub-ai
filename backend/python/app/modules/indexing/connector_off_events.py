@@ -390,7 +390,7 @@ class GraphConnectorOffFilter:
                     )
                 )
             if swapped:
-                await asyncio.wait_for(
+                written = await asyncio.wait_for(
                     self._graph.batch_update_nodes(
                         [
                             {"id": record_id, **connector_off_updates(records[record_id])}
@@ -400,6 +400,8 @@ class GraphConnectorOffFilter:
                     ),
                     timeout=self._read_timeout_seconds,
                 )
+                if written is False:
+                    raise RuntimeError("not every swapped record took the rest of its status")
         except Exception as e:
             # A record swapped but not completed keeps its message, and the
             # handler writes the full status when it gets to it.

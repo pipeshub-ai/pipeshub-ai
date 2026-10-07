@@ -456,6 +456,7 @@ class TestKafka:
     ) -> None:
         graph = _graph(off_records=10)
         kafka_harness.produce(*(_envelope(f"off-{i}", OFF) for i in range(10)))
+        kafka_harness.produce(_envelope("on-0", ON))
         consumer = kafka_harness.build(graph)
         inner = consumer.connector_off_filter
 
@@ -478,3 +479,44 @@ class TestKafka:
         assert kafka_harness.committed() == 0
         assert kafka_harness.broker.consumers[0].commit_calls == []
         assert handler.seen == []
+
+
+def _flip_to_in_progress_after_read(graph: FakeConnectorGraph, record_id: str) -> None:
+    """Another delivery starts on ``record_id`` between the filter's read and its write."""
+    read = graph.get_nodes_by_field_in
+
+    async def read_then_flip(collection, *args, **kwargs):  # noqa: ANN202
+        docs = await read(collection, *args, **kwargs)
+        if collection == "records" and graph.records[record_id]["indexingStatus"] == ProgressStatus.QUEUED.value:
+            graph.records[record_id]["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+        return docs
+
+    graph.get_nodes_by_field_in = read_then_flip
+
+
+class TestARecordMovedOnBetweenReadAndWrite:
+    async def test_redis_leaves_it_unacknowledged_for_the_normal_path(self, redis_harness: RedisHarness) -> None:
+        graph = _graph(off_records=3)
+        _flip_to_in_progress_after_read(graph, "off-1")
+        await redis_harness.produce(*(_envelope(f"off-{i}", OFF) for i in range(3)))
+        handler = Handler()
+        await redis_harness.build(graph).start(handler)
+
+        await _until(redis_harness.settled)
+        await _until(lambda: handler.seen == ["off-1"])
+
+        assert graph.records["off-1"]["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
+        assert graph.records["off-0"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_kafka_leaves_it_unresolved_for_the_normal_path(self, kafka_harness: KafkaHarness) -> None:
+        graph = _graph(off_records=3)
+        _flip_to_in_progress_after_read(graph, "off-1")
+        kafka_harness.produce(*(_envelope(f"off-{i}", OFF) for i in range(3)))
+        handler = Handler()
+        await kafka_harness.build(graph).start(handler)
+
+        await _until(lambda: kafka_harness.committed() == 3)
+
+        assert handler.seen == ["off-1"]
+        assert graph.records["off-1"]["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
+        assert graph.records["off-0"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
