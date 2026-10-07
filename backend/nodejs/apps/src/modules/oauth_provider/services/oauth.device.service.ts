@@ -266,6 +266,7 @@ export class OAuthDeviceService {
       true,
       fullName,
       accountType,
+      { recheckAppScopes: true },
     )
 
     return {

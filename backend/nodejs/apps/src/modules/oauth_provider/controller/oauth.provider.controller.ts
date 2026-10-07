@@ -618,6 +618,7 @@ export class OAuthProviderController {
       true,
       fullName,
       accountType,
+      { recheckAppScopes: true },
     )
 
     this.logger.info('Authorization code grant completed', {

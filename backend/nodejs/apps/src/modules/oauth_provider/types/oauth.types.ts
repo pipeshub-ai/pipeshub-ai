@@ -34,6 +34,9 @@ export interface GeneratedTokens {
 export interface GenerateTokensOptions {
   accessTokenLifetimeOverrideSeconds?: number
   name?: string
+  // User grants only: PAT and service pseudo-apps store allowedScopes once
+  // and validate against MCP_SCOPES instead.
+  recheckAppScopes?: boolean
 }
 
 // Token Response (RFC 6749 compliant)
