@@ -73,6 +73,15 @@ class TestCreateClient:
         kwargs = mock_cluster_cls.call_args.kwargs
         assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (1, 1)
 
+    def test_never_fewer_than_one_attempt_because_cluster_pipelines_need_one(
+        self, mock_cluster_cls
+    ) -> None:
+        provider = ClusterRedisProvider(_config())
+        provider.create_client(ClientOptions(retry_attempts=0))
+
+        kwargs = mock_cluster_cls.call_args.kwargs
+        assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (1, 1)
+
     def test_three_retries_unless_asked_otherwise(self, mock_cluster_cls) -> None:
         provider = ClusterRedisProvider(_config())
         provider.create_client()

@@ -316,6 +316,30 @@ class TestKnownClassAndLaneCount:
         meta = await _meta(provider)
         assert (meta[f"large:{lane}"], meta[f"small:{lane}"]) == ("0", "1")
 
+    async def test_creation_racing_a_first_publish_still_records_the_real_class(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        """Both lookups miss; the publish places first and caches its guess.
+        Creation must still correct the class rather than take the cache."""
+        assignments = _assignments(provider)
+        real_eval = assignments._eval
+
+        async def yielding_eval(body: str, *args: object) -> list:
+            await asyncio.sleep(0)  # as a real round trip would
+            return await real_eval(body, *args)
+
+        assignments._eval = yielding_eval  # type: ignore[method-assign]
+
+        published, created = await asyncio.gather(
+            assignments.lane_for("gmail-1"),
+            assignments.assign("gmail-1", ConnectorClass.PERSONAL),
+        )
+
+        assert published == created
+        assert (await _map(provider))["gmail-1"].connector_class == "personal"
+        meta = await _meta(provider)
+        assert (meta[f"large:{created}"], meta[f"small:{created}"]) == ("0", "1")
+
     async def test_a_lowered_lane_count_seen_by_any_lookup_drops_cached_lanes_past_it(
         self, provider: FakeRedisConnectionProvider
     ) -> None:
