@@ -358,6 +358,73 @@ class TestKnowledgeBaseService:
         assert result["code"] == 200
 
     @pytest.mark.asyncio
+    async def test_a_new_kb_is_given_its_queue_lane_as_a_knowledge_base(self) -> None:
+        svc = _make_kb_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "fullName": "Test User"}
+        )
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock()
+        svc.graph_provider.batch_create_edges = AsyncMock()
+        svc.graph_provider.commit_transaction = AsyncMock()
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.assign_lane_to_new_connector",
+            new_callable=AsyncMock,
+        ) as assign:
+            result = await svc.create_knowledge_base("user-1", "org-1", "My KB")
+
+        assign.assert_awaited_once()
+        assert assign.await_args.args[1] == result["id"]
+        assert assign.await_args.kwargs == {
+            "connector_type": "KB", "scope": "personal", "org_id": "org-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_kb_that_failed_to_commit_is_given_no_lane(self) -> None:
+        svc = _make_kb_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "fullName": "Test User"}
+        )
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock()
+        svc.graph_provider.batch_create_edges = AsyncMock()
+        svc.graph_provider.commit_transaction = AsyncMock(side_effect=RuntimeError("commit failed"))
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.assign_lane_to_new_connector",
+            new_callable=AsyncMock,
+        ) as assign:
+            result = await svc.create_knowledge_base("user-1", "org-1", "My KB")
+
+        assert result["success"] is False
+        assign.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_kb_frees_its_queue_lane_after_its_cleanup_events(self) -> None:
+        svc = _make_kb_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "fullName": "Test User"}
+        )
+        svc.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        svc.graph_provider.delete_connector_instance = AsyncMock(
+            return_value={"success": True, "virtual_record_ids": []}
+        )
+        order: list[str] = []
+        svc._publish_with_retry = AsyncMock(side_effect=lambda event, _kb: order.append(event["eventType"]))
+
+        async def freed(_logger, kb_id) -> None:  # noqa: ANN001
+            order.append(f"free:{kb_id}")
+
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.free_lane_of_deleted_connector",
+            side_effect=freed,
+        ):
+            result = await svc.delete_knowledge_base("kb-1", "user-1", "org-1")
+
+        assert result["success"] is True
+        assert order[-1] == "free:kb-1"
+        assert len(order) > 1, "the cleanup events go out first"
+
+    @pytest.mark.asyncio
     async def test_create_folder_in_kb_success(self):
         svc = _make_kb_service()
         svc.graph_provider._validate_folder_creation = AsyncMock(

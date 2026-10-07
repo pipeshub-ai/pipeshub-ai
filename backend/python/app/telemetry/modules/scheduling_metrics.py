@@ -62,6 +62,19 @@ LANE_ASSIGNMENT_FALLBACKS = METRICS_BACKEND.counter(
     ["reason"],
 )
 
+# Bounded by the lane count; never labelled by connector.
+LANE_CONNECTORS = METRICS_BACKEND.gauge(
+    "pipeshub_indexing_lane_connectors",
+    "Connectors assigned to each Redis Streams lane, by size",
+    ["lane", "size"],
+)
+
+LANE_OLDEST_WAITING = METRICS_BACKEND.gauge(
+    "pipeshub_indexing_lane_oldest_waiting_seconds",
+    "Age of the oldest event each lane has not finished with; 0 when it has none",
+    ["lane"],
+)
+
 DWELL_EXCEEDED = METRICS_BACKEND.counter(
     "pipeshub_indexing_scheduler_dwell_exceeded_total",
     "Buffered items force-resolved after exceeding the dwell budget",
@@ -110,6 +123,14 @@ def record_lanes_paused(broker: str, count: int) -> None:
 
 def record_lane_assignment_fallback(reason: str) -> None:
     LANE_ASSIGNMENT_FALLBACKS.inc(reason)
+
+
+def record_lane_connectors(lane: str, size: str, count: int) -> None:
+    LANE_CONNECTORS.set(lane, size, value=count)
+
+
+def record_lane_oldest_waiting(lane: str, seconds: float) -> None:
+    LANE_OLDEST_WAITING.set(lane, value=seconds)
 
 
 def record_dwell_exceeded(broker: str, count: int = 1) -> None:

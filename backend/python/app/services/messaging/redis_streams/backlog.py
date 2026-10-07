@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
     from app.services.redis.connection_provider import RedisClient
 
-__all__ = ["read_stream_backlog"]
+__all__ = ["read_stream_backlog", "read_stream_backlog_detail"]
 
 
 def _text(value: object) -> str:
@@ -33,6 +33,17 @@ async def read_stream_backlog(
 ) -> dict[str, float]:
     """Per stream, when the oldest entry ``group`` has not finished with was added.
 
+    See ``read_stream_backlog_detail``, which also counts each pending list.
+    """
+    oldest, _pending = await read_stream_backlog_detail(redis, group, streams)
+    return oldest
+
+
+async def read_stream_backlog_detail(
+    redis: "RedisClient", group: str, streams: "Iterable[str]"
+) -> tuple[dict[str, float], dict[str, int]]:
+    """Per stream, when the oldest entry ``group`` has not finished with was added.
+
     That is the older of two entries: the oldest one delivered but not yet
     acknowledged (the head of the pending list, which is where a buffered,
     parked or in-flight entry sits), and the first one not delivered at all.
@@ -40,14 +51,17 @@ async def read_stream_backlog(
 
     Three commands per stream, whatever its length. Raises if a stream or its
     group cannot be read, so a partial answer is never mistaken for "caught up".
+    Also returns, per stream, how many entries its pending list holds.
     """
     oldest: dict[str, float] = {}
+    pending: dict[str, int] = {}
     for stream in streams:
         waiting: list[float] = []
 
         summary = await redis.xpending(stream, group)  # type: ignore[union-attr]
         pending_head = _field(summary, "min")
-        if _field(summary, "pending") and pending_head:
+        pending[stream] = int(_field(summary, "pending") or 0)
+        if pending[stream] and pending_head:
             waiting.append(_entry_ms(pending_head))
 
         info = next(
@@ -72,4 +86,4 @@ async def read_stream_backlog(
 
         if waiting:
             oldest[stream] = min(waiting)
-    return oldest
+    return oldest, pending

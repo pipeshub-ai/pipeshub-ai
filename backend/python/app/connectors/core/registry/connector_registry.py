@@ -18,6 +18,7 @@ from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
 from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.lanes.lifecycle import assign_lane_to_new_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -612,6 +613,13 @@ class ConnectorRegistry:
             self.logger.info(
                 f"Created connector instance '{instance_name}' of type {connector_type} "
                 f"with scope {scope} for user {created_by}"
+            )
+            await assign_lane_to_new_connector(
+                self.logger,
+                instance_key,
+                connector_type=connector_type,
+                scope=scope,
+                org_id=org_id,
             )
             return instance_document
 

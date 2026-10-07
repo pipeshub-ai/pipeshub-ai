@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 __all__ = ["LaneBacklog", "redis_lanes_for_key"]
 
+_NO_PENDING: Mapping[str, int] = MappingProxyType({})
 # Nothing assigned: hashing is the whole story.
 _NO_ASSIGNMENTS: Mapping[str, LaneEntry] = MappingProxyType({})
 
@@ -47,6 +48,9 @@ class LaneBacklog:
     # broker places messages itself and the lane cannot be recomputed here
     # (Kafka's partitioner), so any lane might hold it.
     lanes_for_event: Callable[[Mapping[str, object]], Collection[str]] | None = None
+    # Lane name -> entries delivered but not yet acknowledged, where the broker
+    # reports it (Redis). For the lane view on /health.
+    pending: Mapping[str, int] = _NO_PENDING
 
     def oldest_waiting_for(self, payload: Mapping[str, object]) -> float | None:
         """Oldest event still waiting on any lane ``payload`` could be on; None if none is."""

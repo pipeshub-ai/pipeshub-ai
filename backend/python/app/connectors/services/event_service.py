@@ -46,6 +46,7 @@ from app.edition_services import (
     sync_executor_enabled,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Bounded because this runs inline in the sync consumer loop: a longer wait
@@ -1342,6 +1343,7 @@ class EventService:
                     f"Published {published}/{len(events)} vector-cleanup event(s) "
                     f"for connector {connector_id}"
                 )
+            await free_lane_of_deleted_connector(self.logger, connector_id)
 
             # Delete connector credentials from etcd/config store
             try:

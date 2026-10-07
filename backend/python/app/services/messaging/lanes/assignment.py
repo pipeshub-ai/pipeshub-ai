@@ -62,7 +62,7 @@ from app.services.redis.loop_clients import LoopBoundClients
 from app.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Collection, Mapping
     from logging import Logger
 
     from app.services.messaging.lanes.assignment_policy import LaneChoice
@@ -76,6 +76,8 @@ __all__ = [
     "LaneAssignments",
     "LaneEntry",
     "LaneMoveRefusedError",
+    "UpkeepResult",
+    "lane_assignments_in_use",
     "lane_map_key",
     "lane_meta_key",
     "read_lane_map",
@@ -161,6 +163,33 @@ class LaneEntry:
         )
 
 
+# Shared by the scripts below: Redis's clock in ms, an entry split on "|",
+# and the count field a class is kept under (only "team" is large).
+_LUA_HELPERS = """
+local function now_ms()
+    local t = redis.call("TIME")
+    return tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+end
+
+local function split(s)
+    local out, start = {}, 1
+    while true do
+        local i = string.find(s, "|", start, true)
+        if not i then
+            table.insert(out, string.sub(s, start))
+            return out
+        end
+        table.insert(out, string.sub(s, start, i - 1))
+        start = i + 1
+    end
+end
+
+local function size_of(c)
+    if c == "team" then return "large:" end
+    return "small:"
+end
+"""
+
 # KEYS: map, meta. ARGV: connector id, fallback lane count, "1" to always
 # return the snapshot. A valid entry comes back alone; otherwise the snapshot
 # the rule needs comes with it, so a first assignment costs no extra round trip.
@@ -187,34 +216,11 @@ return {entry or "", lane_count, now_ms, redis.call("HGETALL", KEYS[2])}
 # count; "move" does, unless a previous move is still settling. Either way the
 # write is refused, and the current snapshot returned, if the meta version is
 # no longer the one the rule saw.
-_COMMIT_SCRIPT = """
+_COMMIT_SCRIPT = _LUA_HELPERS + """
 local map, meta = KEYS[1], KEYS[2]
 local id, lane, class = ARGV[1], tonumber(ARGV[2]), ARGV[3]
 local expected, mode, legacy = tonumber(ARGV[4]), ARGV[5], tonumber(ARGV[6])
 local lane_count = tonumber(redis.call("HGET", meta, "laneCount")) or tonumber(ARGV[7])
-
-local function now_ms()
-    local t = redis.call("TIME")
-    return tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
-end
-
-local function split(s)
-    local out, start = {}, 1
-    while true do
-        local i = string.find(s, "|", start, true)
-        if not i then
-            table.insert(out, string.sub(s, start))
-            return out
-        end
-        table.insert(out, string.sub(s, start, i - 1))
-        start = i + 1
-    end
-end
-
-local function size_of(c)
-    if c == "team" then return "large:" end
-    return "small:"
-end
 
 local raw = redis.call("HGET", map, id)
 local old = nil
@@ -275,6 +281,143 @@ end
 redis.call("HSET", KEYS[1], "laneCount", ARGV[1])
 redis.call("HINCRBY", KEYS[1], "version", 1)
 return 1
+"""
+
+
+# KEYS: map, meta. ARGV: connector id.
+# A deleted connector's entry stays, so its late events still go to the same
+# lane, but it stops counting at once so the lane can go to the next
+# connector. Its delete time is kept where a move keeps its time, and upkeep
+# fences and removes it the same way it settles a move.
+_RELEASE_SCRIPT = _LUA_HELPERS + """
+local raw = redis.call("HGET", KEYS[1], ARGV[1])
+if not raw then return 0 end
+local f = split(raw)
+if #f ~= 7 or f[1] ~= "v1" or not tonumber(f[2]) or f[4] ~= "live" then return 0 end
+f[4], f[6], f[7] = "deleted", tostring(now_ms()), ""
+redis.call("HSET", KEYS[1], ARGV[1], table.concat(f, "|"))
+redis.call("HINCRBY", KEYS[2], size_of(f[3]) .. f[2], -1)
+redis.call("HINCRBY", KEYS[2], "version", 1)
+return 1
+"""
+
+# KEYS: map, meta. ARGV: connector id, the entry as it was read, new class.
+# Only if the entry has not changed since it was read; never moves anyone.
+_SET_CLASS_SCRIPT = _LUA_HELPERS + """
+local raw = redis.call("HGET", KEYS[1], ARGV[1])
+if raw ~= ARGV[2] then return 0 end
+local f = split(raw)
+if #f ~= 7 or f[3] == ARGV[3] then return 0 end
+if f[4] == "live" then
+    redis.call("HINCRBY", KEYS[2], size_of(f[3]) .. f[2], -1)
+    redis.call("HINCRBY", KEYS[2], size_of(ARGV[3]) .. f[2], 1)
+end
+f[3] = ARGV[3]
+redis.call("HSET", KEYS[1], ARGV[1], table.concat(f, "|"))
+redis.call("HINCRBY", KEYS[2], "version", 1)
+return 1
+"""
+
+# KEYS: map, meta. ARGV: fence delay ms, busy-after ms, fallback lane count,
+# "1" if the backlog below was read, then lane/oldest-unfinished-ms pairs for
+# every lane that has unfinished work.
+#
+# One pass over the map, in one step so no placement can land in between:
+# fences the moves and deletes whose producers' caches have run out, clears
+# a move once its old lane has finished everything up to the fence, removes a
+# deleted entry once its lanes have, rebuilds the per-lane counts, and writes
+# the busy flags. Nothing that needs the backlog is decided without it.
+_UPKEEP_SCRIPT = _LUA_HELPERS + """
+local map, meta = KEYS[1], KEYS[2]
+local fence_delay, busy_after = tonumber(ARGV[1]), tonumber(ARGV[2])
+local lane_count = tonumber(redis.call("HGET", meta, "laneCount")) or tonumber(ARGV[3])
+local known = ARGV[4] == "1"
+local oldest = {}
+for i = 5, #ARGV, 2 do oldest[tonumber(ARGV[i])] = tonumber(ARGV[i + 1]) end
+local now = now_ms()
+
+local function finished_up_to(lane, fence)
+    if not known then return false end
+    local o = oldest[tonumber(lane)]
+    return o == nil or o > fence
+end
+
+local changed = false
+local fenced, cleared, removed = 0, 0, 0
+local counts = {}
+local entries = redis.call("HGETALL", map)
+for i = 1, #entries, 2 do
+    local id, f = entries[i], split(entries[i + 1])
+    if #f == 7 and f[1] == "v1" and tonumber(f[2]) then
+        local dirty, gone = false, false
+        local deleted = f[4] == "deleted"
+        if deleted and f[6] == "" then
+            f[6], dirty = tostring(now), true
+        end
+        if f[6] ~= "" and (deleted or f[5] ~= "") then
+            if f[7] == "" then
+                if now >= tonumber(f[6]) + fence_delay then
+                    f[7], dirty, fenced = tostring(now), true, fenced + 1
+                end
+            else
+                local fence = tonumber(f[7])
+                if deleted then
+                    if finished_up_to(f[2], fence) and (f[5] == "" or finished_up_to(f[5], fence)) then
+                        redis.call("HDEL", map, id)
+                        gone, removed = true, removed + 1
+                    end
+                elseif finished_up_to(f[5], fence) then
+                    f[5], f[6], f[7], dirty, cleared = "", "", "", true, cleared + 1
+                end
+            end
+        end
+        if dirty and not gone then
+            redis.call("HSET", map, id, table.concat(f, "|"))
+            changed = true
+        end
+        if not gone and f[4] == "live" then
+            local field = size_of(f[3]) .. f[2]
+            counts[field] = (counts[field] or 0) + 1
+        end
+    end
+end
+
+local fields = redis.call("HGETALL", meta)
+for i = 1, #fields, 2 do
+    local name = fields[i]
+    if string.match(name, "^large:%d+$") or string.match(name, "^small:%d+$") then
+        if counts[name] == nil then counts[name] = 0 end
+    end
+end
+for name, n in pairs(counts) do
+    if tonumber(redis.call("HGET", meta, name)) ~= n then
+        redis.call("HSET", meta, name, n)
+        changed = true
+    end
+end
+
+if known then
+    for lane = 0, lane_count - 1 do
+        local o, busy = oldest[lane], "0"
+        if o and now - o > busy_after then busy = "1" end
+        if redis.call("HGET", meta, "busy:" .. lane) ~= busy then
+            redis.call("HSET", meta, "busy:" .. lane, busy)
+            changed = true
+        end
+    end
+    redis.call("HSET", meta, "busyAt", now)
+end
+if changed then redis.call("HINCRBY", meta, "version", 1) end
+return {fenced, cleared, removed, now}
+"""
+
+# KEYS: map, meta. Recorded once, the first time upkeep has finished the
+# one-time upgrade fix-up; returns when that was.
+_MARK_MIGRATED_SCRIPT = _LUA_HELPERS + """
+if redis.call("HSETNX", KEYS[2], "migratedAt", now_ms()) == 1 then
+    redis.call("HINCRBY", KEYS[2], "version", 1)
+end
+return tonumber(redis.call("HGET", KEYS[2], "migratedAt"))
 """
 
 
@@ -344,6 +487,29 @@ def _without(snapshot: LaneSnapshot, entry: LaneEntry) -> LaneSnapshot:
         for load in snapshot.lanes
     )
     return replace(snapshot, lanes=lanes)
+
+
+def _with_large_on(snapshot: LaneSnapshot, lanes: Collection[int]) -> LaneSnapshot:
+    held = set(lanes)
+    return replace(
+        snapshot,
+        lanes=tuple(
+            replace(load, large=load.large + 1) if load.lane in held else load
+            for load in snapshot.lanes
+        ),
+    )
+
+
+def _hash_lane_rule(request: LaneRequest, _snapshot: LaneSnapshot) -> int:
+    return request.hash_lane
+
+
+@dataclass(frozen=True)
+class UpkeepResult:
+    fenced: int
+    cleared: int
+    removed: int
+    now_ms: int
 
 
 class LaneMoveRefusedError(RuntimeError):
@@ -475,13 +641,17 @@ class LaneAssignments:
         reason: LaneRequestReason,
         *,
         org_id: str | None = None,
+        still_held: Collection[int] = (),
     ) -> LaneEntry:
         """Ask the rule for a new lane for a connector that already has one.
 
         The old lane is kept as ``prevLane`` until housekeeping sees it
         drained past the fence. An admin move happens only if the edition's
         ``admin_lane_move_allowed`` says so; a move while an earlier one is
-        still settling is refused.
+        still settling is refused. ``still_held`` names lanes that hold
+        another large connector's backlog although the map no longer counts
+        it there (it is moving off them); the rule sees one more large
+        connector on each.
         """
         if reason is LaneRequestReason.ADMIN and not self._admin_move_allowed(
             org_id, connector_id
@@ -510,6 +680,7 @@ class LaneAssignments:
             snapshot_from_meta(_pairs(reply[3]), lane_count, int(reply[2])),
             mode="move",
             legacy_lane=None,
+            still_held=still_held,
         )
         if status == "settling":
             raise LaneMoveRefusedError(
@@ -525,6 +696,112 @@ class LaneAssignments:
 
     async def read_map(self) -> dict[str, LaneEntry]:
         return await read_lane_map(self._client(), self.topic)
+
+    async def read_meta(self) -> dict[str, str]:
+        return _pairs(await self._client().hgetall(self._meta))  # type: ignore[misc]
+
+    async def release(self, connector_id: str) -> bool:
+        """Take a deleted connector off its lane's count at once.
+
+        Its entry stays, so a late event still goes to the same lane, until
+        upkeep sees that lane finished past the delete. True if it had a live
+        entry. The shared ``__default__`` entry is never released.
+        """
+        if connector_id == DEFAULT_LANE_KEY:
+            return False
+        released = bool(await self._eval(_RELEASE_SCRIPT, connector_id))
+        if released:
+            self.logger.info(
+                "Connector %s was deleted; its lane on %s is free for the next connector",
+                connector_id,
+                self.topic,
+            )
+        return released
+
+    async def correct_class(
+        self, connector_id: str, entry: LaneEntry, connector_class: str
+    ) -> bool:
+        """Record a connector's real class, read from the graph, if its entry
+        is still the one that was read. Affects later placements only."""
+        return bool(
+            await self._eval(_SET_CLASS_SCRIPT, connector_id, entry.encode(), connector_class)
+        )
+
+    async def record_at_hash_lane(
+        self,
+        connector_id: str,
+        connector_class: str,
+        *,
+        org_id: str | None = None,
+        connector_type: str | None = None,
+    ) -> int:
+        """Record a connector where hashing has always put it, unless it
+        already has a lane. Used by the upgrade fix-up, which then moves only
+        the connectors that collide."""
+        reply = await self._eval(
+            _LOOKUP_SCRIPT, connector_id, self._fallback_lane_count, "1"
+        )
+        lane_count = self._note_lane_count(reply[1])
+        entry = LaneEntry.parse(reply[0])
+        if entry is not None and entry.lane < lane_count:
+            return entry.lane
+        request = LaneRequest(
+            connector_id=connector_id,
+            connector_class=connector_class,
+            hash_lane=stable_lane(connector_id, lane_count),
+            reason=LaneRequestReason.UPGRADE,
+            org_id=org_id,
+            connector_type=connector_type,
+        )
+        _status, value, _occupancy = await self._commit_loop(
+            request,
+            entry,
+            snapshot_from_meta(_pairs(reply[3]), lane_count, int(reply[2])),
+            mode="assign",
+            legacy_lane=request.hash_lane,
+            choose=_hash_lane_rule,
+        )
+        recorded = LaneEntry.parse(value)
+        if recorded is None:
+            raise RuntimeError(f"Lane map returned an unreadable entry for {connector_id}")
+        self._remember(connector_id, recorded.lane)
+        return recorded.lane
+
+    async def upkeep(
+        self,
+        oldest_waiting_ms: Mapping[int, float] | None,
+        *,
+        fence_delay_ms: int,
+        busy_after_ms: int = BUSY_READING_MAX_AGE_MS,
+    ) -> UpkeepResult:
+        """Fence settled moves and deletes, clear and remove what has drained,
+        rebuild the counts and write the busy flags, in one atomic step.
+
+        ``oldest_waiting_ms`` is, per lane number, when its oldest unfinished
+        event was published (lanes with none left out); None when the backlog
+        could not be read, so nothing that depends on it is decided.
+        """
+        pairs: list[object] = []
+        for lane, oldest in (oldest_waiting_ms or {}).items():
+            pairs.extend((lane, int(oldest)))
+        reply = await self._eval(
+            _UPKEEP_SCRIPT,
+            int(fence_delay_ms),
+            int(busy_after_ms),
+            self._fallback_lane_count,
+            "1" if oldest_waiting_ms is not None else "",
+            *pairs,
+        )
+        return UpkeepResult(
+            fenced=int(reply[0]),
+            cleared=int(reply[1]),
+            removed=int(reply[2]),
+            now_ms=int(reply[3]),
+        )
+
+    async def mark_migrated(self) -> int:
+        """Record that the one-time upgrade fix-up is done; returns when it was."""
+        return int(await self._eval(_MARK_MIGRATED_SCRIPT))
 
     async def _lookup_or_place(
         self, connector_id: str, hint: LaneHint, *, is_new: bool
@@ -605,6 +882,8 @@ class LaneAssignments:
         *,
         mode: str,
         legacy_lane: int | None,
+        choose: Callable[[LaneRequest, LaneSnapshot], LaneChoice] | None = None,
+        still_held: Collection[int] = (),
     ) -> tuple[str, object, tuple[int, int]]:
         """Commit the rule's choice, asking it again on a fresh snapshot for as
         long as another placement keeps getting in first.
@@ -618,7 +897,9 @@ class LaneAssignments:
                 if entry is not None and request.current_lane is not None
                 else snapshot
             )
-            choice = self._choose(request, view)
+            if still_held:
+                view = _with_large_on(view, still_held)
+            choice = (choose or self._choose)(request, view)
             if choice is KEEP_CURRENT:
                 if request.current_lane is None:
                     raise ValueError(
@@ -832,3 +1113,13 @@ def shared_lane_assignments(
         )
         _shared[key] = assignments
         return assignments
+
+
+def lane_assignments_in_use(topic: str) -> LaneAssignments | None:
+    """The lane map this process's producers place ``topic`` by, if any.
+
+    None unless a producer was built with assignment on, on Redis: the
+    creation, delete and upkeep paths then have nothing to do.
+    """
+    with _shared_lock:
+        return next((a for a in _shared.values() if a.topic == topic), None)

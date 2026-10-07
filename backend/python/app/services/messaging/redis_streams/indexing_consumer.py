@@ -40,7 +40,7 @@ from app.services.distributed.interface import IDistributedLeaseManager, IRetryT
 from app.services.messaging.lanes.assignment import read_lane_map, write_lane_count
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
 from app.services.messaging.lease import LeaseRenewer
-from app.services.messaging.redis_streams.backlog import read_stream_backlog
+from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
 from app.services.messaging.redis_streams.stream_read_planner import StreamReadPlanner
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
@@ -543,7 +543,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         ]
         if not streams:
             raise RuntimeError(f"This consumer does not read {topic}")
-        oldest = await read_stream_backlog(self.redis, self.config.group_id, streams)
+        oldest, pending = await read_stream_backlog_detail(
+            self.redis, self.config.group_id, streams
+        )
 
         # The same settings the lane-aware producer routes by.
         laned = topic in messaging_env.fair_scheduling_laned_topics
@@ -563,7 +565,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 assignments,
             )
 
-        return LaneBacklog(topic, oldest, lanes_for_event)
+        return LaneBacklog(topic, oldest, lanes_for_event, pending)
 
     async def __read_lane_map(self, topic: str) -> "Mapping[str, LaneEntry] | None":
         """The lane map, once per backlog read; None if it cannot be read,

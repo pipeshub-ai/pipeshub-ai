@@ -1416,6 +1416,37 @@ class TestIndexingHealthCheck:
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
 
+    async def test_the_queue_lane_view_is_included_once_upkeep_has_run(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+        from app.modules.indexing.lane_upkeep import LaneReport
+
+        report = LaneReport(
+            topic="record-events",
+            updated_at_ms=5,
+            lane_count=8,
+            migrated_at_ms=4,
+            backlog_read=True,
+            lanes=[{"lane": 0, "stream": "record-events.0"}],
+        )
+        with patch("app.indexing_main.last_lane_report", return_value=report):
+            result = await health_check(_make_health_request())
+
+        body = json.loads(result.body)
+        assert body["lanes"]["laneCount"] == 8
+        assert body["lanes"]["lanes"] == [{"lane": 0, "stream": "record-events.0"}]
+
+    async def test_no_lane_view_before_upkeep_has_run(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+
+        with patch("app.indexing_main.last_lane_report", return_value=None):
+            result = await health_check(_make_health_request())
+
+        assert "lanes" not in json.loads(result.body)
+
     async def test_stats_failures_are_not_echoed(self):
         """Still healthy; the exceptions go to the log and the payload says only that stats are unavailable."""
         import json
@@ -3035,3 +3066,60 @@ class TestRecoveryAsksTheRecordConsumerForItsBacklog:
 
         consumer.lane_backlog.assert_awaited_once_with("record-events")
         container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+
+class TestLaneUpkeepInTheRecoveryPass:
+    async def test_the_backlog_is_read_once_and_shared(self) -> None:
+        from app.indexing_main import _read_once
+
+        read = AsyncMock(return_value="backlog")
+        once = _read_once(read)
+
+        assert (await once(), await once()) == ("backlog", "backlog")
+        read.assert_awaited_once()
+
+    async def test_a_failed_read_fails_every_caller_the_same_way_without_reading_again(self) -> None:
+        from app.indexing_main import _read_once
+
+        read = AsyncMock(side_effect=ConnectionError("broker down"))
+        once = _read_once(read)
+
+        for _ in range(2):
+            with pytest.raises(ConnectionError):
+                await once()
+        read.assert_awaited_once()
+
+    async def test_with_hashing_upkeep_does_nothing(self) -> None:
+        from app.indexing_main import _upkeep_lanes
+
+        read = AsyncMock()
+        with patch("app.indexing_main.lane_assignments_in_use", return_value=None), \
+             patch("app.indexing_main.run_lane_upkeep", new_callable=AsyncMock) as upkeep:
+            await _upkeep_lanes(
+                graph_provider=MagicMock(), producer=MagicMock(), read_backlog=read,
+                run_coordination=lambda coro: coro, logger=MagicMock(),
+            )
+
+        upkeep.assert_not_awaited()
+        read.assert_not_awaited()
+
+    async def test_upkeep_gets_the_backlog_or_none_and_never_fails_the_pass(self) -> None:
+        from app.indexing_main import _upkeep_lanes
+
+        assignments = MagicMock()
+        logger = MagicMock()
+        with patch("app.indexing_main.lane_assignments_in_use", return_value=assignments), \
+             patch(
+                 "app.indexing_main.run_lane_upkeep",
+                 new_callable=AsyncMock,
+                 side_effect=RuntimeError("redis gone"),
+             ) as upkeep:
+            await _upkeep_lanes(
+                graph_provider=MagicMock(), producer=MagicMock(),
+                read_backlog=AsyncMock(side_effect=ConnectionError("broker down")),
+                run_coordination=lambda coro: coro, logger=logger,
+            )
+
+        assert upkeep.await_args.kwargs["backlog"] is None
+        assert upkeep.await_args.kwargs["assignments"] is assignments
+        logger.warning.assert_called_once()

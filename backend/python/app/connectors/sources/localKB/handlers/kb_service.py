@@ -30,6 +30,10 @@ from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH, RESTORED_AT_FIELD
+from app.services.messaging.lanes.lifecycle import (
+    assign_lane_to_new_connector,
+    free_lane_of_deleted_connector,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     MoveDestinationMissing,
@@ -569,6 +573,13 @@ class KnowledgeBaseService:
                 transaction=txn_id,
             )
             await self.graph_provider.commit_transaction(txn_id)
+            await assign_lane_to_new_connector(
+                self.logger,
+                kb_key,
+                connector_type=Connectors.KNOWLEDGE_BASE.value,
+                scope=ConnectorScopes.PERSONAL.value,
+                org_id=org_id,
+            )
 
             result = {"success": True}
             if result and result.get("success"):
@@ -880,6 +891,7 @@ class KnowledgeBaseService:
                     f"Published only {published}/{len(events)} vector-cleanup "
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
+            await free_lane_of_deleted_connector(self.logger, kb_id)
 
             # Fire-and-forget: etcd config + blob storage cleanup runs in the
             # background so the API response is not blocked (mirrors the async

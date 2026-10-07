@@ -130,3 +130,36 @@ async def test_a_script_flushed_by_a_restart_is_loaded_again(
 
     assert set(await read_lane_map(provider.get_client(), topic)) == {"c-1", "c-2"}
     await assignments.aclose()
+
+
+async def test_release_upkeep_and_the_upgrade_marker_on_the_real_lua_runtime(
+    redis_available: tuple[str, int], topic: str
+) -> None:
+    host, port = redis_available
+    provider = _provider(host, port)
+    assignments = LaneAssignments(
+        logging.getLogger("it"), provider, topic=topic, fallback_lane_count=LANES, cache_seconds=0
+    )
+    same_lane = [c for c in (f"c-{i}" for i in range(200)) if stable_lane(c, LANES) == 5][:2]
+    for connector in same_lane:
+        await assignments.lane_for(connector)
+    moved = (await read_lane_map(provider.get_client(), topic))[same_lane[1]]
+    await assignments.release(same_lane[0])
+
+    fenced = await assignments.upkeep({5: 1.0}, fence_delay_ms=0)
+    assert fenced.fenced == 2
+    held = await assignments.upkeep({5: 1.0}, fence_delay_ms=0)
+    assert (held.cleared, held.removed) == (0, 0)
+    drained = await assignments.upkeep({}, fence_delay_ms=0)
+    assert (drained.cleared, drained.removed) == (1, 1)
+
+    entries = await read_lane_map(provider.get_client(), topic)
+    assert set(entries) == {same_lane[1]}
+    assert entries[same_lane[1]].lane == moved.lane
+    assert entries[same_lane[1]].prev_lane is None
+    first = await assignments.mark_migrated()
+    assert await assignments.mark_migrated() == first
+    meta = await assignments.read_meta()
+    assert meta[f"large:{moved.lane}"] == "1"
+    assert meta["large:5"] == "0"
+    await assignments.aclose()
