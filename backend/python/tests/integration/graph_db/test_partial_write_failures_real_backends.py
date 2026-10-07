@@ -1238,6 +1238,8 @@ async def test_a_folder_in_the_trash_takes_no_new_folder_and_no_upload(
     assert (await kb.service.validate_folder_for_upload(kb.kb_id, kb.old, kb.owner, w.org_id))["valid"] is True
 
 
+# Neo4j only: ArangoDB reads the parent without a lock (see upsert_record_under_parent).
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
 async def test_a_kb_move_waits_for_a_trash_of_its_folder_still_being_written(world: _World) -> None:
     """The trash marks the folder in a transaction still open when the move is checked and written.
 
@@ -1246,8 +1248,6 @@ async def test_a_kb_move_waits_for_a_trash_of_its_folder_still_being_written(wor
     before taking its lock and put the item under it once the trash commits.
     """
     w = world
-    if not w.neo4j:
-        pytest.skip("ArangoDB reads the parent without a lock; see upsert_record_under_parent")
     kb = await _kb_tree(w)
     in_old = {
         "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
