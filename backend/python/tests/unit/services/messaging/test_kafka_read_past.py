@@ -424,3 +424,99 @@ class TestARevokeWhileFetchedBackMessagesAreInHand:
         main.position.pop(TP, None)
         await _until(lambda: harness.committed() == 505)
         assert {*handler.seen} == {f"a-{i:05d}" for i in range(500)} | {f"b-{i}" for i in range(5)}
+
+
+class TestFetchBackFailures:
+    async def test_a_failed_commit_while_resolving_deleted_offsets_does_not_strand_the_partition(
+        self, harness: Harness
+    ) -> None:
+        harness.produce_backlog(a=500)
+        release = asyncio.Event()
+        real_fetch = remembered_module.OffsetFetcher.fetch
+
+        async def held_fetch(self, wanted):  # noqa: ANN202
+            await release.wait()
+            return await real_fetch(self, wanted)
+
+        handler = Handler()
+        with patch.object(remembered_module.OffsetFetcher, "fetch", held_fetch):
+            consumer = await harness.start(handler)
+            await _until(lambda: len(handler.seen) == 55)
+            main = harness.broker.consumers[0]
+            commit = main.commit
+            failed: list[dict] = []
+
+            async def commit_failing_once(offsets=None):  # noqa: ANN202
+                if not failed:
+                    failed.append(dict(offsets or {}))
+                    raise RuntimeError("coordinator moved")
+                return await commit(offsets)
+
+            main.commit = commit_failing_once
+            harness.broker.log_start[TP] = 80
+            release.set()
+            await _until(lambda: harness.committed() == 505)
+
+        assert failed, "the failing commit was never attempted"
+        assert len(handler.seen) == 505 - 30
+        assert consumer._remembered.total == 0
+
+    async def test_a_message_that_fails_to_parse_on_fetch_back_stays_remembered_and_is_retried(
+        self, harness: Harness
+    ) -> None:
+        harness.produce_backlog(a=500)
+        handler = Handler()
+        consumer = await harness.start(handler)
+        parse = consumer._IndexingKafkaConsumer__parse_message
+        calls: dict[int, int] = {}
+
+        async def parse_failing_once_on_fetch_back(message):  # noqa: ANN202
+            calls[message.offset] = calls.get(message.offset, 0) + 1
+            # The second parse of offset 50 is its fetch-back.
+            if message.offset == 50 and calls[50] == 2:
+                raise ValueError("transient")
+            return await parse(message)
+
+        consumer._IndexingKafkaConsumer__parse_message = parse_failing_once_on_fetch_back
+        await _until(lambda: harness.committed() == 505)
+
+        assert calls[50] >= 3
+        assert handler.seen.count("a-00050") == 1
+        assert _a_in_order(handler)
+
+
+async def test_a_revoke_while_a_poison_message_is_reported_commits_nothing(harness: Harness) -> None:
+    """The revocation clears the partition's watermark; marking the poison
+    offset done afterwards would compute one from nothing and commit past
+    offsets the next owner still needs."""
+    harness.broker.produce(TOPIC, _envelope("a-00000", "conn-a"))
+    harness.broker.produce(TOPIC, b"{not json")
+    consumer_ref: list[IndexingKafkaConsumer] = []
+    reported: list[bool] = []
+
+    class RevokingSink:
+        async def on_message_abandoned(self, message, *, reason, attempts):  # noqa: ANN202
+            await consumer_ref[0]._on_partitions_revoked([TP])
+            reported.append(True)
+
+    handler = Handler()
+    consumer = IndexingKafkaConsumer(
+        logging.getLogger("test"),
+        KafkaConsumerConfig(
+            topics=[TOPIC], client_id="indexing-test", group_id=GROUP,
+            auto_offset_reset="earliest", enable_auto_commit=False,
+            bootstrap_servers=["kafka:9092"],
+        ),
+        fair_scheduler_config=_fair(),
+        disposition_sink=RevokingSink(),
+    )
+    consumer_ref.append(consumer)
+    harness.consumers.append(consumer)
+    await consumer.start(handler)
+    await _until(lambda: bool(reported))
+    await asyncio.sleep(0.3)
+
+    # Offset 0 was buffered when the revocation purged it; a commit past it
+    # would make the next owner skip it.
+    commits = harness.broker.consumers[0].commit_calls
+    assert all(c.get(TP, 0) == 0 for c in commits), commits

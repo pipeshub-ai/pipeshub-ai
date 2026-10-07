@@ -1629,99 +1629,101 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         found: dict[tuple[TopicPartition, int], ConsumerRecord],
         gone: set[tuple[TopicPartition, int]],
     ) -> None:
+        """Buffer, or resolve, what a fetch-back brought.
+
+        Positions stay in ``RememberedOffsets`` through every await, so a
+        revocation that runs during one forgets them like any other. They are
+        taken off the queue only in the synchronous step below, and only from
+        the head while the next one is on a partition not revoked since the
+        last poll. Anything not taken stays remembered for a later pass.
+        """
         remembered = self._remembered
         scheduler = self._scheduler
         if remembered is None or scheduler is None:
             return
-        # Positions are looked up afresh: a rebalance during the fetch forgets
-        # those of revoked partitions, and only what is still remembered, from
-        # the head, is buffered. A record at an offset never changes, so one
-        # remembered again after a reassignment is the same message.
-        #
-        # Once popped, a position is out of reach of the revocation callback,
-        # which can still run during any await below. So after each await a
-        # position on a partition revoked since the last poll is dropped: not
-        # buffered, not remembered again, not tracked or committed. The
-        # revocation cleared its watermark, and its next owner reads it from
-        # the committed offset.
         revoked = self._revoked_since_poll
-        settled_gone: list[tuple[TopicPartition, int]] = []
-        fetched: list[tuple[FairnessKey, TopicPartition, ConsumerRecord]] = []
+
+        pre_parsed: dict[tuple[TopicPartition, int], StreamMessage | None] = {}
         for entity in plan:
-            for _ in range(len(plan[entity])):
+            for position in remembered.peek(entity, len(plan[entity])):
+                if position in gone:
+                    continue
+                if position not in found:
+                    break
+                try:
+                    parsed = await self.__parse_message(found[position])
+                except Exception as e:
+                    # It parsed when it was first read; try again next pass.
+                    self.logger.warning(
+                        "Could not parse fetched-back message %s-%s; it stays "
+                        "remembered: %r", position[0], position[1], e,
+                    )
+                    parsed = None
+                if parsed is not None:
+                    pre_parsed[position] = parsed
+        settled = await self.__settle_connector_off(pre_parsed)
+
+        # No awaits from here until the positions taken are resolved.
+        buffered = 0
+        settled_taken: list[tuple[TopicPartition, int]] = []
+        gone_taken: list[tuple[TopicPartition, int]] = []
+        for entity in plan:
+            while True:
                 position = remembered.head(entity)
-                if position is None or position not in found and position not in gone:
+                if position is None or position[0] in revoked:
+                    break
+                if position in gone:
+                    gone_taken.append(remembered.pop(entity))
+                    continue
+                if position in settled:
+                    settled_taken.append(remembered.pop(entity))
+                    continue
+                parsed = pre_parsed.get(position)
+                if parsed is None:
+                    break
+                result = scheduler.enqueue(
+                    self.key_extractor.extract(parsed),
+                    (position[0], found[position], parsed),
+                    not_before=self.__retry_not_before(parsed),
+                )
+                if result != EnqueueResult.ACCEPTED:
+                    # Others may have taken the room measured when the fetch
+                    # was planned; the rest wait for a later pass, in order.
                     break
                 remembered.pop(entity)
-                if position in gone:
-                    settled_gone.append(position)
-                else:
-                    fetched.append((entity, position[0], found[position]))
-        if settled_gone:
+                buffered += 1
+
+        if gone_taken:
             self.logger.warning(
                 "%d remembered message(s) were deleted by Kafka retention before "
                 "they could be read back; their records are re-sent by the "
                 "stranded-record sweep",
-                len(settled_gone),
+                len(gone_taken),
             )
-            for tp, offset in settled_gone:
-                if tp not in revoked:
-                    await self.__resolve_offset(_InFlightOffset(tp, offset), done=True)
-        if not fetched:
-            return
+            await self.__commit_resolved(gone_taken)
+        await self.__resolve_settled(settled_taken, settled)
 
-        pre_parsed: dict[tuple[TopicPartition, int], StreamMessage | None] = {}
-        for _entity, tp, record in fetched:
-            try:
-                pre_parsed[(tp, record.offset)] = await self.__parse_message(record)
-            except Exception:
+    async def __commit_resolved(self, positions: list[tuple[TopicPartition, int]]) -> None:
+        """Mark offsets done in the watermark, all before any await, then
+        commit once per partition. A failed commit is carried by the next one."""
+        offset_tracker = self._offset_tracker
+        if offset_tracker is None or self.consumer is None:
+            return
+        commits: dict[TopicPartition, int] = {}
+        for tp, offset in positions:
+            if tp in self._revoked_since_poll:
                 continue
-        settled = await self.__settle_connector_off(pre_parsed)
-        fetched = [item for item in fetched if item[1] not in revoked]
-        settled_reached = [
-            (tp, record.offset) for _e, tp, record in fetched if (tp, record.offset) in settled
-        ]
-        refused: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
-        for entity, tp, record in fetched:
-            position = (tp, record.offset)
-            if position in settled or tp in revoked:
-                continue
-            if entity in refused:
-                refused[entity].append(position)
-                continue
-            parsed = pre_parsed.get(position)
-            if parsed is None:
-                # Unparseable now means unparseable when first read, before its
-                # key was known: the terminal path, as for any poison message.
-                await self.__commit_if_appropriate(
-                    record,
-                    None,
-                    success=False,
-                    is_terminal_error=True,
-                    in_flight=_InFlightOffset(tp, record.offset),
-                )
-                continue
-            result = scheduler.enqueue(
-                self.key_extractor.extract(parsed),
-                (tp, record, parsed),
-                not_before=self.__retry_not_before(parsed),
+            watermark = offset_tracker.mark_done(tp, offset)
+            if watermark is not None:
+                commits[tp] = watermark
+        if not commits:
+            return
+        try:
+            await self.consumer.commit(commits)  # type: ignore
+        except Exception as e:
+            self.logger.warning(
+                "Could not commit past %d resolved offset(s): %s", len(positions), e
             )
-            if result != EnqueueResult.ACCEPTED:
-                # Other connectors may have taken the room measured when the
-                # fetch was planned; this connector's rest go back in order.
-                self.logger.debug(
-                    "Fetched-back message %s-%s could not be buffered (%s); "
-                    "remembering it again",
-                    tp,
-                    record.offset,
-                    result.value,
-                )
-                refused[entity] = [position]
-        for entity, positions in refused.items():
-            kept = [p for p in positions if p[0] not in revoked]
-            if kept:
-                remembered.restore_front(entity, kept)
-        await self.__resolve_settled(settled_reached, settled)
 
     def __retry_not_before(self, parsed: StreamMessage) -> float | None:
         not_before = parsed.payload.get("_retry_not_before")
@@ -1763,7 +1765,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         tp, offset = in_flight.tp, in_flight.offset
 
         async def do_resolve() -> None:
-            if self.consumer is None:
+            # Revoked while this delivery was settling: the revocation cleared
+            # the partition's watermark, so marking it now would compute one
+            # from nothing and commit past offsets the next owner still needs.
+            if self.consumer is None or tp in self._revoked_since_poll:
                 return
             watermark = (
                 offset_tracker.mark_done(tp, offset)
