@@ -444,11 +444,11 @@ class TestAMoveIsOnlyMadeToALaneOfItsOwn:
         assert producer.events == []
         assert report.migrated_at_ms is not None
 
-    async def test_a_move_that_still_lands_beside_a_large_connector_is_not_counted_done(
+    async def test_a_lane_an_edition_rule_picks_is_its_decision_and_the_records_follow(
         self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
     ) -> None:
-        """An edition rule may choose a lane that is taken; that pair is
-        decided on a later pass before anything is re-sent there."""
+        """An edition may put a connector beside another large one; the fix-up
+        takes that as decided and re-sends its queued records there."""
         await provider.get_client().hset(lane_meta_key(TOPIC), "laneCount", str(LANES))
         graph.add(GITLAB, queued=40)
         graph.add(SLACK, queued=6)
@@ -461,47 +461,18 @@ class TestAMoveIsOnlyMadeToALaneOfItsOwn:
             provider,
             topic=TOPIC,
             fallback_lane_count=LANES,
-            choose=lambda _request, _snapshot: drive_lane,
-        )
-
-        report = await _upkeep(provider, graph, producer, assignments=onto_drive)
-
-        assert (await _map(provider))[SLACK].lane == drive_lane
-        assert producer.events == []
-        assert report.migrated_at_ms is None
-
-    async def test_the_pair_an_edition_rule_made_is_decided_once_the_move_settles(
-        self,
-        provider: FakeRedisConnectionProvider,
-        graph: _Graph,
-        producer: _RecordingProducer,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """No pass may sit on the same map for ever: once the move off the
-        shared lane has settled, the pair it joined is decided and it ends."""
-        monkeypatch.setenv("FAIR_SCHEDULING_LANE_CACHE_SECONDS", "0")
-        monkeypatch.setattr(lane_upkeep_module, "_FENCE_MARGIN_MS", 0)
-        await provider.get_client().hset(lane_meta_key(TOPIC), "laneCount", str(LANES))
-        graph.add(GITLAB, queued=40)
-        graph.add(SLACK, queued=6)
-        graph.add("drive-1", queued=3)
-        await _assignments(provider).record_at_hash_lane("drive-1", "team")
-        drive_lane = stable_lane("drive-1", LANES)
-        onto_drive = LaneAssignments(
-            logging.getLogger("t"),
-            provider,
-            topic=TOPIC,
-            fallback_lane_count=LANES,
-            # Slack goes beside Drive; anyone already placed stays where it is.
             choose=lambda request, _snapshot: drive_lane
             if request.connector_id == SLACK
             else request.current_lane,
         )
 
-        passes = [await _upkeep(provider, graph, producer, assignments=onto_drive) for _ in range(4)]
+        report = await _upkeep(provider, graph, producer, assignments=onto_drive)
 
-        assert passes[0].migrated_at_ms is None
-        assert passes[-1].migrated_at_ms is not None
+        assert (await _map(provider))[SLACK].lane == drive_lane
+        assert [(t, p["recordId"]) for t, _e, p, _k in producer.events] == [
+            (f"{TOPIC}.{drive_lane}", f"{SLACK}-r{i}") for i in range(6)
+        ]
+        assert report.migrated_at_ms is not None
 
 
 async def _seed(
@@ -548,7 +519,7 @@ class TestTheBiggestQueueGetsTheFreeLane:
         assert (entries["a-30"].lane, entries["b-10"].lane, entries["c-200"].lane) == (0, 0, 6)
         assert report.migrated_at_ms is not None
 
-    async def test_one_already_moved_onto_a_shared_lane_with_nowhere_better_is_decided(
+    async def test_one_already_moved_onto_a_shared_lane_stays_and_its_records_follow(
         self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
     ) -> None:
         """Every lane has a team connector, lane 0 two of them, and X moved off
@@ -564,8 +535,86 @@ class TestTheBiggestQueueGetsTheFreeLane:
         report = await _upkeep(provider, graph, producer)
 
         assert report.migrated_at_ms is not None
-        assert (await _map(provider))["x-moved"].lane == 1
-        assert producer.events == []
+        entries = await _map(provider)
+        assert (entries["x-moved"].lane, entries["second-0"].lane) == (1, 0)
+        assert [(t, p["recordId"]) for t, _e, p, _k in producer.events] == [
+            (f"{TOPIC}.1", f"x-moved-r{i}") for i in range(20)
+        ], "its new events already go to lane 1, so its queued ones follow"
+
+
+class TestAFreeLaneReallyIsFree:
+    async def test_a_lane_still_holding_a_keepers_backlog_is_not_given_away(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """Lane 0: an occupant with 50 queued and K (200), which moved to lane
+        2 but whose backlog is still on lane 0. Lane 1: 100 and 10. Lane 7 is
+        the only free lane."""
+        placements: dict[str, tuple[int, int | None, int]] = {
+            "o-50": (0, None, 50),
+            "k-200": (2, 0, 200),
+            "p-100": (1, None, 100),
+            "q-10": (1, None, 10),
+        }
+        placements |= {f"solo-{lane}": (lane, None, 5) for lane in range(3, 7)}
+        await _seed(provider, graph, placements)
+
+        report = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert entries["o-50"].lane == 7
+        assert entries["q-10"].lane == 1, "lane 0 still holds K's backlog"
+        # K keeps lane 0's backlog, where O no longer sits in front of it;
+        # only O's records follow O.
+        assert {t for t, *_ in producer.events} == {f"{TOPIC}.7"}
+        assert report.migrated_at_ms is not None
+
+    async def test_a_connector_still_settling_holds_the_free_lane_for_itself(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """One free lane; A (50) has to leave a shared lane but is still
+        settling an earlier move; B (10) shares another lane. B must not take
+        the lane A is waiting for."""
+        placements: dict[str, tuple[int, int | None, int]] = {
+            "c-200": (3, None, 200),
+            "a-50": (3, 4, 50),
+            "big-4": (4, None, 300),
+            "x-100": (0, None, 100),
+            "b-10": (0, None, 10),
+        }
+        placements |= {f"solo-{lane}": (lane, None, 5) for lane in (1, 2, 5, 6)}
+        await _seed(provider, graph, placements)
+
+        first = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert first.migrated_at_ms is None
+        assert (entries["a-50"].lane, entries["b-10"].lane) == (3, 0)
+
+        settled = LaneEntry(3, "team")
+        await provider.get_client().hset(lane_map_key(TOPIC), "a-50", settled.encode())
+        second = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert entries["a-50"].lane == 7
+        assert entries["b-10"].lane == 0
+        assert second.migrated_at_ms is not None
+
+
+    async def test_a_connector_recorded_late_beside_one_already_moved_is_separated(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """A connector the fix-up moved on an earlier pass still takes part
+        on the lane it is on now: one recorded there later must not just join it."""
+        await _seed(provider, graph, {"slack-moved": (5, None, 20)})
+        await _assignments(provider).note_fix_up_progress("slack-moved", "rescued")
+        newcomer = next(c for c in (f"late-{i}" for i in range(500)) if stable_lane(c, LANES) == 5)
+        graph.add(newcomer, queued=50)
+
+        report = await _upkeep(provider, graph, producer)
+
+        entries = await _map(provider)
+        assert entries[newcomer].lane != entries["slack-moved"].lane
+        assert report.migrated_at_ms is not None
 
 
 class TestConnectorsFromBeforeOrgWasOnTheDocument:
