@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import crypto from 'crypto'
 import { Types } from 'mongoose'
 import { OAuthDeviceService } from '../../../../src/modules/oauth_provider/services/oauth.device.service'
+import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
 import {
   OAuthDeviceCode,
   OAuthDeviceCodeStatus,
@@ -70,7 +71,11 @@ describe('OAuthDeviceService', () => {
     mockScopeValidatorService = {
       parseScopes: sinon.stub().returns(['user:read']),
       validateScopesForApp: sinon.stub(),
+      resolveGrantedScopes: sinon.stub().returns({ granted: ['user:read'], notGranted: [] }),
       getScopeDefinitions: sinon.stub().returns([{ name: 'user:read' }]),
+      getGrantedScopes: sinon.stub().callsFake((requested: string[], allowed: string[]) =>
+        new ScopeValidatorService().getGrantedScopes(requested, allowed),
+      ),
     }
     mockFirstPartyDeviceAppService = {
       getOrCreate: sinon.stub().resolves('pipeshub-agent'),
@@ -101,6 +106,23 @@ describe('OAuthDeviceService', () => {
     expect(result.user_code).to.match(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)
     expect(result.verification_uri).to.equal('http://localhost:3000/oauth/device')
     expect(result.interval).to.equal(5)
+  })
+
+  it('should store only the requested scopes the app allows', async () => {
+    const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
+    const realService = new OAuthDeviceService(
+      mockLogger as any,
+      mockOAuthAppService,
+      mockOAuthTokenService,
+      new ScopeValidatorService(),
+      mockFirstPartyDeviceAppService,
+    )
+    await realService.createAuthorization(
+      'cid',
+      'user:read agent:read',
+      'http://localhost:3000',
+    )
+    expect(create.firstCall.args[0].scopes).to.deep.equal(['user:read'])
   })
 
   it('should not reset lastPolledAt when rejecting a fast poll', async () => {
@@ -184,6 +206,28 @@ describe('OAuthDeviceService', () => {
     expect(mockOAuthTokenService.generateTokens.firstCall.args[1]).to.not.equal(
       null,
     )
+  })
+
+  it('should drop scopes the app lost between approval and poll', async () => {
+    const userId = new Types.ObjectId()
+    const orgId = new Types.ObjectId()
+    const approved = {
+      _id: new Types.ObjectId(),
+      status: OAuthDeviceCodeStatus.APPROVED,
+      expiresAt: new Date(Date.now() + 60_000),
+      userId,
+      orgId,
+      scopes: ['user:read', 'kb:read'],
+      clientId: 'cid',
+    }
+    sinon.stub(OAuthDeviceCode, 'findOne').resolves(approved as any)
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any)
+    stubLookup(Users, { fullName: 'Ada' })
+    stubLookup(Org, { accountType: 'business' })
+
+    await service.poll('cid', undefined, 'device-code')
+
+    expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal(['user:read'])
   })
 
   for (const gone of ['user', 'org'] as const) {

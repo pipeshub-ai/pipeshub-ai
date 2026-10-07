@@ -95,10 +95,11 @@ export class OAuthProviderController {
     try {
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(query.scope)
-      this.scopeValidatorService.validateScopesForApp(
-        requestedScopes,
-        app.allowedScopes,
-      )
+      const { granted, notGranted } =
+        this.scopeValidatorService.resolveGrantedScopes(
+          requestedScopes,
+          app.allowedScopes,
+        )
 
       // RFC 9700: PKCE is REQUIRED for public clients
       if (!app.isConfidential && !query.code_challenge) {
@@ -117,8 +118,12 @@ export class OAuthProviderController {
 
       // Build consent data
       const user = req.user!
-      const scopeDefinitions =
-        this.scopeValidatorService.getScopeDefinitions(requestedScopes)
+      const toScopeInfo = (scopes: string[]): ConsentData['scopes'] =>
+        this.scopeValidatorService.getScopeDefinitions(scopes).map((s) => ({
+          name: s.name,
+          description: s.description,
+          category: s.category,
+        }))
 
       const consentData: ConsentData = {
         app: {
@@ -129,11 +134,8 @@ export class OAuthProviderController {
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
         },
-        scopes: scopeDefinitions.map((s) => ({
-          name: s.name,
-          description: s.description,
-          category: s.category,
-        })),
+        scopes: toScopeInfo(granted),
+        notGrantedScopes: toScopeInfo(notGranted),
         user: {
           email: user.email,
           name: user.fullName,
@@ -225,7 +227,7 @@ export class OAuthProviderController {
 
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(scope)
-      this.scopeValidatorService.validateScopesForApp(
+      const { granted } = this.scopeValidatorService.resolveGrantedScopes(
         requestedScopes,
         app.allowedScopes,
       )
@@ -236,7 +238,7 @@ export class OAuthProviderController {
         user.userId,
         user.orgId,
         redirect_uri,
-        requestedScopes,
+        granted,
         code_challenge,
         code_challenge_method,
       )
@@ -249,7 +251,7 @@ export class OAuthProviderController {
       this.logger.info('Authorization code issued', {
         clientId: client_id,
         userId: user.userId,
-        scopes: requestedScopes,
+        scopes: granted,
       })
 
       res.json({ redirectUrl: redirectUrl.toString() })
@@ -603,15 +605,20 @@ export class OAuthProviderController {
       }
     }
 
-    // Generate tokens
+    // The code may predate an edit that removed scopes from the app; the
+    // revocation that edit triggers cannot reach a token minted after it.
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       codeResult.userId,
       codeResult.orgId,
-      codeResult.scopes,
+      this.scopeValidatorService.getGrantedScopes(
+        codeResult.scopes,
+        app.allowedScopes,
+      ),
       true,
       fullName,
       accountType,
+      { recheckAppScopes: true },
     )
 
     this.logger.info('Authorization code grant completed', {

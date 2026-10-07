@@ -331,6 +331,167 @@ class TestUpdateAttachments:
         assert graph.rolled_back
         _no_leak(response)
 
+    _SLACK = {"name": "Slack", "instanceId": "inst-1", "tools": [{"name": "send"}]}
+
+    def _linked_toolsets(self, graph: InMemoryGraph) -> list[str]:
+        return [e["_to"] for e in graph.edges_from("agentHasToolset", f"{AGENTS}/private")]
+
+    def _assert_old_toolset_intact(self, graph: InMemoryGraph) -> None:
+        assert self._linked_toolsets(graph) == ["agentToolsets/ts-old"]
+        assert set(graph.nodes["agentToolsets"]) == {"ts-old"}
+        assert set(graph.nodes["agentTools"]) == {"tool-old"}
+        assert [e["_to"] for e in graph.edges_from("toolsetHasTool", "agentToolsets/ts-old")] == [
+            "agentTools/tool-old",
+        ]
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    @pytest.mark.parametrize("failing,collection", [
+        ("batch_upsert_nodes", "agentToolsets"),
+        ("batch_upsert_nodes", "agentTools"),
+        ("batch_create_edges", "toolsetHasTool"),
+        ("batch_create_edges", "agentHasToolset"),
+    ])
+    @pytest.mark.parametrize("how", ["raises", "returns_false"])
+    def test_failed_toolset_save_keeps_the_old_toolsets(
+        self, client, graph, failing, collection, how, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        real = getattr(graph, failing)
+
+        async def fail_for(items: list[dict], target: str, transaction: str | None = None) -> bool:
+            if target == collection:
+                if how == "raises":
+                    raise RuntimeError("write timed out on 10.0.0.7")
+                return False
+            return await real(items, target, transaction)
+        setattr(graph, failing, fail_for)
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 500
+        assert response.json()["detail"].startswith("We couldn't save this agent.")
+        _no_leak(response)
+        self._assert_old_toolset_intact(graph)
+
+    def test_new_toolsets_are_written_in_the_saves_transaction(self, client, graph) -> None:
+        self._seed_toolset(graph)
+        seen: list[str | None] = []
+        for name in ("batch_upsert_nodes", "batch_create_edges"):
+            real = getattr(graph, name)
+
+            async def record(items: list[dict], target: str, transaction: str | None = None, real=real) -> bool:
+                if target in ("agentToolsets", "agentTools", "toolsetHasTool", "agentHasToolset"):
+                    seen.append(transaction)
+                return await real(items, target, transaction)
+            setattr(graph, name, record)
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 200
+        assert len(seen) == 4
+        (transaction,) = set(seen)
+        assert transaction in graph.committed
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_failure_between_old_unlinks_finishes_on_the_new_toolsets(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        graph.add_node("agentToolsets", {"_key": "ts-old2", "name": "github"})
+        graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/private", "_to": "agentToolsets/ts-old2"})
+        real = graph.delete_all_edges_for_node
+        failed: list[str] = []
+
+        async def fail_second_once(node_key: str, collection: str, transaction: str | None = None) -> int:
+            if node_key == "agentToolsets/ts-old2" and collection == "agentHasToolset" and not failed:
+                failed.append(node_key)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(node_key, collection, transaction)
+        graph.delete_all_edges_for_node = fail_second_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 500
+        assert response.json()["detail"].startswith("We couldn't save this agent.")
+        if rollback_undoes_writes:
+            assert sorted(self._linked_toolsets(graph)) == ["agentToolsets/ts-old", "agentToolsets/ts-old2"]
+            assert set(graph.nodes["agentToolsets"]) == {"ts-old", "ts-old2"}
+        else:
+            # Writes that can't be undone: the old links were going anyway, so the save finishes.
+            (new_toolset,) = self._linked_toolsets(graph)
+            new_key = new_toolset.split("/", 1)[1]
+            assert graph.nodes["agentToolsets"][new_key]["name"] == "slack"
+            assert set(graph.nodes["agentToolsets"]) == {new_key}
+            (tool,) = graph.nodes["agentTools"].values()
+            assert tool["fullName"] == "slack.send"
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_failure_removing_old_nodes_keeps_the_new_toolsets_linked(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_tools_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentTools" and "tool-old" in keys and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_tools_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            self._assert_old_toolset_intact(graph)
+        else:
+            (new_toolset,) = self._linked_toolsets(graph)
+            assert new_toolset != "agentToolsets/ts-old"
+            assert "ts-old" not in graph.nodes["agentToolsets"]
+            assert "tool-old" not in graph.nodes["agentTools"]
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_failed_removal_of_every_toolset_keeps_them(self, client, graph, rollback_undoes_writes) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        graph.fail("delete_all_edges_for_node")
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": []})
+
+        assert response.status_code == 500
+        self._assert_old_toolset_intact(graph)
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_removing_every_toolset_still_cleans_up_when_old_nodes_fail_to_delete(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_tools_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentTools" and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_tools_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": []})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            self._assert_old_toolset_intact(graph)
+        else:
+            # Every old link is already gone, as asked; the records they pointed to go too.
+            assert self._linked_toolsets(graph) == []
+            assert graph.nodes["agentToolsets"] == {}
+            assert graph.nodes["agentTools"] == {}
+
     def test_mcp_servers_are_replaced(self, client, graph) -> None:
         graph.add_node("agentMcpServers", {"_key": "mcp-old", "instanceId": "old"})
         graph.add_node("agentTools", {"_key": "mcp-tool-old", "name": "t"})
@@ -517,6 +678,31 @@ class TestUpdateAttachments:
         assert response.status_code == 500
         assert graph.nodes.get("agentKnowledge", {}) == {}
         assert graph.edges_from("agentHasKnowledge", f"{AGENTS}/private") == []
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_removing_all_knowledge_still_cleans_up_when_old_nodes_fail_to_delete(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_two_old(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_knowledge_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentKnowledge" and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_knowledge_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"knowledge": []})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            assert self._linked(graph) == {"agentKnowledge/kn-old", "agentKnowledge/kn-old2"}
+        else:
+            assert self._linked(graph) == set()
+            assert graph.nodes["agentKnowledge"] == {}
 
     def test_skills_link_only_to_the_callers_own_or_builtin_active_skills(self, client, graph) -> None:
         skills = [

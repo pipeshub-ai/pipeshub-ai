@@ -7,6 +7,8 @@ import {
   isValidScope,
   OAuthScopes,
   ScopeCategories,
+  DefaultMcpScopes,
+  AdminOnlyScopes,
 } from '../../../../src/modules/oauth_provider/config/scopes.config'
 import { OAuthScopeNames } from '../../../../src/libs/enums/oauth-scopes.enum'
 
@@ -15,6 +17,14 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     const result = validateScopes(['openid', 'not-a-real-scope'])
     expect(result.valid).to.be.false
     expect(result.invalid).to.include('not-a-real-scope')
+  })
+
+  // pipeshub_directory lists groups through GET /userGroups, which requires
+  // usergroup:read; without it in MCP_SCOPES that call always returns 403.
+  it('DefaultMcpScopes covers group listing and grants nothing admin-only', () => {
+    expect(DefaultMcpScopes).to.include('usergroup:read')
+    expect(DefaultMcpScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
+    expect(DefaultMcpScopes.every((s) => isValidScope(s))).to.be.true
   })
 
   it('getScopesGroupedByCategoryForRole filters admin-only scopes for non-admin', () => {
