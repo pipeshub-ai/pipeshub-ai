@@ -7,6 +7,7 @@ without editing these tests.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -62,10 +63,17 @@ XSS_EXEMPT_EXACT: tuple[tuple[str, frozenset[str]], ...] = (
     ("/api/v1/skills", frozenset({"POST", "PUT", "PATCH"})),
 )
 
-# Operations whose oauth2 entry lists more scopes than requireScopes checks; a later step needs the
-# rest (before an upload, the connector service's knowledge base lookup needs kb:read).
+# The scopes requireScopes checks, where the oauth2 entries do not list exactly those.
+# Upload: a later step needs kb:read too (the connector service's knowledge base lookup).
+# The rest are SDK operations, which may carry only one oauth2 entry (Speakeasy refuses more); the
+# alternative scope is named in their description instead.
 GATE_SCOPES: dict[str, tuple[str, ...]] = {
     "POST /knowledgeBase/{kbId}/upload": ("kb:upload",),
+    "GET /connectors/navigate": ("kb:read", "connector:read"),
+    "GET /connectors/record/lookup": ("kb:read", "connector:read"),
+    "GET /artifacts": ("kb:read", "connector:read"),
+    "GET /artifacts/{artifactId}": ("kb:read", "connector:read"),
+    "GET /artifacts/{artifactId}/versions": ("kb:read", "connector:read"),
 }
 
 
@@ -101,7 +109,17 @@ class Operation:
 
     @property
     def oauth_scopes(self) -> list[str]:
-        return [s for entry in self.operation.get("security") or [] for s in entry.get("oauth2") or []]
+        """Every scope named by any of the operation's oauth2 entries, in order, once each."""
+        listed = [s for entry in self.operation.get("security") or [] for s in entry.get("oauth2") or []]
+        return list(dict.fromkeys(listed))
+
+    @property
+    def oauth_entries(self) -> list[list[str]]:
+        return [list(entry["oauth2"]) for entry in self.operation.get("security") or [] if "oauth2" in entry]
+
+    @property
+    def in_sdk(self) -> bool:
+        return self.operation.get("x-pipeshub-sdk") is True
 
     @property
     def gate_scopes(self) -> list[str]:
@@ -121,6 +139,68 @@ def resolve(node: dict[str, Any]) -> dict[str, Any]:
             target = target[part.replace("~1", "/").replace("~0", "~")]
         node = target
     return node
+
+
+_TEXT, _NON_TEXT, _NEUTRAL = "text", "non-text", "neutral"
+
+
+def text_only_problem(schema: Any) -> str | None:
+    """Where a body schema admits a value that is not a string, or None when every leaf is a string.
+
+    A form body arrives as strings (qs nests `a[b]` and `a[]` into objects and arrays), so only an
+    all-text schema can describe one.
+    """
+    verdict, where = _text_verdict(schema, overlay=False, at="body")
+    return None if verdict == _TEXT else (where or "body: no typed value")
+
+
+def _text_verdict(schema: Any, *, overlay: bool, at: str) -> tuple[str, str | None]:
+    # overlay: a branch of allOf/anyOf/oneOf refining a typed base, so an untyped member is only a constraint.
+    if isinstance(schema, dict):
+        schema = resolve(schema)
+    if schema is True or schema == {}:
+        return (_NEUTRAL, None) if overlay else (_NON_TEXT, f"{at}: any value")
+    if not isinstance(schema, dict):
+        return _NON_TEXT, f"{at}: not a schema"
+    declared = schema.get("type")
+    types = set(declared) if isinstance(declared, list) else ({declared} if declared else set())
+    types.discard("null")
+    if not types and ("properties" in schema or "additionalProperties" in schema):
+        types = {"object"}
+    if not types and "items" in schema:
+        types = {"array"}
+    if types - {"string", "object", "array"}:
+        return _NON_TEXT, f"{at}: {sorted(types)}"
+    if any(not isinstance(v, str) for v in schema.get("enum") or [] if v is not None):
+        return _NON_TEXT, f"{at}: enum with a value that is not a string"
+    found = "string" in types or "enum" in schema
+    if "object" in types:
+        properties = schema.get("properties") or {}
+        for name, sub in properties.items():
+            verdict, where = _text_verdict(sub, overlay=overlay, at=f"{at}.{name}")
+            if verdict == _NON_TEXT or (verdict == _NEUTRAL and not overlay):
+                return _NON_TEXT, where or f"{at}.{name}: any value"
+        extra = schema.get("additionalProperties")
+        combined = any(k in schema for k in ("oneOf", "anyOf", "allOf"))
+        if isinstance(extra, dict):
+            verdict, where = _text_verdict(extra, overlay=False, at=f"{at}.*")
+            if verdict != _TEXT:
+                return _NON_TEXT, where or f"{at}.*: any value"
+        elif extra is True or (extra is None and not properties and not overlay and not combined):
+            return _NON_TEXT, f"{at}: free-form object"
+        found = True
+    if "array" in types:
+        verdict, where = _text_verdict(schema.get("items", {}), overlay=overlay, at=f"{at}[]")
+        if verdict == _NON_TEXT or (verdict == _NEUTRAL and not overlay):
+            return _NON_TEXT, where or f"{at}[]: any value"
+        found = True
+    for keyword in ("oneOf", "anyOf", "allOf"):
+        for i, sub in enumerate(schema.get(keyword) or []):
+            verdict, where = _text_verdict(sub, overlay=overlay or found, at=f"{at}<{keyword}[{i}]>")
+            if verdict == _NON_TEXT:
+                return _NON_TEXT, where
+            found = found or verdict == _TEXT
+    return (_TEXT, None) if found else (_NEUTRAL, None)
 
 
 def _dummy(param: dict[str, Any]) -> str:
@@ -156,6 +236,10 @@ def operations() -> tuple[Operation, ...]:
     return tuple(out)
 
 
+def find(method: str, spec_path: str) -> Operation:
+    return next(op for op in operations() if op.method == method and op.spec_path == spec_path)
+
+
 def params_for(ops: list[Operation] | tuple[Operation, ...]) -> list[Any]:
     return [pytest.param(op, id=op.id) for op in ops]
 
@@ -170,6 +254,28 @@ def error_of(resp: requests.Response) -> dict[str, Any]:
     body = resp.json()
     assert isinstance(body, dict) and isinstance(body.get("error"), dict), resp.text[:500]
     return body["error"]
+
+
+def mint_token(base_url: str, timeout: float, scope: str) -> str:
+    """A client-credentials token of the suite's own OAuth client asking for ``scope``.
+
+    The token endpoint drops `openid` for a client-credentials grant, so `openid` alone grants the empty set.
+    """
+    resp = requests.post(
+        f"{base_url}/api/v1/oauth2/token",
+        json={
+            "grant_type": "client_credentials",
+            "client_id": os.environ["CLIENT_ID"],
+            "client_secret": os.environ["CLIENT_SECRET"],
+            "scope": scope,
+        },
+        timeout=timeout,
+    )
+    assert resp.status_code == 200, f"minting a token for {scope!r}: HTTP {resp.status_code}"
+    granted = resp.json().get("scope")
+    expected = "" if scope == "openid" else scope
+    assert granted == expected, f"asked for {scope!r}, the token carries {granted!r}"
+    return str(resp.json()["access_token"])
 
 
 def forget_access_token(token: str) -> None:

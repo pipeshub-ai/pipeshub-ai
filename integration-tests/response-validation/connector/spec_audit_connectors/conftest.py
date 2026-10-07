@@ -68,10 +68,7 @@ def _remove(client: ConnectorsAuditClient, connector_ids: list[str]) -> None:
         resp = client.delete_instance(connector_id)
         # 409: the test already asked for the deletion and it is still running.
         if resp.status_code >= 400 and resp.status_code not in (404, 409):
-            logger.warning(
-                "could not delete seeded connector %s: %s %s",
-                connector_id, resp.status_code, resp.text[:200],
-            )
+            logger.warning("could not delete a seeded connector: HTTP %s", resp.status_code)
 
 
 @pytest.fixture(scope="session")
@@ -170,7 +167,7 @@ def token_without_connector_scopes(
     finally:
         deleted = apps.delete_app(str(app["id"]))
         if deleted.status_code >= 300:
-            logger.warning("could not delete OAuth app %s: %s", app.get("id"), deleted.status_code)
+            logger.warning("could not delete an OAuth app: HTTP %s", deleted.status_code)
 
 
 @pytest.fixture(scope="session")
@@ -215,7 +212,7 @@ def token_with_scopes(
         for app_id in created:
             deleted = apps.delete_app(app_id)
             if deleted.status_code >= 300:
-                logger.warning("could not delete OAuth app %s: %s", app_id, deleted.status_code)
+                logger.warning("could not delete an OAuth app: HTTP %s", deleted.status_code)
 
 
 @pytest.fixture(scope="session")
@@ -275,7 +272,7 @@ def kb_records(pipeshub_client: PipeshubClient) -> Iterator[KbRecords]:
         try:
             kb.delete_kb(kb_id)
         except Exception as e:  # noqa: BLE001
-            logger.warning("could not delete KB %s: %s", kb_id, e)
+            logger.warning("could not delete a knowledge base: %s", type(e).__name__)
 
 
 async def _set_rebuild_lock(token: str) -> bool:
@@ -427,7 +424,7 @@ def gitlab_oauth_connector(
         if oauth_app_id:
             deleted = pipeshub_client.request("DELETE", f"/api/v1/oauth/GitLab/{oauth_app_id}")
             if deleted.status_code >= 300:
-                logger.warning("could not delete OAuth app %s: %s", oauth_app_id, deleted.status_code)
+                logger.warning("could not delete the GitLab OAuth app: HTTP %s", deleted.status_code)
 
 
 @pytest.fixture

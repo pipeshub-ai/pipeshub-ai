@@ -63,13 +63,13 @@ def _delete_instances(toolsets_client: ToolsetsClient, records: list[JsonObject]
         for record in records:
             deleted = toolsets_client.delete_instance(record["_id"])
             if deleted.status_code >= 300 and deleted.status_code != 404:
-                logger.warning("could not delete toolset instance %s: %s", record["_id"], deleted.text[:300])
+                logger.warning("could not delete a toolset instance: HTTP %s", deleted.status_code)
         for toolset_type, oauth_config_id in sorted(
             {(r["toolsetType"], r["oauthConfigId"]) for r in records if r.get("oauthConfigId")}
         ):
             removed = toolsets_client.delete_oauth_config(toolset_type, oauth_config_id)
             if removed.status_code >= 300 and removed.status_code != 404:
-                logger.warning("could not delete OAuth config %s: %s", oauth_config_id, removed.text[:300])
+                logger.warning("could not delete a toolset OAuth config: HTTP %s", removed.status_code)
 
 
 @pytest.fixture
@@ -144,4 +144,4 @@ def seed_agent(pipeshub_client: PipeshubClient) -> Iterator[SeedAgent]:
         for agent_key in created:
             deleted = pipeshub_client.request("DELETE", f"{AGENTS_BASE}/{agent_key}")
             if deleted.status_code >= 300 and deleted.status_code != 404:
-                logger.warning("could not delete agent %s: %s", agent_key, deleted.text[:300])
+                logger.warning("could not delete an agent: HTTP %s", deleted.status_code)

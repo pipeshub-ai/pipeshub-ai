@@ -111,11 +111,19 @@ def oauth_token_with_scopes(base_url: str, scopes: list[str], timeout: int = 60)
 
 
 def spec_accepts_oauth_scopes(method: str, route: str, scopes: list[str]) -> bool:
-    """Whether the spec's security for the operation is met by an OAuth token holding only ``scopes``."""
+    """Whether the spec admits an OAuth token holding only ``scopes`` for the operation.
+
+    An SDK operation may carry only one oauth2 requirement (Speakeasy refuses more), so there the
+    alternative scope is named in the operation's description instead.
+    """
     found = find_operation(load_openapi_document(), method, route)
     assert found is not None, f"{method} {route} is not in the spec"
-    requirements = found[1].get("security") or []
-    return any(set(req) == {"oauth2"} and set(req["oauth2"]) <= set(scopes) for req in requirements)
+    operation = found[1]
+    requirements = operation.get("security") or []
+    if any(set(req) == {"oauth2"} and set(req["oauth2"]) <= set(scopes) for req in requirements):
+        return True
+    description = operation.get("description") or ""
+    return operation.get("x-pipeshub-sdk") is True and all(f"`{s}`" in description for s in scopes)
 
 
 def request_as(user: SecondUser, path: str = "", **kwargs: Any) -> requests.Response:
