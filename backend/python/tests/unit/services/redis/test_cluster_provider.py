@@ -82,6 +82,18 @@ class TestCreateClient:
         kwargs = mock_cluster_cls.call_args.kwargs
         assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (1, 1)
 
+    @pytest.mark.parametrize("attempts", [0, 1, 3])
+    def test_the_real_cluster_client_accepts_these_options(self, attempts: int) -> None:
+        """The mocked tests above cannot tell whether redis-py takes these
+        keyword arguments; building the real client (it connects lazily) can."""
+        from redis.asyncio.cluster import RedisCluster
+
+        provider = ClusterRedisProvider(_config(cluster_endpoints=["127.0.0.1:1"]))
+
+        client = RedisCluster(**provider._client_kwargs(ClientOptions(retry_attempts=attempts)))
+
+        assert client.cluster_error_retry_attempts == max(1, attempts)
+
     def test_three_retries_unless_asked_otherwise(self, mock_cluster_cls) -> None:
         provider = ClusterRedisProvider(_config())
         provider.create_client()
