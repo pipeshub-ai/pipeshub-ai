@@ -190,3 +190,10 @@ def test_fields_described_by_any_composition_branch_are_documented() -> None:
 def test_a_repeated_or_malformed_scalar_parameter_is_one_the_spec_forbids() -> None:
     assert "sent 2 times" in _request_problems({"name": "a"}, query="kind=a&kind=b")[0]
     assert _request_problems({"name": "a"}, query="kind=a&kind=b", status=400, rejected=["query.kind"]) == []
+
+
+def test_express_page_for_a_method_no_route_handles_is_not_an_undocumented_operation() -> None:
+    page = b"<!DOCTYPE html>\n<html><body><pre>Cannot POST /api/v1/teams/x</pre></body></html>"
+    assert _problems(None, method="POST", status=404, content_type="text/html; charset=utf-8") != []
+    assert strict_response_problems(_DOC, _REGISTRY, "POST", "/api/v1/teams/x", 404, "text/html; charset=utf-8", page) == []
+    assert strict_response_problems(_DOC, _REGISTRY, "GET", "/api/v1/nowhere", 200, "text/html", page) != []

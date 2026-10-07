@@ -143,6 +143,23 @@ def find_operation(
     return None
 
 
+_EXPRESS_NO_ROUTE = re.compile(rb"<pre>Cannot (GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) [^<]*</pre>")
+
+
+def _is_express_no_route_page(method: str, status: int, content_type: str, body: bytes) -> bool:
+    """Express's own 404 page for a method and path no route handles: there is no operation to describe.
+
+    The spec says so once, in ``info.description``; an operation that does exist must still answer as documented.
+    """
+    match = _EXPRESS_NO_ROUTE.search(body or b"")
+    return (
+        status == 404
+        and content_type.split(";", 1)[0].strip().lower() == "text/html"
+        and match is not None
+        and match.group(1).decode().lower() == method.lower()
+    )
+
+
 def strict_response_problems(
     doc: dict[str, Any],
     registry: Registry,
@@ -156,6 +173,8 @@ def strict_response_problems(
     method = method.lower()
     found = find_operation(doc, method, path)
     if found is None:
+        if _is_express_no_route_page(method, status, content_type, body):
+            return []
         return [f"{method.upper()} {path} is not in the OpenAPI spec"]
     spec_path, operation = found
     label = f"{method.upper()} {spec_path} -> {status}"
@@ -505,6 +524,8 @@ def _catch_all_matchers() -> list[tuple[re.Pattern[str], str]]:
 
 
 def _template_for(url_path: str) -> str | None:
+    # Express collapses repeated slashes before routing: /knowledgeBase//permissions is GET /knowledgeBase/{kbId}.
+    url_path = re.sub(r"/{2,}", "/", url_path)
     bare = (url_path.removeprefix(_API_PREFIX) if url_path.startswith(_API_PREFIX + "/") else url_path) or "/"
     for matchers in (_path_matchers(), _catch_all_matchers()):
         found = next((spec_path for regex, spec_path in matchers if regex.match(bare)), None)
