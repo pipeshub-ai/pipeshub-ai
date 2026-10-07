@@ -98,9 +98,11 @@ write_credentials() {
 
 load_credentials() {
   [[ -f "${CREDENTIALS_FILE}" ]] || die "missing ${CREDENTIALS_FILE}; run ./scripts/setup.sh first"
-  # shellcheck disable=SC1090
   set -a
   # credentials.env uses shell-quoted assignments from printf %q
+  # The directive has to sit immediately above the source line; on `set -a` it
+  # applies to that command instead and SC1090 is still reported.
+  # shellcheck source=/dev/null
   source "${CREDENTIALS_FILE}"
   set +a
   [[ -n "${PIPESHUB_MCP_TOKEN:-}" ]] || die "PIPESHUB_MCP_TOKEN missing in credentials file"

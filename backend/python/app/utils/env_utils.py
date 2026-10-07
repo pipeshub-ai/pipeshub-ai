@@ -53,4 +53,16 @@ def env_int(
     return value
 
 
-__all__ = ["env_bool", "env_int"]
+def uvicorn_worker_healthcheck_timeout() -> int:
+    """Seconds a uvicorn worker may go without answering its supervisor before
+    it is killed and replaced (`UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS`).
+
+    uvicorn's own default is 5. A worker that is still loading models at
+    startup, or is busy with a large document, does not answer that fast, so
+    with more than one worker the supervisor killed healthy workers in a loop
+    and each restart re-ran startup recovery.
+    """
+    return env_int("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", 60, lo=5) or 60
+
+
+__all__ = ["env_bool", "env_int", "uvicorn_worker_healthcheck_timeout"]

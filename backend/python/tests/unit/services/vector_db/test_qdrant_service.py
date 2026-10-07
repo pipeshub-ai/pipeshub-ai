@@ -845,3 +845,47 @@ class TestQdrantConfig:
         cfg = QdrantConfig.from_dict({"host": "h"})
         assert cfg.prefer_grpc is True
 
+
+
+class TestUpdatePayloadByIds:
+    @pytest.mark.asyncio
+    async def test_sets_payload_on_the_listed_points_by_id_filter(self, connected_service) -> None:
+        """A plain id list makes Qdrant 404 the whole call when one id is
+        missing; the interface says missing ids are ignored."""
+        await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]})
+
+        kwargs = connected_service.client.set_payload.await_args.kwargs
+        assert kwargs["collection_name"] == "entities"
+        assert kwargs["payload"] == {"connectorIds": ["c1"]}
+        assert kwargs["wait"] is True
+        (condition,) = kwargs["points"].filter.must
+        assert condition.has_id == ["p1", "p2"]
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, connected_service):
+        await connected_service.update_payload_by_ids("entities", [], {"x": 1})
+        connected_service.client.set_payload.assert_not_called()
+
+
+class TestRetrievePoints:
+    @pytest.mark.asyncio
+    async def test_retrieves_by_id_without_vectors(self, connected_service):
+        connected_service.client.retrieve.return_value = [
+            MagicMock(id="p1", payload={"metadata": {"entityId": "e1"}}),
+            MagicMock(id="p2", payload=None),
+        ]
+
+        points = await connected_service.retrieve_points("entities", ["p1", "p2", "p3"])
+
+        connected_service.client.retrieve.assert_awaited_once_with(
+            collection_name="entities", ids=["p1", "p2", "p3"],
+            with_payload=True, with_vectors=False,
+        )
+        assert [(p.id, p.payload) for p in points] == [
+            ("p1", {"metadata": {"entityId": "e1"}}), ("p2", {}),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, connected_service):
+        assert await connected_service.retrieve_points("entities", []) == []
+        connected_service.client.retrieve.assert_not_called()

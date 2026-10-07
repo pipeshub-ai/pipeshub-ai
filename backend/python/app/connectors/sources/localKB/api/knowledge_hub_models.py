@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
+
 
 class NodeType(str, Enum):
     """Valid node types in the knowledge hub hierarchy"""
@@ -64,6 +66,7 @@ class NodeItem(BaseModel):
     parentId: Optional[str] = Field(None, description="ID of the parent node")
     origin: OriginType = Field(..., description="Origin type (COLLECTION or CONNECTOR)")
     connector: Optional[str] = Field(None, description="Connector name (only for CONNECTOR origin)")
+    connectorId: Optional[str] = Field(None, description="Connector instance id (only for CONNECTOR origin)")
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
@@ -174,11 +177,19 @@ class PermissionsInfo(BaseModel):
     canEdit: bool = Field(..., description="Whether user can edit")
     canDelete: bool = Field(..., description="Whether user can delete")
     canManagePermissions: bool = Field(..., description="Whether user can manage permissions")
+    collectionRole: str | None = Field(
+        None,
+        description=(
+            "The user's own role on the collection this node is in, as restore and the trash list "
+            "check it; null outside a collection. Unlike role, it is the same at every level inside."
+        ),
+    )
 
 class KnowledgeHubNodesResponse(BaseModel):
     """Response model for the Knowledge Hub nodes API"""
     success: bool = Field(..., description="Whether the request was successful")
     error: Optional[str] = Field(None, description="Error message if success is False")
+    errorCode: Optional[int] = Field(None, description="HTTP status the router answers with when success is False; 4xx means `error` was written for the reader")
     id: Optional[str] = Field(None, description="Current parent node ID (null for root)")
     currentNode: Optional[CurrentNode] = Field(None, description="The node being browsed (when parentId is provided)")
     parentNode: Optional[CurrentNode] = Field(None, description="The parent of currentNode (one level up)")
@@ -188,6 +199,7 @@ class KnowledgeHubNodesResponse(BaseModel):
     breadcrumbs: Optional[List[BreadcrumbItem]] = Field(None, description="Breadcrumb trail")
     counts: Optional[CountsInfo] = Field(None, description="Counts summary")
     permissions: Optional[PermissionsInfo] = Field(None, description="User permissions")
+    maxFolderDepth: int = Field(KB_MAX_FOLDER_DEPTH, description="Deepest a collection folder may be nested (a folder directly in the collection is depth 1)")
     typed_records: Optional[Dict[str, Any]] = Field(None, description="Typed Record instances keyed by record ID (only when include_typed_records is requested)")
 
     class Config:

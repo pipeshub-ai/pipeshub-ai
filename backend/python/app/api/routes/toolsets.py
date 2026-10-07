@@ -22,7 +22,6 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
 
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
@@ -33,9 +32,12 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
 )
+from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import OAuthScopeType
+from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.edition_containers import ConnectorAppContainer
 from app.edition_config import (
+    REDACTED_PLACEHOLDER,
     check_user_is_admin,
     get_oauth_credentials_for_toolset,
     get_toolset_by_id,
@@ -55,8 +57,13 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
-from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from app.utils.oauth_config import (
+    check_salesforce_login_url_setting,
+    extract_oauth_error_message,
+    get_oauth_config,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import not_found
 
 # Re-export for client builders / token refresh .
 __all__ = [
@@ -223,6 +230,45 @@ def _validate_dict(value: object, field_name: str, *, allow_empty: bool = True) 
     return value
 
 
+def _holds_object(value: object) -> bool:
+    return isinstance(value, dict) or (isinstance(value, list) and any(_holds_object(v) for v in value))
+
+
+def _mask_inline_auth(auth: dict[str, Any]) -> dict[str, Any]:
+    """Edition masking, with any nested object hidden whole: the masker reads top-level keys only."""
+    return {
+        key: REDACTED_PLACEHOLDER if _holds_object(value) else value
+        for key, value in mask_oauth_secrets(auth).items()
+    }
+
+
+def _instance_for_response(instance: dict[str, Any], *, is_admin: bool) -> dict[str, Any]:
+    """Copy of *instance* that is safe to return.
+
+    Its inline ``auth`` holds credentials: non-admins never get it, admins get it
+    masked the way the edition masks OAuth secrets.
+    """
+    if "auth" not in instance:
+        return instance
+    safe = {k: v for k, v in instance.items() if k != "auth"}
+    auth = instance["auth"]
+    if is_admin and isinstance(auth, dict) and auth:
+        safe["auth"] = _mask_inline_auth(auth)
+    return safe
+
+
+def _keep_stored_secrets(incoming: dict[str, Any], stored: dict[str, Any] | None) -> dict[str, Any]:
+    """A client echoing back a masked value must not overwrite the stored secret."""
+    stored = stored or {}
+    merged: dict[str, Any] = {}
+    for key, value in incoming.items():
+        if not is_redacted_placeholder(value):
+            merged[key] = value
+        elif key in stored:
+            merged[key] = stored[key]
+    return merged
+
+
 def _has_oauth_credentials(auth_config: dict[str, Any]) -> bool:
     """
     Check if auth_config contains actual OAuth credentials (not just infrastructure fields).
@@ -338,6 +384,49 @@ def _get_toolset_metadata(registry: ToolsetRegistry, toolset_type: str) -> dict[
         raise ToolsetNotFoundError(toolset_type)
 
     return metadata
+
+
+def _declared_auth_fields(request: Request, instance: dict[str, Any]) -> set[str]:
+    """Names of the credential fields the toolset declares for the instance's auth type."""
+    auth_meta = _get_toolset_metadata(_get_registry(request), instance.get("toolsetType", "")).get("config", {}).get("auth", {})
+    schema = (auth_meta.get("schemas") or {}).get((instance.get("authType") or "").upper()) or auth_meta.get("schema") or {}
+    return {field["name"] for field in schema.get("fields", []) if isinstance(field, dict) and field.get("name")}
+
+
+def _credential_text(value: object) -> str:
+    """A credential value as trimmed text; anything that is not a string counts as missing."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _refuse_undeclared_auth_fields(request: Request, instance: dict[str, Any], auth: object) -> None:
+    """Refuse credential fields the toolset does not declare, so a save cannot add
+    settings (endpoints, client credentials) the instance never asked for.
+    """
+    if not isinstance(auth, dict):
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="auth must be an object.")
+    unexpected = sorted(set(auth) - _declared_auth_fields(request, instance))
+    if unexpected:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"Unexpected credential fields for this toolset: {', '.join(unexpected)}",
+        )
+
+
+async def _instance_for_credential_update(
+    instance_id: str, org_id: str, config_service: ConfigurationService
+) -> dict[str, Any]:
+    """The instance a stored credential belongs to. OAuth instances are refused: their
+    tokens come from the OAuth flow, not from a saved field."""
+    instances = await _load_toolset_instances(org_id, config_service)
+    instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
+    if not instance:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
+    if (instance.get("authType") or "").upper() == "OAUTH":
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="OAuth toolsets sign in through the OAuth flow. Use reauthenticate to start a new one.",
+        )
+    return instance
 
 
 # ============================================================================
@@ -572,6 +661,7 @@ async def _build_oauth_config(
     scopes = auth_config.get("scopes", [])
     if not scopes:
         scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
+    scopes = apply_confluence_jira_scope(toolset_type, auth_config, list(scopes))
 
 
     # If a tenantId is supplied in the auth config, substitute it into the
@@ -595,6 +685,8 @@ async def _build_oauth_config(
 
     if "tenantId" in auth_config:
         config["tenantId"] = auth_config["tenantId"]
+    if auth_config.get(AuthFieldKeys.LOGIN_URL):
+        config[AuthFieldKeys.LOGIN_URL] = auth_config[AuthFieldKeys.LOGIN_URL]
 
     if "additionalParams" in auth_config:
         config["additionalParams"] = auth_config["additionalParams"]
@@ -669,7 +761,7 @@ def _parse_request_json(request: Request, data: bytes) -> dict[str, Any]:
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail=f"Invalid JSON in request body: {str(e)}"
+            detail="We couldn't read that request. Refresh the page and try again."
         ) from e
 
 
@@ -706,6 +798,11 @@ async def _create_or_update_toolset_oauth_config(
     Returns the OAuth config _id.
     """
     try:
+        check_salesforce_login_url_setting(toolset_type, auth_config)
+    except ValueError as e:
+        raise InvalidAuthConfigError(str(e)) from e
+
+    try:
         oauth_configs = await _get_oauth_configs_for_type(toolset_type, config_service)
 
         if oauth_config_id:
@@ -722,12 +819,15 @@ async def _create_or_update_toolset_oauth_config(
                     for k, v in enriched.items():
                         if k == "type":
                             continue  # Skip type field
+                        if is_redacted_placeholder(v):
+                            continue  # A masked value echoed back keeps what is stored
                         if k == "clientSecret" and (
                             not v or not str(v).strip() or is_redacted_placeholder(v)
                         ):
                             continue  # Keep existing clientSecret if not provided / redacted
                         cfg["config"][k] = v
                     cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+                    cfg["updatedBy"] = user_id
                     oauth_configs[idx] = cfg
                     path = _get_toolset_oauth_config_path(toolset_type)
                     await config_service.set_config(path, oauth_configs)
@@ -736,11 +836,17 @@ async def _create_or_update_toolset_oauth_config(
             logger.warning("OAuth config not found, creating new one")
 
         # Create new OAuth config
+        if any(is_redacted_placeholder(v) for v in auth_config.values()):
+            raise InvalidAuthConfigError("a masked value cannot be saved. Enter the value again.")
         enriched = await _prepare_toolset_auth_config(
             auth_config, toolset_type, registry, config_service, base_url
         )
         # Store all fields dynamically (except type)
         config_data = {k: v for k, v in enriched.items() if k != "type"}
+        # Imported here: edition_config imports this module before it binds this hook.
+        from app.edition_config import oauth_create_extra_fields
+
+        now = get_epoch_timestamp_in_ms()
         new_cfg = {
             "_id": _generate_oauth_config_id(),
             "oauthInstanceName": instance_name,
@@ -748,14 +854,19 @@ async def _create_or_update_toolset_oauth_config(
             "userId": user_id,
             "orgId": org_id,
             "config": config_data,
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "createdAtTimestamp": now,
+            "updatedAtTimestamp": now,
+            "createdBy": user_id,
+            "updatedBy": user_id,
+            **oauth_create_extra_fields(connector_scope=None, oauth_instance_name=instance_name),
         }
         oauth_configs.append(new_cfg)
         path = _get_toolset_oauth_config_path(toolset_type)
         await config_service.set_config(path, oauth_configs)
         return new_cfg["_id"]
 
+    except InvalidAuthConfigError:
+        raise
     except Exception as e:
         logger.error(f"Error creating/updating toolset OAuth config: {e}", exc_info=True)
         return None
@@ -939,7 +1050,7 @@ async def get_toolset_schema(toolset_type: str, request: Request) -> dict[str, A
     oauth_registry = getattr(request.app.state, "oauth_config_registry", None)
     oauth_config = None
     if oauth_registry and oauth_registry.has_config(toolset_type):
-        oauth_config = oauth_registry.get_metadata(toolset_type)
+        oauth_config = oauth_registry.get_metadata(toolset_type, source="toolset")
 
     toolset_config = metadata.get("config", {}) or {}
     return {
@@ -1130,7 +1241,7 @@ async def create_toolset_instance(
                 if inherited_probe is None:
                     raise HTTPException(
                         status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"OAuth configuration '{oauth_config_id_from_body}' not found.",
+                        detail=not_found("This sign-in app"),
                     )
             oauth_config_id = oauth_config_id_from_body
             logger.debug(f"Using existing OAuth config for instance {instance_name}")
@@ -1227,7 +1338,7 @@ async def create_toolset_instance(
 
     return {
         "status": "success",
-        "instance": new_instance,
+        "instance": _instance_for_response(new_instance, is_admin=True),
         "message": "Toolset instance created successfully."
     }
 
@@ -1259,6 +1370,11 @@ async def get_toolset_instances(
             or search_lower in i.get("toolsetType", "").lower()
         ]
 
+    # Only instances with inline credentials need to know who is asking.
+    is_admin = any("auth" in i for i in instances) and await _check_user_is_admin(
+        user_context["user_id"], request, config_service
+    )
+
     # Add registry metadata
     registry = _get_registry(request)
     enriched = []
@@ -1266,7 +1382,7 @@ async def get_toolset_instances(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         enriched.append({
-            **inst,
+            **_instance_for_response(inst, is_admin=is_admin),
             "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
             "description": meta.get("description", "") if meta else "",
             "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1312,14 +1428,14 @@ async def get_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     registry = _get_registry(request)
     toolset_type = instance.get("toolsetType", "")
     meta = registry.get_toolset_metadata(toolset_type)
 
     result: dict[str, Any] = {
-        **instance,
+        **_instance_for_response(instance, is_admin=is_admin),
         "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
         "description": meta.get("description", "") if meta else "",
         "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1455,7 +1571,7 @@ async def update_toolset_instance(
 
     idx = next((i for i, inst in enumerate(instances) if inst.get("_id") == instance_id and inst.get("orgId") == org_id), None)
     if idx is None:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     instance = instances[idx]
     toolset_type = instance.get("toolsetType", "")
@@ -1548,7 +1664,7 @@ async def update_toolset_instance(
         auth_config = _validate_dict(
             value=body.get("authConfig"), field_name="authConfig", allow_empty=True
         )
-        instance["auth"] = auth_config
+        instance["auth"] = _keep_stored_secrets(auth_config, instance.get("auth"))
 
     # Recalculate inheritedFromOrgId server-side when oauth config linkage changed.
     if oauth_credentials_changed and instance.get("oauthConfigId"):
@@ -1587,7 +1703,7 @@ async def update_toolset_instance(
 
     return {
         "status": "success",
-        "instance": instance,
+        "instance": _instance_for_response(instance, is_admin=True),
         "message": msg,
         "deauthenticatedUserCount": deauthed_count,
     }
@@ -1618,7 +1734,7 @@ async def delete_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     # Safe-delete check: block if any agent is using this toolset instance
     # This check must happen BEFORE deleting user credentials to prevent data loss
@@ -1915,9 +2031,9 @@ async def authenticate_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
-    auth_type = instance.get("authType", "")
+    auth_type = (instance.get("authType") or "").upper()
     if auth_type == "OAUTH":
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -1930,15 +2046,16 @@ async def authenticate_toolset_instance(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     # Validate required fields based on auth type
     if auth_type == "API_TOKEN":
-        token = auth.get("apiToken").strip()
+        token = _credential_text(auth.get("apiToken"))
         if not token:
             raise InvalidAuthConfigError("apiToken is required for API_TOKEN auth type")
     elif auth_type == "BASIC_AUTH":
-        username = auth.get("username").strip()
-        password = auth.get("password").strip()
+        username = _credential_text(auth.get("username"))
+        password = _credential_text(auth.get("password"))
         if not username or not password:
             raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
 
@@ -1984,6 +2101,8 @@ async def update_toolset_credentials(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    instance = await _instance_for_credential_update(instance_id, user_context["org_id"], config_service)
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     auth_path = _get_user_auth_path(instance_id, user_id)
 
@@ -2057,7 +2176,7 @@ async def reauthenticate_toolset_instance(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_path = _get_user_auth_path(instance_id, user_id)
 
@@ -2106,7 +2225,7 @@ async def get_instance_oauth_authorization_url(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_type = instance.get("authType", "")
     if auth_type != "OAUTH":
@@ -2243,7 +2362,7 @@ async def _validate_toolset_oauth_setup(
                 logger=logger,
             )
     except ToolsetAuthError as e:
-        setup_error_msg = str(e)
+        setup_error_msg = str(e)  # user-written message
         setup_error_title = e.title  # factory-supplied notification heading
     except Exception as e:
         logger.warning("Toolset %s setup validation skipped: %s", toolset_type, e)
@@ -2277,7 +2396,7 @@ async def handle_toolset_oauth_callback(
     base_url: str | None = Query(None),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
     notification_service: Any = Depends(Provide[ConnectorAppContainer.connector_notification_service]),
-) -> dict[str, Any] | RedirectResponse:
+) -> dict[str, Any]:
     """Handle OAuth callback for toolset instance authentication."""
     base_url = base_url or "http://localhost:3001"
 
@@ -2311,15 +2430,38 @@ async def handle_toolset_oauth_callback(
             try:
                 await _require_agent_edit_access(agent_key_from_state, request)
             except HTTPException as auth_exc:
-                err_param = "agent_permission_denied" if auth_exc.status_code in (403, 401) else "agent_auth_error"
-                return RedirectResponse(url=f"{base_url}/tools?oauth_error={err_param}")
+                # A JSON answer, not a redirect: the Node API calls this with
+                # fetch, which would follow a redirect to the caller's base_url.
+                # 404 is what the check answers for "no access" as well as a
+                # missing agent, so it gets the permission message too.
+                if auth_exc.status_code in (403, 404):
+                    err_param = "agent_permission_denied"
+                    err_message = (
+                        "You don't have permission to connect tools for this agent. "
+                        "Ask the agent's owner to give you edit access, then try again."
+                    )
+                elif auth_exc.status_code == 401:
+                    err_param = "agent_auth_error"
+                    err_message = "We couldn't verify your account. Sign out and back in, then try again."
+                elif auth_exc.status_code == 400:
+                    err_param = "agent_auth_error"
+                    err_message = str(auth_exc.detail)
+                else:
+                    err_param = "agent_auth_error"
+                    err_message = "We couldn't check your access to this agent. Please try again."
+                return {
+                    "success": False,
+                    "error": err_param,
+                    "error_message": err_message,
+                    "redirect_url": f"{base_url}/tools?oauth_error={err_param}",
+                }
 
         # Load instance
         instances = await _load_toolset_instances(org_id, config_service)
 
         instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
         if not instance:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
         toolset_type = instance.get("toolsetType", "")
         oauth_config_id = instance.get("oauthConfigId")
@@ -2674,7 +2816,7 @@ async def get_instance_status(
 
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_path = _get_user_auth_path(instance_id, user_id)
     try:
@@ -3097,7 +3239,7 @@ async def authenticate_agent_toolset(
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_type = instance.get("authType", "")
     if auth_type.upper() == "OAUTH":
@@ -3112,13 +3254,14 @@ async def authenticate_agent_toolset(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     # Validate required fields per auth type — mirrors the user authenticate endpoint
     if auth_type.upper() == "API_TOKEN":
-        if not (auth.get("apiToken") or "").strip():
+        if not _credential_text(auth.get("apiToken")):
             raise InvalidAuthConfigError("apiToken is required for API_TOKEN auth type")
     elif auth_type.upper() == "BASIC_AUTH" and (
-        not (auth.get("username") or "").strip() or not (auth.get("password") or "").strip()
+        not _credential_text(auth.get("username")) or not _credential_text(auth.get("password"))
     ):
         raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
 
@@ -3161,6 +3304,10 @@ async def update_agent_toolset_credentials(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    instance = await _instance_for_credential_update(
+        instance_id, _get_user_context(request)["org_id"], config_service
+    )
+    _refuse_undeclared_auth_fields(request, instance, auth)
 
     auth_path = _get_agent_auth_path(instance_id, agent_key)
     try:
@@ -3230,7 +3377,7 @@ async def reauthenticate_agent_toolset(
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_path = _get_agent_auth_path(instance_id, agent_key)
 
@@ -3274,7 +3421,7 @@ async def get_agent_toolset_oauth_url(
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id and i.get("orgId") == org_id), None)
     if not instance:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
 
     auth_type = instance.get("authType", "")
     if auth_type != "OAUTH":

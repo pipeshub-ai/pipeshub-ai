@@ -16,6 +16,9 @@ import { TeamsController } from '../controller/teams.controller';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
 import * as messageBrokerFactory from '../../../libs/services/message-broker.factory';
 import { NotificationProducer } from '../../notification/service/notification.producer';
+import { ServiceAccountsService } from '../services/service-accounts.service';
+import { ServiceAccountsController } from '../controller/service-accounts.controller';
+import { MailProducer } from '../../mail/services/mail.producer';
 
 const loggerConfig = {
   service: 'User Manager Container',
@@ -48,10 +51,6 @@ export class UserManagerContainer {
     appConfig: AppConfig,
   ): Promise<void> {
     try {
-      const mailService = new MailService(appConfig, container.get('Logger'));
-      container
-        .bind<MailService>('MailService')
-        .toDynamicValue(() => mailService);
 
       const authService = new AuthService(appConfig, container.get('Logger'));
       container
@@ -83,6 +82,18 @@ export class UserManagerContainer {
       container
         .bind<IMessageProducer>('MessageProducer')
         .toConstantValue(messageProducer);
+
+      // MailService publishes to the mail topic instead of sending inline.
+      const mailProducer = new MailProducer(messageProducer, container.get('Logger'));
+      container.bind<MailProducer>(MailProducer).toConstantValue(mailProducer);
+      const mailService = new MailService(
+        appConfig,
+        container.get('Logger'),
+        mailProducer,
+      );
+      container
+        .bind<MailService>('MailService')
+        .toDynamicValue(() => mailService);
 
       const entityEventsService = new EntitiesEventProducer(
         messageProducer,
@@ -124,6 +135,18 @@ export class UserManagerContainer {
           container.get<NotificationProducer>('NotificationProducer'),
         );
       });
+
+      const serviceAccountsService = new ServiceAccountsService(
+        container.get('Logger'),
+        container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+      );
+      container
+        .bind<ServiceAccountsService>('ServiceAccountsService')
+        .toConstantValue(serviceAccountsService);
+
+      container
+        .bind<ServiceAccountsController>('ServiceAccountsController')
+        .toConstantValue(new ServiceAccountsController(serviceAccountsService));
 
       const userGroupController = new UserGroupController();
       container

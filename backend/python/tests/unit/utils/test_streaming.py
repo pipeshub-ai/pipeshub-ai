@@ -1053,7 +1053,7 @@ class TestAiterLlmStream:
 # ---------------------------------------------------------------------------
 # create_stream_record_response
 # ---------------------------------------------------------------------------
-class TestCreateStreamRecordResponse:
+class TestCreateStreamRecordResponseFilenames:
     """Tests for create_stream_record_response."""
 
     def test_basic_response(self):
@@ -1101,7 +1101,7 @@ class TestCreateStreamRecordResponse:
 # ---------------------------------------------------------------------------
 # stream_content
 # ---------------------------------------------------------------------------
-class TestStreamContent:
+class TestStreamContentUrlTypes:
     """Tests for stream_content(signed_url, ...)."""
 
     async def test_non_string_url_raises_type_error(self):
@@ -2054,7 +2054,7 @@ class TestStreamContentCoverage:
 
     @pytest.mark.asyncio
     async def test_stream_content_400_error(self):
-        """400 Bad Request should raise HTTPException."""
+        """400 Bad Request maps to 422 - the source refused the request."""
         from fastapi import HTTPException
 
         from app.utils.streaming import stream_content
@@ -2074,7 +2074,7 @@ class TestStreamContentCoverage:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in stream_content("https://example.com/file.pdf", "rec-1", "file.pdf"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_content_403_error(self):

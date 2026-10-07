@@ -23,19 +23,44 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     this.headers = headers || {};
   }
 
-  // Helper to build the full URL including query parameters.
+  /**
+   * Build the full URL including query parameters, with SSRF validation.
+   *
+   * User-controlled path segments (e.g. `agentKey`, `conversationId`) are
+   * interpolated into the URI string by callers.  This method validates the
+   * result before it reaches `fetch()`:
+   *
+   *  - Must be a valid, absolute URL (`new URL()` will throw otherwise).
+   *  - Protocol must be `http:` or `https:`.
+   *  - Must not contain embedded credentials (blocks `http://x@evil.com/` tricks).
+   */
   protected buildUrl(): string {
-    if (!this.queryParams) return this.uri;
-    const queryString = new URLSearchParams(
-      Object.entries(this.queryParams).reduce<Record<string, string>>(
-        (acc, [key, value]) => {
-          acc[key] = String(value);
-          return acc;
-        },
-        {},
-      ),
-    ).toString();
-    return `${this.uri}?${queryString}`;
+    let raw = this.uri;
+    if (this.queryParams) {
+      const queryString = new URLSearchParams(
+        Object.entries(this.queryParams).reduce<Record<string, string>>(
+          (acc, [key, value]) => {
+            acc[key] = String(value);
+            return acc;
+          },
+          {},
+        ),
+      ).toString();
+      raw = `${this.uri}?${queryString}`;
+    }
+
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new InternalServerError(
+        `Blocked request with disallowed protocol: ${parsed.protocol}`,
+      );
+    }
+    if (parsed.username || parsed.password) {
+      throw new InternalServerError(
+        'Blocked request: URL must not contain embedded credentials',
+      );
+    }
+    return parsed.href;
   }
 
   protected sanitizeBody(body: any): any {

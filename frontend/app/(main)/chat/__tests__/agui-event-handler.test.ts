@@ -178,6 +178,10 @@ describe('createAGUIEventHandler', () => {
       chunk: '',
       accumulated: body,
       citations: [],
+      // The trailer is stripped from the text, and the confidence it carried is
+      // surfaced as a field — this case sends /confidence in its final
+      // STATE_DELTA, so the handler is expected to pass it through.
+      confidence: 'High',
     });
   });
 
@@ -462,6 +466,28 @@ describe('createAGUIEventHandler', () => {
     handle(frame('RUN_ERROR', { parentRunId: 'root-run', message: 'tool crashed' }));
 
     expect(spies.onError).not.toHaveBeenCalled();
+  });
+
+  it('treats a root RUN_ERROR with code "abort" as a stop, not an error', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const tracking: AGUIStreamTracking = { receivedComplete: false };
+    const handle = createAGUIEventHandler(callbacks, tracking);
+
+    handle(frame('RUN_ERROR', { code: 'abort', message: 'Stream aborted' }));
+
+    expect(spies.onError).not.toHaveBeenCalled();
+    // Left unset so the stream closer still ends a turn nobody stopped.
+    expect(tracking.receivedError).toBeFalsy();
+  });
+
+  it('marks tracking.receivedError on a root RUN_ERROR it reports', () => {
+    const { callbacks } = makeCallbacks();
+    const tracking: AGUIStreamTracking = { receivedComplete: false };
+    const handle = createAGUIEventHandler(callbacks, tracking);
+
+    handle(frame('RUN_ERROR', { message: 'Agent crashed' }));
+
+    expect(tracking.receivedError).toBe(true);
   });
 
   it('silently ignores unmapped event types (e.g. RUN_STARTED, STATE_SNAPSHOT)', () => {

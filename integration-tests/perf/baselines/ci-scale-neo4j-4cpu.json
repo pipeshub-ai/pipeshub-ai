@@ -1,0 +1,6 @@
+{
+  "placeholder": true,
+  "benchmark": "scale",
+  "label": "ci-scale-neo4j-4cpu",
+  "note": "Placeholder: no real scale run has been recorded yet. Replace this file with the scale.json artifact of a trusted monthly run on main (4-CPU runner, Neo4j, Redis broker, test OpenAI models, 2000 files, seed 1337, all kinds). Until then the comparison step prints the run's numbers and says there is nothing to compare with."
+}

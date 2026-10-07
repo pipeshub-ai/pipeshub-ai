@@ -15,6 +15,7 @@ import axios from 'axios';
 import axiosRetry from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { 
   AuthenticatedUserRequest,
@@ -48,8 +49,6 @@ import {
   getFilterFieldOptions,
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
-  submitConnectorFileEvents,
-  submitConnectorFileEventUploads,
   getConnectorSchema,
   getActiveAgentInstances,
   getConnectorStats,
@@ -60,6 +59,7 @@ import {
   reindexVectorStore,
   reindexConnector,
   resyncConnectorRecords,
+  stopConnectorSync,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
@@ -89,8 +89,6 @@ import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
-import type { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { createLocalFsConnectorFileEventsUploadMiddleware } from '../../../libs/middlewares/local-fs.middleware';
 
 const logger = Logger.getInstance({
   service: 'ConnectorRoutes',
@@ -226,6 +224,9 @@ const saveConnectorInstanceFilterOptionsSchema = z.object({
   }),
 });
 
+// The connector service pages filter options 100 at a time at most.
+const FILTER_OPTIONS_LIMIT_MESSAGE = 'Limit must be between 1 and 100.';
+
 /**
  * Schema for getting filter field options (dynamic with pagination)
  */
@@ -239,7 +240,7 @@ const getFilterFieldOptionsSchema = z.object({
       .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1, FILTER_OPTIONS_LIMIT_MESSAGE).max(100, FILTER_OPTIONS_LIMIT_MESSAGE))
       .optional(),
     search: z.string().optional(),
     cursor: z.string().optional(),
@@ -267,6 +268,8 @@ const connectorToggleSchema = z.object({
   body: z.object({
     type: z.enum(['sync', 'agent']),
     fullSync: z.boolean().optional(),
+    deviceId: z.string().min(1).max(255).optional(),
+    deviceName: z.string().max(255).optional(),
   }),
   params: z.object({
     connectorId: z.string().min(1, 'Connector ID is required'),
@@ -432,14 +435,18 @@ export function createConnectorRouter(
   crawlingContainer: Container,
 ): Router {
   const router = Router();
+  guardPathParams(
+    router,
+    'connectorId',
+    'connectorType',
+    'filterKey',
+    'recordId',
+  );
   let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const eventService = container.get<EntitiesEventProducer>('EntitiesEventProducer');
   const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
-  );
-  const localFsUploadMiddleware = createLocalFsConnectorFileEventsUploadMiddleware(
-    container.get<KeyValueStoreService>('KeyValueStoreService'),
   );
   const recordsEventProducer = container.get<RecordsEventProducer>(
     'RecordsEventProducer',
@@ -687,6 +694,18 @@ export function createConnectorRouter(
     resyncConnectorRecords(recordRelationService, config),
   );
 
+  /**
+   * POST /:connectorId/sync/stop
+   * Request cancellation of the in-flight sync for a connector.
+   */
+  router.post(
+    '/:connectorId/sync/stop',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    stopConnectorSync(config),
+  );
+
   // ============================================================================
   // Configuration Routes
   // ============================================================================
@@ -838,23 +857,6 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     ValidationMiddleware.validate(connectorToggleSchema),
     toggleConnectorInstance(config, scheduler)
-  );
-
-  router.post(
-    '/:connectorId/file-events/upload',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
-    ValidationMiddleware.validate(connectorIdParamSchema),
-    localFsUploadMiddleware,
-    submitConnectorFileEventUploads(config),
-  );
-
-  router.post(
-    '/:connectorId/file-events',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
-    ValidationMiddleware.validate(connectorIdParamSchema),
-    submitConnectorFileEvents(config),
   );
 
   // ============================================================================
@@ -1038,7 +1040,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id,
+              appGroupId: connector._id.toString(),
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: enabledApps,
@@ -1085,7 +1087,7 @@ export function createConnectorRouter(
             payload: {
               orgId: req.user.orgId,
               appGroup: connector.name,
-              appGroupId: connector._id,
+              appGroupId: connector._id.toString(),
               credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH}`,
               refreshTokenRoute: `${config.cmBackend}/${REFRESH_TOKEN_PATH}`,
               apps: [
@@ -1278,7 +1280,6 @@ export function createConnectorRouter(
 
         res.status(200).json({
           message: 'Connectors configuration updated successfully',
-          config,
         });
       } catch (error) {
         logger.error('Error updating connector configuration', {

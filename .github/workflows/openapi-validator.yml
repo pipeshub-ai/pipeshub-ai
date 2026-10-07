@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Step 1: Lint the spec with Spectral
       - name: Install Spectral
@@ -26,7 +26,7 @@ jobs:
 
       # Step 2: Check route coverage (code routes vs spec)
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -104,7 +104,7 @@ jobs:
       # Step 4: Detect breaking changes against main (last — slowest step)
       - name: Detect breaking changes with oasdiff
         if: github.event_name == 'pull_request'
-        uses: oasdiff/oasdiff-action/breaking@main
+        uses: oasdiff/oasdiff-action/breaking@5e81b5c380accc6b523f9d32a637ca630e33620b # v0.1.17
         with:
           base: https://raw.githubusercontent.com/${{ github.repository }}/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
           revision: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml

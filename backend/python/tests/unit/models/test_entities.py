@@ -1,6 +1,7 @@
 """Tests for entities module: Record, TicketRecord, ProjectRecord, FileRecord, MailRecord, LinkRecord, ProductRecord, DealRecord."""
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,7 +30,44 @@ from app.models.entities import (
     SQLTableRecord,
     SQLViewRecord,
     TicketRecord,
+    substitute_user_email,
 )
+from app.models.permission import EntityType, Permission, PermissionType
+
+
+class TestSubstituteUserEmail:
+    TEMPLATE = "https://mail.google.com/mail?authuser={user.email}#all/m1"
+    GMAIL = Connectors.GOOGLE_MAIL.value
+    GMAIL_WORKSPACE = Connectors.GOOGLE_MAIL_WORKSPACE.value
+
+    @pytest.mark.parametrize("connector", [GMAIL, GMAIL_WORKSPACE])
+    def test_replaces_placeholder_for_gmail_connectors(self, connector):
+        assert substitute_user_email(self.TEMPLATE, "a@b.com", connector) == (
+            "https://mail.google.com/mail?authuser=a@b.com#all/m1"
+        )
+
+    def test_encodes_plus_so_it_is_not_read_as_space(self):
+        assert "authuser=a%2Btag@b.com" in substitute_user_email(
+            self.TEMPLATE, "a+tag@b.com", self.GMAIL
+        )
+
+    @pytest.mark.parametrize("connector", [
+        Connectors.OUTLOOK.value,
+        Connectors.GOOGLE_DRIVE.value,
+        None,
+        "",
+    ])
+    def test_leaves_placeholder_for_non_gmail_connectors(self, connector):
+        assert substitute_user_email(self.TEMPLATE, "a@b.com", connector) == self.TEMPLATE
+
+    @pytest.mark.parametrize("weburl,email", [
+        (TEMPLATE, None),
+        (TEMPLATE, ""),
+        (None, "a@b.com"),
+        ("https://example.com/doc", "a@b.com"),
+    ])
+    def test_returns_input_unchanged(self, weburl, email):
+        assert substitute_user_email(weburl, email, self.GMAIL) == weburl
 
 
 def _record_kwargs(**overrides):
@@ -45,6 +83,46 @@ def _record_kwargs(**overrides):
     }
     defaults.update(overrides)
     return defaults
+
+
+class TestTimestampDefaults:
+    """Defaults are evaluated per instance, not once at import.
+
+    Evaluated at import, every record built on the default carried the process
+    start time: after an hour of uptime all of them looked an hour old, and the
+    stranded-record sweep re-sent every one still queued.
+    """
+
+    def test_each_record_gets_its_own_timestamps(self) -> None:
+        first = Record(**_record_kwargs())
+        time.sleep(0.005)
+        second = Record(**_record_kwargs())
+        assert second.created_at > first.created_at
+        assert second.updated_at > first.updated_at
+
+    def test_each_permission_gets_its_own_timestamps(self) -> None:
+        first = Permission(type=PermissionType.READ, entity_type=EntityType.USER)
+        time.sleep(0.005)
+        second = Permission(type=PermissionType.READ, entity_type=EntityType.USER)
+        assert second.created_at > first.created_at
+
+    def test_queued_at_is_stored_only_once_set(self) -> None:
+        record = Record(**_record_kwargs())
+        assert "queuedAtTimestamp" not in record.to_arango_base_record()
+        record.queued_at = 123
+        assert record.to_arango_base_record()["queuedAtTimestamp"] == 123
+
+    def test_the_sweep_clocks_are_declared_in_the_record_schema(self) -> None:
+        """Arango enforces record_schema strictly: an undeclared field is rejected."""
+        schema = get_node_schema(CollectionNames.RECORDS.value)
+        doc = {
+            k: v
+            for k, v in Record(**_record_kwargs(queued_at=123)).to_arango_base_record().items()
+            if k != "_key"
+        }
+        doc["lastRepublishedAt"] = 456
+        doc["republishCount"] = 2
+        jsonschema.validate(instance=doc, schema=schema)
 
 
 # ============================================================================
@@ -1454,6 +1532,24 @@ class TestRecordGroup:
         assert arango["groupName"] == "Test Group"
         assert arango["connectorName"] == "DRIVE"
         assert arango["groupType"] == "DRIVE"
+
+    def test_a_record_group_upsert_takes_back_a_group_kept_for_the_trash(self) -> None:
+        """The source listing the group again clears the mark the purge removes it by."""
+        from app.models.entities import RecordGroup, RecordGroupType
+        rg = RecordGroup(
+            name="Team", external_group_id="ext-1", connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1", group_type=RecordGroupType.DRIVE,
+        )
+        arango = rg.to_arango_base_record_group()
+        assert arango["isDeletedAtSource"] is False
+        assert arango["deletedAtSourceTimestamp"] is None
+
+    def test_a_record_group_read_back_says_whether_it_is_kept_for_the_trash(self) -> None:
+        from app.models.entities import RecordGroup
+        doc = {"_key": "rg-1", "groupName": "Team", "connectorName": "DRIVE", "connectorId": "c", "groupType": "DRIVE"}
+        assert RecordGroup.from_arango_base_record_group(doc).is_deleted_at_source is False
+        kept = RecordGroup.from_arango_base_record_group({**doc, "isDeletedAtSource": True})
+        assert kept.is_deleted_at_source is True
 
     def test_from_arango_base_record_group(self):
         from app.models.entities import RecordGroup, RecordGroupType

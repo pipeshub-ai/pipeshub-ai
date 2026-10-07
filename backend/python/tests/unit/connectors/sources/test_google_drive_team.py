@@ -5,10 +5,11 @@ import io
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -124,67 +125,6 @@ def _make_record(record_id="rec-1", external_id="file-1", record_name="test.txt"
     r.record_type = RecordType.FILE
     r.connector_id = "drive-fc-1"
     return r
-
-
-@pytest.fixture
-def connector():
-    with patch(
-        "app.connectors.sources.google.drive.team.connector.GoogleClient"
-    ), patch(
-        "app.connectors.sources.google.drive.team.connector.SyncPoint"
-    ) as MockSyncPoint:
-        mock_sync_point = AsyncMock()
-        mock_sync_point.read_sync_point = AsyncMock(return_value=None)
-        mock_sync_point.update_sync_point = AsyncMock()
-        MockSyncPoint.return_value = mock_sync_point
-
-        from app.connectors.sources.google.drive.team.connector import (
-            GoogleDriveTeamConnector,
-        )
-
-        logger = _make_logger()
-        dep = AsyncMock()
-        dep.org_id = "org-1"
-        dep.on_new_app_users = AsyncMock()
-        dep.on_new_record_groups = AsyncMock()
-        dep.on_new_records = AsyncMock()
-        dep.on_record_deleted = AsyncMock()
-        dep.on_record_metadata_update = AsyncMock()
-        dep.on_record_content_update = AsyncMock()
-        dep.on_updated_record_permissions = AsyncMock()
-        dep.add_permission_to_record = AsyncMock()
-        dep.get_all_active_users = AsyncMock(return_value=[])
-        dep.reindex_existing_records = AsyncMock()
-        dep.get_record_by_external_id = AsyncMock(return_value=None)
-        provider = _make_mock_data_store_provider()
-
-        config_svc = AsyncMock()
-        config_svc.get_config = AsyncMock(return_value={
-            "auth": {
-                "adminEmail": "admin@example.com",
-                "type": "service_account",
-            }
-        })
-
-        c = GoogleDriveTeamConnector(
-            logger=logger,
-            data_entities_processor=dep,
-            data_store_provider=provider,
-            config_service=config_svc,
-            connector_id="drive-fc-1",
-            scope="personal",
-            created_by="test-user-id",
-        )
-        c.admin_data_source = AsyncMock()
-        c.drive_data_source = AsyncMock()
-        async def execute(operation):
-            return operation()
-        c.drive_data_source.execute = AsyncMock(side_effect=execute)
-        c.admin_client = MagicMock()
-        c.drive_client = MagicMock()
-        c.sync_filters = FilterCollection()
-        c.indexing_filters = FilterCollection()
-        yield c
 
 
 class TestInit:
@@ -382,7 +322,10 @@ class TestProcessGroup:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_lookup_in_synced_users(self, connector):
@@ -417,7 +360,10 @@ class TestProcessGroup:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
 
 class TestFetchGroupMembers:
@@ -1657,6 +1603,45 @@ class TestStreamRecord:
             result = await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_stream_regular_file_to_pdf_writes_inside_temp_dir(self, connector, file_name):
+        record = MagicMock(spec=Record)
+        record.external_record_id = "file-1"
+        record.record_name = file_name
+        record.id = "rec-1"
+
+        mock_service = MagicMock()
+        connector._get_drive_service_for_user = AsyncMock(return_value=mock_service)
+        connector._get_file_metadata_from_drive = AsyncMock(return_value={
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        })
+        connector._convert_to_pdf = AsyncMock(return_value="/tmp/test_dir/file.pdf")
+
+        user_perm = MagicMock()
+        user_perm.email = "u@t.com"
+        connector.data_store_provider = _make_mock_data_store_provider(user_with_perm=user_perm)
+
+        status = MagicMock()
+        status.progress.return_value = 1.0
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.MediaIoBaseDownload"
+        ) as mock_download, patch(
+            "app.connectors.sources.google.drive.team.connector.create_stream_record_response"
+        ) as mock_stream, patch("builtins.open", MagicMock()), patch(
+            "tempfile.TemporaryDirectory"
+        ) as mock_tmp:
+            mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_download.return_value.next_chunk.return_value = (status, True)
+            mock_stream.return_value = MagicMock()
+
+            await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
+
+            path, temp_dir = connector._convert_to_pdf.await_args.args
+            assert temp_dir == "/tmp/test_dir"
+            assert os.path.dirname(path) == temp_dir
+
 
 class TestGetDriveServiceForUser:
     @pytest.mark.asyncio
@@ -2214,7 +2199,10 @@ class TestProcessGroupFullCoverage:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_lookup_in_synced_users(self, connector):
@@ -2249,7 +2237,10 @@ class TestProcessGroupFullCoverage:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
 
 class TestFetchGroupMembersFullCoverage:
@@ -3796,15 +3787,16 @@ class TestSharedFolderExpansion:
         assert found == []
 
     @pytest.mark.asyncio
-    async def test_403_without_retryable_reason_skips_the_folder(self, connector):
-        # A 403 with no rate-limit reason (or none at all) is still a genuine
-        # permission loss and safe to skip permanently.
+    async def test_403_with_a_known_permission_refusal_skips_the_folder(self, connector):
+        # Access revoked since the folder was listed: nothing to replay, safe to skip.
         folder = _make_file_metadata(
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
         async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
-            raise _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            http_err = _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            http_err.error_details = [{"reason": "insufficientFilePermissions"}]
+            raise http_err
             yield  # pragma: no cover - makes this an async generator
 
         with patch(
@@ -3816,6 +3808,27 @@ class TestSharedFolderExpansion:
             )
 
         assert found == []
+
+    @pytest.mark.asyncio
+    async def test_403_without_a_known_permission_refusal_is_not_swallowed(self, connector) -> None:
+        # No reason, or one Drive adds later, may be a quota limit; skipping would drop
+        # this folder's descendants for good, since incremental sync never replays them.
+        folder = _make_file_metadata(
+            file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        )
+
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped) -> AsyncIterator[list]:
+            raise _make_http_error(HttpStatusCode.FORBIDDEN.value)
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.fetch_folder_children",
+            fake_children,
+        ):
+            with pytest.raises(HttpError):
+                await connector._expand_shared_folders(
+                    [folder], {"fold-1"}, AsyncMock()
+                )
 
     @pytest.mark.asyncio
     async def test_retryable_403_reason_is_not_swallowed(self, connector):

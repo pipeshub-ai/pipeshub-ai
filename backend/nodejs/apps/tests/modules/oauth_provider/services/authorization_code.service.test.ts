@@ -4,7 +4,10 @@ import sinon from 'sinon'
 import crypto from 'crypto'
 import { Types } from 'mongoose'
 import { AuthorizationCodeService } from '../../../../src/modules/oauth_provider/services/authorization_code.service'
-import { AuthorizationCode } from '../../../../src/modules/oauth_provider/schema/authorization_code.schema'
+import {
+  AuthorizationCode,
+  IAuthorizationCode,
+} from '../../../../src/modules/oauth_provider/schema/authorization_code.schema'
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
 import { InvalidGrantError } from '../../../../src/libs/errors/oauth.errors'
@@ -64,7 +67,7 @@ describe('AuthorizationCodeService', () => {
   })
 
   describe('exchangeCode', () => {
-    it('should exchange valid code', async () => {
+    it('should exchange valid code without PKCE for a confidential client', async () => {
       const userId = new Types.ObjectId()
       const orgId = new Types.ObjectId()
       const mockCode = {
@@ -86,6 +89,8 @@ describe('AuthorizationCodeService', () => {
         'valid-code',
         'client-1',
         'https://example.com/cb',
+        undefined,
+        true,
       )
 
       expect(result.userId).to.equal(userId.toString())
@@ -214,7 +219,10 @@ describe('AuthorizationCodeService', () => {
       }
     })
 
-    it('should verify PKCE with plain method', async () => {
+    // Codes stored before the S256-only change (10 minute lifetime) may still
+    // carry `plain`; they keep verifying until they expire. New codes can no
+    // longer be issued with `plain` (see oauth.validators).
+    it('should still verify a legacy stored code with the plain method', async () => {
       const verifier = 'a'.repeat(43) // valid length
       const mockCode = {
         _id: new Types.ObjectId(),
@@ -236,6 +244,121 @@ describe('AuthorizationCodeService', () => {
         'pkce-code', 'client-1', 'https://example.com/cb', verifier,
       )
       expect(result).to.have.property('userId')
+    })
+
+    // PKCE fail-closed for public clients (GHSA-cxgc-52jq-fcx9)
+    describe('public clients without a stored challenge', () => {
+      type AuthCodeFixture = Pick<
+        IAuthorizationCode,
+        | 'code' | 'clientId' | 'userId' | 'orgId' | 'redirectUri' | 'scopes'
+        | 'expiresAt' | 'isUsed' | 'codeChallenge' | 'codeChallengeMethod'
+      > & { _id: Types.ObjectId; save: sinon.SinonStub }
+      type AuthCodeQuery = ReturnType<typeof AuthorizationCode.findOne>
+
+      // exchangeCode awaits findOne and touches only the fixture's fields and save().
+      function stubFindOne(fixture: AuthCodeFixture): void {
+        sinon
+          .stub(AuthorizationCode, 'findOne')
+          .returns(Promise.resolve(fixture) as unknown as AuthCodeQuery)
+      }
+
+      function codeWithoutChallenge(): AuthCodeFixture {
+        return {
+          _id: new Types.ObjectId(),
+          code: 'no-pkce-code',
+          clientId: 'client-1',
+          userId: new Types.ObjectId(),
+          orgId: new Types.ObjectId(),
+          redirectUri: 'https://example.com/cb',
+          scopes: ['org:read'],
+          expiresAt: new Date(Date.now() + 600000),
+          isUsed: false,
+          codeChallenge: undefined,
+          codeChallengeMethod: undefined,
+          save: sinon.stub().resolves(),
+        }
+      }
+
+      it('rejects a public client redeeming a code that has no challenge, even with a verifier', async () => {
+        const mockCode = codeWithoutChallenge()
+        stubFindOne(mockCode)
+
+        try {
+          await service.exchangeCode(
+            'no-pkce-code', 'client-1', 'https://example.com/cb', 'a'.repeat(43), false,
+          )
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+          expect((error as InvalidGrantError).message).to.include('PKCE is required')
+        }
+        expect(mockCode.isUsed).to.be.false
+        expect(mockCode.save.called).to.be.false
+      })
+
+      it('fails closed when the caller omits the client type', async () => {
+        stubFindOne(codeWithoutChallenge())
+
+        try {
+          await service.exchangeCode('no-pkce-code', 'client-1', 'https://example.com/cb')
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+      })
+
+      it('lets a confidential client redeem a code that has no challenge', async () => {
+        const mockCode = codeWithoutChallenge()
+        stubFindOne(mockCode)
+
+        const result = await service.exchangeCode(
+          'no-pkce-code', 'client-1', 'https://example.com/cb', undefined, true,
+        )
+        expect(result.scopes).to.deep.equal(['org:read'])
+        expect(mockCode.isUsed).to.be.true
+      })
+
+      it('lets a public client redeem a code with an S256 challenge and matching verifier', async () => {
+        const verifier = 'b'.repeat(64)
+        const challenge = crypto
+          .createHash('sha256')
+          .update(verifier)
+          .digest('base64')
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '')
+        const mockCode: AuthCodeFixture = { ...codeWithoutChallenge(), codeChallenge: challenge, codeChallengeMethod: 'S256' }
+        stubFindOne(mockCode)
+
+        const result = await service.exchangeCode(
+          'no-pkce-code', 'client-1', 'https://example.com/cb', verifier, false,
+        )
+        expect(result.scopes).to.deep.equal(['org:read'])
+        expect(mockCode.isUsed).to.be.true
+      })
+
+      it('rejects a public client whose verifier does not match the S256 challenge', async () => {
+        const challenge = crypto
+          .createHash('sha256')
+          .update('c'.repeat(64))
+          .digest('base64')
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '')
+        const mockCode: AuthCodeFixture = { ...codeWithoutChallenge(), codeChallenge: challenge, codeChallengeMethod: 'S256' }
+        stubFindOne(mockCode)
+
+        try {
+          await service.exchangeCode(
+            'no-pkce-code', 'client-1', 'https://example.com/cb', 'd'.repeat(64), false,
+          )
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+          expect((error as InvalidGrantError).message).to.include('Invalid code verifier')
+        }
+        expect(mockCode.isUsed).to.be.false
+      })
     })
   })
 

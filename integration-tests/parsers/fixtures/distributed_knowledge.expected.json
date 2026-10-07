@@ -1295,7 +1295,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "graph TD\n\nA[Client] --&gt; B[API Gateway]\n\nB --&gt; C[Authentication]\n\nB --&gt; D[Search Service]\n\nD --&gt; E[Vector DB]\n\nD --&gt; F[Graph DB]\n\nC --&gt; G[User Store]",
+      "data": "graph TD\n\nA[Client] --> B[API Gateway]\n\nB --> C[Authentication]\n\nB --> D[Search Service]\n\nD --> E[Vector DB]\n\nD --> F[Graph DB]\n\nC --> G[User Store]",
       "links": null,
       "weburl": null,
       "public_data_link": null,

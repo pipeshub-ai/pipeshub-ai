@@ -58,12 +58,18 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         return [ClusterNode(host=self._config.host, port=self._config.port)]
 
     def _client_kwargs(self, options: ClientOptions) -> dict[str, Any]:
+        # `options.max_connections` is deliberately not forwarded. Standalone
+        # maps it onto a BlockingConnectionPool where contention *queues*;
+        # RedisCluster's per-node pool has no wait at all -- the first command
+        # over the cap raises MaxConnectionsError instantly, which under the
+        # indexing worker's fan-out turned every config read into a failure.
+        # redis-py's default (effectively unbounded) matches what standalone
+        # gives a non-blocking client today.
         kwargs: dict[str, Any] = {
             "startup_nodes": self._startup_nodes(),
             "decode_responses": options.decode_responses,
             "socket_timeout": options.socket_timeout_seconds,
             "socket_connect_timeout": options.socket_connect_timeout_seconds,
-            "max_connections": options.max_connections,
             "read_from_replicas": self._config.scale_reads in ("slave", "all"),
             "require_full_coverage": True,
         }
@@ -148,8 +154,10 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         kwargs.pop("startup_nodes", None)
         kwargs.pop("read_from_replicas", None)
         kwargs.pop("require_full_coverage", None)
-        kwargs.pop("max_connections", None)
         kwargs.pop("address_remap", None)
+        # A subscriber sits idle waiting for messages; any finite
+        # socket_timeout kills the connection during that wait.
+        kwargs["socket_timeout"] = None
         client = Redis(host=host, port=port, **kwargs)
         with self._created_lock:
             self._pubsub_clients.append(client)
@@ -164,6 +172,15 @@ class ClusterRedisProvider(IRedisConnectionProvider):
             return node.host, node.port
         startup = self._startup_nodes()[0]
         return startup.host, startup.port
+
+    async def publish(self, channel: str, message: str) -> int:
+        # redis-py 5.x's async RedisCluster has no publish() and PUBLISH is
+        # keyless, so a bare execute_command has no slot to route by and
+        # raises. Any node will do -- regular PUBLISH propagates cluster-wide.
+        result = await self.get_client().execute_command(
+            "PUBLISH", channel, message, target_nodes=RedisCluster.DEFAULT_NODE
+        )
+        return int(result)
 
     async def scan_keys(self, pattern: str, count: int = 100) -> AsyncIterator[str]:
         """Keyspace-wide SCAN: ioredis-style ``Cluster.scan()`` hits one node,

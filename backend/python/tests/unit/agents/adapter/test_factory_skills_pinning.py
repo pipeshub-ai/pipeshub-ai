@@ -14,6 +14,7 @@ path. These tests assert the PipesHub factory closes the same gap.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -151,3 +152,54 @@ class TestSkillsToolsetPinnedUnderLazyDisclosure:
 
         assert agent.spec.tool_disclosure == "lazy"
         assert agent.spec.pinned_toolsets == []
+
+
+class TestSkillsGatedByPlatformFlagInAdditionToEnvVar:
+    """`factory.py` line ~485: `if skills_enabled() and await is_skills_enabled(
+    context.config_service):` — BOTH the deployment-level env kill-switch
+    and the org-level `ENABLE_SKILLS` platform feature flag must be true.
+    `TestSkillsToolsetPinnedUnderLazyDisclosure` above covers the env-var
+    layer; this covers the platform-flag layer."""
+
+    async def test_no_skill_manager_when_env_true_but_platform_flag_false(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
+        monkeypatch.setattr(
+            "app.agents.agent_loop.factory.is_skills_enabled", AsyncMock(return_value=False),
+        )
+        monkeypatch.setattr(
+            "app.agents.agent_loop.factory.build_skill_manager", _fake_build_skill_manager,
+        )
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        agent, runtime, _goal, _clarifying = await factory.create(
+            context, context.llm, "quick", query="make me a pptx",
+        )
+
+        assert runtime.skills is None
+        assert agent.spec.pinned_toolsets == []
+        assert runtime.tool_registry is not None
+        assert not (_SKILL_TOOL_NAMES & set(runtime.tool_registry.names()))
+
+    async def test_skill_manager_wired_when_env_and_platform_flag_are_both_true(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
+        monkeypatch.setattr(
+            "app.agents.agent_loop.factory.is_skills_enabled", AsyncMock(return_value=True),
+        )
+        monkeypatch.setattr(
+            "app.agents.agent_loop.factory.build_skill_manager", _fake_build_skill_manager,
+        )
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        agent, runtime, _goal, _clarifying = await factory.create(
+            context, context.llm, "quick", query="make me a pptx",
+        )
+
+        assert runtime.skills is not None
+        assert "skills" in agent.spec.pinned_toolsets
+        assert _SKILL_TOOL_NAMES <= set(runtime.tool_registry.names())

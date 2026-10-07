@@ -65,6 +65,23 @@ export interface Document {
    */
   mutationCount?: number;
   /**
+   * Client-supplied key that makes a create safe to retry; see utils/idempotency.ts.
+   */
+  idempotencyKey?: string;
+  /**
+   * Digest of the request the key was first used for.
+   */
+  idempotencyFingerprint?: string;
+  /**
+   * The keyed upload attempt that owns this unfinished document, and until when.
+   */
+  uploadLeaseToken?: string;
+  uploadLeaseExpiresAt?: number;
+  /**
+   * A signed URL was issued for this new document's first file, which may not have arrived.
+   */
+  awaitingDirectUpload?: boolean;
+  /**
    * Access permissions for the document.
    */
   permissions?: DocumentPermission;

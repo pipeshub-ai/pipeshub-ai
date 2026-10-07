@@ -31,6 +31,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider, TransactionStore
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -49,6 +56,7 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.sources.salesforce.common.auth_fields import salesforce_login_url_field
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -56,6 +64,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.salesforce.common.apps import SalesforceApp
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -744,11 +753,15 @@ def _ts_in_bounds(
                 AuthField(
                     name="instance_url",
                     display_name="Salesforce Instance URL",
-                    placeholder="https://login.salesforce.com",
-                    description="The base URL of your Salesforce instance",
+                    placeholder="https://yourcompany.my.salesforce.com",
+                    description=(
+                        "Your org's My Domain URL, shown in Salesforce Setup under My Domain. "
+                        "Don't use login.salesforce.com: it only handles sign-in, and API calls to it fail."
+                    ),
                     field_type="TEXT",
                     max_length=2048
                 ),
+                salesforce_login_url_field(),
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App")
             ],
@@ -870,12 +883,12 @@ class SalesforceConnector(BaseConnector):
         each page independently — no full result set is ever held in memory by this helper.
 
         Raises:
-            RuntimeError: on any Salesforce API failure — initial query or any pagination page.
-                The generator stops; callers must not advance sync-point cursors when this
-                generator raises.
+            HTTPException (or RuntimeError when Salesforce gave no status) on any API
+                failure — initial query or any pagination page. The generator stops;
+                callers must not advance sync-point cursors when this generator raises.
         """
         if not self.data_source:
-            raise RuntimeError("Salesforce data source is not initialized")
+            raise connector_not_ready(self.display_name)
 
         if queryAll:
             response = await self.data_source.soql_query_all(api_version=api_version, q=q)
@@ -884,7 +897,13 @@ class SalesforceConnector(BaseConnector):
 
         if not response.success:
             self.logger.error("SOQL query failed: %s. Query: %s", response.error, q)
-            raise RuntimeError(f"SOQL query failed: {response.error}")
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector=self.display_name,
+                status=response.status_code,
+                message=f"SOQL query failed: {response.error}",
+            )
 
         yield list(response.data.get("records") or [])
 
@@ -897,7 +916,13 @@ class SalesforceConnector(BaseConnector):
                 self.logger.error(
                     "SOQL pagination failed at %s: %s.", next_url, response.error,
                 )
-                raise RuntimeError(f"SOQL pagination failed: {response.error}")
+                raise_for_stream_fetch(
+                    success=False,
+                    has_payload=False,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=f"SOQL pagination failed: {response.error}",
+                )
             yield list(response.data.get("records") or [])
 
     @staticmethod
@@ -1070,8 +1095,7 @@ class SalesforceConnector(BaseConnector):
             self.logger.debug(f"Salesforce access token still active for connector {self.connector_id}")
             return True
 
-        # Check for 401 Unauthorized (error is e.g. "HTTP 401")
-        if not response.error or "401" not in response.error:
+        if response.status_code != HttpStatusCode.UNAUTHORIZED.value:
             return False
 
         self.logger.debug(f"Salesforce API returned 401 for connector {self.connector_id}; attempting token refresh.")
@@ -1164,16 +1188,14 @@ class SalesforceConnector(BaseConnector):
             )
         access_token = await self._get_access_token()
         if not access_token:
-            raise HTTPException(
-                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="Salesforce connector not authenticated"
-            )
+            raise connector_not_ready(self.display_name)
         api_version = await self._get_api_version()
         base = (self.salesforce_instance_url or "").rstrip("/")
         path = f"/services/data/v{api_version}/sobjects/ContentVersion/{record.external_revision_id}/VersionData"
         url = f"{base}{path}"
         timeout = httpx.Timeout(FILE_STREAM_TIMEOUT_TOTAL_S, connect=FILE_STREAM_CONNECT_TIMEOUT_S)
         http_client = self._http_client or httpx.AsyncClient()
+        owns_client = http_client is not self._http_client
         try:
             async with http_client.stream(
                 "GET",
@@ -1187,18 +1209,19 @@ class SalesforceConnector(BaseConnector):
                     self.logger.error(
                         f"Salesforce VersionData request failed: {response.status_code} {body[:500]}"
                     )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to fetch file content: {response.status_code}"
+                    raise map_source_status(
+                        response.status_code,
+                        connector=self.display_name,
+                        retry_after=response.headers.get("Retry-After"),
                     )
                 async for chunk in response.aiter_bytes(STREAM_CHUNK_SIZE):
                     yield chunk
         except httpx.HTTPError as e:
             self.logger.error(f"Error streaming Salesforce file {record.id}: {e}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to fetch file content: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
+        finally:
+            if owns_client:
+                await http_client.aclose()
 
     async def _message_segments_to_html(self, segments: List[MessageSegment]) -> str:
         """
@@ -1708,7 +1731,7 @@ class SalesforceConnector(BaseConnector):
                             )
                     except Exception as e:
                         self.logger.error(f"Error resolving child record: {e}", exc_info=True)
-        except RuntimeError as e:
+        except (HTTPException, RuntimeError) as e:
             self.logger.warning(
                 "Linked-file SOQL failed for record %s: %s", record_salesforce_id, e
             )
@@ -1836,7 +1859,7 @@ class SalesforceConnector(BaseConnector):
         await self._reinitialize_token_if_needed()
         if not self.data_source:
             self.logger.error("Salesforce data source not initialized")
-            return
+            raise connector_not_ready(self.display_name)
 
         try:
             if record.record_type == RecordType.FILE:
@@ -1855,8 +1878,10 @@ class SalesforceConnector(BaseConnector):
             elif record.record_type == RecordType.TASK:
                 content_bytes = await self._process_task_record(record)
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
-            
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
             return StreamingResponse(
                 iter([content_bytes]),
@@ -1875,10 +1900,7 @@ class SalesforceConnector(BaseConnector):
         Fetch product description using external_record_id and return content as BlocksContainer bytes.
         """
         if not self.data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="Salesforce connector not initialized"
-            )
+            raise connector_not_ready(self.display_name)
 
         product_id = record.external_record_id
         api_version = await self._get_api_version()
@@ -1894,23 +1916,17 @@ class SalesforceConnector(BaseConnector):
         soql_query = (
             f"SELECT Id, Name, Description, ProductCode, Family FROM Product2 WHERE Id = '{safe_product_id}'"
         )
-        try:
-            product_data = await self._fetch_first_record(
-                api_version=api_version, soql=soql_query,
-            )
-        except Exception as e:
-            self.logger.warning("Failed to fetch product %s: %s", product_id, e)
-            product_data = None
+        product_data = await self._fetch_first_record(
+            api_version=api_version, soql=soql_query,
+        )
         if product_data is None:
-            description_content = f"# {record.record_name or 'Product'}"
-        else:
-            description_raw = product_data.get("Description") or ""
-            description_content = (
-                description_raw
-                if description_raw
-                else f"# {record.record_name or 'Product'}\n\nNo description available."
-            )
-
+            raise not_found_at_source(self.display_name)
+        description_raw = product_data.get("Description") or ""
+        description_content = (
+            description_raw
+            if description_raw
+            else f"# {record.record_name or 'Product'}\n\nNo description available."
+        )
 
         weburl = None
         if self.salesforce_instance_url and product_id:
@@ -1944,10 +1960,7 @@ class SalesforceConnector(BaseConnector):
         Fetch deal (Opportunity) description using external_record_id and return content as BlocksContainer bytes.
         """
         if not self.data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="Salesforce connector not initialized"
-            )
+            raise connector_not_ready(self.display_name)
 
         opportunity_id = record.external_record_id
         api_version = await self._get_api_version()
@@ -1963,22 +1976,17 @@ class SalesforceConnector(BaseConnector):
         soql_query = (
             f"SELECT Id, Description FROM Opportunity WHERE Id = '{safe_opportunity_id}'"
         )
-        try:
-            opportunity_data = await self._fetch_first_record(
-                api_version=api_version, soql=soql_query,
-            )
-        except Exception as e:
-            self.logger.error("Failed to fetch opportunity %s: %s", opportunity_id, e)
-            opportunity_data = None
+        opportunity_data = await self._fetch_first_record(
+            api_version=api_version, soql=soql_query,
+        )
         if opportunity_data is None:
-            description_content = f"# {record.record_name or 'Deal'}"
-        else:
-            description_raw = opportunity_data.get("Description") or ""
-            description_content = (
-                description_raw
-                if description_raw
-                else f"# {record.record_name or 'Deal'}\n\nNo description available."
-            )
+            raise not_found_at_source(self.display_name)
+        description_raw = opportunity_data.get("Description") or ""
+        description_content = (
+            description_raw
+            if description_raw
+            else f"# {record.record_name or 'Deal'}\n\nNo description available."
+        )
 
         weburl = None
         if self.salesforce_instance_url and opportunity_id:
@@ -2030,10 +2038,7 @@ class SalesforceConnector(BaseConnector):
         Fetch case description using external_record_id and return content as BlocksContainer bytes.
         """
         if not self.data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="Salesforce connector not initialized"
-            )
+            raise connector_not_ready(self.display_name)
 
         case_id = record.external_record_id
         api_version = await self._get_api_version()
@@ -2049,26 +2054,21 @@ class SalesforceConnector(BaseConnector):
         soql_query = (
             f"SELECT Id, Subject, Description FROM Case WHERE Id = '{safe_case_id}'"
         )
-        try:
-            case_data = await self._fetch_first_record(
-                api_version=api_version, soql=soql_query,
-            )
-        except Exception as e:
-            self.logger.warning("Failed to fetch case %s: %s", case_id, e)
-            case_data = None
+        case_data = await self._fetch_first_record(
+            api_version=api_version, soql=soql_query,
+        )
         if case_data is None:
-            description_content = f"# {record.record_name or 'Case'}"
+            raise not_found_at_source(self.display_name)
+        subject = case_data.get("Subject") or ""
+        description_raw = case_data.get("Description") or ""
+        if subject and description_raw:
+            description_content = f"# {subject}\n\n{description_raw}"
+        elif subject:
+            description_content = f"# {subject}\n\nNo description available."
+        elif description_raw:
+            description_content = description_raw
         else:
-            subject = case_data.get("Subject") or ""
-            description_raw = case_data.get("Description") or ""
-            if subject and description_raw:
-                description_content = f"# {subject}\n\n{description_raw}"
-            elif subject:
-                description_content = f"# {subject}\n\nNo description available."
-            elif description_raw:
-                description_content = description_raw
-            else:
-                description_content = f"# {record.record_name or 'Case'}\n\nNo description available."
+            description_content = f"# {record.record_name or 'Case'}\n\nNo description available."
 
         weburl = None
         if self.salesforce_instance_url and case_id:
@@ -2120,10 +2120,7 @@ class SalesforceConnector(BaseConnector):
         self.logger.debug("_process_task_record start for record_id=%s, external_record_id=%s", record.id, record.external_record_id)
         if not self.data_source:
             self.logger.error("_process_task_record: data_source not initialized for record %s", record.id)
-            raise HTTPException(
-                status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail="Salesforce connector not initialized"
-            )
+            raise connector_not_ready(self.display_name)
 
         task_id = record.external_record_id
         api_version = await self._get_api_version()
@@ -2143,31 +2140,36 @@ class SalesforceConnector(BaseConnector):
             f"SELECT Id, Subject, HtmlBody, TextBody, HasAttachment "
             f"FROM EmailMessage WHERE ActivityId = '{safe_task_id}' LIMIT 1"
         )
-        try:
-            task_data, email_data = await asyncio.gather(
-                self._fetch_first_record(api_version=api_version, soql=soql_query),
-                self._fetch_first_record(api_version=api_version, soql=email_query),
-            )
-        except Exception as e:
-            self.logger.warning(
-                "_process_task_record: Failed to fetch task %s: %s", task_id, e,
-            )
-            task_data = None
-            email_data = None
+        task_data, email_data = await asyncio.gather(
+            self._fetch_first_record(api_version=api_version, soql=soql_query),
+            self._fetch_first_record(api_version=api_version, soql=email_query),
+            return_exceptions=True,
+        )
 
+        if isinstance(task_data, BaseException):
+            raise task_data
         if task_data is None:
-            description_content = f"# {record.record_name or 'Task'}"
+            raise not_found_at_source(self.display_name)
+
+        # EmailMessage is optional: orgs without Enhanced Email, or without read
+        # access to it, answer INVALID_TYPE, which must not fail a Task whose own
+        # query succeeded.
+        if isinstance(email_data, BaseException):
+            self.logger.warning(
+                "_process_task_record: EmailMessage lookup failed for task %s: %s",
+                task_id, email_data,
+            )
+            email_data = None
+        subject = task_data.get("Subject") or ""
+        description_raw = task_data.get("Description") or ""
+        if subject and description_raw:
+            description_content = f"# {subject}\n\n{description_raw}"
+        elif subject:
+            description_content = f"# {subject}\n\nNo description available."
+        elif description_raw:
+            description_content = description_raw
         else:
-            subject = task_data.get("Subject") or ""
-            description_raw = task_data.get("Description") or ""
-            if subject and description_raw:
-                description_content = f"# {subject}\n\n{description_raw}"
-            elif subject:
-                description_content = f"# {subject}\n\nNo description available."
-            elif description_raw:
-                description_content = description_raw
-            else:
-                description_content = f"# {record.record_name or 'Task'}\n\nNo description available."
+            description_content = f"# {record.record_name or 'Task'}\n\nNo description available."
 
         weburl = None
         if self.salesforce_instance_url and task_id:
@@ -4489,6 +4491,7 @@ class SalesforceConnector(BaseConnector):
 
                         person = self._create_person(
                             email=email,
+                            org_id=org_id,
                             first_name=contact.FirstName,
                             last_name=contact.LastName,
                             phone=contact.Phone,
@@ -4527,8 +4530,21 @@ class SalesforceConnector(BaseConnector):
                 if not contact_with_edges:
                     continue
 
+                email_to_contact_ids: DefaultDict[str, List[str]] = defaultdict(list)
+                for p, dup_contact_edge, _ in contact_with_edges:
+                    email_to_contact_ids[p.email.lower()].append(
+                        dup_contact_edge.get("externalId") if dup_contact_edge else None
+                    )
+                for dup_email, dup_contact_ids in email_to_contact_ids.items():
+                    if len(dup_contact_ids) > 1:
+                        self.logger.warning(
+                            "Multiple Salesforce Contacts %s share email %r. If only some of them "
+                            "changed, their CONTACT/MEMBER_OF edges may be dropped this sync.",
+                            dup_contact_ids, dup_email,
+                        )
+
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _, _ in contact_with_edges]
+                    all_emails = [p.email.lower() for p, _, _ in contact_with_edges]
                     all_account_names = list({
                         moe.get("accountName")
                         for _, sce, moe in contact_with_edges
@@ -4554,7 +4570,7 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people_result or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
@@ -4570,7 +4586,7 @@ class SalesforceConnector(BaseConnector):
                     unchanged_emails: set = set()
                     delete_tasks = []
                     for person, contact_edge, _ in contact_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             stored_updated = node.get("updatedAtTimestamp")
@@ -4580,7 +4596,7 @@ class SalesforceConnector(BaseConnector):
                                 and incoming_updated is not None
                                 and stored_updated == incoming_updated
                             ):
-                                unchanged_emails.add(person.email)
+                                unchanged_emails.add(person.email.lower())
                                 continue
                             delete_tasks.append(tx_store.delete_edges_to(
                                 to_id=person.id,
@@ -4599,7 +4615,7 @@ class SalesforceConnector(BaseConnector):
                     changed_contacts = [
                         (p, sce, moe)
                         for p, sce, moe in contact_with_edges
-                        if p.email not in unchanged_emails
+                        if p.email.lower() not in unchanged_emails
                     ]
                     if changed_contacts:
                         await tx_store.batch_upsert_people([p for p, _, _ in changed_contacts])
@@ -4699,6 +4715,7 @@ class SalesforceConnector(BaseConnector):
                             continue
                         person = self._create_person(
                             email=lead_email,
+                            org_id=org_id,
                             first_name=lead.FirstName,
                             last_name=lead.LastName,
                             phone=lead.Phone,
@@ -4714,7 +4731,7 @@ class SalesforceConnector(BaseConnector):
                     continue
 
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _ in lead_with_edges]
+                    all_emails = [p.email.lower() for p, _ in lead_with_edges]
                     existing_people = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.PEOPLE.value,
                         field="email",
@@ -4722,14 +4739,14 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
 
                     ids_to_delete = []
                     for person, _ in lead_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             ids_to_delete.append(person.id)
@@ -5515,10 +5532,19 @@ class SalesforceConnector(BaseConnector):
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
         Handle different types of record updates (content changed, metadata changed).
+
+        A failed write is re-raised: the files checkpoint is saved after this
+        returns, so swallowing it would move the checkpoint past a change that
+        was never stored.
         """
         try:
             if record_update.is_deleted and record_update.external_record_id:
-                await self.data_entities_processor.on_record_deleted(record_id=record_update.external_record_id)
+                # The update carries the source's id; records are deleted by their key.
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
+                )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
             elif record_update.is_updated and record_update.record:
                 if record_update.content_changed:
                     self.logger.debug(f"Content changed for record: {record_update.record.record_name}")
@@ -5528,6 +5554,7 @@ class SalesforceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            raise
 
     async def _sync_files(
         self,
@@ -5807,10 +5834,18 @@ class SalesforceConnector(BaseConnector):
                         or getattr(existing, "external_revision_id", None) != rec.external_revision_id
                         or getattr(existing, "source_updated_at", None) != rec.source_updated_at
                         or getattr(existing, "size_in_bytes", None) != rec.size_in_bytes
-                        or getattr(existing, "extension", None) != rec.extension
                         or getattr(existing, "mime_type", None) != rec.mime_type
                         or getattr(existing, "weburl", None) != rec.weburl
                     )
+                    if not metadata_changed:
+                        # The lookup above returns a base Record, which has no extension. If the file
+                        # record is missing or can't be read, the file can't be shown unchanged, so update it.
+                        try:
+                            existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        except GraphQueryError as read_error:
+                            self.logger.warning(f"Updating {ext_id}: its stored file record could not be read: {read_error}")
+                            existing_file = None
+                        metadata_changed = existing_file is None or existing_file.extension != rec.extension
                     if content_changed or metadata_changed:
                         rec.id = existing.id
                         rec.version = getattr(existing, "version", 0) + 1

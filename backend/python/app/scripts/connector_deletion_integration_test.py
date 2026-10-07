@@ -1084,7 +1084,8 @@ async def run_deletion_test(
 # MAIN
 # ==============================================================================
 
-async def run_all() -> None:
+async def run_all() -> int:
+    """Run every case. Returns the number that failed."""
     data_store = os.getenv("DATA_STORE", "arangodb").lower()
 
     logger.info("=" * 72)
@@ -1175,6 +1176,11 @@ async def run_all() -> None:
                 logger.info(f"\n  x  {r['name']}")
                 logger.info(f"     Detail: {r['detail']}")
 
+    return failed
+
 
 if __name__ == "__main__":
-    asyncio.run(run_all())
+    # Exit non-zero when anything failed. Without this the script reported its
+    # failures in the log and still exited 0, so any caller — a CI step, a
+    # wrapper, someone checking $? — would read a failed run as a pass.
+    sys.exit(1 if asyncio.run(run_all()) else 0)

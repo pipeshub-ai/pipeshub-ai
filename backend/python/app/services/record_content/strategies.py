@@ -21,7 +21,6 @@ import mimetypes
 from typing import Any
 
 import aiohttp
-import jwt
 
 from app.agents.actions.util.blob_staging import fetch_blob_bytes
 from app.config.configuration_service import ConfigurationService
@@ -33,6 +32,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.services.artifact_registry.versioning import resolve_storage_version
+from app.utils.jwt import mint_service_token
 
 from .models import (
     RecordContentUnavailableError,
@@ -178,14 +178,13 @@ class ConnectorBackedContentStrategy:
             if not scoped_jwt_secret:
                 raise RecordContentUnavailableError("Missing scopedJwtSecret in configuration")
 
-            token = jwt.encode(
+            token = mint_service_token(
+                scoped_jwt_secret,
                 {
                     "orgId": actor.org_id,
                     "userId": actor.user_id,
                     "scopes": [TokenScopes.RECORD_CONTENT.value],
                 },
-                scoped_jwt_secret,
-                algorithm="HS256",
             )
 
             endpoints = await config_service.get_config(

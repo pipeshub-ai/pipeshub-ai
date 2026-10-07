@@ -232,6 +232,16 @@ export const xssSanitizationMiddleware = (
       return;
     }
 
+    // Skills persist SKILL.md and resource files that routinely contain HTML/JS
+    // samples (e.g. anthropics/skills pptx). Same exemption as agents.
+    if (
+      (req.path === '/api/v1/skills' || req.path.startsWith('/api/v1/skills/')) &&
+      (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH')
+    ) {
+      next();
+      return;
+    }
+
     // Validate request body
     if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       // Skip if body is a Buffer (file upload)

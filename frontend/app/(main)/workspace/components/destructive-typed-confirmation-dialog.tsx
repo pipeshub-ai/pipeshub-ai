@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 
@@ -16,6 +17,16 @@ export interface DestructiveTypedConfirmationDialogProps {
   onConfirm: () => void;
   isLoading?: boolean;
   confirmLoadingLabel?: string;
+  /**
+   * Portal target for the overlay + `Dialog.Content` — same contract as
+   * {@link ConfirmationDialog}'s `container` prop. Pass the host from
+   * `useWorkspaceDrawerNestedModalHost` when this dialog opens from inside
+   * `WorkspaceRightPanel` (z-index ~9201): without it, both the manual
+   * overlay below and `Dialog.Content`'s own portal render at their default
+   * location (`document.body`, appended BEFORE the drawer's own portal),
+   * so the drawer paints on top of them instead of the other way round.
+   */
+  container?: HTMLElement | null;
 }
 
 export function DestructiveTypedConfirmationDialog({
@@ -30,6 +41,7 @@ export function DestructiveTypedConfirmationDialog({
   onConfirm,
   isLoading = false,
   confirmLoadingLabel = 'ΓÇª',
+  container,
 }: DestructiveTypedConfirmationDialogProps) {
   const [input, setInput] = useState('');
 
@@ -43,6 +55,20 @@ export function DestructiveTypedConfirmationDialog({
     if (!isLoading) onOpenChange(false);
   };
 
+  const overlay = open && (
+    <Box
+      data-testid="destructive-dialog-overlay"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(28, 32, 36, 0.5)',
+        zIndex: 999,
+        cursor: isLoading ? 'not-allowed' : 'pointer',
+      }}
+      onClick={handleCancel}
+    />
+  );
+
   return (
     <Dialog.Root
       open={open}
@@ -50,19 +76,15 @@ export function DestructiveTypedConfirmationDialog({
         if (!isLoading) onOpenChange(v);
       }}
     >
-      {open && (
-        <Box
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(28, 32, 36, 0.5)',
-            zIndex: 999,
-            cursor: isLoading ? 'not-allowed' : 'pointer',
-          }}
-          onClick={handleCancel}
-        />
-      )}
+      {/*
+       * Portaled to the same `container` as `Dialog.Content` below (default:
+       * document.body) — a plain sibling render here would sit wherever this
+       * component lives in the tree, which is the wrong stacking context
+       * when that's nested inside `WorkspaceRightPanel`.
+       */}
+      {overlay && typeof document !== 'undefined' && createPortal(overlay, container ?? document.body)}
       <Dialog.Content
+        container={container ?? undefined}
         style={{
           maxWidth: '37.5rem',
           padding: 'var(--space-5) 0',

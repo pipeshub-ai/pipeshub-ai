@@ -9,6 +9,7 @@ from app.services.vector_db.collection_locator import StaticCollectionLocator
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.filters import canonical_filter_key
 from app.services.vector_db.membership import (
@@ -465,9 +466,102 @@ class TestSyncAndRewriteMembership:
 
         vdb.set_payload.assert_awaited_once_with(
             "records",
-            {CONNECTOR_IDS_FIELD: ["c1"], RECORD_GROUP_IDS_FIELD: ["g1"]},
+            {
+                CONNECTOR_IDS_FIELD: ["c1"],
+                RECORD_GROUP_IDS_FIELD: ["g1"],
+                # empty: this connector is not root-scoped, so nothing filters on it
+                ROOT_RECORD_GROUP_IDS_FIELD: [],
+            },
             filt,
         )
+
+    @pytest.mark.asyncio
+    async def test_sync_derives_the_root_for_a_root_scoped_connector(self):
+        """A Slack record synced before rootRecordGroupId existed has none
+        stored, so the root is walked from the group edges instead. Without
+        this, scoping Slack by root would drop everything already indexed."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={
+                "rec-1": {
+                    "connectorId": "c1",
+                    "recordGroupId": "thread-1",
+                    "connectorName": "SLACK",
+                }
+            },
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
+        )
+        # thread-1 belongs to channel-1, which has no parent of its own
+        async def edges_from(node_id, _collection):
+            if node_id.endswith("/thread-1"):
+                return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/channel-1"}]
+            if node_id.endswith("/channel-1"):
+                return []
+            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
+
+        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        payload = vdb.set_payload.await_args.args[1]
+        assert payload[ROOT_RECORD_GROUP_IDS_FIELD] == ["channel-1"]
+
+    @pytest.mark.asyncio
+    async def test_sync_leaves_the_stored_root_alone_when_the_walk_fails(self):
+        """set_payload merges, so writing the array we resolved would replace a
+        good root with an empty one on a transient graph error, and the record
+        would then match no container filter for a root-scoped connector."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={
+                "rec-1": {
+                    "connectorId": "c1",
+                    "recordGroupId": "thread-1",
+                    "connectorName": "SLACK",
+                }
+            },
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
+        )
+
+        async def edges_from(node_id, _collection):
+            if node_id.endswith("/thread-1"):
+                raise RuntimeError("graph unavailable")
+            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
+
+        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        payload = vdb.set_payload.await_args.args[1]
+        assert ROOT_RECORD_GROUP_IDS_FIELD not in payload
+        # the rest of the membership is still current and must still be written
+        assert payload[CONNECTOR_IDS_FIELD] == ["c1"]
+        assert payload[RECORD_GROUP_IDS_FIELD] == ["thread-1"]
+
+    @pytest.mark.asyncio
+    async def test_sync_does_not_walk_edges_for_other_connectors(self):
+        """The walk is one graph call per group; only root-scoped connectors
+        can use the result, so everyone else must not pay for it."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={"rec-1": {"connectorId": "c1", "recordGroupId": "g1",
+                               "connectorName": "DRIVE"}},
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/g1"}],
+        )
+        before = gp.get_edges_from_node.await_count if hasattr(
+            gp.get_edges_from_node, "await_count") else 0
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        # one call per record for its belongsTo edges, none for the root walk
+        assert gp.get_edges_from_node.await_count - before == 1
+        assert vdb.set_payload.await_args.args[1][ROOT_RECORD_GROUP_IDS_FIELD] == []
 
     @pytest.mark.asyncio
     async def test_sync_skips_empty_vrid(self):
@@ -507,6 +601,98 @@ class TestSyncAndRewriteMembership:
         gp.delete_nodes.assert_awaited_once()
         vdb.delete_points.assert_awaited_once()
         vdb.set_payload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_graph_does_not_delete_the_vectors(self):
+        """An empty answer here deletes this virtual record's points from
+        every managed collection, and then the mapping -- which the code's own
+        comment calls the way an orphaned point set is found again. A graph
+        that cannot be read answered empty, so a restart destroyed the vectors
+        of records that were perfectly alive, leaving them indexed, COMPLETED
+        and absent from every search.
+        """
+        gp = _graph(keys=[])
+
+        async def unreadable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer [] unless asked not
+            # to. A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return []
+
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=unreadable_graph)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=MagicMock())
+
+        with pytest.raises(RuntimeError):
+            await rewrite_or_delete_virtual_record(
+                vdb, _loc(), gp, "vr-1", MagicMock()
+            )
+
+        vdb.delete_points.assert_not_awaited()
+        gp.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_collection_listing_keeps_the_mapping(self):
+        """Both graph reads succeed and find no records, so deleting is right --
+        but listing the collections fails. Unless strict, that listing answers
+        [] exactly like a deployment with nothing in it, the loop deletes from
+        nowhere, and the mapping row is dropped with the points still there.
+        """
+        gp = _graph(keys=[])
+        gp.delete_nodes = AsyncMock()
+
+        class _UnlistableCollections:
+            # What list_managed_collections does: degrade to [] unless strict.
+            # A double that raised either way would pass without the fix.
+            async def all_collections(self, *, fresh=False, strict=False):
+                if strict:
+                    raise RuntimeError("vector DB unreachable")
+                return []
+
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=MagicMock())
+
+        with pytest.raises(RuntimeError):
+            await rewrite_or_delete_virtual_record(
+                vdb, _UnlistableCollections(), gp, "vr-1", MagicMock()
+            )
+
+        vdb.delete_points.assert_not_awaited()
+        gp.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_graph_that_fails_only_on_the_confirming_read_does_not_delete(self):
+        """The confirming re-read is its own call site. The candidate pass
+        reads a genuinely empty result and the graph goes down in the half
+        second before the confirmation, which is the window that read exists
+        to cover.
+        """
+        gp = _graph(keys=[])
+        calls = {"n": 0}
+
+        async def fails_on_the_second_read(*_args, raise_on_error=False, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return []
+            if raise_on_error:
+                raise RuntimeError("graph went down between the two reads")
+            return []
+
+        gp.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=fails_on_the_second_read
+        )
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=MagicMock())
+
+        with pytest.raises(RuntimeError):
+            await rewrite_or_delete_virtual_record(
+                vdb, _loc(), gp, "vr-1", MagicMock()
+            )
+
+        assert calls["n"] == 2
+        vdb.delete_points.assert_not_awaited()
+        gp.delete_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mapping_delete_failure_still_deletes_points(self):
@@ -684,6 +870,156 @@ class TestMembershipConcurrency:
             timeout=5,
         )
         assert result == "rewritten"
+
+
+class TestVridWriteLocks:
+    """The re-read and the write are one critical section per VRID.
+
+    The connector purge computes a point's new membership from what it reads,
+    so anything that escapes this block is a lost update.
+    """
+
+    @pytest.mark.asyncio
+    async def test_locks_are_taken_in_sorted_order(self):
+        """Two batches overlapping in opposite order would otherwise each hold
+        the lock the other wants."""
+        import app.services.vector_db.membership as m
+
+        recorded = []
+        original = m._vrid_lock
+
+        def _recording(virtual_record_id):
+            recorded.append(virtual_record_id)
+            return original(virtual_record_id)
+
+        m._vrid_lock = _recording
+        try:
+            async with m.vrid_write_locks(["vr-c", "vr-a", "vr-b"]):
+                pass
+        finally:
+            m._vrid_lock = original
+
+        assert recorded == ["vr-a", "vr-b", "vr-c"], recorded
+
+    @pytest.mark.asyncio
+    async def test_overlapping_batches_in_opposite_order_both_finish(self):
+        """The smoke test for the property above: sorted acquisition means one
+        batch always wins outright instead of the two wedging each other."""
+        import asyncio
+
+        from app.services.vector_db.membership import vrid_write_locks
+
+        async def _batch(ids):
+            async with vrid_write_locks(ids):
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(
+            asyncio.gather(_batch(["vr-a", "vr-b"]), _batch(["vr-b", "vr-a"])),
+            timeout=5,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_read_happens_before_the_lock(self):
+        """The whole point of the fix. While another writer holds one of the
+        batch's VRIDs, the batch must not have looked at anything yet."""
+        import asyncio
+
+        from app.services.vector_db.membership import _vrid_lock, vrid_write_locks
+
+        held = _vrid_lock("vr-b")  # strong ref: the registry is weak-valued
+        await held.acquire()
+        entered = {"yes": False}
+
+        async def _batch():
+            async with vrid_write_locks(["vr-a", "vr-b"]):
+                entered["yes"] = True
+
+        task = asyncio.create_task(_batch())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert entered["yes"] is False, "entered the block while vr-b was held"
+
+        held.release()
+        await asyncio.wait_for(task, timeout=5)
+        assert entered["yes"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_write_half_does_not_take_the_lock_again(self):
+        """It is called from inside the block, and asyncio.Lock is not
+        reentrant — a locking write half would wedge every batch."""
+        import asyncio
+
+        from app.services.vector_db.membership import (
+            vrid_write_locks,
+            write_membership_batch_locked,
+        )
+
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=MagicMock())
+
+        async with vrid_write_locks(["vr-a"]):
+            await asyncio.wait_for(
+                write_membership_batch_locked(
+                    vdb, "records", ["vr-a"], ["conn-2"], None, None
+                ),
+                timeout=5,
+            )
+
+        vdb.set_payload.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_locks_are_released_when_the_body_raises(self):
+        """A disconnect mid-read must not strand every VRID in the batch."""
+        from app.services.vector_db.membership import _vrid_lock, vrid_write_locks
+
+        with pytest.raises(ConnectionError):
+            async with vrid_write_locks(["vr-a", "vr-b"]):
+                raise ConnectionError("vector db gone")
+
+        still_held = [v for v in ("vr-a", "vr-b") if _vrid_lock(v).locked()]
+        assert still_held == [], still_held
+
+    @pytest.mark.asyncio
+    async def test_locks_are_released_when_cancelled(self):
+        import asyncio
+
+        from app.services.vector_db.membership import _vrid_lock, vrid_write_locks
+
+        started = asyncio.Event()
+
+        async def _hold():
+            async with vrid_write_locks(["vr-cancel"]):
+                started.set()
+                await asyncio.sleep(3600)
+
+        task = asyncio.create_task(_hold())
+        await started.wait()
+        assert _vrid_lock("vr-cancel").locked()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not _vrid_lock("vr-cancel").locked()
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_during_the_read_releases_every_lock(self):
+        """The timeout covers the whole block, not just acquisition, so it can
+        fire while the caller is mid-read — with every lock still held."""
+        import asyncio
+
+        import app.services.vector_db.membership as m
+
+        original = m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS
+        m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 0.05
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                async with m.vrid_write_locks(["vr-t1", "vr-t2"]):
+                    await asyncio.sleep(1)
+        finally:
+            m.MEMBERSHIP_LOCK_TIMEOUT_SECONDS = original
+
+        still_held = [v for v in ("vr-t1", "vr-t2") if m._vrid_lock(v).locked()]
+        assert still_held == [], still_held
 
 
 class TestMembershipLockRelease:
@@ -1013,7 +1349,7 @@ class TestStorageReconcileIsOptIn:
 
         with _patch.dict(os.environ, {}, clear=False):
             os.environ.pop("VECTOR_STORAGE_RECONCILE_ENABLED", None)
-            await vs._reconcile_storage_layout("records", 1024, False)
+            await vs._reconcile_storage_layout("records", 1024)
 
         vdb.reconcile_storage_layout.assert_not_awaited()
 
@@ -1037,7 +1373,7 @@ class TestStorageReconcileIsOptIn:
         )
 
         with _patch.dict(os.environ, {"VECTOR_STORAGE_RECONCILE_ENABLED": "true"}):
-            await vs._reconcile_storage_layout("records", 1024, False)
+            await vs._reconcile_storage_layout("records", 1024)
 
         vdb.reconcile_storage_layout.assert_awaited_once()
 

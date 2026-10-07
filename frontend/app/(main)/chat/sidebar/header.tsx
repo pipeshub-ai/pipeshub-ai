@@ -1,15 +1,42 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { Flex, IconButton, Tooltip } from '@radix-ui/themes';
 import { Link } from '@/lib/navigation';
 import { HEADER_ELEMENT_SIZE } from '@/app/components/sidebar';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore } from '@/lib/store/user-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { toast } from '@/lib/store/toast-store';
 import { PipesHubIcon } from '@/app/components/ui';
+
+function SidebarPanelIcon({ size = 18, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ display: 'block', flexShrink: 0, color }}
+      aria-hidden
+    >
+      <rect
+        x="3"
+        y="3"
+        width="20"
+        height="20"
+        rx="2.5"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+      <path d="M9 3v18" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 /**
  * Sidebar header — logo, user avatar, and a desktop collapse button.
@@ -17,6 +44,7 @@ import { PipesHubIcon } from '@/app/components/ui';
  * so we only need to handle the expanded state here.
  */
 export function ChatSidebarHeader() {
+  const { t } = useTranslation();
   const profile = useUserStore((s) => s.profile);
   const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
   const isMobile = useIsMobile();
@@ -41,10 +69,10 @@ export function ChatSidebarHeader() {
           <IconButton
             variant="ghost"
             color="gray"
-            aria-label="Open profile"
+            aria-label={t('common.openProfile')}
             onClick={() => {
-              toast.info('Coming soon', {
-                description: 'Profile page on mobile is coming soon.',
+              toast.info(t('chat.comingSoon'), {
+                description: t('chat.mobileProfileComingSoon'),
               });
             }}
             style={{ margin: 0, padding: 0, lineHeight: 0, cursor: 'pointer' }}
@@ -52,21 +80,21 @@ export function ChatSidebarHeader() {
             {avatar}
           </IconButton>
         ) : (
-          <Link href="/workspace/profile/" aria-label="Open profile" style={{ textDecoration: 'none', lineHeight: 0 }}>
+          <Link href="/workspace/profile/" aria-label={t('common.openProfile')} style={{ textDecoration: 'none', lineHeight: 0 }}>
             {avatar}
           </Link>
         )}
         {!isMobile && (
-          <Tooltip content="Collapse sidebar" side="right">
+          <Tooltip content={t('sidebar.collapse')} side="right">
             <IconButton
               variant="ghost"
               color="gray"
               size="1"
-              aria-label="Collapse sidebar"
+              aria-label={t('sidebar.collapse')}
               onClick={() => setNavCollapsed(true)}
               style={{ margin: 0, cursor: 'pointer' }}
             >
-              <MaterialIcon name="keyboard_tab" size={18} color="var(--gray-10)" style={{ transform: 'scaleX(-1)' }} />
+              <SidebarPanelIcon size={18} color="var(--gray-10)" />
             </IconButton>
           </Tooltip>
         )}

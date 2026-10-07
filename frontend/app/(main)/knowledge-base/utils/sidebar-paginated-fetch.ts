@@ -1,8 +1,18 @@
 import { KnowledgeHubApi } from '../api';
 import { useKnowledgeBaseStore } from '../store';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
-import { buildConnectorAppSidebarTree, treeHasNodeWithId } from './tree-builder';
-import { sidebarNodeChildrenMetaAfterPage } from './sidebar-child-pagination-meta';
+import { buildConnectorAppSidebarTree } from './tree-builder';
+import { isKbCollectionsHubApp } from './all-records-transformer';
+import {
+  fetchRootAppPage,
+  isReplacingRootListLoadInFlight,
+  restoreOpenFoldersInSidebar,
+  rootListPaginationAfter,
+  showCollectionsInSidebar,
+  watchRootList,
+} from './root-app-list';
+import { loadNextChildrenPage, showFolderChildren } from './folder-children';
+import { kbSessionToken } from './kb-session';
 import { toast } from '@/lib/store/toast-store';
 import type { KnowledgeHubNode } from '../types';
 
@@ -20,36 +30,38 @@ function mergeNodesById(existing: KnowledgeHubNode[], incoming: KnowledgeHubNode
 export async function loadMoreRootAppList(): Promise<void> {
   const state = useKnowledgeBaseStore.getState();
   const meta = state.appRootListPagination;
-  if (!meta?.hasNext) return;
+  // A refresh or first-page load already reads the pages this would; its
+  // result replaces the list, so a page fetched now would only be discarded.
+  if (!meta?.hasNext || isReplacingRootListLoadInFlight()) return;
 
-  const {
-    appendAppNodes,
-    setAppRootListPagination,
-    setLoadingRootAppListMore,
-  } = useKnowledgeBaseStore.getState();
+  const { setLoadingRootAppListMore } = state;
+  const isCurrent = watchRootList();
 
   setLoadingRootAppListMore(true);
   try {
-    const response = await KnowledgeHubApi.getNavigationNodes({
-      page: meta.nextPage,
-      limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-      include: 'counts',
-      sortBy: 'updatedAt',
-      sortOrder: 'desc',
-    });
+    const response = await fetchRootAppPage(meta.nextPage);
+    // Stale if a refresh started meanwhile, or one already running when this
+    // was clicked has since written its own cursor: its pages replace ours.
+    const cursorNow = useKnowledgeBaseStore.getState().appRootListPagination;
+    if (
+      !isCurrent() ||
+      isReplacingRootListLoadInFlight() ||
+      !cursorNow?.hasNext ||
+      cursorNow.nextPage !== meta.nextPage
+    ) {
+      return;
+    }
 
     const appItems = response.items.filter((n) => n.nodeType === 'app');
+    const { appendAppNodes, setAppRootListPagination, nodes } = useKnowledgeBaseStore.getState();
     appendAppNodes(appItems);
+    setAppRootListPagination(rootListPaginationAfter(response.pagination));
 
-    const p = response.pagination;
-    setAppRootListPagination(
-      p
-        ? {
-            hasNext: p.hasNext,
-            nextPage: p.hasNext ? p.page + 1 : p.page,
-          }
-        : null
-    );
+    const knownIds = new Set(nodes.map((n) => n.id));
+    const newCollections = appItems.filter((n) => isKbCollectionsHubApp(n) && !knownIds.has(n.id));
+    if (newCollections.length > 0) {
+      showCollectionsInSidebar([...nodes.filter((n) => n.nodeType === 'app'), ...newCollections]);
+    }
   } catch (error) {
     console.error('loadMoreRootAppList failed:', error);
     toast.error('Could not load more connectors', {
@@ -79,6 +91,7 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     addNodes,
   } = useKnowledgeBaseStore.getState();
 
+  const stillSignedIn = kbSessionToken();
   setAppLoading(appId, true);
   try {
     const response = await KnowledgeHubApi.getNodeChildren('app', appId, {
@@ -88,6 +101,7 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
       sortBy: 'name',
       sortOrder: 'asc',
     });
+    if (!stillSignedIn()) return;
 
     const previous = useKnowledgeBaseStore.getState().appChildrenCache.get(appId) || [];
     const merged = mergeNodesById(previous, response.items);
@@ -109,6 +123,7 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     addNodes(response.items);
     setConnectorAppTree(appId, buildConnectorAppSidebarTree(appId, merged));
   } catch (error) {
+    if (!stillSignedIn()) return;
     console.error('loadMoreAppChildPage failed:', { appId, error });
     toast.error('Could not load more items', {
       description: 'Please try again or refresh the page.',
@@ -120,57 +135,20 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
 
 /**
  * Fetches the next page of children for a nested sidebar parent (folder, kb,
- * recordGroup, …). App direct children use {@link loadMoreAppChildPage} instead.
+ * recordGroup, or a collection in the Collections tree). All Records app
+ * direct children use {@link loadMoreAppChildPage} instead.
  */
 export async function loadMoreNodeChildrenPage(parentId: string): Promise<void> {
   const state = useKnowledgeBaseStore.getState();
-  const meta = state.nodeChildrenPagination.get(parentId);
-  if (!meta?.hasNext || meta.nodeType === 'app') return;
+  if (!state.nodeChildrenPagination.get(parentId)?.hasNext) return;
   if (state.loadingNodeChildrenMoreIds.has(parentId)) return;
 
-  const {
-    cacheNodeChildren,
-    setNodeChildrenPagination,
-    setLoadingNodeChildrenMore,
-    addNodes,
-    mergeConnectorAppTreeChildren,
-    reMergeCachedChildrenIntoTree,
-  } = useKnowledgeBaseStore.getState();
-
+  const { setLoadingNodeChildrenMore } = state;
   setLoadingNodeChildrenMore(parentId, true);
   try {
-    const response = await KnowledgeHubApi.getNodeChildren(meta.nodeType, parentId, {
-      onlyContainers: true,
-      page: meta.nextPage,
-      limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-      sortBy: 'name',
-      sortOrder: 'asc',
-    });
-
-    const previous = useKnowledgeBaseStore.getState().nodeChildrenCache.get(parentId) || [];
-    const merged = mergeNodesById(previous, response.items);
-    cacheNodeChildren(parentId, merged);
-
-    setNodeChildrenPagination(
-      parentId,
-      sidebarNodeChildrenMetaAfterPage(
-        response.pagination,
-        response.items.length,
-        SIDEBAR_PAGINATION_PAGE_SIZE,
-        meta.nextPage,
-        meta.nodeType
-      )
-    );
-
-    addNodes(response.items);
-    reMergeCachedChildrenIntoTree();
-
-    const { connectorAppTrees } = useKnowledgeBaseStore.getState();
-    for (const [appId, tree] of connectorAppTrees) {
-      if (!treeHasNodeWithId(tree, parentId)) continue;
-      mergeConnectorAppTreeChildren(appId, parentId, merged);
-      // Each hub node appears under at most one connector app tree.
-      break;
+    if (await loadNextChildrenPage(parentId)) {
+      showFolderChildren(parentId);
+      restoreOpenFoldersInSidebar();
     }
   } catch (error) {
     console.error('loadMoreNodeChildrenPage failed:', { parentId, error });

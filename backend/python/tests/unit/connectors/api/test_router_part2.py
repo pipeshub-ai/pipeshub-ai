@@ -638,6 +638,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": {"team_sync": ["shared_scope"]},
                 "config": {},
@@ -666,6 +668,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": {"personal_sync": ["ps1"], "team_sync": ["ts1"]},
                 "config": {},
@@ -694,6 +698,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": {"agent": ["agent_s1"]},
                 "config": {},
@@ -722,6 +728,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "scopes": ["scope_a", "scope_b"],
                 "config": {},
@@ -747,6 +755,8 @@ class TestBuildOAuthFlowConfig:
         config_service.get_config = AsyncMock(return_value=[
             {
                 "_id": "oa1",
+                "authorizeUrl": "https://auth.test",
+                "tokenUrl": "https://token.test",
                 "orgId": "o1",
                 "config": {"client_id": "cid", "client_secret": "cs"},
             }
@@ -1877,6 +1887,10 @@ class TestHandleOAuthCallback:
 
         assert result["success"] is True
         assert "redirect_url" in result
+        # whoever completes the consent is recorded as the one who authenticated the connector
+        updates = req.app.state.connector_registry.update_connector_instance.await_args.kwargs["updates"]
+        assert updates["isAuthenticated"] is True
+        assert updates["authenticatedBy"] == "u1"
 
     async def test_invalid_token_returns_failure(self):
         from app.connectors.api.router import handle_oauth_callback
@@ -2432,6 +2446,237 @@ class TestToggleConnectorInstance:
         assert result["success"] is True
         producer.send_message.assert_called_once()
         mock_existing_connector.cleanup.assert_called_once()
+
+
+class TestToggleLocalFsOwnerClaim:
+    """Enabling Local FS sync claims the owner device or refuses another one."""
+
+    async def _enable(
+        self, body: dict, owner: dict | None = None, init: AsyncMock | None = None
+    ):
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(user_id="u1", body={"type": "sync", **body})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "individual"}
+        )
+        instance = _make_instance(
+            connector_type="Local FS",
+            scope="personal",
+            created_by="u1",
+            auth_type="NONE",
+            is_active=False,
+            is_configured=True,
+            extra=owner,
+        )
+        registry = req.app.state.connector_registry
+        registry.get_connector_instance = AsyncMock(return_value=instance)
+        registry.update_connector_instance = AsyncMock(return_value=True)
+        init = init or AsyncMock()
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._ensure_connector_initialized", new=init), \
+             patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+        return registry.update_connector_instance.await_args.kwargs["updates"], init
+
+    async def test_unclaimed_without_device_is_refused(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable({})
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_UNCLAIMED:")
+
+    async def test_unclaimed_with_device_claims_ownership(self):
+        updates, init = await self._enable({"deviceId": "dev-a", "deviceName": "Laptop A"})
+
+        assert updates["isActive"] is True
+        assert updates["ownerDeviceId"] == "dev-a"
+        assert updates["ownerDeviceName"] == "Laptop A"
+        init.assert_awaited_once()
+
+    async def test_other_device_is_refused_before_initializing(self):
+        init = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable(
+                {"deviceId": "dev-b", "deviceName": "Laptop B"},
+                owner={"ownerDeviceId": "dev-a", "ownerDeviceName": "Laptop A"},
+                init=init,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_OWNED_BY_OTHER_DEVICE:")
+        assert "Laptop A" in exc_info.value.detail
+        init.assert_not_awaited()
+
+    async def test_owned_connector_without_device_is_refused(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._enable(
+                {}, owner={"ownerDeviceId": "dev-a", "ownerDeviceName": "Laptop A"}
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.startswith("DESKTOP_OWNED_BY_OTHER_DEVICE:")
+
+    async def test_owner_device_refreshes_a_changed_name_only(self):
+        owner = {"ownerDeviceId": "dev-a", "ownerDeviceName": "Old name"}
+
+        renamed, _ = await self._enable(
+            {"deviceId": "dev-a", "deviceName": "New name"}, owner=owner
+        )
+        unchanged, _ = await self._enable(
+            {"deviceId": "dev-a", "deviceName": "Old name"}, owner=owner
+        )
+
+        assert renamed["ownerDeviceName"] == "New name"
+        assert "ownerDeviceId" not in renamed
+        assert "ownerDeviceName" not in unchanged
+
+    async def test_other_connectors_ignore_device_fields(self):
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(user_id="u1", is_admin=True, body={"type": "sync"})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "individual"}
+        )
+        instance = _make_instance(
+            connector_type="Web", auth_type="NONE", is_active=False, is_configured=True
+        )
+        registry = req.app.state.connector_registry
+        registry.get_connector_instance = AsyncMock(return_value=instance)
+        registry.update_connector_instance = AsyncMock(return_value=True)
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._ensure_connector_initialized", new=AsyncMock()), \
+             patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+
+        updates = registry.update_connector_instance.await_args.kwargs["updates"]
+        assert "ownerDeviceId" not in updates
+
+
+class TestToggleRollsBackOnPublishFailure:
+    """A toggle whose event never reaches the broker must not stay committed."""
+
+    async def _toggle(
+        self,
+        *,
+        is_active: bool,
+        body: dict | None = None,
+        connector_type: str = "Web",
+        publish_error: Exception | None = RuntimeError("broker down"),
+        cached: dict | None = None,
+        revert_error: Exception | None = None,
+        current_version: int = 5000,
+    ):
+        from app.connectors.api.router import toggle_connector_instance
+        from app.config.constants.arangodb import CollectionNames
+
+        req = _make_request(user_id="u1", is_admin=True, body={"type": "sync", **(body or {})})
+        org = {"_key": "o1", "accountType": "individual"}
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=org)
+
+        async def compare_and_set(key, collection, updates, expected) -> bool:
+            if revert_error is not None:
+                raise revert_error
+            assert collection == CollectionNames.APPS.value
+            return expected == {"updatedAtTimestamp": current_version}
+
+        graph_provider.update_node_fields_if_match = AsyncMock(side_effect=compare_and_set)
+        instance = _make_instance(
+            connector_type=connector_type,
+            scope="personal",
+            auth_type="NONE",
+            is_active=is_active,
+            is_configured=True,
+        )
+        registry = req.app.state.connector_registry
+        registry.get_connector_instance = AsyncMock(return_value=instance)
+        registry.update_connector_instance = AsyncMock(return_value={"updatedAtTimestamp": 5000})
+        req.app.container.connectors_map = dict(cached or {})
+        req.app.container.messaging_producer.send_message = AsyncMock(side_effect=publish_error)
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router._ensure_connector_initialized", new=AsyncMock()), \
+             patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=1000):
+            try:
+                result = await toggle_connector_instance("c1", req, graph_provider=graph_provider)
+                error = None
+            except HTTPException as exc:
+                result, error = None, exc
+
+        updates = [c.kwargs["updates"] for c in registry.update_connector_instance.await_args_list]
+        updates += [c.args[2] for c in graph_provider.update_node_fields_if_match.await_args_list]
+        return result, error, updates, req.app.container.connectors_map
+
+    async def test_enable_publish_failure_reverts_is_active(self):
+        _, error, updates, _ = await self._toggle(is_active=False)
+
+        assert error is not None and error.status_code == 500
+        assert len(updates) == 2
+        assert updates[0]["isActive"] is True
+        assert updates[1]["isActive"] is False
+
+    async def test_enable_publish_failure_evicts_built_connector(self):
+        conn = AsyncMock()
+        _, error, _, connectors_map = await self._toggle(is_active=False, cached={"c1": conn})
+
+        assert error is not None
+        assert "c1" not in connectors_map
+        conn.cleanup.assert_awaited_once()
+
+    async def test_disable_publish_failure_restores_active_and_keeps_connector(self):
+        conn = AsyncMock()
+        _, error, updates, connectors_map = await self._toggle(is_active=True, cached={"c1": conn})
+
+        assert error is not None and error.status_code == 500
+        assert updates[0]["isActive"] is False
+        assert updates[1]["isActive"] is True
+        assert connectors_map == {"c1": conn}
+        conn.cleanup.assert_not_awaited()
+
+    async def test_local_fs_enable_publish_failure_restores_owner_fields(self):
+        _, error, updates, _ = await self._toggle(
+            is_active=False,
+            connector_type="Local FS",
+            body={"deviceId": "dev-a", "deviceName": "Laptop A"},
+        )
+
+        assert error is not None
+        assert updates[0]["ownerDeviceId"] == "dev-a"
+        assert updates[1]["ownerDeviceId"] is None
+        assert updates[1]["ownerDeviceName"] is None
+
+    async def test_revert_failure_still_returns_original_error(self):
+        _, error, updates, _ = await self._toggle(
+            is_active=False,
+            revert_error=RuntimeError("db down"),
+        )
+
+        assert error is not None and error.status_code == 500
+        assert len(updates) == 2
+
+    async def test_newer_write_is_not_overwritten_by_stale_revert(self):
+        conn = AsyncMock()
+        _, error, updates, connectors_map = await self._toggle(
+            is_active=False, cached={"c1": conn}, current_version=6000
+        )
+
+        assert error is not None and error.status_code == 500
+        # The revert was attempted against the version it wrote, and refused.
+        assert len(updates) == 2
+        assert connectors_map == {"c1": conn}
+        conn.cleanup.assert_not_awaited()
+
+    async def test_enable_publish_success_updates_once(self):
+        conn = AsyncMock()
+        result, error, updates, connectors_map = await self._toggle(
+            is_active=False, publish_error=None, cached={"c1": conn}
+        )
+
+        assert error is None and result["success"] is True
+        assert len(updates) == 1
+        assert connectors_map == {"c1": conn}
 
 
 # ===========================================================================

@@ -2,7 +2,7 @@ import base64
 import io
 import json
 import logging
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
@@ -21,7 +21,6 @@ from app.utils.streaming import invoke_with_structured_output_and_reflection
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
 MAX_IMAGE_DIMENSION = 2000
-SentimentType = Literal["Positive", "Neutral", "Negative"]
 
 SUPPORTED_LLM_IMAGE_PREFIXES = (
     "data:image/png",
@@ -109,14 +108,22 @@ class DocumentClassification(BaseModel):
     languages: List[str] = Field(
         description="List of languages detected in the document"
     )
-    sentiment: SentimentType = Field(description="Overall sentiment of the document")
-    confidence_score: float = Field(
-        description="Confidence score of the classification", ge=0, le=1
-    )
     topics: List[str] = Field(
         description="List of key topics/themes extracted from the document"
     )
-    summary: str = Field(description="Summary of the document")
+    summary: str = Field(
+        description=(
+            "Retrieval-facing summary. Sentence 1 must state document type, "
+            "primary subject, principal parties or owning team, and time period "
+            "or effective date, in that order — a downstream tool shows only the "
+            "first ~600 characters, so front-loading is mandatory. Length is "
+            "tiered to document depth: 3-5 sentences for thin/sparse documents, "
+            "no more than 300 words typically, never exceeding 400 words. Prefer "
+            "concrete named entities, identifiers, dates, and figures over "
+            "connective prose. No opening filler, meta commentary, "
+            "recommendations, or unsupported claims."
+        )
+    )
 
 class DocumentExtraction(Transformer):
     def __init__(self, logger, graph_provider: IGraphDBProvider, config_service) -> None:
@@ -129,7 +136,12 @@ class DocumentExtraction(Transformer):
         record = ctx.record
         blocks = record.block_containers.blocks
 
-        document_classification = await self.process_document(blocks, record.org_id)
+        document_classification = await self.process_document(
+            blocks,
+            record.org_id,
+            record_name=record.record_name,
+            record_type=record.record_type.value,
+        )
         if document_classification is None:
             record.semantic_metadata = None
             return
@@ -269,11 +281,27 @@ class DocumentExtraction(Transformer):
 
         return content
 
+    @staticmethod
+    def _fill_prompt(department_list: str, record_name: str, record_type: str) -> str:
+        """Substitute template placeholders via `.replace()`, not `.format()`.
+
+        A record name containing braces (e.g. "report_{final}.pdf") would raise
+        inside `.format()`, and record names come from connector data.
+        """
+        return (
+            prompt_for_document_extraction
+            .replace("{department_list}", department_list)
+            .replace("{record_name}", record_name or "(unknown)")
+            .replace("{record_type}", record_type or "(unknown)")
+        )
+
     async def classify(
         self,
         blocks: List[Block],
         org_id: str,
         departments: Optional[List[str]] = None,
+        record_name: str = "",
+        record_type: str = "",
     ) -> Optional[DocumentClassification]:
         """Extract metadata using pre-fetched *departments*.
 
@@ -291,12 +319,7 @@ class DocumentExtraction(Transformer):
         try:
             resolved_departments: List[str] = departments or [dept.value for dept in DepartmentNames]
             department_list = "\n".join(f'     - "{dept}"' for dept in resolved_departments)
-            sentiment_list = "\n".join(
-                f'     - "{sentiment}"' for sentiment in SentimentType.__args__
-            )
-            filled_prompt = prompt_for_document_extraction.replace(
-                "{department_list}", department_list
-            ).replace("{sentiment_list}", sentiment_list)
+            filled_prompt = self._fill_prompt(department_list, record_name, record_type)
             content = self._prepare_content(blocks, is_multimodal_llm, context_length)
             if len(content) == 0:
                 self.logger.info("No content to process in document extraction")
@@ -322,7 +345,11 @@ class DocumentExtraction(Transformer):
             raise
 
     async def extract_metadata(
-        self, blocks: List[Block], org_id: str
+        self,
+        blocks: List[Block],
+        org_id: str,
+        record_name: str = "",
+        record_type: str = "",
     ) -> Optional[DocumentClassification]:
         """
         Extract metadata from document content.
@@ -341,15 +368,7 @@ class DocumentExtraction(Transformer):
                 departments = [dept.value for dept in DepartmentNames]
 
             department_list = "\n".join(f'     - "{dept}"' for dept in departments)
-
-            sentiment_list = "\n".join(
-                f'     - "{sentiment}"' for sentiment in SentimentType.__args__
-            )
-
-            filled_prompt = prompt_for_document_extraction.replace(
-                "{department_list}", department_list
-            ).replace("{sentiment_list}", sentiment_list)
-
+            filled_prompt = self._fill_prompt(department_list, record_name, record_type)
 
             # Prepare multimodal content
             content = self._prepare_content(blocks, is_multimodal_llm, context_length)
@@ -435,8 +454,6 @@ class DocumentExtraction(Transformer):
                 category="",
                 subcategories=SubCategories(level1="", level2="", level3=""),
                 languages=[],
-                sentiment="Neutral",
-                confidence_score=0.0,
                 topics=[],
                 summary=summary_text,
             )
@@ -444,9 +461,15 @@ class DocumentExtraction(Transformer):
             self.logger.error(f"❌ Fallback summary call failed: {e}")
             return None
 
-    async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
-            self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
-            return await self.extract_metadata(blocks, org_id)
+    async def process_document(
+        self,
+        blocks: List[Block],
+        org_id: str,
+        record_name: str = "",
+        record_type: str = "",
+    ) -> DocumentClassification:
+        self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
+        return await self.extract_metadata(blocks, org_id, record_name=record_name, record_type=record_type)
 
 
 

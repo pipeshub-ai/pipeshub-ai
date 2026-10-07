@@ -4,7 +4,10 @@ import tempfile
 
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.utils.libreoffice_convert import convert_with_libreoffice
+from app.utils.libreoffice_convert import (
+    convert_with_libreoffice,
+    unreadable_file_as_parse_error,
+)
 
 
 class PPTParser:
@@ -27,7 +30,8 @@ class PPTParser:
         parsing service). See :func:`DocParser.convert_doc_to_docx_async` for
         rationale.
         """
-        return await convert_with_libreoffice(binary, "ppt", "pptx")
+        with unreadable_file_as_parse_error("ppt"):
+            return await convert_with_libreoffice(binary, "ppt", "pptx")
 
     def convert_ppt_to_pptx(self, binary: bytes) -> bytes:
         """Convert .ppt file to .pptx using LibreOffice

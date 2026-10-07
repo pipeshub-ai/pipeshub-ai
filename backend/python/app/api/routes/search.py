@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import deny_service_tokens, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
@@ -15,11 +15,21 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.query_transform import setup_query_transformation
+from app.utils.user_errors import provider_error_code
+from app.utils.user_messages import action_failed
 
 if TYPE_CHECKING:
+    from logging import Logger
+
+    from langchain_core.runnables import Runnable
+
     from app.containers.query import QueryAppContainer
 
 router = APIRouter()
+
+# The rewrite and expansion are optional, and the LLM's own timeout is minutes long;
+# past this the search goes on with what the user typed.
+QUERY_TRANSFORM_TIMEOUT_SECONDS = 20.0
 
 
 # Pydantic models
@@ -55,6 +65,47 @@ async def get_config_service(request: Request) -> ConfigurationService:
     return container.config_service()
 
 
+async def _transform_query(
+    chain: "Runnable", query: str, step: str, logger: "Logger"
+) -> str | None:
+    """The model's output for one query-transformation step, or None if it failed.
+
+    Retrieval needs only the embedding model, so a rewrite the LLM could not do
+    (provider down, content filter, timeout) must not cost the whole search.
+    """
+    try:
+        return await asyncio.wait_for(chain.ainvoke(query), timeout=QUERY_TRANSFORM_TIMEOUT_SECONDS)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Provider errors can quote the prompt, so only the error's kind is logged.
+        logger.warning(
+            "Query %s failed (%s, %s); continuing the search without it",
+            step,
+            type(exc).__name__,
+            provider_error_code(exc),
+        )
+        return None
+
+
+def _queries_for_search(
+    original: str, rewritten: str | None, expanded: str | None
+) -> list[str]:
+    """The queries to retrieve with; what the user typed covers a failed step."""
+    original = original.strip()
+    # A rewrite that failed is replaced by the original; one that came back
+    # blank is not, so the expansions stand alone as they always have.
+    first = original if rewritten is None else rewritten.strip()
+    queries = [first] if first else []
+    for line in (expanded or "").split("\n"):
+        q = line.strip()
+        if q and q not in queries:
+            queries.append(q)
+    if not queries and original:
+        queries = [original]
+    return queries
+
+
 @router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def search(
@@ -64,9 +115,9 @@ async def search(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 )-> JSONResponse :
     """Perform semantic search across documents"""
+    container = request.app.container
+    logger = container.logger()
     try:
-        container = request.app.container
-        logger = container.logger()
         llm = await resolve_llm_for_search(request, retrieval_service)
 
         # Extract KB IDs from filters if present
@@ -77,18 +128,14 @@ async def search(
 
         # Run query transformations in parallel
         rewritten_query, expanded_queries = await asyncio.gather(
-            rewrite_chain.ainvoke(body.query), expansion_chain.ainvoke(body.query)
+            _transform_query(rewrite_chain, body.query, "rewrite", logger),
+            _transform_query(expansion_chain, body.query, "expansion", logger),
         )
 
         logger.debug(f"Rewritten query: {rewritten_query}")
         logger.debug(f"Expanded queries: {expanded_queries}")
 
-        expanded_queries_list = [
-            q.strip() for q in expanded_queries.split("\n") if q.strip()
-        ]
-
-        queries = [rewritten_query.strip()] if rewritten_query.strip() else []
-        queries.extend([q for q in expanded_queries_list if q not in queries])
+        queries = _queries_for_search(body.query, rewritten_query, expanded_queries)
         results = await retrieval_service.search_with_filters(
             queries=queries,
             org_id=request.state.user.get("orgId"),
@@ -113,11 +160,14 @@ async def search(
 
         return JSONResponse(status_code=custom_status_code, content=results)
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.error("Search failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
 
 
-@router.get("/health")
+@router.get("/health", dependencies=[Depends(deny_service_tokens)])
 async def health_check() -> dict[str, str]:
     """Health check endpoint"""
     return {"status": "healthy"}

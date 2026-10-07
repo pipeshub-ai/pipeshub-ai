@@ -58,6 +58,15 @@ export interface Connector {
    * Prefer comparing to `CONNECTOR_INSTANCE_STATUS` from `./constants`; other strings may appear before the UI is updated.
    */
   status?: string | null;
+  /**
+   * Local FS only, and only while sync is enabled. Live: the owner device
+   * (`ownerDeviceId`) is connected, stamped by Node at response time.
+   * Absent when unknown, unclaimed, or when the connector is disabled.
+   */
+  desktopOnline?: boolean;
+  /** Local FS only. The desktop device that claimed this connector on first enable. */
+  ownerDeviceId?: string;
+  ownerDeviceName?: string;
 }
 
 /** API list response shape. */
@@ -206,7 +215,7 @@ export interface FilterSchemaField {
     | 'NUMBER'
     | 'BOOLEAN'
     | 'TAGS';
-  filterType?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect';
+  filterType?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect' | 'select';
   category?: 'sync' | 'indexing';
   required?: boolean;
   defaultValue?: unknown;
@@ -452,6 +461,8 @@ export interface ConnectorInstance extends Connector {
 export interface LocalSyncStatus {
   connectorId: string;
   watcherState: 'starting' | 'watching' | 'stopped';
+  /** Strategy the mounted watcher is running under — falls back to journal meta when stopped. */
+  syncStrategy: 'MANUAL' | 'SCHEDULED';
   rootPath: string | null;
   lastError: string | null;
   pendingCount: number;

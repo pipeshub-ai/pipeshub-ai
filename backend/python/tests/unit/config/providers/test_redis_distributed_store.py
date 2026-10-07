@@ -192,6 +192,25 @@ class TestGetKey:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_deserialization_error_raises_when_asked(self):
+        """A stored value that cannot be read is not an absent key. For a
+        strict reader -- the collection manifest on a delete path -- None here
+        reads as "no collections", and the delete drops mappings it never
+        deleted points for."""
+        store = _make_store()
+        mock = _mock_client(store)
+        mock.get = AsyncMock(return_value=b"not valid json")
+        with pytest.raises(ConnectionError):
+            await store.get_key("badkey", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_absent_key_is_none_even_when_asked(self):
+        store = _make_store()
+        mock = _mock_client(store)
+        mock.get = AsyncMock(return_value=None)
+        assert await store.get_key("missing", raise_on_error=True) is None
+
+    @pytest.mark.asyncio
     async def test_get_failure_raises(self):
         store = _make_store()
         mock = _mock_client(store)
@@ -351,22 +370,28 @@ class TestListKeysInDirectory:
 
 
 class TestPublishCacheInvalidation:
+    """PUBLISH is issued through `IRedisConnectionProvider.publish()`, not the
+    command client -- async RedisCluster has no `.publish()` (R13)."""
+
     @pytest.mark.asyncio
     async def test_publish_success(self):
         store = _make_store()
-        mock = _mock_client(store)
-        mock.publish = AsyncMock(return_value=1)
+        client = _mock_client(store)
+        store._provider.publish = AsyncMock(return_value=1)
         await store.publish_cache_invalidation("mykey")
-        mock.publish.assert_called_once()
+        store._provider.publish.assert_awaited_once_with(
+            store._invalidation_channel(), "mykey"
+        )
+        client.publish.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_publish_retries_on_failure(self):
         store = _make_store()
-        mock = _mock_client(store)
-        mock.publish = AsyncMock(side_effect=Exception("pub fail"))
+        _mock_client(store)
+        store._provider.publish = AsyncMock(side_effect=Exception("pub fail"))
         # Should not raise, logs error after retries
         await store.publish_cache_invalidation("mykey")
-        assert mock.publish.call_count == 3  # max_retries
+        assert store._provider.publish.await_count == 3  # max_retries
 
 
 class TestClose:

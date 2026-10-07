@@ -14,23 +14,16 @@ const SIDEBAR_ITEMS = [
   { label: 'Prompts', url: '/workspace/prompts/' },
   { label: 'Services', url: '/workspace/services/' },
   { label: 'Labs', url: '/workspace/labs/' },
+  { label: 'Connectors', url: '/workspace/connectors/team/' },
 ];
+
+// These sit under the collapsible "People" section.
+const PEOPLE_ITEMS = new Set(['Users', 'Teams', 'Groups']);
 
 test.describe('Workspace Sidebar Navigation', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/workspace/general/');
     await page.waitForTimeout(2_000);
-  });
-
-  // TODO: Re-enable once Connectors route is confirmed — admin route is /workspace/connectors/team/.
-  test.skip('navigates to Connectors', async ({ page }) => {
-    const item = { label: 'Connectors', url: '/workspace/connectors/team/' };
-    const sidebarLink = page.locator(`text="${item.label}"`).first();
-    if (await sidebarLink.isVisible()) {
-      await sidebarLink.click();
-      await page.waitForURL(`**${item.url}`, { timeout: 5_000 });
-      await expect(page).toHaveURL(new RegExp(item.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    }
   });
 
   test('navigates to Groups and shows the Enterprise placeholder', async ({ page }) => {
@@ -52,12 +45,20 @@ test.describe('Workspace Sidebar Navigation', () => {
 
   for (const item of SIDEBAR_ITEMS) {
     test(`navigates to ${item.label}`, async ({ page }) => {
-      const sidebarLink = page.locator(`text="${item.label}"`).first();
-      if (await sidebarLink.isVisible()) {
-        await sidebarLink.click();
-        await page.waitForURL(`**${item.url}`, { timeout: 5_000 });
-        await expect(page).toHaveURL(new RegExp(item.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      // A link's name may start with its icon's ligature text ("hub Connectors"); allow one
+      // such word, which still keeps "Your Personal Connectors" from matching "Connectors".
+      const sidebarLink = page
+        .getByRole('link', { name: new RegExp(`^(\\S+ )?${item.label}$`) })
+        .first();
+      if (PEOPLE_ITEMS.has(item.label) && !(await sidebarLink.isVisible())) {
+        await page.getByRole('button', { name: 'People' }).click();
       }
+      await expect(sidebarLink, `the ${item.label} link should be in the sidebar`).toBeVisible({
+        timeout: 5_000,
+      });
+      await sidebarLink.click();
+      await page.waitForURL(`**${item.url}`, { timeout: 5_000 });
+      await expect(page).toHaveURL(new RegExp(item.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     });
   }
 });

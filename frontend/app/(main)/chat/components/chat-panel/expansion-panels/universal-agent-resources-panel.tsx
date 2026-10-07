@@ -36,6 +36,12 @@ import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
+import {
+  bareToolFullName,
+  buildCatalogMcpGroups,
+  buildCatalogToolGroups,
+  type CatalogToolGroupRow,
+} from '@/chat/tool-groups';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
@@ -185,20 +191,10 @@ function humanizeUnderscores(value: string): string {
   return value.replace(/_/g, ' ');
 }
 
-/**
- * Strip the `instanceId:` prefix from an internal key to get the bare fullName.
- * Internal keys are `${instanceId}:${fullName}` when the toolset has an instanceId,
- * or just `fullName` for toolsets without one.
- */
-function bareFullName(key: string): string {
-  const colon = key.indexOf(':');
-  return colon >= 0 ? key.slice(colon + 1) : key;
-}
-
 function toolsetSubtitle(group: { fullNames: string[] }): string {
   const raw = group.fullNames[0];
   if (!raw) return '';
-  const fn = bareFullName(raw);
+  const fn = bareToolFullName(raw);
   if (!fn.includes('.')) return '';
   return fn
     .slice(0, fn.indexOf('.'))
@@ -270,106 +266,6 @@ let _mcpCache: {
   instances: McpMyServerEntry[];
   lastFetchedAt: number;
 } = { instances: [], lastFetchedAt: 0 };
-
-/**
- * Build tool groups from authenticated my-toolsets.
- *
- * **Internal key format:** when a toolset has an `instanceId`, each entry in `fullNames`
- * is stored as `${instanceId}:${rawFullName}`. This ensures two instances of the same
- * toolset type (e.g. two Slack workspaces sharing identical tool names) are independently
- * selectable in the UI. The prefix is stripped before sending on the wire (see runtime.ts).
- * For toolsets without an `instanceId`, the raw fullName is used unchanged.
- */
-function buildUniversalToolGroups(toolsets: BuilderSidebarToolset[]): Array<{
-  label: string;
-  fullNames: string[];
-  toolDescriptions?: Record<string, string>;
-  toolsetSlug: string;
-  instanceId: string;
-  iconPath?: string;
-  isAuthenticated: boolean;
-}> {
-  const groups: ReturnType<typeof buildUniversalToolGroups> = [];
-  for (let i = 0; i < toolsets.length; i++) {
-    const ts = toolsets[i]!;
-    const rawInstanceId = typeof ts.instanceId === 'string' ? ts.instanceId.trim() : '';
-
-    // Always assign a unique discriminator per entry in the list.
-    // Prefer the real instanceId from the API (stable, meaningful).
-    // Fall back to the loop index so that multiple instances of the same toolset type
-    // (e.g., three Gmail workspaces) never share internal selection keys even when
-    // the API omits instanceId.
-    const groupDiscriminator = rawInstanceId || `local-${i}`;
-
-    const rawFullNames = (ts.tools || [])
-      .map((t) => (typeof t.fullName === 'string' ? t.fullName.trim() : ''))
-      .filter(Boolean);
-    if (rawFullNames.length === 0) continue;
-
-    // Every internal key is always prefixed — guarantees uniqueness in the store.
-    const fullNames = rawFullNames.map((fn) => `${groupDiscriminator}:${fn}`);
-
-    const toolDescriptions: Record<string, string> = {};
-    rawFullNames.forEach((rawFn, j) => {
-      const key = fullNames[j]!;
-      const t = (ts.tools || [])[j];
-      const d = t && typeof t.description === 'string' ? t.description.trim() : '';
-      if (d) toolDescriptions[key] = d;
-    });
-
-    const instanceLabel = typeof ts.instanceName === 'string' ? ts.instanceName.trim() : '';
-    const productLabel = (ts.displayName || ts.name || 'Tools').trim();
-
-    groups.push({
-      label: instanceLabel || productLabel,
-      toolsetSlug: (ts.toolsetType || ts.name || '').trim(),
-      instanceId: groupDiscriminator,
-      iconPath: ts.iconPath?.trim() || undefined,
-      fullNames,
-      toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
-      isAuthenticated: Boolean(ts.isAuthenticated),
-    });
-  }
-  return groups;
-}
-
-/** Row shape shared by `buildUniversalToolGroups` (Actions tab) and `buildUniversalMcpGroups` (MCP tab). */
-type UniversalResourceGroupRow = ReturnType<typeof buildUniversalToolGroups>[number];
-
-/**
- * Build tool groups from authenticated my-mcp-servers instances. Same `${instanceId}:${rawFullName}`
- * internal-key discriminator strategy as `buildUniversalToolGroups` — two MCP instances of the same
- * underlying server type could otherwise expose identical `namespacedName`s.
- */
-function buildUniversalMcpGroups(instances: McpMyServerEntry[]): UniversalResourceGroupRow[] {
-  const groups: UniversalResourceGroupRow[] = [];
-  for (const entry of instances) {
-    const rawFullNames = (entry.tools || [])
-      .map((t) => (typeof t.namespacedName === 'string' ? t.namespacedName.trim() : ''))
-      .filter(Boolean);
-    if (rawFullNames.length === 0) continue;
-
-    const fullNames = rawFullNames.map((fn) => `${entry._id}:${fn}`);
-
-    const toolDescriptions: Record<string, string> = {};
-    rawFullNames.forEach((rawFn, j) => {
-      const key = fullNames[j]!;
-      const tool = (entry.tools || [])[j];
-      const d = tool && typeof tool.description === 'string' ? tool.description.trim() : '';
-      if (d) toolDescriptions[key] = d;
-    });
-
-    groups.push({
-      label: (entry.name || 'MCP Server').trim(),
-      toolsetSlug: 'mcp',
-      instanceId: entry._id,
-      fullNames,
-      toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
-      isAuthenticated: Boolean(entry.isAuthenticated),
-    });
-  }
-  return groups;
-}
 
 interface UniversalAgentResourcesPanelProps {
   onToggleView?: () => void;
@@ -470,7 +366,7 @@ export function UniversalAgentResourcesPanel({
         };
 
         // Rebuild from full accumulated list so instanceId-based discriminators are stable.
-        const groups = buildUniversalToolGroups(_actionsPageCache.toolsets);
+        const groups = buildCatalogToolGroups(_actionsPageCache.toolsets);
         const catalogFullNames = groups.flatMap((g) => g.fullNames);
         hydrateResources({ toolGroups: groups, toolCatalogFullNames: catalogFullNames });
         setHasNextPage(result.hasNext);
@@ -528,7 +424,7 @@ export function UniversalAgentResourcesPanel({
       const authenticated = (result.instances || []).filter((entry) => entry.isAuthenticated);
       _mcpCache = { instances: authenticated, lastFetchedAt: Date.now() };
 
-      const groups = buildUniversalMcpGroups(authenticated);
+      const groups = buildCatalogMcpGroups(authenticated);
       const catalogFullNames = groups.flatMap((g) => g.fullNames);
       hydrateMcpResources({ mcpGroups: groups, mcpCatalogFullNames: catalogFullNames });
     } catch (err) {
@@ -679,7 +575,7 @@ export function UniversalAgentResourcesPanel({
   // ── Filtered views ──
 
   const filterGroupsBySearch = useCallback(
-    (groups: UniversalResourceGroupRow[]): UniversalResourceGroupRow[] =>
+    (groups: CatalogToolGroupRow[]): CatalogToolGroupRow[] =>
       groups
         .map((g) => ({
           ...g,
@@ -688,7 +584,7 @@ export function UniversalAgentResourcesPanel({
             const q = search.toLowerCase();
             const desc = (g.toolDescriptions?.[key] ?? '').toLowerCase();
             // Strip the instanceId prefix when comparing against the search term
-            const bare = bareFullName(key);
+            const bare = bareToolFullName(key);
             return bare.toLowerCase().includes(q) || g.label.toLowerCase().includes(q) || desc.includes(q);
           }),
         }))
@@ -783,7 +679,7 @@ export function UniversalAgentResourcesPanel({
     renderToolIcon,
     afterGroups,
   }: {
-    groups: UniversalResourceGroupRow[];
+    groups: CatalogToolGroupRow[];
     keyPrefix: string;
     loading: boolean;
     error: string | null;
@@ -795,7 +691,7 @@ export function UniversalAgentResourcesPanel({
     footerLinkHref: string;
     footerLinkText: string;
     footerLinkAriaLabel: string;
-    renderGroupIcon: (group: UniversalResourceGroupRow) => React.ReactNode;
+    renderGroupIcon: (group: CatalogToolGroupRow) => React.ReactNode;
     renderToolIcon: (bareFn: string) => React.ReactNode;
     afterGroups?: React.ReactNode;
   }) => {
@@ -920,7 +816,7 @@ export function UniversalAgentResourcesPanel({
               {expanded &&
                 group.fullNames.map((internalKey) => {
                   // Strip instanceId prefix for display and icon resolution
-                  const fn = bareFullName(internalKey);
+                  const fn = bareToolFullName(internalKey);
                   const shortRaw = fn.includes('.') ? fn.slice(fn.indexOf('.') + 1) : fn;
                   const short = humanizeUnderscores(shortRaw);
                   return (

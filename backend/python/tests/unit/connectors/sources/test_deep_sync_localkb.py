@@ -49,7 +49,7 @@ def kb_service(mock_logger, mock_graph_provider, mock_kafka):
         logger=mock_logger,
         graph_provider=mock_graph_provider,
         kafka_service=mock_kafka,
-        processor=processor,
+        processor_for_kb=AsyncMock(return_value=processor),
     )
 
 

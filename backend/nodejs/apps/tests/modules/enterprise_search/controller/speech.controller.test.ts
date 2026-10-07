@@ -74,7 +74,34 @@ describe('SpeechController', () => {
       expect(res.json.calledWith({ detail: 'no provider' })).to.be.true
     })
 
-    it('should call next with BadGatewayError on upstream response error', async () => {
+    it('should hide a 5xx service message, which is the path that happens', async () => {
+      // validateStatus accepts every status, so axios resolves here rather
+      // than throwing: this is the reply a reader actually receives.
+      sinon.stub(axios, 'get').resolves({ status: 500, data: { detail: 'broken' } })
+      const res = makeRes()
+
+      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub())
+
+      expect(res.status.calledWith(500)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(JSON.stringify(body)).to.not.include('broken')
+      expect(body.detail).to.include('check the speech settings')
+    })
+
+    it('should keep a resolved 4xx message and its status', async () => {
+      sinon.stub(axios, 'get').resolves({
+        status: 409,
+        data: { detail: 'No speech provider is set up yet.' },
+      })
+      const res = makeRes()
+
+      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub())
+
+      expect(res.status.calledWith(409)).to.be.true
+      expect(res.json.firstCall.args[0].detail).to.equal('No speech provider is set up yet.')
+    })
+
+    it('should hide a 5xx service message behind plain advice', async () => {
       sinon.stub(axios, 'get').rejects({
         response: { status: 500, data: { detail: 'broken' } },
       })
@@ -84,7 +111,50 @@ describe('SpeechController', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('broken')
+      expect(err.message).to.equal(
+        'Something went wrong while PipesHub tried to check the speech settings. ' +
+          'Please try again in a moment; if it keeps happening, ask your admin to check the services page.',
+      )
+      expect(err.message).to.not.include('broken')
+    })
+
+    it('should keep an unmapped thrown 4xx status, such as 413', async () => {
+      // An oversized recording is the likely 413 here; 400 would tell the
+      // caller the wrong thing about what to do next.
+      sinon.stub(axios, 'get').rejects({
+        response: { status: 413, data: { detail: 'That recording is too large.' } },
+      })
+      const next = sinon.stub()
+
+      await getSpeechCapabilities(appConfig)(makeReq(), makeRes(), next)
+
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(413)
+      expect(err.message).to.equal('That recording is too large.')
+    })
+
+    it('should keep a thrown 4xx status even when the service sent no words', async () => {
+      sinon.stub(axios, 'get').rejects({ response: { status: 404, data: {} } })
+      const next = sinon.stub()
+
+      await getSpeechCapabilities(appConfig)(makeReq(), makeRes(), next)
+
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(404)
+      expect(err.message).to.include('check the speech settings')
+    })
+
+    it('should keep a thrown 4xx message and its status, not flatten it to 502', async () => {
+      sinon.stub(axios, 'get').rejects({
+        response: { status: 409, data: { detail: 'No speech provider is set up yet.' } },
+      })
+      const next = sinon.stub()
+
+      await getSpeechCapabilities(appConfig)(makeReq(), makeRes(), next)
+
+      const err = next.firstCall.args[0]
+      expect(err.message).to.equal('No speech provider is set up yet.')
+      expect(err.statusCode).to.equal(409)
     })
 
     it('should call next with ServiceUnavailableError on network error', async () => {
@@ -95,7 +165,7 @@ describe('SpeechController', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
+      expect(err.message).to.include('trouble reaching one of its services')
     })
 
     it('should strip hop-by-hop headers and keep custom headers', async () => {
@@ -208,6 +278,22 @@ describe('SpeechController', () => {
       expect(res.json.firstCall.args[0]).to.deep.equal({ detail: 'text too long' })
     })
 
+    it('should hide a resolved 5xx service message behind plain advice', async () => {
+      sinon.stub(axios, 'post').resolves({
+        status: 500,
+        data: Buffer.from(JSON.stringify({ detail: 'broken' })),
+        headers: { 'content-type': 'application/json' },
+      })
+      const res = makeRes()
+
+      await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
+
+      expect(res.status.calledWith(500)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(JSON.stringify(body)).to.not.include('broken')
+      expect(body.detail).to.include('read this message aloud')
+    })
+
     it('should handle upstream error with plain text body', async () => {
       const errBody = Buffer.from('Internal Server Error')
       sinon.stub(axios, 'post').resolves({
@@ -220,7 +306,10 @@ describe('SpeechController', () => {
       await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
 
       expect(res.status.calledWith(500)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ detail: 'Internal Server Error' })
+      // The service's own words described its internals; the reader gets advice.
+      const body = res.json.firstCall.args[0]
+      expect(body.detail).to.include('read this message aloud')
+      expect(JSON.stringify(body)).to.not.include('Internal Server Error')
     })
 
     it('should handle upstream error with empty body', async () => {
@@ -234,7 +323,9 @@ describe('SpeechController', () => {
       await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
 
       expect(res.status.calledWith(502)).to.be.true
-      expect(res.json.firstCall.args[0]).to.have.property('detail').that.includes('502')
+      const body = res.json.firstCall.args[0]
+      expect(body.detail).to.include('read this message aloud')
+      expect(JSON.stringify(body)).to.not.include('502')
     })
 
     it('should handle upstream error with malformed JSON', async () => {
@@ -247,7 +338,7 @@ describe('SpeechController', () => {
 
       await synthesizeSpeech(appConfig)(makeReq(), res, sinon.stub())
 
-      expect(res.json.firstCall.args[0]).to.have.property('detail').that.includes('500')
+      expect(res.json.firstCall.args[0].detail).to.include('read this message aloud')
     })
 
     it('should call next on network error', async () => {
@@ -257,7 +348,7 @@ describe('SpeechController', () => {
       await synthesizeSpeech(appConfig)(makeReq(), makeRes(), next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0].message).to.include('unavailable')
+      expect(next.firstCall.args[0].message).to.include('trouble reaching one of its services')
     })
 
     it('should use req.body when present', async () => {
@@ -285,7 +376,7 @@ describe('SpeechController', () => {
       expect(stub.firstCall.args[1]).to.deep.equal({})
     })
 
-    it('should map upstream error with data.message fallback', async () => {
+    it('should hide a 5xx service message behind plain advice', async () => {
       sinon.stub(axios, 'post').rejects({
         response: { status: 503, data: { message: 'rate limited' } },
       })
@@ -293,7 +384,9 @@ describe('SpeechController', () => {
 
       await synthesizeSpeech(appConfig)(makeReq(), makeRes(), next)
 
-      expect(next.firstCall.args[0].message).to.include('rate limited')
+      const message = next.firstCall.args[0].message
+      expect(message).to.include('read this message aloud')
+      expect(message).to.not.include('rate limited')
     })
 
     it('should map upstream error with non-object data', async () => {
@@ -304,7 +397,7 @@ describe('SpeechController', () => {
 
       await synthesizeSpeech(appConfig)(makeReq(), makeRes(), next)
 
-      expect(next.firstCall.args[0].message).to.include('upstream 500')
+      expect(next.firstCall.args[0].message).to.include('read this message aloud')
     })
 
     it('should map upstream error with null data', async () => {
@@ -315,7 +408,7 @@ describe('SpeechController', () => {
 
       await synthesizeSpeech(appConfig)(makeReq(), makeRes(), next)
 
-      expect(next.firstCall.args[0].message).to.include('upstream 500')
+      expect(next.firstCall.args[0].message).to.include('read this message aloud')
     })
   })
 
@@ -400,6 +493,22 @@ describe('SpeechController', () => {
       await transcribeAudio(appConfig)(req, makeRes(), sinon.stub())
     })
 
+    it('should hide a resolved 5xx service message behind plain advice', async () => {
+      sinon.stub(axios, 'post').resolves({ status: 500, data: { detail: 'broken' } })
+      const req = makeReq({
+        file: { buffer: Buffer.from('a'), originalname: 'a.wav', mimetype: 'audio/wav' },
+        body: {},
+      })
+      const res = makeRes()
+
+      await transcribeAudio(appConfig)(req, res, sinon.stub())
+
+      expect(res.status.calledWith(500)).to.be.true
+      const body = res.json.firstCall.args[0]
+      expect(JSON.stringify(body)).to.not.include('broken')
+      expect(body.detail).to.include('turn your recording into text')
+    })
+
     it('should forward upstream error status', async () => {
       sinon.stub(axios, 'post').resolves({
         status: 413,
@@ -427,7 +536,7 @@ describe('SpeechController', () => {
       await transcribeAudio(appConfig)(req, makeRes(), next)
 
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args[0].message).to.include('unavailable')
+      expect(next.firstCall.args[0].message).to.include('trouble reaching one of its services')
     })
 
     it('should replace original content-type with form-data boundary', async () => {

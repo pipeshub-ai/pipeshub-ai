@@ -9,6 +9,8 @@ from typing import Any, AsyncGenerator, Dict
 
 import pytest
 import pytest_asyncio
+
+from helper.source_credentials import source_unavailable
 from app.sources.client.confluence.confluence import (  # type: ignore[import-not-found]
     ConfluenceClient,
     ConfluenceApiKeyConfig,
@@ -40,9 +42,9 @@ async def confluence_datasource():
     api_token = os.getenv("CONFLUENCE_TEST_API_TOKEN")
 
     if not base_url or not email or not api_token:
-        pytest.skip(
-            "Confluence credentials not set "
-            "(CONFLUENCE_TEST_BASE_URL, CONFLUENCE_TEST_EMAIL, CONFLUENCE_TEST_API_TOKEN)"
+        source_unavailable(
+            "The Confluence site this suite syncs from is not configured.",
+            secrets=["CONFLUENCE_TEST_BASE_URL", "CONFLUENCE_TEST_EMAIL", "CONFLUENCE_TEST_API_TOKEN"],
         )
 
     config = ConfluenceApiKeyConfig(base_url=base_url, email=email, api_key=api_token)

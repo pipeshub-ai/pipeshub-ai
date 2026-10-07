@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Literal
 from uuid import uuid4
 
@@ -209,6 +210,22 @@ class MarkdownToBlocksConverter:
         return container
 
 
+@lru_cache(maxsize=1)
+def _worker_converter() -> MarkdownToBlocksConverter:
+    return MarkdownToBlocksConverter()
+
+
+def convert_markdown_to_blocks(
+    markdown_content: str,
+    caption_map: dict[str, str] | None = None,
+    page_number: int | None = None,
+) -> BlocksContainer:
+    """``MarkdownToBlocksConverter.convert`` as a function a parse worker can be sent."""
+    return _worker_converter().convert(
+        markdown_content, caption_map=caption_map, page_number=page_number
+    )
+
+
 class _TokenWalker:
     def __init__(
         self,
@@ -216,7 +233,12 @@ class _TokenWalker:
         caption_map: dict[str, str] | None = None,
     ) -> None:
         self.caption_map = caption_map or {}
-        self._source_lines = markdown_content.splitlines()
+        # token.map counts lines the way markdown-it does: only \r\n, \r and \n
+        # end a line. str.splitlines also breaks on form feeds, U+2028 and other
+        # separators, which would shift every later slice onto the wrong lines.
+        self._source_lines = (
+            markdown_content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        )
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
         self.group_stack: list[_OpenGroup] = []

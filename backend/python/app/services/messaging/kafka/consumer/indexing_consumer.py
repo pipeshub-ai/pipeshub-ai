@@ -38,6 +38,8 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.consumer.backlog import read_partition_backlog
+from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
@@ -72,6 +74,11 @@ if TYPE_CHECKING:
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 _MAIN_LOOP_OP_TIMEOUT = 5.0
+# The backlog read opens its own short-lived connection, so it gets longer
+# than a commit does; the caller's wait is a little longer still, so the read
+# reports its own timeout rather than being abandoned mid-way.
+_BACKLOG_READ_TIMEOUT = 10.0
+_BACKLOG_BRIDGE_TIMEOUT = _BACKLOG_READ_TIMEOUT + 5.0
 # How often the retry-backoff wait re-checks self.running, so a shutdown
 # request can interrupt a long (up to 300s) wait instead of holding an
 # active-future slot — and blocking graceful shutdown — for the full delay.
@@ -201,6 +208,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
+        # Guards publishing worker_loop against a concurrent stop request, so
+        # a stop that arrives before the loop exists is not lost.
+        self._worker_loop_lock = threading.Lock()
+        self._worker_stop_requested = False
         self.main_loop: asyncio.AbstractEventLoop | None = None
         # Nested active-pipeline and parsing gates (created in worker thread).
         # Legacy fallback only: unused (stay None) once a governor is set.
@@ -300,7 +311,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Start the worker thread with its own event loop"""
         def run_worker_loop() -> None:
             """Run the event loop in the worker thread"""
-            self.worker_loop = asyncio.new_event_loop()
+            loop = asyncio.new_event_loop()
+            with self._worker_loop_lock:
+                self.worker_loop = loop
+                if self._worker_stop_requested:
+                    # run_forever() will return after one pass; the cleanup
+                    # in its finally still runs.
+                    loop.stop()
             asyncio.set_event_loop(self.worker_loop)
 
             if self.governor is not None:
@@ -328,7 +345,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
                 self.logger.info("Worker thread event loop started with semaphores initialized")
 
-            # Signal that the worker loop is ready
             if self.concurrency_manager is not None:
                 self.lease_renewer = LeaseRenewer(
                     self.logger,
@@ -337,7 +353,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     interval_seconds=messaging_env.concurrency_renew_interval_seconds,
                 )
                 self.worker_loop.call_soon(self.lease_renewer.start)
-            self.worker_loop_ready.set()
+            # Set from inside the loop, not before run_forever(): initialize()
+            # checks is_running() as soon as this fires.
+            self.worker_loop.call_soon(self.worker_loop_ready.set)
 
             # Run the event loop until stopped
             try:
@@ -364,6 +382,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         # Reset the ready event
         self.worker_loop_ready.clear()
+        self._worker_stop_requested = False
 
         # Create executor with single worker thread
         self.worker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="indexing-worker")
@@ -423,10 +442,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # First, wait for all active futures to complete with a timeout
         self._wait_for_active_futures()
 
-        if self.worker_loop and self.worker_loop.is_running():
-            # Stop the event loop (the finally block in run_worker_loop will handle cleanup)
-            self.worker_loop.call_soon_threadsafe(self.worker_loop.stop)
-            self.logger.info("Worker thread event loop stop requested")
+        with self._worker_loop_lock:
+            self._worker_stop_requested = True
+            loop = self.worker_loop
+        # Requested even when the loop is not running yet: a stop queued before
+        # run_forever() makes it return straight away, whereas skipping it
+        # would leave the shutdown below waiting on a loop that never ends.
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+                self.logger.info("Worker thread event loop stop requested")
+            except RuntimeError:
+                # Closed by the worker between the check and the call.
+                self.logger.debug("Worker thread event loop already closed")
 
         # Shutdown the executor and wait for thread to finish
         if self.worker_executor:
@@ -606,6 +634,38 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     def is_running(self) -> bool:
         """Check if consumer is running"""
         return self.running
+
+    @override
+    async def lane_backlog(self, topic: str) -> LaneBacklog:
+        return await concurrency.bridge_to_main_loop(
+            self, self._read_lane_backlog(topic), _BACKLOG_BRIDGE_TIMEOUT
+        )
+
+    async def _read_lane_backlog(self, topic: str) -> LaneBacklog:
+        if self.consumer is None:
+            raise RuntimeError("Kafka consumer is not started")
+        partitions = self.consumer.partitions_for_topic(topic)
+        if not partitions:
+            raise RuntimeError(f"No partition metadata for {topic}")
+        client_config = {
+            name: value
+            for name, value in IndexingKafkaConsumer.kafka_config_to_dict(
+                self.kafka_config
+            ).items()
+            if name not in ("topics", "enable_auto_commit", "auto_offset_reset")
+        }
+        client_config["client_id"] = f"{self.kafka_config.client_id}-backlog"
+        oldest = await read_partition_backlog(
+            client_config,
+            topic,
+            partitions,
+            auto_offset_reset=self.kafka_config.auto_offset_reset,
+            timeout_seconds=_BACKLOG_READ_TIMEOUT,
+        )
+        # No lanes_for_event: the broker's partitioner placed each message, and
+        # by design nothing here recomputes it (see lanes/interface.py), so an
+        # event may be waiting on any partition.
+        return LaneBacklog(topic, oldest)
 
     async def _on_partitions_revoked(self, revoked: "list[TopicPartition]") -> None:
         """Drop buffered (not-yet-dispatched) messages for partitions this
@@ -1580,7 +1640,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 pass
             except Exception as exc:
                 retry_current = True
-                self.logger.error(f"Task completed with unhandled exception: {exc}")
+                # %r and the traceback: a bare TimeoutError's message is empty.
+                self.logger.error(
+                    "Task completed with unhandled exception: %r", exc, exc_info=exc
+                )
             main_loop = self.main_loop
             if main_loop is not None and main_loop.is_running():
                 main_loop.call_soon_threadsafe(

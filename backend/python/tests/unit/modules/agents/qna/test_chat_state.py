@@ -145,6 +145,34 @@ class TestBuildInitialState:
         assert state["conversation_id"] == "conv-123"
         assert len(state["previous_conversations"]) == 1
 
+    def test_default_project_instructions_is_none(self, mock_deps, minimal_chat_query, minimal_user_info):
+        state = build_initial_state(
+            chat_query=minimal_chat_query,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state["project_instructions"] is None
+
+    def test_project_instructions_passthrough(self, mock_deps, minimal_user_info):
+        """`projectInstructions` (Node `ChatQuery` field) flows into
+        `chat_state["project_instructions"]` unchanged — additive, distinct
+        from both `instructions` (agent-specific) and `custom_instructions`
+        (org-level)."""
+        cq = {
+            "query": "q",
+            "instructions": "Focus on finance",
+            "custom_instructions": "Always respond in Spanish.",
+            "projectInstructions": "Cite the Q3 report for every financial claim.",
+        }
+        state = build_initial_state(
+            chat_query=cq,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state["instructions"] == "Focus on finance"
+        assert state["custom_instructions"] == "Always respond in Spanish."
+        assert state["project_instructions"] == "Cite the Q3 report for every financial claim."
+
     def test_with_toolsets(self, mock_deps, minimal_user_info):
         cq = {
             "query": "q",

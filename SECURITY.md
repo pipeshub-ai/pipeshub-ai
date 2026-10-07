@@ -14,7 +14,7 @@ We take security vulnerabilities seriously and appreciate your efforts to respon
 
 **Please DO NOT create public GitHub issues for security vulnerabilities.**
 
-Instead, please report security vulnerabilities by emailing: **abhishek@pipeshub.com**
+Instead, please report security vulnerabilities by emailing: **security@pipeshub.com**
 
 ### What to Include
 

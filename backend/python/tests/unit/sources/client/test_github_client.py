@@ -245,6 +245,17 @@ class TestBuildFromServices:
             await GitHubClient.build_from_services(logger, mock_config_service, "inst-1")
 
     @pytest.mark.asyncio
+    async def test_api_token_without_credentials_builds(self, logger, mock_config_service):
+        # A token-only connector has no OAuth credentials and must still build.
+        mock_config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN", "token": "tok"}}
+        )
+        with patch("app.sources.client.github.github.Github"), \
+             patch("app.sources.client.github.github.Auth"):
+            gc = await GitHubClient.build_from_services(logger, mock_config_service, "inst-1")
+            assert isinstance(gc, GitHubClient)
+
+    @pytest.mark.asyncio
     async def test_api_token_missing_raises(self, logger, mock_config_service):
         mock_config_service.get_config = AsyncMock(
             return_value={

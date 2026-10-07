@@ -317,16 +317,18 @@ class TestGetFreshDatasource:
     async def test_no_client_raises(self):
         connector = _make_connector()
         connector.external_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self):
         connector = _make_connector()
         connector.external_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_api_token_returns_datasource(self):
@@ -2331,8 +2333,9 @@ class TestProcessIssueBlockgroupsForStreaming:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record()
-        with pytest.raises(Exception, match="Failed to fetch"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._process_issue_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_no_issue_data(self):
@@ -2343,8 +2346,9 @@ class TestProcessIssueBlockgroupsForStreaming:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record()
-        with pytest.raises(Exception, match="No issue data"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._process_issue_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_without_site_url_uses_record_weburl(self):
@@ -3516,25 +3520,27 @@ class TestFetchIssuesBatchedFilters:
 class TestFallbackPermissionsForForbiddenSchemeCloud:
 
     @pytest.mark.asyncio
-    async def test_returns_user_permission_when_email_set(self):
+    async def test_returns_user_permission_for_authenticated_jira_account(self):
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
+        conn._authenticated_jira_email = "dev@jira.com"
         result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
-        assert result[0].email == "owner@example.com"
+        assert result[0].email == "dev@jira.com"
         assert result[0].type == PermissionType.READ
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_email(self):
+    async def test_returns_none_when_jira_email_unknown_even_with_creator_email(self):
         conn = _make_connector()
-        conn.creator_email = None
-        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") == []
+        conn.creator_email = "owner@example.com"
+        conn._authenticated_jira_email = None
+        assert await conn._fallback_permissions_for_forbidden_scheme("PROJ", 401, "permission scheme") is None
 
     @pytest.mark.asyncio
     async def test_works_for_both_401_and_403(self):
         conn = _make_connector()
-        conn.creator_email = "e@x.com"
+        conn._authenticated_jira_email = "e@x.com"
         for status in (401, 403):
             result = await conn._fallback_permissions_for_forbidden_scheme("P", status, "grants")
             assert len(result) == 1
@@ -3573,20 +3579,18 @@ class TestFallbackPermissionsForForbiddenSchemeCloud:
         assert "dev@jira.com" in message
         assert "admin@pipes.com" not in message
         assert len(result) == 1
-        assert result[0].email == "admin@pipes.com"
+        assert result[0].email == "dev@jira.com"
 
     @pytest.mark.asyncio
-    async def test_notify_message_generic_when_myself_email_not_cached(self):
+    async def test_no_notify_and_no_grant_when_myself_email_not_cached(self):
         conn = _make_connector()
         conn.creator_email = "admin@pipes.com"
         conn._authenticated_jira_email = None
         conn.site_url = "https://example.atlassian.net"
         conn.notify = AsyncMock()
-        await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
-        message = conn.notify.call_args.kwargs["message"]
-        assert "admin@pipes.com" not in message
-        assert "connector's Jira account" in message
-        assert "PROJ" in message
+        result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
+        assert result is None
+        conn.notify.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_init_caches_myself_email(self):
@@ -3642,7 +3646,7 @@ class TestFetchProjectPermissionScheme401403Cloud:
     @pytest.mark.asyncio
     async def test_scheme_403_returns_fallback_with_email(self):
         conn = _make_connector()
-        conn.creator_email = "admin@example.com"
+        conn._authenticated_jira_email = "admin@example.com"
         ds = MagicMock()
         ds.get_assigned_permission_scheme = AsyncMock(return_value=_err_resp_cloud(403, '{"errorMessages":["No permission"]}'))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
@@ -3675,7 +3679,7 @@ class TestFetchProjectPermissionScheme401403Cloud:
     @pytest.mark.asyncio
     async def test_grants_403_returns_fallback(self):
         conn = _make_connector()
-        conn.creator_email = "admin@example.com"
+        conn._authenticated_jira_email = "admin@example.com"
         ds = MagicMock()
         ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 7}))
         ds.get_permission_scheme_grants = AsyncMock(return_value=_err_resp_cloud(403, "Forbidden"))
@@ -3786,7 +3790,9 @@ class TestSearchIssuesWithRetryCloud:
         )
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with pytest.raises(Exception, match="after 3 attempts"):
+                # Re-raised bare so to_stream_error can still read the
+                # timeout/status off the SDK exception.
+                with pytest.raises(httpx.RemoteProtocolError):
                     await conn._search_issues_with_retry(
                         project_key="PROJ",
                         jql='project = "PROJ"',
@@ -3914,7 +3920,7 @@ class TestGetIssueWithRetryCloud:
         ds.get_issue = AsyncMock(side_effect=httpx.RemoteProtocolError("disconnected"))
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                with pytest.raises(Exception, match="after 3 attempts"):
+                with pytest.raises(httpx.RemoteProtocolError):
                     await conn._get_issue_with_retry("10001", fields=["summary"], max_attempts=3)
         assert ds.get_issue.await_count == 3
 
@@ -4007,7 +4013,7 @@ class TestStreamRecordFileCloud:
             with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
                 with pytest.raises(HTTPException) as exc_info:
                     await conn.stream_record(_make_file_record())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_http_exception_not_swallowed_by_outer_handler(self):

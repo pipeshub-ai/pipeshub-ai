@@ -135,8 +135,11 @@ class AzureFilesDataSource:
             directory_client = share_client.get_directory_client(directory_path)
 
             items: List[Dict[str, Any]] = []
+            # Without "timestamps" and "Etag" the service returns only name,
+            # size and FileId, so every item's last_modified and etag are None.
             async for item in directory_client.list_directories_and_files(
-                name_starts_with=name_starts_with
+                name_starts_with=name_starts_with,
+                include=["timestamps", "Etag"],
             ):
                 content_settings = getattr(item, "content_settings", None)
                 item_info = {
@@ -144,6 +147,8 @@ class AzureFilesDataSource:
                     "is_directory": item.is_directory,
                     "size": getattr(item, "size", None),
                     "last_modified": getattr(item, "last_modified", None),
+                    "last_write_time": getattr(item, "last_write_time", None),
+                    "creation_time": getattr(item, "creation_time", None),
                     "etag": getattr(item, "etag", None),
                     "content_length": getattr(item, "content_length", None),
                     "file_id": getattr(item, "file_id", None),
@@ -203,6 +208,7 @@ class AzureFilesDataSource:
                 if properties.content_settings
                 else None,
                 "etag": properties.etag,
+                "file_id": getattr(properties, "file_id", None),
                 "last_modified": properties.last_modified,
                 "creation_time": properties.creation_time,
                 "last_write_time": properties.last_write_time,
@@ -245,6 +251,7 @@ class AzureFilesDataSource:
                 "name": properties.name,
                 "path": directory_path,
                 "etag": properties.etag,
+                "file_id": getattr(properties, "file_id", None),
                 "last_modified": properties.last_modified,
                 "creation_time": properties.creation_time,
                 "last_write_time": properties.last_write_time,
@@ -447,31 +454,27 @@ class AzureFilesDataSource:
 
         Returns:
             AzureFilesResponse with file content as bytes
+
+        Raises:
+            AzureError: SDK errors propagate. This feeds the user-facing streaming
+                fallback, which needs HttpResponseError's status_code to tell a
+                403/401 on the share from a deleted file; flattening it to a message
+                left the caller substring-matching for "not found".
         """
-        try:
-            client = await self._get_async_share_service_client()
-            share_client = client.get_share_client(share_name)
-            file_client = share_client.get_file_client(file_path)
+        client = await self._get_async_share_service_client()
+        share_client = client.get_share_client(share_name)
+        file_client = share_client.get_file_client(file_path)
 
-            download = await file_client.download_file(offset=offset, length=length)
-            content = await download.readall()
+        download = await file_client.download_file(offset=offset, length=length)
+        content = await download.readall()
 
-            return self._handle_response(
-                data={
-                    "content": content,
-                    "size": len(content),
-                    "file_path": file_path,
-                }
-            )
-
-        except ResourceNotFoundError:
-            return self._handle_response(
-                error=f"File not found: {share_name}/{file_path}"
-            )
-        except AzureError as e:
-            return self._handle_response(error=f"Azure Files API error: {str(e)}")
-        except Exception as e:
-            return self._handle_response(error=f"Unexpected error: {str(e)}")
+        return self._handle_response(
+            data={
+                "content": content,
+                "size": len(content),
+                "file_path": file_path,
+            }
+        )
 
     async def check_directory_exists(
         self, share_name: str, directory_path: str

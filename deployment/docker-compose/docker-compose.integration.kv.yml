@@ -1,0 +1,20 @@
+# etcd for the KeyValueStore integration tests (KV_STORE_TYPE=etcd).
+#
+#   docker compose -f deployment/docker-compose/docker-compose.integration.kv.yml up -d --wait
+#   cd backend/python && pytest tests/integration/kv -m integration
+#
+# The port is non-standard so this can run beside a dev stack.
+services:
+  etcd-kv-it:
+    image: quay.io/coreos/etcd:v3.5.17
+    ports:
+      - "2389:2379"
+    command:
+      - etcd
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://127.0.0.1:2379
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

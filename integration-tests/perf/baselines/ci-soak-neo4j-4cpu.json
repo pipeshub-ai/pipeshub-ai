@@ -1,0 +1,6 @@
+{
+  "placeholder": true,
+  "benchmark": "scale",
+  "label": "ci-soak-neo4j-4cpu",
+  "note": "Placeholder: no real soak run has been recorded yet. A soak is the same run over more files, started by hand, and what matters in it is the memory trend rather than the throughput. Replace this file with the scale.json artifact of a trusted soak run on main (4-CPU runner, Neo4j, Redis broker, test OpenAI models, 4000 files, seed 1337)."
+}

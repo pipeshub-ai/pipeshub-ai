@@ -5,6 +5,8 @@ import type {
 } from '@/app/(main)/workspace/connectors/types';
 import type { ToolsetOauthConfigListRow } from '@/app/(main)/toolsets/api';
 import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { i18n } from '@/lib/i18n';
 
 export { normalizeDocumentationLinks };
 
@@ -156,12 +158,7 @@ export function isOrgOAuthAppCredentialFieldName(fieldName: string): boolean {
 }
 
 export function apiErrorDetail(e: unknown): string {
-  const ax = e as { response?: { data?: { detail?: string; message?: string } } };
-  return (
-    ax.response?.data?.detail ||
-    ax.response?.data?.message ||
-    (e instanceof Error ? e.message : 'Request failed')
-  );
+  return getUserFacingErrorMessage(e, i18n.t('common.errorOccurred'));
 }
 
 /** Deterministic serialization for comparing auth field maps (e.g. OAuth dirty state). */

@@ -25,6 +25,11 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.error.sql_stream_errors import (
+    to_sql_response_error,
+    to_sql_stream_error,
+)
+from app.connectors.core.base.error.stream_errors import connector_not_ready
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -438,8 +443,11 @@ class MariaDBConnector(BaseConnector):
             await self._sync_tables(self.database_name, tables)
             self.sync_stats.tables_new += len(tables)
 
-            # Save sync state for incremental sync
-            await self._save_tables_sync_state("mariadb_tables_state")
+            undeleted = await self._remove_stale_tables({t.fqn for t in tables})
+
+            # A stale table whose delete failed stays in the state, so incremental
+            # sync finds it missing and retries the delete.
+            await self._save_tables_sync_state("mariadb_tables_state", undeleted)
 
             self.logger.info("✅ [Full Sync] MariaDB full sync completed")
         except Exception as e:
@@ -468,8 +476,10 @@ class MariaDBConnector(BaseConnector):
     async def _fetch_tables(self, database: str) -> List[MariaDBTable]:
         response = await self.data_source.list_tables(database=database)
         if not response.success:
-            self.logger.error(f"Failed to fetch tables: {response.error}")
-            return []
+            # An empty list here would read as "no tables": stale removal would
+            # delete every record, and the saved state would hide them from
+            # incremental sync.
+            raise ConnectionError(f"Failed to list MariaDB tables: {response.error}")
         
         tables = []
         for item in response.data:
@@ -672,32 +682,49 @@ class MariaDBConnector(BaseConnector):
     ) -> StreamingResponse:
         try:
             if not self.data_source:
-                raise HTTPException(status_code=500, detail="MariaDB data source not initialized")
+                raise connector_not_ready(self.display_name)
 
             if record.record_type == RecordType.SQL_TABLE:
-                parts = record.external_record_id.split(".")
+                # Matches how the rest of this file splits a database-qualified
+                # name: everything after the first dot is the table.
+                parts = record.external_record_id.split(".", 1)
                 if len(parts) != 2:
                     raise HTTPException(status_code=500, detail="Invalid table FQN")
                 database, table = parts[0], parts[1]
 
                 table_info_response = await self.data_source.get_table_info(table, database)
-                columns: List[ColumnInfo] = []
-                if table_info_response.success:
-                    detail = TableDetail.model_validate(table_info_response.data)
-                    columns = detail.columns
-                    self.logger.info(f"✅ Retrieved {len(columns)} columns for {database}.{table}")
-                else:
+                if not table_info_response.success:
                     self.logger.error(f"❌ Failed to get table info for {database}.{table}: {table_info_response.error}")
+                    raise to_sql_response_error(
+                        table_info_response.error, connector=self.display_name
+                    )
+                detail = TableDetail.model_validate(table_info_response.data)
+                columns: List[ColumnInfo] = detail.columns
+                self.logger.info(f"✅ Retrieved {len(columns)} columns for {database}.{table}")
 
+                # These queries only fail on a driver error — a table with no
+                # constraints succeeds with an empty list — so degrading here
+                # would stream a table whose keys were refused, not absent.
                 fks_response = await self.data_source.get_foreign_keys(table, database)
-                foreign_keys: List[ForeignKeyInfo] = []
-                if fks_response.success:
-                    foreign_keys = [ForeignKeyInfo.model_validate(fk) for fk in fks_response.data]
-                
+                if not fks_response.success:
+                    self.logger.error(f"❌ Failed to get foreign keys for {database}.{table}: {fks_response.error}")
+                    raise to_sql_response_error(
+                        fks_response.error, connector=self.display_name
+                    )
+                foreign_keys = [
+                    ForeignKeyInfo.model_validate(fk) for fk in (fks_response.data or [])
+                ]
+
                 pks_response = await self.data_source.get_primary_keys(table, database)
-                primary_keys: List[str] = []
-                if pks_response.success:
-                    primary_keys = [PrimaryKeyInfo.model_validate(pk).column_name for pk in pks_response.data]
+                if not pks_response.success:
+                    self.logger.error(f"❌ Failed to get primary keys for {database}.{table}: {pks_response.error}")
+                    raise to_sql_response_error(
+                        pks_response.error, connector=self.display_name
+                    )
+                primary_keys: List[str] = [
+                    PrimaryKeyInfo.model_validate(pk).column_name
+                    for pk in (pks_response.data or [])
+                ]
 
                 sync_filters, _ = await load_connector_filters(
                     self.config_service, "mariadb", self.connector_id, self.logger
@@ -706,13 +733,19 @@ class MariaDBConnector(BaseConnector):
                     int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
                     MAX_ROWS_PER_TABLE_LIMIT,
                 )
-                rows = await self.data_source.fetch_table_rows(database, table, limit=max_rows)
-                
+                try:
+                    rows = await self.data_source.fetch_table_rows(database, table, limit=max_rows)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to read rows for {database}.{table}: {e}")
+                    raise to_sql_stream_error(e, connector=self.display_name) from e
+
                 ddl_response = await self.data_source.get_table_ddl(table, database)
-                ddl = ""
-                if ddl_response.success:
-                    ddl_obj = DDLResult.model_validate(ddl_response.data)
-                    ddl = ddl_obj.ddl
+                if not ddl_response.success:
+                    self.logger.error(f"❌ Failed to get DDL for {database}.{table}: {ddl_response.error}")
+                    raise to_sql_response_error(
+                        ddl_response.error, connector=self.display_name
+                    )
+                ddl = DDLResult.model_validate(ddl_response.data).ddl
 
                 data = {
                     "table_name": table,
@@ -866,10 +899,11 @@ class MariaDBConnector(BaseConnector):
                 await self._sync_new_tables(new_tables)
             if changed_tables:
                 await self._sync_changed_tables(changed_tables) 
+            undeleted: Dict[str, MariaDBTableState] = {}
             if deleted_tables:
-                await self._handle_deleted_tables(deleted_tables)
+                undeleted = await self._handle_deleted_tables(deleted_tables)
             
-            await self._save_tables_sync_state(sync_point_key)
+            await self._save_tables_sync_state(sync_point_key, undeleted)
             
             self.logger.info("✅ [Incremental Sync] MariaDB incremental sync completed")
 
@@ -889,16 +923,16 @@ class MariaDBConnector(BaseConnector):
         """
         table_states: Dict[str, MariaDBTableState] = {}
 
+        # An empty result here reads as "every table was dropped": incremental
+        # sync would delete every record, and a saved state would hide them all.
         if not self.database_name:
-            self.logger.warning("Database name is not configured")
-            return table_states
+            raise ValueError("Database name must be configured for MariaDB connector")
 
         databases_to_check = [self.database_name]
 
         stats_response = await self.data_source.get_table_stats(databases_to_check)
         if not stats_response.success:
-            self.logger.warning(f"Failed to get table stats: {stats_response.error}")
-            return table_states
+            raise ConnectionError(f"Failed to read MariaDB table stats: {stats_response.error}")
 
         exclude = filter_op == MultiselectOperator.NOT_IN.value
         stats_by_fqn: Dict[str, TableStatsEntry] = {}
@@ -1039,9 +1073,13 @@ class MariaDBConnector(BaseConnector):
             
             await self._sync_updated_tables(database_name, [table])
 
-    async def _handle_deleted_tables(self, table_fqns: List[str]) -> None:
-        """Handle tables that no longer exist in the database."""
+    async def _handle_deleted_tables(self, table_fqns: List[str]) -> Dict[str, MariaDBTableState]:
+        """Delete records of tables that no longer exist or are filtered out.
+
+        Returns a placeholder state for each table whose delete failed.
+        """
         self.logger.info(f"Handling {len(table_fqns)} deleted tables")
+        undeleted: Dict[str, MariaDBTableState] = {}
         
         for fqn in table_fqns:
             try:
@@ -1053,12 +1091,50 @@ class MariaDBConnector(BaseConnector):
                     await self.data_entities_processor.on_record_deleted(record.id)
                     self.logger.debug(f"Deleted record for table: {fqn}")
             except Exception as e:
+                self.sync_stats.errors += 1
                 self.logger.warning(f"Failed to delete record for {fqn}: {e}")
+                undeleted[fqn] = MariaDBTableState()
+        return undeleted
 
-    async def _save_tables_sync_state(self, sync_point_key: str) -> None:
-        """Save current table states for next incremental sync comparison."""
+    async def _remove_stale_tables(self, listed_fqns: set[str]) -> Dict[str, MariaDBTableState]:
+        """Delete records of tables that were dropped or are now filtered out.
+
+        Returns a placeholder state for each table whose delete failed.
+        """
+        records = await self.data_entities_processor.get_records_by_record_type(
+            self.connector_id, RecordType.SQL_TABLE
+        )
+        stale = [r for r in records if r.external_record_id not in listed_fqns]
+        undeleted: Dict[str, MariaDBTableState] = {}
+        if not stale:
+            return undeleted
+
+        self.logger.info(f"Removing {len(stale)} tables that are no longer synced")
+        for record in stale:
+            try:
+                await self.data_entities_processor.on_record_deleted(record.id)
+            except Exception as e:
+                self.sync_stats.errors += 1
+                self.logger.warning(f"Failed to delete record for {record.external_record_id}: {e}")
+                undeleted[record.external_record_id] = MariaDBTableState()
+        return undeleted
+
+    async def _save_tables_sync_state(
+        self,
+        sync_point_key: str,
+        undeleted: Optional[Dict[str, MariaDBTableState]] = None,
+    ) -> None:
+        """Save current table states for next incremental sync comparison.
+
+        ``undeleted`` are gone or filtered-out tables whose record could not be
+        deleted. They are kept so the next incremental sync, not finding them
+        in the stats, tries the delete again.
+        """
         selected_tables, filter_op = self._get_filter_values()
-        current_states = await self._get_current_table_states(selected_tables, filter_op)
+        current_states = {
+            **(undeleted or {}),
+            **await self._get_current_table_states(selected_tables, filter_op),
+        }
         count = len(current_states)
         serialized_states = json.dumps(
             {fqn: state.model_dump() for fqn, state in current_states.items()}

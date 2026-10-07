@@ -19,6 +19,11 @@ const BASE_URL = '/api/v1/knowledgeBase';
 
 const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>();
 
+/** Stops later callers sharing a request made for the previous session (sign-out). */
+export function forgetPendingNodeChildrenRequests(): void {
+  pendingGetNodeChildren.clear();
+}
+
 function getNodeChildrenCacheKey(
   nodeType: NodeType,
   nodeId: string,
@@ -179,7 +184,7 @@ export const KnowledgeHubApi = {
    * @param params - Search query, filters, sorting, pagination
    * @returns Filtered results across all sources
    */
-  async searchAllRecords(params: KnowledgeHubQueryParams) {
+  async searchAllRecords(params: KnowledgeHubQueryParams, options?: { suppressErrorToast?: boolean }) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
@@ -190,6 +195,7 @@ export const KnowledgeHubApi = {
           // Data area: Never use onlyContainers (we need all record types)
           ...params,
         },
+        ...options,
       }
     );
     return data;
@@ -755,18 +761,6 @@ export const KnowledgeBaseApi = {
     const { data } = await apiClient.get(
       `${BASE_URL}/stream/record/${recordId}`,
       { responseType: 'blob', params }
-    );
-    return data;
-  },
-
-  /**
-   * Download record file using externalRecordId
-   * Returns blob that can be converted to object URL
-   */
-  async downloadRecord(externalRecordId: string): Promise<Blob> {
-    const { data } = await apiClient.get(
-      `/api/v1/document/${externalRecordId}/download`,
-      { responseType: 'blob' }
     );
     return data;
   },

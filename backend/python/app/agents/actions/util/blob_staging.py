@@ -19,7 +19,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import aiohttp
-import jwt
 from yarl import URL
 
 from app.config.configuration_service import ConfigurationService
@@ -30,6 +29,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.utils.jwt import mint_service_token
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +91,9 @@ async def _get_storage_auth(
     if not scoped_jwt_secret:
         raise BlobStagingError("Missing scopedJwtSecret in configuration")
 
-    token = jwt.encode(
-        {"orgId": org_id, "scopes": [TokenScopes.STORAGE_TOKEN.value]},
+    token = mint_service_token(
         scoped_jwt_secret,
-        algorithm="HS256",
+        {"orgId": org_id, "scopes": [TokenScopes.STORAGE_TOKEN.value]},
     )
     headers = {"Authorization": f"Bearer {token}"}
 

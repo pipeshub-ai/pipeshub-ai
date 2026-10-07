@@ -6,9 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.utils.llm import (
+    LLM_MISSING_FOR_FILE,
+    LLMNotConfiguredError,
     get_embedding_model_config,
     get_image_generation_config,
     get_llm,
+    get_llm_for_role,
     get_stt_config,
     get_stt_model_instance,
     get_tts_config,
@@ -81,7 +84,7 @@ class TestGetLlm:
             "llm": []
         }
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm(mock_config_service)
 
     @pytest.mark.asyncio
@@ -91,8 +94,28 @@ class TestGetLlm:
             "llm": None
         }
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm(mock_config_service)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ai_models", [{}, None, {"embedding": [{"provider": "openAI"}]}])
+    async def test_no_llm_key_says_what_to_do_instead_of_keyerror(self, mock_config_service, ai_models) -> None:
+        """A config with no LLM bucket used to raise KeyError('llm'), which records showed as "'llm'"."""
+        mock_config_service.get_config.return_value = ai_models
+
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            await get_llm(mock_config_service)
+        assert str(exc.value) == LLM_MISSING_FOR_FILE
+        assert "AI Models" in str(exc.value) and "reindex" in str(exc.value)
+        assert isinstance(exc.value, ValueError)
+
+    @pytest.mark.asyncio
+    async def test_role_lookup_without_any_llm_raises_the_clear_error(self, mock_config_service) -> None:
+        """Indexing asks for the "indexing" role; with nothing configured it must reach the same error."""
+        mock_config_service.get_config.return_value = {}
+
+        with pytest.raises(LLMNotConfiguredError):
+            await get_llm_for_role(mock_config_service, "indexing", reasoning_effort="low")
 
     @pytest.mark.asyncio
     async def test_uses_provided_llm_configs(self, mock_config_service):

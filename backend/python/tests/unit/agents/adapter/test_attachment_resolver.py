@@ -81,6 +81,13 @@ def _fake_record(vrid: str = "vrid-1") -> dict[str, Any]:
 _LOG = logging.getLogger("test_attachment_resolver")
 
 
+def _granting_graph() -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_records_by_virtual_record_id.return_value = ["rec-vrid-1"]
+    graph.check_record_access_with_details.return_value = {"id": "rec-vrid-1"}
+    return graph
+
+
 # ---------------------------------------------------------------------------
 # _collect_historical_attachments
 # ---------------------------------------------------------------------------
@@ -313,6 +320,7 @@ class TestAttachmentRehydration:
             ],
             blob_store=blob,
             tool_state={},
+            graph_provider=_granting_graph(),
         )
 
         with patch(
@@ -358,10 +366,34 @@ class TestAttachmentRehydration:
             ],
             blob_store=blob,
             tool_state={},
+            graph_provider=_granting_graph(),
         )
 
         await attachment_rehydration(context)(ctx_data, _noop_next)
 
+        assert len(goal.constraints) == 1
+        assert "could not be loaded" in goal.constraints[0]
+
+    async def test_denied_history_is_not_loaded(self):
+        blob = AsyncMock()
+        graph = AsyncMock()
+        graph.get_records_by_virtual_record_id.return_value = ["rec-vrid-1"]
+        graph.check_record_access_with_details.return_value = None
+
+        ctx_data, goal = _make_turn_ctx()
+        context = _make_context(
+            previous_conversations=[
+                {"role": "user_query", "content": "q", "attachments": [_pdf_attachment()]},
+            ],
+            blob_store=blob,
+            tool_state={},
+            graph_provider=graph,
+        )
+
+        await attachment_rehydration(context)(ctx_data, _noop_next)
+
+        blob.get_record_from_storage.assert_not_called()
+        assert "vrid-1" not in context.tool_state.get("virtual_record_id_to_result", {})
         assert len(goal.constraints) == 1
         assert "could not be loaded" in goal.constraints[0]
 
@@ -389,6 +421,7 @@ class TestAttachmentRehydration:
             ],
             blob_store=blob,
             tool_state={},
+            graph_provider=_granting_graph(),
         )
 
         with patch(

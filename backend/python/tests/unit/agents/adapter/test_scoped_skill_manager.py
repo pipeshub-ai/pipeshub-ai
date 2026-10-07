@@ -84,6 +84,26 @@ class TestSearch:
         assert kwargs["tags"] == ["a"]
 
 
+class TestGetSkill:
+    @pytest.mark.asyncio
+    async def test_allowed_skill_delegates(self) -> None:
+        manager = MagicMock()
+        manager.get_skill = AsyncMock(return_value=SimpleNamespace(metadata=_metadata("pdf-extractor")))
+        scoped = ScopedSkillManager(manager, {"pdf-extractor"})
+        result = await scoped.get_skill("pdf-extractor")
+        manager.get_skill.assert_awaited_once_with("pdf-extractor")
+        assert result.metadata.name == "pdf-extractor"
+
+    @pytest.mark.asyncio
+    async def test_disallowed_skill_raises_without_calling_manager(self) -> None:
+        manager = MagicMock()
+        manager.get_skill = AsyncMock()
+        scoped = ScopedSkillManager(manager, {"pdf-extractor"})
+        with pytest.raises(RegistryError, match="not assigned"):
+            await scoped.get_skill("csv-summarizer")
+        manager.get_skill.assert_not_called()
+
+
 class TestActivateSkill:
     @pytest.mark.asyncio
     async def test_allowed_skill_delegates(self) -> None:

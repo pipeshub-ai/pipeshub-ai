@@ -103,10 +103,11 @@ class TestKnowledgeBaseRecordsCrud:
             headers=self.headers,
             timeout=self.client.timeout_seconds,
         )
-        assert resp.status_code == 500, resp.text
+        assert resp.status_code == 404, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "getRecordById", status_code="500"
+            resp.json(), "getRecordById", status_code="404"
         )
+        assert resp.json()["error"]["code"] == "HTTP_NOT_FOUND"
 
     def test_delete_record_by_id_success(
         self, six_kb_records: dict[str, object]

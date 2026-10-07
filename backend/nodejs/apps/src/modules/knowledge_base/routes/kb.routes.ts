@@ -3,6 +3,9 @@ import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
   deleteRecord,
+  restoreRecord,
+  restoreRecords,
+  listTrash,
   getRecordById,
   updateRecord,
   getRecordBuffer,
@@ -23,12 +26,18 @@ import {
   createFolder,
   getKnowledgeHubNodes,
   moveRecord,
+  getDemoDataStatus,
+  setDemoDataPreference,
+  setDemoDataWorkspace,
 } from '../controllers/kb_controllers';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   getRecordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
+  restoreRecordSchema,
+  restoreRecordsSchema,
+  listTrashSchema,
   reindexRecordGroupSchema,
   createKBSchema,
   getKBSchema,
@@ -45,6 +54,8 @@ import {
   listKnowledgeBasesSchema,
   reindexRecordSchema,
   moveRecordSchema,
+  demoDataPreferenceSchema,
+  demoDataWorkspaceSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -60,6 +71,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { validateNoXSS, validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 const logger = Logger.getInstance({
   service: 'KnowledgeBaseRoutes',
@@ -74,6 +86,15 @@ export function createKnowledgeBaseRouter(
     'KeyValueStoreService',
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  guardPathParams(
+    router,
+    'kbId',
+    'folderId',
+    'recordId',
+    'recordGroupId',
+    'parentType',
+    'parentId',
+  );
 
   // Helper: resolve current max upload size (bytes) from platform settings
   const resolveMaxUploadSize = async (): Promise<number> => {
@@ -179,6 +200,30 @@ export function createKnowledgeBaseRouter(
     listKnowledgeBases(appConfig),
   );
 
+  // Each person's switch for the Acme Corp demo data
+  router.get(
+    '/demo-data/status',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
+    getDemoDataStatus(appConfig),
+  );
+
+  router.put(
+    '/demo-data/preference',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(demoDataPreferenceSchema),
+    setDemoDataPreference(appConfig),
+  );
+
+  router.put(
+    '/demo-data/workspace',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(demoDataWorkspaceSchema),
+    setDemoDataWorkspace(appConfig),
+  );
+
   // Knowledge Hub unified browse API - Root
   router.get(
     '/knowledge-hub/nodes',
@@ -229,6 +274,24 @@ export function createKnowledgeBaseRouter(
     requireScopes(OAuthScopeNames.KB_DELETE),
     ValidationMiddleware.validate(deleteRecordSchema),
     deleteRecord(appConfig),
+  );
+
+  // Bring a deleted record back from the trash, with what was deleted along with it
+  router.post(
+    '/record/:recordId/restore',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
+    ValidationMiddleware.validate(restoreRecordSchema),
+    restoreRecord(appConfig),
+  );
+
+  // Restore several deleted records
+  router.post(
+    '/records/restore',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
+    ValidationMiddleware.validate(restoreRecordsSchema),
+    restoreRecords(appConfig),
   );
 
   // Old api for streaming records
@@ -398,6 +461,15 @@ export function createKnowledgeBaseRouter(
     requireScopes(OAuthScopeNames.KB_DELETE),
     ValidationMiddleware.validate(deletePermissionsSchema),
     removeKBPermission(appConfig),
+  );
+
+  // A collection's recently deleted items; the same scope as restore, since it lists what may be restored
+  router.get(
+    '/:kbId/trash',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
+    ValidationMiddleware.validate(listTrashSchema),
+    listTrash(appConfig),
   );
 
   // Move record (file or folder) to another location

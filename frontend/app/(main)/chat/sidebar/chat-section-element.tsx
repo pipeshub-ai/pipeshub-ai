@@ -10,10 +10,12 @@ import { Conversation } from '@/chat/types';
 import { useChatStore, isConversationStreamingInScope } from '@/chat/store';
 import { ChatApi } from '@/chat/api';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import { ProjectApi } from '@/chat/project-api';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { ICON_SIZE_DEFAULT, CHAT_ITEM_HEIGHT } from '@/app/components/sidebar';
 import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
-import { DeleteChatDialog, ArchiveChatDialog } from './dialogs';
+import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
@@ -55,12 +57,21 @@ interface ChatSectionElementProps {
    * (rename/archive are not supported for agent chats).
    */
   agentId?: string;
+  /**
+   * Set by `ProjectConversationsSidebar` so the row's href keeps `projectId`
+   * in the URL — otherwise navigating away from the project's own sidebar
+   * list would drop back to the main chat sidebar mid-click. Ignored when
+   * `agentId` is set (see `buildChatHref`).
+   */
+  projectId?: string;
 }
 
 /**
  * A single conversation item in the chat sidebar.
  */
-export function ChatSectionElement({ conversation, isActive, onClick, agentId }: ChatSectionElementProps) {
+export function ChatSectionElement({ conversation, isActive, onClick, agentId, projectId }: ChatSectionElementProps) {
+  const { t } = useTranslation();
+
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -68,6 +79,8 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
   const [isTypingTitle, setIsTypingTitle] = useState(false);
@@ -102,6 +115,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
   const removeConversation = useChatStore((s) => s.removeConversation);
   const renameConversation = useChatStore((s) => s.renameConversation);
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
+  const moveConversationToProject = useChatStore((s) => s.moveConversationToProject);
 
   useEffect(() => {
     if (isRenaming) {
@@ -216,6 +230,35 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     }
   };
 
+  const handleConfirmMoveToProject = async (projectId: string | null) => {
+    if (convStreamingBlocksSidebarMutation()) {
+      throw new Error('Cannot move a conversation while it is streaming.');
+    }
+    await ProjectApi.setConversationProject(conversation.id, projectId, {
+      agentKey: agentId,
+    });
+    moveConversationToProject(conversation.id, projectId);
+    bumpConversationsVersion();
+  };
+
+  const handleRemoveFromProject = async () => {
+    if (convStreamingBlocksSidebarMutation()) return;
+    try {
+      await ProjectApi.setConversationProject(conversation.id, null, { agentKey: agentId });
+      moveConversationToProject(conversation.id, null);
+      bumpConversationsVersion();
+    } catch {
+      // Non-fatal — row simply stays linked; user can retry from the menu.
+    }
+  };
+
+  const sharedByName = conversation.sharedBy?.name?.trim();
+  const sharedBySubtitle =
+    conversation.isOwner === false && sharedByName
+      ? t('chat.sharedBy', { name: sharedByName })
+      : undefined;
+
+
   // Inline rename mode — render a plain input instead of SidebarItem
   if (isRenaming) {
     return (
@@ -254,7 +297,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
     );
   }
 
-  const conversationHref = buildChatHref({ agentId, conversationId: conversation.id });
+  const conversationHref = buildChatHref({ agentId, projectId, conversationId: conversation.id });
 
   return (
     <>
@@ -273,6 +316,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         onClick={onClick}
         textColor="var(--slate-12)"
         fontWeight={500}
+        subtitle={sharedBySubtitle}
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
         rightSlot={
@@ -285,6 +329,10 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
               onDelete={() => setDeleteDialogOpen(true)}
               showRename={true}
               showArchive={true}
+              onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
+              onRemoveFromProject={
+                projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
+              }
             />
           ) : undefined
         }
@@ -305,6 +353,13 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId }:
         onConfirm={handleConfirmArchive}
         chatTitle={conversation.title}
         isArchiving={isArchiving}
+      />
+
+      <MoveToProjectDialog
+        open={moveDialogOpen}
+        onOpenChange={setMoveDialogOpen}
+        currentProjectId={conversation.projectId ?? null}
+        onConfirm={handleConfirmMoveToProject}
       />
     </>
   );

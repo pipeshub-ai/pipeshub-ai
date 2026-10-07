@@ -13,9 +13,9 @@ export type ResponseTab = 'answer' | 'sources' | 'citation';
 
 /**
  * Platform-normalized reasoning effort levels. `null`/absent means "no
- * explicit user choice" — the backend applies `DEFAULT_REASONING_EFFORT`
- * ("high") for any reasoning-capable model rather than deferring to the
- * provider's own default.
+ * explicit user choice" — the backend applies the model's own default
+ * effort, else `DEFAULT_REASONING_EFFORT` ("high"), for any reasoning-capable
+ * model rather than deferring to the provider's own default.
  *
  * `'none'` is kept in the type for backward compatibility with
  * already-persisted conversations/agents, but is no longer offered as a
@@ -29,8 +29,8 @@ export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max';
 
 /**
  * Effective reasoning effort applied by the backend (`_reasoning_effort_kwargs`
- * in `backend/python/app/utils/aimodels.py`) when the user hasn't explicitly
- * picked one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
+ * in `backend/python/app/utils/aimodels.py`) when neither the user, the agent
+ * nor the model set one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
  */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
 
@@ -100,6 +100,12 @@ export interface SharedWithEntry {
   _id: string;
 }
 
+/** Initiator of a chat, present on conversations shared with the current user */
+export interface SharedByInfo {
+  userId: string;
+  name: string;
+}
+
 /**
  * Pagination metadata returned by the conversation detail API.
  * `hasNextPage` means there are older message batches to load;
@@ -133,6 +139,10 @@ export interface ConversationApiResponse {
   updatedAt: string;
   isOwner: boolean;
   accessLevel: string;
+  /** Present when this conversation is linked to a Project. */
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -161,6 +171,10 @@ export interface Conversation {
   status?: string;
   modelInfo?: ModelInfo;
   isOwner?: boolean;
+  /** Present when this conversation is linked to a Project. */
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
+  sharedBy?: SharedByInfo;
 }
 
 export interface ChatSuggestion {
@@ -611,6 +625,8 @@ export interface CitationApiResponse {
       recordName: string;
       recordId: string;
       connector: string;
+      /** Connector instance the record came from; absent on older saved answers */
+      connectorId?: string;
       recordType: string;
       webUrl?: string;
       mimeType: string;
@@ -764,6 +780,8 @@ export interface ConversationMessage {
   reasoning?: ReasoningTurn[];
   /** Persisted agent-activity transcript (`agui` protocol only) — see MessagePart. */
   parts?: MessagePart[];
+  /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
+  status?: 'stopped';
 }
 
 export interface ConversationCompleteData {
@@ -784,6 +802,8 @@ export interface ConversationCompleteData {
   createdAt: string;
   updatedAt: string;
   __v: number;
+  projectId?: string;
+  projectVisibility?: 'private' | 'project';
 }
 
 export interface SSECompleteEvent {
@@ -864,6 +884,21 @@ export interface StreamChatRequest {
    * reasoning-capable model. Omitted → backend uses the model's own default.
    */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Client-generated UUID for this run, minted before the fetch in
+   * `streamMessageForSlot`/`streamRegenerateForSlot`. Lets a later
+   * `POST .../cancel` (see `ChatApi.cancelStream`) target this exact run —
+   * see `cancelRunBodySchema` (Node) / `CancelRunRequest` (Python).
+   */
+  runId?: string;
+  /**
+   * Links a brand-new conversation to a Project. Only meaningful when
+   * `conversationId` is absent — once a session exists its `projectId` is
+   * the source of truth server-side and this field is ignored on follow-ups
+   * (see Node `es_controller.ts` / plan's "projectId on follow-up requests
+   * is ignored").
+   */
+  projectId?: string;
 }
 
 /**
@@ -924,6 +959,8 @@ export interface AvailableLlmModel {
   isReasoning: boolean;
   isDefault: boolean;
   modelFriendlyName: string;
+  /** The model's own effort, used when the request sets no reasoningEffort and the agent has no default. Absent when nothing valid is stored; a legacy `none` is shown as Low. */
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -961,10 +998,22 @@ export interface ChatSlot {
    * relying on the global `agentStreamTools` (which tracks the current URL agent only).
    */
   agentStreamTools: string[] | null;
+  /**
+   * Project this thread is linked to (`/chat?projectId=…`), or null.
+   * Only used to seed `StreamChatRequest.projectId` on the first message of
+   * a brand-new chat — once `convId` is assigned, the session row is the
+   * source of truth and this field is not sent on follow-ups.
+   */
+  projectId: string | null;
   /** True until the server assigns a real convId. */
   isTemp: boolean;
   /** True once messages have been loaded (or immediately for new chats). */
   isInitialized: boolean;
+  /**
+   * Bumped by every `invalidateConversation`, including one that arrives while a history load is
+   * in flight; the loader discards and repeats a response fetched under an older value.
+   */
+  refreshGeneration: number;
   /** True after first successful message load — drives tracker selection. */
   hasLoaded: boolean;
 
@@ -1014,12 +1063,31 @@ export interface ChatSlot {
 
   /**
    * Pending interactive questionnaire from SSE `ask_user_question`.
-   * Cleared when the user submits answers or starts another stream that replaces messages.
+   * Stays on the same assistant row through submit (`status: 'submitted'`)
+   * so the follow-up answer streams in-place. Replaced by
+   * `persistedAskUserQuestion` after `onComplete` / reload.
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
+
+  /**
+   * Client-generated UUID for the in-flight run, minted in
+   * `streamMessageForSlot`/`streamRegenerateForSlot` and sent to the backend
+   * so a later Stop can target this exact run. `null` when nothing is
+   * streaming. NOT cleared until the run fully settles (grace-timeout abort
+   * fallback in `stopStreamForSlot` still needs it after `stopping` starts).
+   */
+  runId: string | null;
+  /**
+   * True from the moment Stop is clicked until the run actually ends
+   * (`RUN_FINISHED` with `status: 'stopped'`, or the 5s grace-timeout abort
+   * fallback in `stopStreamForSlot`). Disables a second Stop click / shows a
+   * "Stopping…" affordance instead of hard-aborting immediately, so Python
+   * gets a chance to persist the partial answer before the connection dies.
+   */
+  stopping: boolean;
 
   /**
    * Tracks message pagination for the "load older messages" flow.
@@ -1069,6 +1137,8 @@ export interface SearchResultMetadata {
   recordVersion?: number;
   origin: string;
   connector: string;
+  /** Connector instance the record came from; marks demo records. */
+  connectorId?: string;
   blockText?: string;
   blockType?: string;
   bounding_box?: Array<{ x: number; y: number }>;

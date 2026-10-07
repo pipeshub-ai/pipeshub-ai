@@ -30,7 +30,7 @@ def _make_orchestrator(*, graph_doc=None, vector_result=None):
     vector_store.apply = AsyncMock(return_value=vector_result)
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value=graph_doc)
-    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     orch = SinkOrchestrator(
         graphdb=graphdb,
         blob_storage=blob_storage,
@@ -206,6 +206,7 @@ class TestSaveReconciliationMetadata:
 
         ctx = MagicMock(spec=TransformContext)
         ctx.record = record
+        ctx.settings = {}
         ctx.reconciliation_context = ReconciliationContext(
             new_metadata={"hash_to_block_ids": {"h": ["b"]}, "block_id_to_index": {"b": 0}}
         )
@@ -215,6 +216,9 @@ class TestSaveReconciliationMetadata:
         orch.blob_storage.save_reconciliation_metadata.assert_awaited_once_with(
             "org-rc", "rec-rc", "vr-rc",
             ctx.reconciliation_context.new_metadata,
+            document_path=ctx.settings.get("storage_path"),
+            connector_id=record.connector_id,
+            record_group_id=record.record_group_id,
         )
 
     @pytest.mark.asyncio

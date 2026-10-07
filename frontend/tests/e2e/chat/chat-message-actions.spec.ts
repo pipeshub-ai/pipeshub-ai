@@ -177,10 +177,7 @@ test.describe('Chat — message actions: like / dislike', () => {
       })
       .first();
 
-    if (!(await likeBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(likeBtn, 'the thumbs-up button should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await likeBtn.click();
 
@@ -215,10 +212,7 @@ test.describe('Chat — message actions: like / dislike', () => {
       })
       .first();
 
-    if (!(await likeBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(likeBtn, 'the thumbs-up button should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await likeBtn.click();
 
@@ -229,21 +223,11 @@ test.describe('Chat — message actions: like / dislike', () => {
       .filter({ hasText: /excellent|well.explained|helpful|accurate|clear/i })
       .first();
 
-    if (await chip.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await chip.click();
+    await expect(chip).toBeVisible({ timeout: 5_000 });
+    await chip.click();
 
-      // Popover should close after chip selection
-      await expect(chip).not.toBeVisible({ timeout: 5_000 }).catch(() => {});
-
-      // Icon should switch to filled thumb_up indicating feedback was given
-      const filledLike = page
-        .locator('span.material-icons-outlined')
-        .filter({ hasText: 'thumb_up' })
-        .first();
-      await expect(filledLike).toBeVisible({ timeout: 5_000 }).catch(() => {
-        // filled variant may render as different icon name — test is best-effort
-      });
-    }
+    await expect.poll(() => capturedFeedbackBody, { timeout: 5_000 }).not.toBeNull();
+    await expect(chip).not.toBeVisible({ timeout: 5_000 });
   });
 
   test('thumbs-down button is visible after assistant response', async ({ page }) => {
@@ -269,10 +253,7 @@ test.describe('Chat — message actions: like / dislike', () => {
       })
       .first();
 
-    if (!(await dislikeBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(dislikeBtn, 'the thumbs-down button should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await dislikeBtn.click();
 
@@ -303,10 +284,7 @@ test.describe('Chat — message actions: like / dislike', () => {
       })
       .first();
 
-    if (!(await dislikeBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(dislikeBtn, 'the thumbs-down button should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await dislikeBtn.click();
 
@@ -315,16 +293,11 @@ test.describe('Chat — message actions: like / dislike', () => {
       .filter({ hasText: /incorrect|missing|irrelevant|unclear|poor/i })
       .first();
 
-    if (await chip.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await chip.click();
-      // Wait briefly for the feedback API call to be intercepted
-      await page.waitForTimeout(1_000);
+    await expect(chip).toBeVisible({ timeout: 5_000 });
+    await chip.click();
 
-      if (feedbackBodies.length > 0) {
-        const payload = JSON.parse(feedbackBodies[0]);
-        expect(payload.isHelpful).toBe(false);
-      }
-    }
+    await expect.poll(() => feedbackBodies.length, { timeout: 5_000 }).toBeGreaterThan(0);
+    expect(JSON.parse(feedbackBodies[0]).isHelpful).toBe(false);
   });
 
   test('switching from like to dislike popover works without duplicating network requests', async ({
@@ -349,13 +322,8 @@ test.describe('Chat — message actions: like / dislike', () => {
       .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'thumb_down_off_alt' }) })
       .first();
 
-    if (
-      !(await likeBtn.isVisible().catch(() => false)) ||
-      !(await dislikeBtn.isVisible().catch(() => false))
-    ) {
-      test.skip();
-      return;
-    }
+    await expect(likeBtn).toBeVisible({ timeout: 8_000 });
+    await expect(dislikeBtn).toBeVisible({ timeout: 8_000 });
 
     // Open like popover
     await likeBtn.click();
@@ -498,10 +466,7 @@ test.describe('Chat — message actions: regenerate', () => {
       })
       .first();
 
-    if (!(await regenBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(regenBtn, 'the regenerate button should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await regenBtn.click();
 
@@ -537,50 +502,17 @@ test.describe('Chat — response tabs', () => {
     });
   });
 
-  test('"Sources" tab button is rendered for a completed response', async ({ page }) => {
-    // Sources tab is rendered even when there are no sources (count shows 0)
-    const sourcesTab = page
-      .locator('button, [role="tab"]')
-      .filter({ hasText: /sources/i })
-      .first();
-
-    // The tab may or may not be rendered depending on source count — just
-    // verify the page hasn't crashed and the answer is still visible.
-    const answerStillVisible = await page
-      .locator(`text=${TEST_ANSWER.slice(0, 40)}`)
-      .first()
-      .isVisible()
-      .catch(() => false);
-
-    expect(answerStillVisible).toBeTruthy();
+  test('"Sources" tab is rendered for a completed response', async ({ page }) => {
+    // Tabs are plain elements, not buttons; match the label itself.
+    await expect(page.getByText('Sources', { exact: true }).first()).toBeVisible({ timeout: 5_000 });
   });
 
-  test('clicking the "Sources" tab switches the view away from answer', async ({ page }) => {
-    const sourcesTab = page
-      .locator('button, [role="tab"]')
-      .filter({ hasText: /sources/i })
-      .first();
-
-    if (!(await sourcesTab.isVisible({ timeout: 3_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
-
-    await sourcesTab.click();
-    await page.waitForTimeout(400);
-
-    // After switching to sources tab, clicking "Answer" tab restores the answer
-    const answerTab = page
-      .locator('button, [role="tab"]')
-      .filter({ hasText: /answer/i })
-      .first();
-
-    if (await answerTab.isVisible().catch(() => false)) {
-      await answerTab.click();
-      await expect(page.locator(`text=${TEST_ANSWER.slice(0, 40)}`).first()).toBeVisible({
-        timeout: 5_000,
-      });
-    }
+  test('"Sources" tab does nothing for an answer with no sources', async ({ page }) => {
+    // The mocked answer carries no citations, so the tab is shown but disabled.
+    await page.getByText('Sources', { exact: true }).first().click();
+    await expect(page.locator(`text=${TEST_ANSWER.slice(0, 40)}`).first()).toBeVisible({
+      timeout: 5_000,
+    });
   });
 });
 
@@ -592,15 +524,9 @@ test.describe('Chat — model info footer', () => {
   test('model name or chat mode is shown in the message action bar', async ({ page }) => {
     await setupChatWithAnswer(page);
 
-    // The MessageActions component shows the chat mode label and model name
-    // e.g. "Internal Search • GPT-4o mini"
-    const modelLabel = page.locator(
-      'text=/GPT|gpt|internal|Internal|search|Search|agent|Agent|web/i',
-    );
-
-    // At least one label should be visible somewhere in the thread area
-    const count = await modelLabel.count();
-    expect(count).toBeGreaterThanOrEqual(0); // non-crashing assertion
+    await expect(
+      page.getByTestId('message-actions').getByText(MOCK_MODEL_INFO.modelName).first(),
+    ).toBeVisible({ timeout: 8_000 });
   });
 });
 
@@ -617,22 +543,16 @@ test.describe('Chat — feedback "Other" comment flow', () => {
       .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'thumb_up_off_alt' }) })
       .first();
 
-    if (!(await likeBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(likeBtn, 'the thumbs-up button should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await likeBtn.click();
 
     const otherChip = page
       .locator('[role="dialog"] button, [data-radix-popper-content-wrapper] button')
-      .filter({ hasText: /^other$/i })
+      .filter({ hasText: /^\s*other/i })
       .first();
 
-    if (!(await otherChip.isVisible({ timeout: 3_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(otherChip, 'the "Other..." feedback chip should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await otherChip.click();
 
@@ -662,22 +582,16 @@ test.describe('Chat — feedback "Other" comment flow', () => {
       .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'thumb_up_off_alt' }) })
       .first();
 
-    if (!(await likeBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(likeBtn, 'the thumbs-up button should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await likeBtn.click();
 
     const otherChip = page
       .locator('[role="dialog"] button, [data-radix-popper-content-wrapper] button')
-      .filter({ hasText: /^other$/i })
+      .filter({ hasText: /^\s*other/i })
       .first();
 
-    if (!(await otherChip.isVisible({ timeout: 3_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(otherChip, 'the "Other..." feedback chip should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await otherChip.click();
 
@@ -685,10 +599,7 @@ test.describe('Chat — feedback "Other" comment flow', () => {
       .locator('[role="dialog"] textarea, [data-radix-popper-content-wrapper] textarea')
       .first();
 
-    if (!(await commentArea.isVisible({ timeout: 3_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
+    await expect(commentArea, 'the "Other" comment box should be shown after an answer').toBeVisible({ timeout: 8_000 });
 
     await commentArea.fill('Great answer, very clear explanation!');
 
@@ -698,14 +609,11 @@ test.describe('Chat — feedback "Other" comment flow', () => {
       .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'arrow_upward' }) })
       .first();
 
-    if (await submitBtn.isVisible().catch(() => false)) {
-      await submitBtn.click();
-      await page.waitForTimeout(1_000);
+    await expect(submitBtn).toBeVisible({ timeout: 5_000 });
+    await submitBtn.click();
 
-      if (capturedPayload) {
-        expect(capturedPayload.isHelpful).toBe(true);
-        expect(JSON.stringify(capturedPayload)).toContain('Great answer');
-      }
-    }
+    await expect.poll(() => capturedPayload, { timeout: 5_000 }).not.toBeNull();
+    expect(capturedPayload!.isHelpful).toBe(true);
+    expect(JSON.stringify(capturedPayload)).toContain('Great answer');
   });
 });

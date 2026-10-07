@@ -5,7 +5,7 @@ import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 /**
  * Source types that determine which tabs are available
  */
-export type FilePreviewSource = 'collections' | 'all-records' | 'agents' | 'chat';
+export type FilePreviewSource = 'collections' | 'all-records' | 'agents' | 'chat' | 'artifacts';
 
 /**
  * Tab identifiers

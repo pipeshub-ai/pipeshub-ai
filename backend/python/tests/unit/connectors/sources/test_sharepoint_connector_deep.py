@@ -720,14 +720,17 @@ class TestGetSignedUrl:
 
     @pytest.mark.asyncio
     async def test_no_drive_id(self):
+        from fastapi import HTTPException
+
         c, *_ = _make_connector()
         c._reinitialize_credential_if_needed = AsyncMock()
         record = MagicMock()
         record.record_type = RecordType.FILE
         record.external_record_group_id = None
         record.id = "r1"
-        result = await c.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self):
@@ -809,8 +812,9 @@ class TestHandleRecordUpdates:
             content_changed=False,
             permissions_changed=False
         )
+        dep.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
         await c._handle_record_updates(update)
-        dep.on_record_deleted.assert_called_once()
+        dep.on_record_deleted.assert_called_once_with(record_id="rec-1")
 
     @pytest.mark.asyncio
     async def test_metadata_and_permissions_changed(self):

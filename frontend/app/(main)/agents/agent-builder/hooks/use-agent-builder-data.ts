@@ -20,6 +20,8 @@ import {
   useFeatureFlagsStore,
   selectMcpEnabled,
   selectActionsEnabled,
+  selectSkillsEnabled,
+  selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 
 const TOOLSETS_PAGE = 20;
@@ -32,6 +34,31 @@ function isMcpEnabledNow(): boolean {
 /** Non-hook read for use inside plain async functions (not React components). */
 function isActionsEnabledNow(): boolean {
   return selectActionsEnabled(useFeatureFlagsStore.getState());
+}
+
+/** Non-hook read for use inside plain async functions (not React components). */
+function isSkillsEnabledNow(): boolean {
+  return selectSkillsEnabled(useFeatureFlagsStore.getState());
+}
+
+async function ensureFeatureFlagsLoaded(): Promise<void> {
+  if (selectFeatureFlagsLoaded(useFeatureFlagsStore.getState())) return;
+  await useFeatureFlagsStore.getState().fetchFlags();
+}
+
+async function loadSkillsCatalog(): Promise<
+  Awaited<ReturnType<typeof SkillsApi.listAssignableSkills>>
+> {
+  await ensureFeatureFlagsLoaded();
+  if (!isSkillsEnabledNow()) {
+    return [];
+  }
+  try {
+    return await SkillsApi.listAssignableSkills();
+  } catch (err) {
+    console.error('Failed to fetch skills catalog:', err);
+    return [];
+  }
 }
 
 /**
@@ -73,10 +100,7 @@ async function fetchStaticBuilderResources() {
       console.error('Failed to fetch knowledge hub app nodes:', err);
       return [] as KnowledgeHubAppNode[];
     }),
-    SkillsApi.listAssignableSkills().catch((err) => {
-      console.error('Failed to fetch skills catalog:', err);
-      return [] as Awaited<ReturnType<typeof SkillsApi.listAssignableSkills>>;
-    }),
+    loadSkillsCatalog(),
   ]);
 
   const configuredConnectors = mapNodesToConnectors(appNodes);
@@ -89,6 +113,7 @@ async function fetchStaticBuilderResources() {
       name: s.name,
       description: s.description,
       category: s.category,
+      isBuiltin: s.source === 'builtin',
     })),
   };
 }

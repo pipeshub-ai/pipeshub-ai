@@ -1,0 +1,5 @@
+# Local FS integration tests write each run's files here. The integration
+# compose stack mounts this folder into pipeshub-ai read-only, at
+# /srv/local-fs-it, so the connector reads what the tests write.
+*
+!.gitignore

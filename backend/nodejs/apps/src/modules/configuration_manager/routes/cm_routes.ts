@@ -1,4 +1,4 @@
-import { Router, Response, NextFunction } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
@@ -15,6 +15,7 @@ import {
   getMicrosoftAuthConfig,
   getOAuthConfig,
   getSmtpConfig,
+  getSmtpConfigStatus,
   getSsoAuthConfig,
   getStorageConfig,
   setAzureAdAuthConfig,
@@ -26,6 +27,7 @@ import {
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
   getFrontendUrl,
+  getDesktopFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
   setConnectorPublicUrl,
@@ -62,6 +64,7 @@ import {
   deleteWebSearchProvider,
   updateDefaultWebSearchProvider,
   getSlackBotConfigs,
+  getInternalSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
@@ -123,9 +126,17 @@ import {
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
+  // Settings answers depend on who is asking and can carry secrets, so no
+  // browser or proxy cache may keep a copy to hand to the next user.
+  router.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+  guardPathParams(router, 'providerId');
   const keyValueStoreService = container.get<KeyValueStoreService>(
     'KeyValueStoreService',
   );
@@ -357,6 +368,19 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getSmtpConfig(keyValueStoreService),
   );
 
+  /**
+   * GET /smtpConfig/status
+   * Boolean-only SMTP status, no secrets or host/port details — safe for any
+   * authenticated org member. Non-admins can invite users but cannot read
+   * `/smtpConfig` (admin-gated), so the Users page uses this to decide
+   * whether to disable Invite instead of hitting a 403 on the full config.
+   */
+  router.get(
+    '/smtpConfig/status',
+    authMiddleware.authenticate,
+    getSmtpConfigStatus(keyValueStoreService),
+  );
+
   // auth config routes
   router.get(
     '/authConfig/azureAd',
@@ -513,8 +537,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   router.get(
     '/internal/slack-bot',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSlackBotConfigs(keyValueStoreService),
+    authMiddleware.scopedTokenValidator(TokenScopes.SLACK_BOT_VERIFY),
+    getInternalSlackBotConfigs(keyValueStoreService),
   );
 
   router.post(
@@ -1052,6 +1076,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     getFrontendUrl(keyValueStoreService),
+  );
+
+  // The only unauthenticated route in this router: the desktop app calls it
+  // from the sign-in screen before any session exists. Do not put router-wide
+  // auth in front of it.
+  router.get(
+    '/public/desktopFrontendUrl',
+    getDesktopFrontendUrl(keyValueStoreService),
   );
 
   router.post(

@@ -9,8 +9,13 @@ import {
   ForbiddenError,
   NotFoundError,
   InternalServerError,
+  ServiceUnavailableError,
 } from '../../../src/libs/errors/http.errors'
 import { ValidationError } from '../../../src/libs/errors/validation.error'
+import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
+import { KafkaError } from '../../../src/libs/errors/kafka.errors'
+import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.errors'
+import { ConnectionError } from '../../../src/libs/errors/database.errors'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -169,6 +174,36 @@ describe('ErrorMiddleware', () => {
       expect(res.status.calledWith(500)).to.be.true
     })
 
+    it('should relay a Retry-After carried in the error metadata', () => {
+      const error = new ServiceUnavailableError('Try again shortly', { retryAfter: '5' })
+      const res = createMockResponse()
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+      expect(res.setHeader.calledWith('Retry-After', '5')).to.be.true
+    })
+
+    it('should relay a Retry-After given as an HTTP date', () => {
+      const date = 'Wed, 21 Oct 2026 07:28:00 GMT'
+      const error = new ServiceUnavailableError('Try again later', { retryAfter: date })
+      const res = createMockResponse()
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.setHeader.calledWith('Retry-After', date)).to.be.true
+    })
+
+    it('should drop a malformed Retry-After instead of echoing it', () => {
+      const error = new ServiceUnavailableError('Try again', { retryAfter: '5\r\nX-Evil: 1' })
+      const res = createMockResponse()
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(503)).to.be.true
+      expect(res.setHeader.calledWith('Retry-After')).to.be.false
+    })
+
     it('should respond with 400 for ValidationError', () => {
       const error = new ValidationError('Validation failed', [
         { field: 'email', message: 'Required', code: 'INVALID_TYPE' },
@@ -272,21 +307,115 @@ describe('ErrorMiddleware', () => {
       handler(error, req, res, next)
 
       const response = res.json.firstCall.args[0]
-      expect(response.error.message).to.equal('An unexpected error occurred')
+      expect(response.error.message).to.include("went wrong on PipesHub's side")
+      expect(response.error.message).to.not.include('Secret internal detail')
     })
 
-    it('should show error message in non-production for unknown errors', () => {
+    // Compose and the integration stack run with NODE_ENV=development, so this
+    // path is reachable in real deployments and must not echo the raw message.
+    it('should hide the error message outside production too', () => {
       process.env.NODE_ENV = 'development'
 
       const error = new Error('Detailed dev message')
-      const req = createMockRequest()
+      const req = createMockRequest({ context: { requestId: 'req-42' } })
       const res = createMockResponse()
       const next = createMockNext()
 
       handler(error, req, res, next)
 
       const response = res.json.firstCall.args[0]
-      expect(response.error.message).to.equal('Detailed dev message')
+      expect(response.error.message).to.not.include('Detailed dev message')
+      expect(response.error.requestId).to.equal('req-42')
+    })
+
+    it('should keep the raw message in the log', () => {
+      process.env.NODE_ENV = 'development'
+
+      const error = new Error('Detailed dev message')
+      handler(error, createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(loggerErrorStub.called).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Infrastructure failures
+  // -----------------------------------------------------------------------
+  describe('Infrastructure errors', () => {
+    for (const [label, makeError] of [
+      ['Kafka', () => new KafkaError('Error publishing to Kafka topic records')],
+      ['Redis', () => new RedisServiceNotInitializedError('Redis service is not initialized.')],
+      ['MongoDB', () => new ConnectionError('Failed to connect to MongoDB')],
+    ] as [string, () => Error][]) {
+      it(`replaces a ${label} message with a plain one and a reference`, () => {
+        process.env.NODE_ENV = 'development'
+
+        const req = createMockRequest({ context: { requestId: 'req-7' } })
+        const res = createMockResponse()
+
+        handler(makeError(), req, res, createMockNext())
+
+        const response = res.json.firstCall.args[0]
+        expect(response.error.code).to.equal('INTERNAL_ERROR')
+        expect(response.error.message).to.include("went wrong on PipesHub's side")
+        // The id rides beside the words, so a client that filters
+        // technical-looking text still shows the sentence.
+        expect(response.error.message).to.not.include('req-7')
+        expect(response.error.requestId).to.equal('req-7')
+        expect(response.error.message).to.not.match(/kafka|redis|mongo/i)
+        expect(response.error.metadata).to.be.undefined
+      })
+    }
+
+    it('keeps a 5xx message this codebase wrote', () => {
+      process.env.NODE_ENV = 'development'
+
+      const res = createMockResponse()
+      const message =
+        "We couldn't save this file right now. Please try again in a moment."
+      handler(
+        new InternalServerError(message),
+        createMockRequest(),
+        res,
+        createMockNext(),
+      )
+
+      // Modules across the app write their own 5xx copy for readers. Whether an
+      // upstream service's words are worth repeating is decided where they
+      // arrive, in libs/errors/backend-error, not here.
+      expect(res.json.firstCall.args[0].error.message).to.equal(message)
+    })
+
+    it('keeps a 5xx we built and marked, whatever else changes', () => {
+      process.env.NODE_ENV = 'development'
+
+      const res = createMockResponse()
+      const message =
+        'Something went wrong while PipesHub tried to create team. Please try again in a moment.'
+      handler(
+        markClientSafe(new InternalServerError(message)),
+        createMockRequest(),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.json.firstCall.args[0].error.message).to.equal(message)
+    })
+
+    it('leaves a deliberate 4xx message alone', () => {
+      process.env.NODE_ENV = 'development'
+
+      const res = createMockResponse()
+      handler(
+        new BadRequestError('Pick at least one folder to sync.'),
+        createMockRequest({ context: { requestId: 'req-8' } }),
+        res,
+        createMockNext(),
+      )
+
+      const response = res.json.firstCall.args[0]
+      expect(response.error.message).to.equal('Pick at least one folder to sync.')
+      expect(response.error.requestId).to.equal('req-8')
     })
   })
 

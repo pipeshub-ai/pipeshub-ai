@@ -54,6 +54,15 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
 > curl -fsSL https://get.pipeshub.com/install | bash
 > ```
 
+## What can you build with PipesHub?
+
+Don't just use PipesHub — build on it.
+
+**[Give Claude Code, Cursor, or Codex secure access to your company's knowledge →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+About ten minutes once PipesHub is running with data indexed. Mint a Personal Access Token (no admin needed), connect your assistant (one command for Claude Code, one config file for Cursor or Codex), and ask *"why was the retry logic in the billing worker changed?"* — it answers from the incident postmortem, the pull request, the chat thread, and the design doc, each cited, and only if you're allowed to see them.
+
+Want the same retrieval inside your own code, or behind a search box for your team? The [SDK starter and search example](https://github.com/pipeshub-ai/examples) cover both. Built something? [Show us](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
+
 ## PipesHub in Action
 
 ### Connectors
@@ -100,54 +109,6 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## File Formats Supported
-
-| Format | Details |
-|--------|---------|
-| PDF | Including scanned PDFs |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Comma-separated values |
-| Markdown | .md files |
-| HTML | Web pages |
-| Text | Plain text files |
-| Google Docs, Sheets, Slides | Google Workspace formats |
-| Images | PNG, JPG, etc. |
-| Audio | Audio files (Coming Soon) |
-| Video | Video files (Coming Soon) |
-
-## Tech Stack
-
-### Frontend
-
-| Technology | Description |
-|-----------|-------------|
-| Next.js | App Router UI (client-rendered React) |
-| TypeScript | Strongly typed JavaScript superset |
-| Radix UI Themes | Accessible component primitives and styling |
-| Zod | Schema validation and parsing |
-| React Hook Form | Flexible form state management |
-
-### Backend
-
-| Category | Technologies |
-|----------|--------------|
-| GraphDB | Neo4j / ArangoDB |
-| VectorDB | Qdrant / OpenSearch / Redis |
-| Document Store | MongoDB |
-| Blob Storage | Local filesystem / S3 / Azure Blob |
-| Message Broker | Kafka / Redis Streams |
-| Cache | Redis |
-| KV Store | Redis / etcd |
-| Task Queue | Celery |
-| Web Framework | FastAPI |
-| LLM Interface | LangChain (multi-provider model access) |
-| Embeddings | sentence-transformers / fastembed |
-| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
-| Document Conversion | LibreOffice, CairoSVG |
-| Data Analysis | pandas |
 
 ## 🚀 Deployment Guide
 
@@ -222,6 +183,11 @@ An agent connects as a specific person rather than as the application, so it
 retrieves exactly what that person is allowed to see. Access is resolved when
 the query runs, against the source system's own permissions, instead of being
 approximated at build time.
+
+Step-by-step tutorials for the most common builds — an MCP for your coding
+assistant, private enterprise search, and SDK starters — live in
+[**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples). The
+reference material for each building block is below.
 
 ### MCP Server
 
@@ -306,7 +272,11 @@ PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never
 
 ### What connectors does PipesHub support?
 
-PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. See the [connectors overview](https://docs.pipeshub.com/connectors/overview).
+
+### What file formats can PipesHub index?
+
+PDF (including scans), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, plain text, and images. Audio and video can be stored but are not indexed yet. Storage accepts a wider set of MIME types — see [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### How do I deploy PipesHub?
 
@@ -320,7 +290,19 @@ Developers building from source should clone the repository and run `./install.s
 
 ### What LLM providers does PipesHub support?
 
-PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain for LLM pipelines and workflows.
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models.
+
+### What is the tech stack?
+
+PipesHub has three parts:
+
+- **Web app** (Next.js) — search, chat, and admin in the browser.
+- **API** (Node.js) — accounts, permissions, knowledge bases, and files.
+- **Python services** — connectors sync your sources; indexing parses documents; query answers with citations.
+
+Those services call **AI models you bring**. An **embedding model** turns parsed text into vectors for search. An **LLM** writes the cited answer. Use any provider or a local model (Ollama); a local embedding server is the default.
+
+Data sits in a knowledge graph (Neo4j by default, or ArangoDB), a vector store (Qdrant), and MongoDB. Redis is the cache. Files live on disk or object storage. Services hand work to each other over Redis on a local machine, or Kafka in a larger deployment. See the [system overview](https://docs.pipeshub.com/system-overview).
 
 ### What is the Knowledge Graph Retrieval feature?
 

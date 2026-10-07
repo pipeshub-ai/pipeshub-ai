@@ -83,7 +83,7 @@ export function UserProfileSidebar() {
 
   const isSelf = currentUser?.id === profileUser.id || currentUser?.email === profileUser.email;
   const displayName = profileUser.name || profileUser.email || '-';
-  const nameWithSuffix = isSelf ? `${displayName} (You)` : displayName;
+  const nameWithSuffix = isSelf ? `${displayName} (${t('common.you')})` : displayName;
 
   const status = profileUser.hasLoggedIn ? 'Active' : 'Pending';
 

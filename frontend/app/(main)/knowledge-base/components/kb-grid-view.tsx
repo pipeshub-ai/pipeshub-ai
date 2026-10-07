@@ -20,6 +20,8 @@ import {
   mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
 
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import type { 
   KnowledgeBaseItem, 
   KnowledgeHubNode, 
@@ -623,6 +625,9 @@ function GridCard({
                 {item.name}
               </Text>
             )}
+            {!isEditing && isKnowledgeHubNode(item) && (
+              <DemoSourceBadge connectorId={item.connectorId} style={{ alignSelf: 'flex-start' }} />
+            )}
             {isFolder && !item.hasChildren && (
               <Text
                 size="1"
@@ -730,6 +735,8 @@ export function KbGridView({
   onDelete,
   onDownload,
 }: KbGridViewProps) {
+  // Once per page, so each row's Demo badge is a cheap lookup.
+  useDemoDataActive();
   return (
     <Flex direction="column" style={{ flex: 1, minHeight: 0 }}>
       {/* Grid content area */}

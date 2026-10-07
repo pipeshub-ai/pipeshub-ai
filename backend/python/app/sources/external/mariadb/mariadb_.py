@@ -10,9 +10,10 @@ Provides async wrapper methods for MariaDB operations:
 """
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.sources.client.mariadb.mariadb import MariaDBClient, MariaDBResponse
 
@@ -108,6 +109,12 @@ class TableStatsEntry(BaseModel):
     n_live_tup: int = 0
     last_updated: Optional[str] = None
     auto_increment: Optional[int] = None
+
+    @field_validator("last_updated", mode="before")
+    @classmethod
+    def _update_time_as_text(cls, value: object) -> object:
+        # The driver returns UPDATE_TIME as a datetime whenever it is set.
+        return value.isoformat() if isinstance(value, datetime) else value
 
 
 class MariaDBDataSource:
@@ -597,24 +604,19 @@ class MariaDBDataSource:
             limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
 
         Returns:
-            List of row dicts, or empty list on failure.
+            List of row dicts.
+
+        Raises:
+            The driver's exception. Its only caller streams the rows to the
+            user, where swallowing the failure would serve a successful
+            download of an empty table. Goes straight to the client so the
+            exception is not flattened into ``MariaDBResponse.error``.
         """
         row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
         safe_database = database_name.replace('`', '``')
         safe_table = table_name.replace('`', '``')
         query = f"SELECT * FROM `{safe_database}`.`{safe_table}` LIMIT {int(row_limit)}"
-        try:
-            response = await self.execute_query(query)
-            if response.success and response.data:
-                return response.data
-        except Exception as e:
-            logger.warning(
-                "🔧 [MariaDBDataSource] fetch_table_rows failed for %s.%s: %s",
-                database_name,
-                table_name,
-                e,
-            )
-        return []
+        return await self._client.execute_query(query)
 
     async def get_table_stats(
         self, databases: Optional[list[str]] = None

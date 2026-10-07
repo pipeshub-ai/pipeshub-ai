@@ -1,0 +1,241 @@
+"""Redirects in a normal crawl are followed one hop at a time, each target checked (scope, robots.txt)
+before it is requested, whether the site answers HEAD or not, and by each fetch strategy.
+
+curl_cffi and cloudscraper are the fakes from web_behaviour_fakes, answered by the same fake site.
+"""
+
+from collections.abc import Callable
+
+import pytest
+from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector, Page
+
+STRATEGIES = ["aiohttp", "curl_cffi", "cloudscraper"]
+SECRET = "http://site.test/private/secret"
+
+
+def _robots(site: FakeWeb) -> None:
+    site.add("http://site.test/robots.txt",
+             Page(body=b"User-agent: *\nDisallow: /private/\n", content_type="text/plain"))
+
+
+def _requests_to(site: FakeWeb, url: str) -> list[str]:
+    return [method for method, requested in site.requests if requested == url]
+
+
+def _served_by(site: FakeWeb, strategy: str, url: str) -> bool:
+    """Every GET for ``url`` came from ``strategy``, and there was at least one."""
+    clients = {via for via, method, requested in site.served if method == "GET" and requested == url}
+    return clients == {strategy}
+
+
+@pytest.mark.parametrize("strategy", STRATEGIES)
+async def test_a_site_that_refuses_head_never_gets_a_request_for_a_disallowed_redirect(
+    strategy: str, site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None],
+    make_connector: MakeConnector,
+) -> None:
+    use_strategy(strategy)
+    _robots(site)
+    site.html(START_URL, "Home", "/go")
+    site.add("http://site.test/go", Page(status=302, location="/private/secret", content_type=None, head_status=405))
+    site.html(SECRET, "Secret")
+
+    await (await make_connector()).run_sync()
+
+    assert _served_by(site, strategy, "http://site.test/go")
+    assert _requests_to(site, SECRET) == []
+    assert set(db.pages()) == {START_URL}
+
+
+@pytest.mark.parametrize("strategy", STRATEGIES)
+async def test_a_redirect_only_get_sees_is_checked_before_it_is_followed(
+    strategy: str, site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None],
+    make_connector: MakeConnector,
+) -> None:
+    use_strategy(strategy)
+    _robots(site)
+    site.html(START_URL, "Home", "/go")
+    site.add("http://site.test/go", Page(status=302, location="/private/secret", content_type=None, head_status=200))
+    site.html(SECRET, "Secret")
+
+    await (await make_connector()).run_sync()
+
+    assert _requests_to(site, SECRET) == []
+    assert set(db.pages()) == {START_URL}
+
+
+@pytest.mark.parametrize("head", [None, 405], ids=["head-answers", "head-refused"])
+@pytest.mark.parametrize("strategy", STRATEGIES)
+async def test_an_allowed_chain_of_n_redirects_costs_n_plus_two_requests(
+    strategy: str, head: int | None, site: FakeWeb, db: FakeRecordsDb,
+    use_strategy: Callable[[str], None], make_connector: MakeConnector,
+) -> None:
+    use_strategy(strategy)
+    chain = ["http://site.test/a", "http://site.test/b", "http://site.test/c"]
+    site.html(START_URL, "Home", "/a")
+    site.add(chain[0], Page(status=301, location="/b", content_type=None, head_status=head))
+    site.add(chain[1], Page(status=302, location="//site.test/c", content_type=None, head_status=head))
+    site.html(chain[2], "Landing")
+
+    await (await make_connector()).run_sync()
+
+    assert db.pages()["http://site.test/c"].record_name == "Landing"
+    hops = [(method, url) for method, url in site.requests if url in chain]
+    assert len(hops) == (len(chain) - 1) + 2  # N redirects + 2
+    assert [url for method, url in hops if method == "GET"][-1] == chain[-1]
+
+
+@pytest.mark.parametrize("strategy", STRATEGIES)
+async def test_a_cookie_set_on_a_redirect_is_sent_on_the_next_hop(
+    strategy: str, site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None],
+    make_connector: MakeConnector,
+) -> None:
+    use_strategy(strategy)
+    site.html(START_URL, "Home", "/login")
+    site.add("http://site.test/login", Page(status=302, location="/members", content_type=None,
+                                            headers={"Set-Cookie": "sid=abc; Path=/"}, head_status=405))
+    site.html("http://site.test/members", "Members", requires_cookie="sid=abc")
+
+    await (await make_connector()).run_sync()
+
+    assert db.pages()["http://site.test/members"].record_name == "Members"
+    assert _served_by(site, strategy, "http://site.test/members")  # no fallback to another client
+
+
+async def test_a_redirect_behind_a_cloudflare_challenge_is_followed_by_the_same_scraper(
+    site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None], make_connector: MakeConnector,
+) -> None:
+    use_strategy("cloudscraper")
+    protected, inside = "http://site.test/protected", "http://site.test/protected/inside"
+    site.html(START_URL, "Home", "/protected")
+    site.add(protected, Page(status=302, location="/protected/inside", content_type=None,
+                             cloudflare_challenge=True, head_status=405))
+    site.html(inside, "Inside", cloudflare_challenge=True)
+
+    await (await make_connector()).run_sync()
+
+    assert db.pages()[inside].record_name == "Inside"
+    assert site.challenges_solved == [protected]  # a new scraper would face it again at /inside
+    assert _served_by(site, "cloudscraper", inside)  # no fallback to aiohttp
+
+
+async def test_in_robust_mode_a_document_whose_get_redirects_is_checked_before_it_is_followed(
+    site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    # The landing probe asks with HEAD, which this site answers without the redirect.
+    _robots(site)
+    secret_pdf = "http://site.test/private/secret.pdf"
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add("http://site.test/manual.pdf",
+             Page(status=302, location="/private/secret.pdf", content_type=None, head_status=200))
+    site.add(secret_pdf, Page(body=b"%PDF-1.4 secret", content_type="application/pdf"))
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert _requests_to(site, secret_pdf) == []
+    assert set(db.pages()) == {START_URL}
+
+
+@pytest.mark.parametrize("target", [SECRET, "http://elsewhere.test/landing"], ids=["disallowed", "off-site"])
+async def test_a_cloudflare_challenge_that_lands_somewhere_refused_is_not_stored(
+    target: str, site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None],
+    make_connector: MakeConnector,
+) -> None:
+    # cloudscraper requests the solved challenge's target itself, so the check comes after.
+    use_strategy("cloudscraper")
+    _robots(site)
+    protected = "http://site.test/protected"
+    site.html(START_URL, "Home", "/protected")
+    site.html(protected, "Protected", cloudflare_challenge=True, cloudflare_challenge_redirect=target)
+    site.html(target, "Secret")
+
+    await (await make_connector()).run_sync()
+
+    assert set(db.pages()) == {START_URL}
+    assert "Secret" not in {record.record_name for record in db.pages().values()}
+
+
+@pytest.mark.parametrize("strategy", STRATEGIES)
+async def test_a_redirect_loop_is_one_failed_page_with_no_retries_and_no_browser(
+    strategy: str, site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb,
+    use_strategy: Callable[[str], None], make_connector: MakeConnector,
+) -> None:
+    # 11 allowed redirects, then one to a disallowed page: the walk stops at the cap, before the
+    # last check, so nothing else (a retry, or the browser) may follow the rest of the chain.
+    use_strategy(strategy)
+    _robots(site)
+    chain = [f"http://site.test/r{i}" for i in range(12)]
+    site.html(START_URL, "Home", "/r0")
+    for here, there in zip(chain, [*chain[1:], SECRET]):
+        site.add(here, Page(status=302, location=there, content_type=None))
+    site.html(SECRET, "Secret")
+
+    await (await make_connector()).run_sync()
+
+    failed = db.pages()[chain[0]]
+    assert (failed.reason or "").startswith("This page redirects too many times")
+    assert _requests_to(site, chain[0]).count("GET") == 1
+    assert _requests_to(site, SECRET) == []
+    assert not {*chain, SECRET} & set(browser.browser_loaded)
+    assert set(db.pages()) == {START_URL, chain[0]}
+
+
+@pytest.mark.parametrize("suffix", ["", ".pdf"], ids=["page", "file"])
+async def test_in_robust_mode_a_redirect_loop_is_one_failed_page_and_the_browser_never_follows_it(
+    suffix: str, site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    # The walk before the browser gives up after 10 steps; the browser would follow the rest unchecked.
+    _robots(site)
+    chain = [f"http://site.test/r{i}{suffix}" for i in range(12)]
+    site.html(START_URL, "Home", f"/r0{suffix}")
+    for here, there in zip(chain, [*chain[1:], SECRET]):
+        site.add(here, Page(status=302, location=there, content_type=None))
+    site.html(SECRET, "Secret")
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    failed = db.pages()[chain[0]]
+    assert (failed.reason or "").startswith("This page redirects too many times")
+    assert _requests_to(site, SECRET) == []
+    assert not {*chain, SECRET} & set(browser.browser_loaded)
+    assert set(db.pages()) == {START_URL, chain[0]}
+
+
+@pytest.mark.parametrize("suffix", ["", ".pdf"], ids=["page", "file"])
+@pytest.mark.parametrize("robust", [False, True], ids=["normal", "robust"])
+async def test_ten_redirects_land_and_eleven_are_too_many_in_either_mode(
+    robust: bool, suffix: str, site: FakeWeb, db: FakeRecordsDb, browser: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    ten = [f"http://site.test/a{i}{suffix}" for i in range(11)]
+    eleven = [f"http://site.test/b{i}{suffix}" for i in range(12)]
+    site.html(START_URL, "Home", f"/a0{suffix}", f"/b0{suffix}")
+    for chain in (ten, eleven):
+        for here, there in zip(chain, chain[1:]):
+            site.add(here, Page(status=302, location=there, content_type=None))
+        if suffix:
+            site.add(chain[-1], Page(body=b"%PDF-1.4 landing", content_type="application/pdf"))
+        else:
+            site.html(chain[-1], "Landing")
+
+    await (await make_connector(use_headless_browser=robust)).run_sync()
+
+    assert ten[-1] in db.pages()
+    assert (db.pages()[eleven[0]].reason or "").startswith("This page redirects too many times")
+    assert _requests_to(site, eleven[-1]) == []
+    assert eleven[-1] not in browser.browser_loaded
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["declared-size", "streamed"])
+@pytest.mark.parametrize("strategy", STRATEGIES)
+async def test_a_site_that_refuses_head_still_gets_the_size_limit_at_the_final_hop(
+    strategy: str, chunked: bool, site: FakeWeb, db: FakeRecordsDb, use_strategy: Callable[[str], None],
+    make_connector: MakeConnector,
+) -> None:
+    use_strategy(strategy)
+    big = "http://site.test/files/big.pdf"
+    site.html(START_URL, "Home", "/big.pdf")
+    site.add("http://site.test/big.pdf", Page(status=302, location="/files/big.pdf", content_type=None, head_status=405))
+    site.add(big, Page(body=b"x" * (2 * 1024 * 1024), content_type="application/pdf", head_status=405, chunked=chunked))
+
+    await (await make_connector(max_size_mb=1)).run_sync()
+
+    assert (db.pages()[big].reason or "").startswith("This file is larger than this connector's 1 MB size limit")

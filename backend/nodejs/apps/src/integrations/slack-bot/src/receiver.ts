@@ -74,7 +74,6 @@ async function verifySlackRequest(
   next: NextFunction,
 ): Promise<void> {
   try {
-    console.log("verifySlackRequest");
     const signature = getHeaderValue(req, "x-slack-signature");
     const requestTimestamp = getHeaderValue(req, "x-slack-request-timestamp");
     if (!signature || !requestTimestamp) {

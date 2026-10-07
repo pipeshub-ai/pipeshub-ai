@@ -15,10 +15,18 @@ Tests cover:
 import pytest
 from unittest.mock import MagicMock
 
-pytest.importorskip("opensearchpy", reason="opensearch-py not installed")
-
 from app.services.vector_db.opensearch.utils import OpenSearchUtils
-from app.services.vector_db.opensearch.opensearch import OpenSearchService
+
+# OpenSearchUtils is pure and needs no SDK; only the service import does. Keep the
+# skip on the service tests alone so the util assertions still run without opensearch-py.
+try:
+    from app.services.vector_db.opensearch.opensearch import OpenSearchService
+except ImportError:  # pragma: no cover - depends on optional extra
+    OpenSearchService = None
+
+requires_opensearchpy = pytest.mark.skipif(
+    OpenSearchService is None, reason="opensearch-py not installed"
+)
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
@@ -287,6 +295,40 @@ class TestFilterExpressionToBoolQuery:
         assert len(result["bool"]["should"]) == 1
         assert len(result["bool"]["must_not"]) == 1
 
+    def test_must_plus_should_forces_minimum_should_match(self):
+        """The single line standing between container-scoped search and a
+        full-org disclosure.
+
+        OpenSearch defaults `minimum_should_match` to **0** when a `must` or
+        `filter` clause is present, which turns every should clause into a
+        scoring hint. The permission filter is exactly this shape — `orgId` in
+        must, the reachable containers in should — and the caller cannot pass
+        `min_should_match` explicitly because Redis raises on it. So the
+        provider has to supply the 1 itself, and nothing else in the suite
+        would notice if it stopped.
+        """
+        expr = FilterExpression(
+            must=[FieldCondition(key="metadata.orgId", value="org-123")],
+            should=[
+                FieldCondition(key="connectorIds", values=["c1"]),
+                FieldCondition(key="recordGroupIds", values=["rg1"]),
+            ],
+        )
+        result = OpenSearchUtils.filter_expression_to_bool_query(expr)
+        assert result["bool"]["minimum_should_match"] == 1
+
+    def test_an_explicit_min_should_match_is_not_overridden(self):
+        expr = FilterExpression(
+            must=[FieldCondition(key="metadata.orgId", value="org-123")],
+            should=[
+                FieldCondition(key="connectorIds", values=["c1"]),
+                FieldCondition(key="recordGroupIds", values=["rg1"]),
+            ],
+            min_should_match=2,
+        )
+        result = OpenSearchUtils.filter_expression_to_bool_query(expr)
+        assert result["bool"]["minimum_should_match"] == 2
+
 
 # ---------------------------------------------------------------------------
 # OpenSearchUtils.vector_point_to_document
@@ -506,6 +548,7 @@ class TestBuildHybridQuery:
 # OpenSearchService.filter_collection (returns FilterExpression)
 # ---------------------------------------------------------------------------
 
+@requires_opensearchpy
 class TestFilterCollection:
 
     def _make_service(self):

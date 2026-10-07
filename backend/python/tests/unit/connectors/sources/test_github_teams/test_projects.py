@@ -66,7 +66,7 @@ class TestSyncRepoMembers:
         c.runtime.ds_call.side_effect = _dispatch(c, {
             "list_collaborators": ok_response([collaborator]),
         })
-        c.tx_store.get_user_by_source_id = AsyncMock(
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(
             return_value=SimpleNamespace(email="alice@example.com")
         )
 
@@ -92,7 +92,7 @@ class TestSyncRepoMembers:
             "list_collaborators": ok_response([collaborator]),
         })
         c.users.resolve_collaborator_principals = AsyncMock(return_value={42})
-        c.tx_store.get_user_by_source_id = AsyncMock(
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(
             return_value=SimpleNamespace(email="alice@example.com")
         )
 
@@ -453,6 +453,65 @@ class TestRecordGroupHierarchy:
         assert ids_before == ids_after
 
 
+class TestTeamAppEdge:
+    """A public repo's ORG grant is reachable only through the "All" team's
+    edge to the App, so the edge is created exactly when such a grant exists."""
+
+    def _sync(self, *repos: SimpleNamespace) -> tuple[object, ProjectsSync]:
+        c = make_mock_connector()
+        c.pull_requests.fetch_prs_batched = AsyncMock()
+        c.repos.run = AsyncMock()
+        sync = ProjectsSync(c)
+        sync._sync_repo_members = AsyncMock(return_value=[])
+        sync._resolve_repos_with_filters = AsyncMock(return_value=list(repos))
+        return c, sync
+
+    def _repo(self, repo_id: int, visibility: str) -> SimpleNamespace:
+        repo = make_repo(repo_id=repo_id, name=f"r{repo_id}")
+        repo.visibility = visibility
+        return repo
+
+    async def test_private_and_internal_repos_create_no_edge(self) -> None:
+        c, sync = self._sync(self._repo(1, "private"), self._repo(2, "internal"))
+        c.users.org_member_emails = lambda: {"alice@corp.com"}
+
+        await sync.sync_all_repos()
+
+        c.data_entities_processor.ensure_team_app_edge.assert_not_awaited()
+
+    async def test_each_public_repo_ensures_the_edge(self) -> None:
+        c, sync = self._sync(
+            self._repo(1, "private"), self._repo(2, "public"), self._repo(3, "public"),
+        )
+
+        await sync.sync_all_repos()
+
+        assert c.data_entities_processor.ensure_team_app_edge.await_count == 2
+        c.data_entities_processor.ensure_team_app_edge.assert_awaited_with(c.connector_id)
+
+    async def test_edge_precedes_the_public_repos_record_groups(self) -> None:
+        c, sync = self._sync(self._repo(555, "public"))
+        order: list[str] = []
+        c.data_entities_processor.ensure_team_app_edge.side_effect = lambda *_: order.append("edge")
+        c.data_entities_processor.on_new_record_groups.side_effect = (
+            lambda pairs: order.extend(f"group:{rg.external_group_id}" for rg, _ in pairs)
+        )
+
+        await sync.sync_all_repos()
+
+        assert order.index("edge") < order.index("group:555")
+
+    async def test_public_repo_on_403_still_creates_the_edge(self) -> None:
+        c, sync = self._sync(self._repo(1, "public"))
+        sync._sync_repo_members = AsyncMock(
+            side_effect=CollaboratorsUnavailable("forbidden", status_code=403),
+        )
+
+        await sync.sync_all_repos()
+
+        c.data_entities_processor.ensure_team_app_edge.assert_awaited_once()
+
+
 class TestSyncAllReposAndResolution:
     async def test_missing_data_source_raises(self) -> None:
         c = make_mock_connector()
@@ -554,7 +613,7 @@ class TestCollaboratorEdgeCases:
 
     async def test_create_user_permission_exception_returns_none(self) -> None:
         c = make_mock_connector()
-        c.tx_store.get_user_by_source_id = AsyncMock(side_effect=RuntimeError("db"))
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=RuntimeError("db"))
         assert await ProjectsSync(c)._create_user_permission("1", PermissionType.READ) is None
 
     def test_highest_role_none_when_no_permissions(self) -> None:

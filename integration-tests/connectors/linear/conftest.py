@@ -15,10 +15,11 @@ workspace. See ``README.md`` for the shared-workspace contract.
 import logging
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict
 
-import pytest
 import pytest_asyncio
+
+from helper.source_credentials import source_unavailable
 
 from app.sources.client.linear.linear import (  # type: ignore[import-not-found]
     LinearClient,
@@ -61,9 +62,10 @@ async def linear_datasource() -> LinearDataSource:
     api_token = os.getenv("LINEAR_TEST_API_TOKEN")
 
     if not api_token:
-        pytest.skip(
-            "Linear credentials not set (LINEAR_TEST_API_TOKEN). "
-            "The API token must have read access to the target workspace."
+        source_unavailable(
+            "The Linear workspace this suite syncs from is not configured. The API "
+            "token must have read access to it.",
+            secrets=["LINEAR_TEST_API_TOKEN"],
         )
 
     config = LinearTokenConfig(token=api_token)
@@ -98,9 +100,10 @@ async def linear_connector(
 
     team_ids = [t.strip() for t in raw_team_ids.split(",") if t.strip()]
     if not team_ids:
-        pytest.skip(
-            "LINEAR_TEST_TEAM_IDS not set. Provide comma-separated team UUIDs "
-            "whose issues should be synced."
+        source_unavailable(
+            "No Linear teams are named for this suite to sync, so it would test "
+            "nothing. Provide comma-separated team ids.",
+            secrets=["LINEAR_TEST_TEAM_IDS"],
         )
 
     connector_name = f"linear-test-{uuid.uuid4().hex[:8]}"

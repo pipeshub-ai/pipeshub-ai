@@ -6,7 +6,7 @@ test.describe('Workspace General Settings', () => {
     await page.waitForTimeout(2_000);
   });
 
-  test('page loads with organization settings', async ({ page }) => {
+  test('page loads with organization settings @smoke', async ({ page }) => {
     const heading = page.locator('text=/General|Organization|Org/i').first();
     await expect(heading).toBeVisible({ timeout: 5_000 });
   });

@@ -845,7 +845,7 @@ class TestStreamGoogleApiRequest:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in conn._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+            assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     async def test_generic_error_raises_http_exception(self):
         conn = _make_stream_connector()
@@ -977,44 +977,6 @@ class TestGetValidatedConnectorInstance:
             with pytest.raises(HTTPException) as exc_info:
                 await get_validated_connector_instance("conn-1", request)
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
-
-
-# ============================================================================
-# handle_record_deletion
-# ============================================================================
-
-
-class TestHandleRecordDeletion:
-    """Tests for handle_record_deletion route handler."""
-
-    async def test_successful_deletion(self):
-        from app.connectors.api.router import handle_record_deletion
-
-        gp = AsyncMock()
-        gp.delete_records_and_relations = AsyncMock(return_value={"deleted": True})
-
-        result = await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
-        assert result["status"] == "success"
-
-    async def test_not_found_raises_404(self):
-        from app.connectors.api.router import handle_record_deletion
-
-        gp = AsyncMock()
-        gp.delete_records_and_relations = AsyncMock(return_value=None)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-missing", request=MagicMock(), graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
-
-    async def test_unexpected_error_raises_500(self):
-        from app.connectors.api.router import handle_record_deletion
-
-        gp = AsyncMock()
-        gp.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("boom"))
-
-        with pytest.raises(HTTPException) as exc_info:
-            await handle_record_deletion("rec-1", request=MagicMock(), graph_provider=gp)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================
@@ -1305,7 +1267,8 @@ class TestGetRecordById:
 
         with pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", request, gp)
-        assert exc_info.value.status_code == 500  # wrapped by outer except
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "You do not have access to this record"
 
 
 # ============================================================================
@@ -1320,6 +1283,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1347,6 +1311,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": False,
             "code": 404,
@@ -1366,6 +1331,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1390,6 +1356,35 @@ class TestDeleteRecord:
         assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
         assert kafka.publish_event.await_count == 3  # retried before giving up (#3008)
 
+    async def test_an_event_the_broker_refuses_flags_pending(self) -> None:
+        """publish_event answers False without raising when the broker refuses an event."""
+        from app.connectors.api.router import delete_record
+
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        gp.delete_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {
+                "eventType": "record.deleted",
+                "topic": "sync-events",
+                "payload": {"recordId": "rec-1"},
+            },
+        })
+
+        kafka = AsyncMock()
+        kafka.publish_event = AsyncMock(return_value=False)
+
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        request = _mock_request(container=container)
+
+        with patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=999), \
+             patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            result = await delete_record("rec-1", request, gp, kafka)
+        assert result["success"] is True
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
+
     async def test_malformed_event_data_skips_publish_and_flags_pending(self):
         """eventData missing a required field (eventType/topic/payload) must not
         crash a completed deletion via KeyError — skip publishing and flag
@@ -1397,6 +1392,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"payload": {"recordId": "rec-1"}},  # missing eventType/topic
@@ -1419,6 +1415,7 @@ class TestDeleteRecord:
         from app.connectors.api.router import delete_record
 
         gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {
@@ -1544,7 +1541,7 @@ class TestGetConnectorStatsEndpoint:
         })
 
         connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
+        connector_registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
@@ -1572,7 +1569,7 @@ class TestGetConnectorStatsEndpoint:
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
 
         connector_registry = AsyncMock()
-        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
+        connector_registry.get_connector_instance = AsyncMock(return_value={"_key": "conn-1"})
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
@@ -1953,6 +1950,7 @@ class TestGetConnectorInstanceConfig:
             "type": "slack",
             "name": "My Slack",
             "scope": "personal",
+            "createdBy": "user-1",
             "authType": "OAUTH",
         })
 
@@ -1987,6 +1985,54 @@ class TestGetConnectorInstanceConfig:
         with pytest.raises(HTTPException) as exc_info:
             await get_connector_instance_config("c1", request)
         assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+
+    @pytest.mark.parametrize("is_admin", [False, True], ids=["member", "admin"])
+    async def test_personal_connector_config_is_for_its_creator_only(self, is_admin):
+        from app.connectors.api.router import get_connector_instance_config
+
+        registry = AsyncMock()
+        registry.get_connector_instance = AsyncMock(return_value={
+            "type": "confluence", "name": "Theirs", "scope": "personal",
+            "createdBy": "someone-else", "authType": "API_TOKEN",
+        })
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value={"auth": {"apiToken": "secret"}})
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        container.config_service = MagicMock(return_value=config_service)
+        request = _mock_request(container=container, connector_registry=registry, is_admin=is_admin)
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_connector_instance_config("c1", request)
+
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+        config_service.get_config.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("created_by", "is_admin"),
+        [("someone-else", True), ("user-1", False)],
+        ids=["admin-not-creator", "creator-not-admin"],
+    )
+    async def test_team_connector_config_still_readable(self, created_by, is_admin):
+        from app.connectors.api.router import get_connector_instance_config
+
+        registry = AsyncMock()
+        registry.get_connector_instance = AsyncMock(return_value={
+            "type": "confluence", "name": "Team", "scope": "team",
+            "createdBy": created_by, "authType": "API_TOKEN",
+        })
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value={"auth": {"apiToken": "t"}, "sync": {}, "filters": {}})
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        container.config_service = MagicMock(return_value=config_service)
+        request = _mock_request(container=container, connector_registry=registry, is_admin=is_admin)
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock):
+            result = await get_connector_instance_config("c1", request)
+
+        assert result["success"] is True
 
 
 # ============================================================================
@@ -2484,7 +2530,7 @@ class TestPrepareConnectorConfig:
         }
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value=[
-            {"_id": "oc-1", "orgId": "org-1"}
+            {"_id": "oc-1", "orgId": "org-1", "config": {"instanceUrl": "https://gitlab.mycompany.com"}}
         ])
         logger = MagicMock()
 
@@ -2843,43 +2889,23 @@ class TestFindOauthConfigInList:
 
 
 class TestStreamRecordInternal:
-    """Tests for stream_record_internal route handler."""
+    """Tests for stream_record_internal route handler.
 
-    async def test_missing_auth_header_raises_401(self):
-        from app.connectors.api.router import stream_record_internal
+    The auth middleware and the route's require_service_token dependency validate
+    the token; the handler receives the verified claims.
+    """
 
-        gp = AsyncMock()
-        config_service = AsyncMock()
-        request = _mock_request(headers={})
-
-        with pytest.raises(HTTPException) as exc_info:
-            await stream_record_internal(request, "rec-1", gp, config_service)
-        assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
-
-    async def test_invalid_bearer_format_raises_401(self):
-        from app.connectors.api.router import stream_record_internal
-
-        gp = AsyncMock()
-        config_service = AsyncMock()
-        request = _mock_request(headers={"Authorization": "Basic token123"})
-
-        with pytest.raises(HTTPException) as exc_info:
-            await stream_record_internal(request, "rec-1", gp, config_service)
-        assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+    _CLAIMS = {"token_type": "scoped", "orgId": "org-1", "scopes": ["connector:signedUrl"]}
 
     async def test_missing_org_id_in_token_raises_401(self):
         from app.connectors.api.router import stream_record_internal
 
-        gp = AsyncMock()
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
-        request = _mock_request(headers={"Authorization": "Bearer token123"})
-
-        with patch("app.connectors.api.router.jwt.decode", return_value={"userId": "u1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await stream_record_internal(request, "rec-1", gp, config_service)
-            assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+        claims = {"token_type": "scoped", "scopes": ["connector:signedUrl"]}
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                _mock_request(), "rec-1", AsyncMock(), AsyncMock(), claims=claims
+            )
+        assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
 
     async def test_record_not_found_raises_404(self):
         from app.connectors.api.router import stream_record_internal
@@ -2888,33 +2914,55 @@ class TestStreamRecordInternal:
         gp.get_record_by_id = AsyncMock(return_value=None)
         gp.get_document = AsyncMock(return_value={"_key": "org-1"})
 
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                _mock_request(), "rec-1", gp, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
-        request = _mock_request(headers={"Authorization": "Bearer token123"})
+    async def test_record_from_another_org_raises_404(self):
+        """A token for one org must not read another org's records."""
+        from app.connectors.api.router import stream_record_internal
 
-        with patch("app.connectors.api.router.jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await stream_record_internal(request, "rec-1", gp, config_service)
-            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-2"))
+        gp.get_document = AsyncMock(return_value={"_key": "org-1"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                _mock_request(), "rec-1", gp, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        # Only the org lookup ran; no connector was resolved for the foreign record.
+        assert gp.get_document.await_count == 1
+
+    async def test_record_without_org_raises_404(self):
+        """A record with no org cannot be confined to the token's org, so it is refused."""
+        from app.connectors.api.router import stream_record_internal
+
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id=""))
+        gp.get_document = AsyncMock(return_value={"_key": "org-1"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                _mock_request(), "rec-1", gp, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        assert gp.get_document.await_count == 1
 
     async def test_org_not_found_raises_404(self):
         from app.connectors.api.router import stream_record_internal
 
-        record = _mock_record(org_id="org-1")
         gp = AsyncMock()
-        gp.get_record_by_id = AsyncMock(return_value=record)
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
         gp.get_document = AsyncMock(return_value=None)
 
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
-        request = _mock_request(headers={"Authorization": "Bearer token123"})
-
-        with patch("app.connectors.api.router.jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await stream_record_internal(request, "rec-1", gp, config_service)
-            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                _mock_request(), "rec-1", gp, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_knowledge_base_connector_returns_response(self):
         from app.connectors.api.router import stream_record_internal
@@ -2929,22 +2977,26 @@ class TestStreamRecordInternal:
         gp.get_document = AsyncMock(return_value={"_key": "org-1"})
 
         config_service = AsyncMock()
-        config_service.get_config = AsyncMock(side_effect=[
-            {"scopedJwtSecret": "secret"},
-            {"storage": {"endpoint": "http://storage:8080"}},
-        ])
-
-        container = MagicMock()
-        request = _mock_request(
-            headers={"Authorization": "Bearer token123"},
-            container=container,
+        config_service.get_config = AsyncMock(
+            return_value={"storage": {"endpoint": "http://storage:8080"}}
         )
+        request = _mock_request(container=MagicMock())
 
-        with patch("app.connectors.api.router.jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
-            with patch("app.connectors.api.router.generate_jwt", new_callable=AsyncMock, return_value="jwt-tok"):
-                with patch("app.connectors.api.router.make_api_call", new_callable=AsyncMock, return_value={"data": b"file-data"}):
-                    result = await stream_record_internal(request, "rec-1", gp, config_service)
+        with patch(
+            "app.connectors.api.router.generate_jwt", new_callable=AsyncMock, return_value="jwt-tok"
+        ) as mock_generate_jwt:
+            with patch(
+                "app.connectors.api.router.make_api_call",
+                new_callable=AsyncMock,
+                return_value={"data": b"file-data"},
+            ):
+                result = await stream_record_internal(
+                    request, "rec-1", gp, config_service, claims=self._CLAIMS
+                )
         assert isinstance(result, Response)
+        mock_generate_jwt.assert_awaited_once_with(
+            config_service, {"orgId": "org-1", "scopes": ["storage:token"]}
+        )
 
     async def test_connector_not_found_raises_404(self):
         from app.connectors.api.router import stream_record_internal
@@ -2957,19 +3009,13 @@ class TestStreamRecordInternal:
             None,  # connector instance not found
         ])
 
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
+        request = _mock_request(container=MagicMock())
 
-        container = MagicMock()
-        request = _mock_request(
-            headers={"Authorization": "Bearer token123"},
-            container=container,
-        )
-
-        with patch("app.connectors.api.router.jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await stream_record_internal(request, "rec-1", gp, config_service)
-            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                request, "rec-1", gp, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_connector_obj_not_found_raises_unhealthy(self):
         from app.connectors.api.router import stream_record_internal
@@ -2982,35 +3028,15 @@ class TestStreamRecordInternal:
             {"_key": "conn-1", "name": "My Drive", "isActive": False},  # connector instance
         ])
 
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
         container = MagicMock()
         container.connectors_map = {}
-        request = _mock_request(
-            headers={"Authorization": "Bearer token123"},
-            container=container,
-        )
+        request = _mock_request(container=container)
 
-        with patch("app.connectors.api.router.jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
-            with pytest.raises(HTTPException) as exc_info:
-                await stream_record_internal(request, "rec-1", gp, config_service)
-            assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
-
-    async def test_jwt_error_raises_401(self):
-        from jose import JWTError
-
-        from app.connectors.api.router import stream_record_internal
-
-        gp = AsyncMock()
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-        request = _mock_request(headers={"Authorization": "Bearer bad-token"})
-
-        with patch("app.connectors.api.router.jwt.decode", side_effect=JWTError("bad")):
-            with pytest.raises(HTTPException) as exc_info:
-                await stream_record_internal(request, "rec-1", gp, config_service)
-            assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+        with pytest.raises(HTTPException) as exc_info:
+            await stream_record_internal(
+                request, "rec-1", gp, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
 
 # ============================================================================
@@ -3027,7 +3053,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "other-rec"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         gp = AsyncMock()
@@ -3043,7 +3070,7 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
         payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
@@ -3063,7 +3090,7 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
         payload.additional_claims = {"org_id": "org-b"}
         handler.validate_token = MagicMock(return_value=payload)
 
@@ -3083,7 +3110,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         gp = AsyncMock()
@@ -3101,7 +3129,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         gp = AsyncMock()
@@ -3120,7 +3149,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.GOOGLE_DRIVE)
@@ -3143,7 +3173,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.GOOGLE_DRIVE)
@@ -3170,7 +3201,8 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
+        payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.SLACK)
@@ -3200,7 +3232,7 @@ class TestDownloadFile:
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
+        payload.user_id = "user-1"
         payload.additional_claims = {"org_id": "org-1"}
         handler.validate_token = MagicMock(return_value=payload)
 
@@ -3218,38 +3250,89 @@ class TestDownloadFile:
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
         gp.get_document.assert_not_called()
 
-    async def test_legacy_token_without_org_id_claim_still_downloads(self):
-        """Tokens minted before org_id was added to additional_claims still
-        download until expiry; ACL is not re-checked on this path."""
-        from app.connectors.api.router import download_file
-
+    def _redeemable(self, *, token_user="user-1", token_claims=None):
         handler = MagicMock()
         payload = MagicMock()
         payload.record_id = "rec-1"
-        payload.user_id = "u1"
-        payload.additional_claims = {}
+        payload.user_id = token_user
+        payload.additional_claims = {"org_id": "org-1"} if token_claims is None else token_claims
         handler.validate_token = MagicMock(return_value=payload)
 
-        record = _mock_record(connector_name=Connectors.SLACK)
-        connector_instance = {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True}
         gp = AsyncMock()
-        gp.get_document = AsyncMock(side_effect=[
-            {"_key": "org-1"},
-            connector_instance,
-            connector_instance,
-        ])
-        gp.get_record_by_id = AsyncMock(return_value=record)
+        gp.get_document = AsyncMock(return_value={"_key": "org-1"})
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(connector_name=Connectors.SLACK))
+        return handler, gp
+
+    async def test_token_without_org_id_claim_is_404(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable(token_claims={})
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.get_document.assert_awaited_once()
+
+    async def test_same_org_user_other_than_minter_is_404(self):
+        """GHSA-cf48: a leaked URL must not work under a colleague's session."""
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable(token_user="minter")
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.get_record_by_id.assert_not_called()
+
+    async def test_minter_who_lost_record_access_is_404(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable()
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+
+    async def test_purpose_claim_is_required(self):
+        from app.connectors.api.router import download_file
+        from app.core.signed_url import SIGNED_URL_PURPOSE
+
+        handler, gp = self._redeemable()
+        handler.validate_token.side_effect = HTTPException(status_code=401)
+        with pytest.raises(HTTPException):
+            await download_file(_mock_request(), "org-1", "rec-1", "drive", "tok", handler, gp)
+        handler.validate_token.assert_called_once_with(
+            "tok", required_claims={"purpose": SIGNED_URL_PURPOSE}
+        )
+
+    async def test_unauthenticated_caller_is_401(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable()
+        request = _mock_request()
+        request.state.user = None
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
+        assert exc_info.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+
+    async def test_indexing_service_token_skips_user_binding_and_acl(self):
+        from app.connectors.api.router import download_file
+
+        handler, gp = self._redeemable(token_user="minter")
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        connector_instance = {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True}
+        gp.get_document = AsyncMock(side_effect=[{"_key": "org-1"}, connector_instance, connector_instance])
 
         mock_connector = MagicMock()
         mock_connector.get_app_name = MagicMock(return_value=Connectors.SLACK)
         mock_connector.stream_record = AsyncMock(return_value=Response(content=b"data"))
-
         container = MagicMock()
         container.connectors_map = {"conn-1": mock_connector}
-        request = _mock_request(container=container)
+        request = _mock_request(user={"orgId": "org-1"}, container=container)
 
-        result = await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
+        with patch("app.connectors.api.router.has_service_scope", return_value=True):
+            result = await download_file(request, "org-1", "rec-1", "drive", "tok", handler, gp)
         assert isinstance(result, Response)
+        gp.check_record_access_with_details.assert_not_called()
 
 
 # ============================================================================
@@ -3732,3 +3815,6 @@ class TestUpdateConnectorInstanceAuthConfig:
             with patch("app.connectors.api.router.get_epoch_timestamp_in_ms", return_value=999):
                 result = await update_connector_instance_auth_config("c1", request, gp)
         assert result["success"] is True
+        # saving credentials records who supplied them
+        updates = registry.update_connector_instance.await_args.kwargs["updates"]
+        assert updates["authenticatedBy"] == "user-1"

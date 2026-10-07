@@ -77,6 +77,7 @@ export function ProviderRow({ provider, onConfigure, hideCapabilityBadges = fals
 
   return (
     <Flex
+      data-testid={`ai-provider-${provider.providerId}`}
       direction={{ initial: 'column', sm: 'row' }}
       align={{ initial: 'stretch', sm: 'center' }}
       justify={{ initial: 'start', sm: 'between' }}

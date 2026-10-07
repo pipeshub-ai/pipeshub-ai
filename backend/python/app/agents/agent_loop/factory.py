@@ -92,6 +92,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
 )
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
+from app.agent_loop_lib.sandbox.coding.settings import SandboxUnavailableError
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
     RetrieveArtifactContentTool,
 )
@@ -102,6 +103,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.artifact_store import build_artifact_store
+from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
 from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
@@ -116,6 +118,7 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
+    progressive_entity_tools,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -124,6 +127,11 @@ from app.agents.agent_loop.hooks import (
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
+)
+from app.agents.agent_loop.hooks.progressive_tools import (
+    ENTITY_TOOL_NAMES,
+    PROGRESSIVE_TOOL_NAMES,
+    entity_tools_used_in_history,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import (
@@ -150,6 +158,10 @@ from app.agents.agent_loop.loops.plan_execute import (
     register_planning_tools,
 )
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
+from app.agents.agent_loop.output_cap_transport import (
+    max_turn_output_chars,
+    with_output_cap,
+)
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
 from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
@@ -172,6 +184,7 @@ from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
+from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
 
 
@@ -255,6 +268,18 @@ def _composed_agents_enabled() -> bool:
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
 
 
+def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
+    """Entity tools are hidden when no entity store is wired (they could only
+    fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
+    until ``search_entities`` runs (``hooks/progressive_tools.py``) — unless an
+    earlier turn already used an entity tool and its ids are in the history."""
+    if not context.tool_state.get("entity_vector_store"):
+        return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
+    if entity_tools_used_in_history(context.previous_conversations):
+        return tool_names
+    return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
+
+
 class PipesHubAgentFactory:
     """Creates an agent-loop `Agent` (+ its `AgentRuntime`) from PipesHub's
     per-request context. One instance is stateless and reusable across
@@ -309,13 +334,22 @@ class PipesHubAgentFactory:
             provider=context.llm_provider, is_multimodal=context.is_multimodal_llm,
         ).max_images_per_request
 
+        output_cap = max_turn_output_chars()
+
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
             traced_transport_factory(
-                lambda: LangChainTransport(
-                    llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
-                    max_images_per_request=image_cap,
+                lambda: with_output_cap(
+                    LangChainTransport(
+                        llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                        max_images_per_request=image_cap,
+                        # Stop Generation (Phase 3b): per-chunk cancellation
+                        # check inside `stream()`. `None` for requests that
+                        # never registered a `runId` — the check is then a no-op.
+                        cancellation_token=context.cancellation_token,
+                    ),
+                    output_cap,
                 ),
                 opik_active=opik_active,
                 project_name=opik_project_name,
@@ -343,15 +377,27 @@ class PipesHubAgentFactory:
                 llm, model_name=model_name, model_key=model_key,
             )
             if direct is not None:
-                # The direct SDK transports have no image cap of their own --
-                # they live in `agent_loop_lib` and know nothing about
-                # PipesHub's per-provider policy -- so the same net the
-                # LangChain arm applies inline is wrapped around them here.
-                return with_image_cap(direct, image_cap)
-            return LangChainTransport(
-                llm, model_name=model_name,
-                opik_project_name=opik_project_name, model_key=model_key,
-                max_images_per_request=image_cap,
+                # The direct SDK transports have no image cap and no
+                # `CancellationToken` wiring of their own -- they live in
+                # `agent_loop_lib` and know nothing about PipesHub's
+                # per-provider image policy or Stop Generation -- so both
+                # nets the LangChain arm applies inline (`max_images_per_
+                # request`, `cancellation_token=` above) are wrapped around
+                # them here instead. `with_cancellation` is a no-op when
+                # `context.cancellation_token` is `None` (no `runId`
+                # registered for this request).
+                return with_cancellation(
+                    with_output_cap(with_image_cap(direct, image_cap), output_cap),
+                    context.cancellation_token,
+                )
+            return with_output_cap(
+                LangChainTransport(
+                    llm, model_name=model_name,
+                    opik_project_name=opik_project_name, model_key=model_key,
+                    max_images_per_request=image_cap,
+                    cancellation_token=context.cancellation_token,
+                ),
+                output_cap,
             )
 
         transport_registry.register(
@@ -439,9 +485,26 @@ class PipesHubAgentFactory:
         sandbox_manager = None
         if code_exec_enabled:
             _mark("f:pre_sandbox")
-            sandbox_manager = await build_coding_sandbox_manager(
-                allow_network=network_enabled, ctx=context,
+            try:
+                sandbox_manager = await build_coding_sandbox_manager(
+                    allow_network=network_enabled, ctx=context,
+                )
+            except SandboxUnavailableError as exc:
+                # Fail closed but keep the chat: no SANDBOX_MODE (or a typo)
+                # means no code execution this turn, not an in-process
+                # fallback and not a 500.
+                code_exec_enabled = False
+                logger.warning(
+                    "PipesHubAgentFactory.create: coding-sandbox tools NOT registered "
+                    "(org_id=%s conversation_id=%s): %s",
+                    context.org_id, context.conversation_id, exc,
+                )
+        else:
+            logger.info(
+                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
+                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
+        if sandbox_manager is not None:
             register_coding_sandbox_tools(tool_registry, sandbox_manager, allow_network=network_enabled)
             # Stashed on the context (not returned from create()) so
             # stream_bridge.py's finally block can tear it down without
@@ -452,20 +515,18 @@ class PipesHubAgentFactory:
                 [n for n in tool_registry.names() if n in ("run_code", "install_packages", "read_sandbox_file")],
                 network_enabled,
             )
-        else:
-            logger.info(
-                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
-                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
-            )
 
-        # Skills subsystem (env-gated, off by default — see skills_wiring.py's
-        # module docstring for the full rollout/ordering rationale). Built
-        # and its tools registered BEFORE `plan_domain_agents()` runs below
-        # so `skill_search`/`load_skill`/`skill_manage`/... land in that
-        # call's registered-tool snapshot and fall into the residual (never
-        # domain-claimed) top-level grant.
+        # Skills subsystem, gated by two layers that must BOTH be true:
+        # `skills_enabled()` is the deployment-level env kill-switch
+        # (default ON); `is_skills_enabled()` is the org-level `ENABLE_SKILLS`
+        # platform feature flag toggled from Labs (also default ON — see
+        # skills_wiring.py's module docstring for the full rollout/ordering
+        # rationale). Built and its tools registered BEFORE
+        # `plan_domain_agents()` runs below so `skill_search`/`load_skill`/
+        # `skill_manage`/... land in that call's registered-tool snapshot and
+        # fall into the residual (never domain-claimed) top-level grant.
         skill_manager = None
-        if skills_enabled():
+        if skills_enabled() and await is_skills_enabled(context.config_service):
             _mark("f:sandbox")
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:
@@ -516,9 +577,18 @@ class PipesHubAgentFactory:
             composition_plan.top_level_names if composition_plan is not None else tool_registry.names()
         )
 
+        resume_answers = query if is_ask_user_question_resume_query(query) else None
+        goal_query = (
+            last_real_user_query(context.previous_conversations, query)
+            if resume_answers
+            else query
+        )
+        if resume_answers:
+            context.tool_state["ask_user_question_resume"] = resume_answers
+
         loop, goal, clarifying_questions, mode = await select_loop_and_goal(
             chat_mode=chat_mode,
-            query=query,
+            query=goal_query,
             llm=llm,
             context=context,
             tool_names=composed_tool_names,
@@ -627,6 +697,12 @@ class PipesHubAgentFactory:
             opik_project_name=opik_project_name,
             skills=skill_manager,
             summarizer=PipesHubToolSummarizer(),
+            # Stop Generation (Phase 3a): `None` for callers that never
+            # registered a `runId` (background/test runs) — `Agent.__init__`
+            # only installs the `check_not_cancelled` PRE_TURN guard (and
+            # `step()`'s per-tool-call check) when this is set, so those
+            # callers are unaffected.
+            cancellation_token=context.cancellation_token,
         )
         if skill_manager is not None:
             # `hooks` here is the SAME HookRegistry instance now held by
@@ -697,7 +773,8 @@ class PipesHubAgentFactory:
             if mode.loop_kind == "orchestrator":
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
-                    default_tool_names=composed_names, context=context,
+                    default_tool_names=_initial_entity_tool_grant(composed_names, context),
+                    context=context,
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -716,9 +793,10 @@ class PipesHubAgentFactory:
             # this feature's pre-existing behavior.
             runtime.spec_factory = domain_spec_factory(
                 provider=_transport_provider(), model_name=model_name,
-                default_tool_names=[
-                    n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES
-                ],
+                default_tool_names=_initial_entity_tool_grant(
+                    [n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES],
+                    context,
+                ),
                 context=context,
             )
 
@@ -807,6 +885,8 @@ class PipesHubAgentFactory:
                 len(tool_names), context.org_id, context.conversation_id,
             )
 
+        tool_names = _initial_entity_tool_grant(tool_names, context)
+
         spec = AgentSpec(
             name="pipeshub-agent",
             system_prompt=prompt_builder,
@@ -822,7 +902,14 @@ class PipesHubAgentFactory:
         # `AgentContext.root_agent_spec`'s docstring.
         context.root_agent_spec = spec
 
-        agent = Agent(spec, runtime, session_id=session_id)
+        # Stop Generation (Phase 3a): `context.run_id`, when already set by
+        # `stream_bridge.py`/`bridge.py` from the client-supplied `runId`,
+        # becomes the root run's OWN `RunContext.run_id` — so every AG-UI
+        # frame this run emits already carries the id the client used to
+        # register the cancel-able run, with no separate mapping to keep
+        # in sync. `None` (callers that never set one) falls through to
+        # `Agent.__init__`'s own `RunContext` default (a fresh uuid4).
+        agent = Agent(spec, runtime, session_id=session_id, run_id=context.run_id)
         # `AGUIFormatter` (direct EventSink writers — see protocol/formatter.py)
         # has no Agent/RunContext reference of its own; stash the top-level
         # run_id here, the one place both `context` and the freshly-built
@@ -833,6 +920,11 @@ class PipesHubAgentFactory:
             _mark("f:runtime+compose")
             await self._seed_conversation_history(agent, context.previous_conversations, context)
             _mark("f:seed_history")
+
+        if resume_answers:
+            # User already answered the card — do not re-emit clarification.
+            clarifying_questions = []
+            await inject_ask_user_question_resume(agent, resume_answers)
 
         return agent, runtime, goal, clarifying_questions
 
@@ -972,6 +1064,7 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
+        hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
@@ -1054,6 +1147,9 @@ class PipesHubAgentFactory:
                         is_multimodal_llm=is_multimodal,
                         image_budget=image_budget,
                         image_admission=admission_from_state(state),
+                        user_id=context.user_id,
+                        graph_provider=context.graph_provider,
+                        is_service_account=context.is_service_account,
                     )
                     msg = messages[0]
                     if extra_text:
@@ -1125,6 +1221,93 @@ def _inject_images_into_message(
 _V1_NOTE_HEADER = "[SYSTEM NOTE — how to use the findings above in your answer]"
 _V2_NOTE_HEADER = "Guidance for using the findings above in the final answer:"
 _NEUTRAL_NOTE_HEADER = "About these findings:"
+
+ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
+_EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
+
+
+def is_ask_user_question_resume_query(text: str | None) -> bool:
+    return isinstance(text, str) and text.lstrip().startswith(ASK_USER_QUESTION_RESUME_PREFIX)
+
+
+def _is_empty_fallback_assistant(msg: Message) -> bool:
+    return (
+        isinstance(msg, AssistantMessage)
+        and not msg.tool_calls
+        and (msg.text or "").strip() == _EMPTY_ANSWER_FALLBACK
+    )
+
+
+def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fallback: str) -> str:
+    """Original user goal when this request is an ask_user_question resume."""
+    for turn in reversed(previous_conversations or []):
+        if turn.get("role") != "user_query":
+            continue
+        content = str(turn.get("content") or "").strip()
+        if content and not is_ask_user_question_resume_query(content):
+            return content
+    return fallback
+
+
+async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
+    """Bind the user's card answers to the parked ask_user_question tool call.
+
+    Web workers cannot keep the first HTTP request blocked (no hil_store).
+    The first turn stops after the terminal tool; this injects the answer
+    as a ToolMessage so the next request continues that tool_use, not a
+    new user goal.
+
+    History replay already has the first request's tool result (the
+    questions payload) plus the empty-answer fallback AssistantMessage.
+    Appending a second ToolMessage after that text is invalid, so the
+    tail after the parked tool-call AssistantMessage is dropped first.
+    """
+    ctx = agent.context
+    if ctx is None:
+        return
+    messages = await ctx.messages()
+    # Only the newest user turn can still be parked on a card. Binding to an
+    # older turn's call — a card the user left unanswered before chatting on —
+    # would truncate every turn since; the synthetic branch below keeps them.
+    turn_start = 0
+    for i, msg in enumerate(messages):
+        if isinstance(msg, UserMessage):
+            turn_start = i
+    keep_through: int | None = None
+    tool_call_id: str | None = None
+    for i in range(turn_start, len(messages)):
+        msg = messages[i]
+        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
+            continue
+        for call in reversed(msg.tool_calls):
+            if "ask_user_question" in (call.name or ""):
+                keep_through = i
+                tool_call_id = call.id
+                break
+    if tool_call_id is None:
+        trimmed = list(messages)
+        while trimmed and _is_empty_fallback_assistant(trimmed[-1]):
+            trimmed.pop()
+        tool_call_id = "ask_user_question_resume"
+        await ctx.clear()
+        for msg in trimmed:
+            await ctx.add(msg)
+        await ctx.add(AssistantMessage(
+            content=[],
+            tool_calls=[ToolCall(
+                id=tool_call_id,
+                name="internaltools__ask_user_question",
+                arguments={},
+            )],
+        ))
+    else:
+        await ctx.clear()
+        for msg in messages[: keep_through + 1]:
+            await ctx.add(msg)
+    await ctx.add(ToolMessage(
+        content=json.dumps({"status": "answered", "answers": answers}, ensure_ascii=False),
+        tool_call_id=tool_call_id,
+    ))
 
 
 def _scrub_legacy_system_note(text: str) -> str:

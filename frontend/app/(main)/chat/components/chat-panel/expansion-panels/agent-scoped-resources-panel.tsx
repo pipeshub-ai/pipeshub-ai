@@ -189,10 +189,85 @@ function connectorIconHint(row: { connectorKind?: string; label: string }): stri
 
 /** Stable fallback so the Zustand selector always returns the same reference when no scoped caps exist. */
 const DEFAULT_AGENT_CAPS = { internalSearch: true, webSearch: true } as const;
+const EMPTY_STRINGS: string[] = [];
+const EMPTY_ROWS: never[] = [];
+const EMPTY_KNOWLEDGE = { apps: EMPTY_STRINGS, kb: EMPTY_STRINGS };
+
+/** Which store slice the panel renders — a custom agent (`?agentId=`) or a project (`?projectId=`). */
+export type ScopedResourcesSource = 'agent' | 'project';
 
 interface AgentScopedResourcesPanelProps {
   onToggleView?: () => void;
   viewMode?: ExpansionViewMode;
+  scope?: ScopedResourcesSource;
+}
+
+/**
+ * Selects the agent or project slice of the chat store behind one shape so the panel body
+ * doesn't branch on the source. Both slices share semantics: `knowledgeScope === null` and
+ * `selectedTools === null` mean "everything in defaults / catalog".
+ */
+function useScopedResourceSource(scope: ScopedResourcesSource) {
+  const isProject = scope === 'project';
+
+  const agentConnectors = useChatStore((s) => s.agentChatConnectors);
+  const agentCollectionRows = useChatStore((s) => s.agentKnowledgeCollectionRows);
+  const agentToolGroups = useChatStore((s) => s.agentChatToolGroups);
+  const agentMcpGroups = useChatStore((s) => s.agentChatMcpGroups);
+  const agentDefaults = useChatStore((s) => s.agentKnowledgeDefaults);
+  const agentKnowledgeScope = useChatStore((s) => s.agentKnowledgeScope);
+  const agentSelectedTools = useChatStore((s) => s.agentStreamTools);
+  const setAgentKnowledgeScope = useChatStore((s) => s.setAgentKnowledgeScope);
+  const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
+  const agentId = useChatStore((s) => s.agentSidebarAgentId);
+  const agentKbIds = useChatStore((s) => s.agentChatKbIds);
+  const scopedCaps = useChatStore((s) =>
+    agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
+  );
+
+  const projectScope = useChatStore((s) => s.projectScope);
+  const projectKnowledgeScope = useChatStore((s) => s.projectKnowledgeScope);
+  const projectSelectedTools = useChatStore((s) => s.projectStreamTools);
+  const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
+  const setProjectStreamTools = useChatStore((s) => s.setProjectStreamTools);
+
+  const getProjectToolCatalog = useCallback(
+    () => useChatStore.getState().projectScope?.toolCatalogFullNames ?? EMPTY_STRINGS,
+    []
+  );
+  const getAgentToolCatalog = useCallback(() => useChatStore.getState().agentToolCatalogFullNames, []);
+
+  if (isProject) {
+    const defaults = projectScope?.knowledgeDefaults ?? EMPTY_KNOWLEDGE;
+    return {
+      connectors: projectScope?.connectors ?? EMPTY_ROWS,
+      collectionRows: projectScope?.knowledgeCollectionRows ?? EMPTY_ROWS,
+      toolGroups: projectScope?.toolGroups ?? EMPTY_ROWS,
+      mcpGroups: projectScope?.mcpGroups ?? EMPTY_ROWS,
+      defaults,
+      knowledgeScope: projectKnowledgeScope,
+      selectedTools: projectSelectedTools,
+      setKnowledgeScope: setProjectKnowledgeScope,
+      setTools: setProjectStreamTools,
+      getToolCatalog: getProjectToolCatalog,
+      internalSearchEnabled: defaults.apps.length > 0 || defaults.kb.length > 0,
+    };
+  }
+
+  const agentHasInternalSearch = agentConnectors.length > 0 || agentKbIds.length > 0;
+  return {
+    connectors: agentConnectors,
+    collectionRows: agentCollectionRows,
+    toolGroups: agentToolGroups,
+    mcpGroups: agentMcpGroups,
+    defaults: agentDefaults,
+    knowledgeScope: agentKnowledgeScope,
+    selectedTools: agentSelectedTools,
+    setKnowledgeScope: setAgentKnowledgeScope,
+    setTools: setAgentStreamTools,
+    getToolCatalog: getAgentToolCatalog,
+    internalSearchEnabled: agentHasInternalSearch ? scopedCaps.internalSearch : false,
+  };
 }
 
 function setsEqualAsSets(a: string[], b: string[]): boolean {
@@ -264,6 +339,7 @@ interface ChatToolGroupRow {
 export function AgentScopedResourcesPanel({
   onToggleView,
   viewMode = 'inline',
+  scope: source = 'agent',
 }: AgentScopedResourcesPanelProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabValue>('connectors');
@@ -271,26 +347,61 @@ export function AgentScopedResourcesPanel({
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const isProject = source === 'project';
+  // Project chats run in plain chat mode too; tools only ship in agent mode, so hide those tabs.
+  const projectToolsApplicable = useChatStore((s) => !isProject || s.settings.queryMode === 'agent');
 
-  const connectors = useChatStore((s) => s.agentChatConnectors);
-  const collectionRows = useChatStore((s) => s.agentKnowledgeCollectionRows);
-  const toolGroups = useChatStore((s) => s.agentChatToolGroups);
-  const mcpGroups = useChatStore((s) => s.agentChatMcpGroups);
-  const defaults = useChatStore((s) => s.agentKnowledgeDefaults);
-  const scope = useChatStore((s) => s.agentKnowledgeScope);
-  const selectedTools = useChatStore((s) => s.agentStreamTools);
-  const setScope = useChatStore((s) => s.setAgentKnowledgeScope);
-  const setTools = useChatStore((s) => s.setAgentStreamTools);
+  const {
+    connectors,
+    collectionRows,
+    toolGroups,
+    mcpGroups,
+    defaults,
+    knowledgeScope: scope,
+    selectedTools,
+    setKnowledgeScope: setScope,
+    setTools,
+    getToolCatalog,
+    internalSearchEnabled,
+  } = useScopedResourceSource(source);
 
-  const agentId = useChatStore((s) => s.agentSidebarAgentId);
-  const kbIds = useChatStore((s) => s.agentChatKbIds);
-  const agentHasInternalSearch = connectors.length > 0 || kbIds.length > 0;
-
-  const scopedCaps = useChatStore((s) =>
-    agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
+  const copy = useMemo(
+    () =>
+      isProject
+        ? {
+            noConnectors: t('chat.projectResources.noConnectors', {
+              defaultValue: 'No connectors enabled for this project.',
+            }),
+            noCollections: t('chat.projectResources.noCollections', {
+              defaultValue: 'No collections enabled for this project.',
+            }),
+            noActions: t('chat.projectResources.noActions', {
+              defaultValue: 'No actions (toolsets) enabled for this project.',
+            }),
+            noMcpServers: t('chat.projectResources.noMcpServers', {
+              defaultValue: 'No MCP servers enabled for this project.',
+            }),
+            resetDefaults: t('chat.projectResources.resetDefaults', {
+              defaultValue: 'Reset to project defaults',
+            }),
+          }
+        : {
+            noConnectors: t('chat.agentResources.noConnectors', {
+              defaultValue: 'No connectors configured for this agent.',
+            }),
+            noCollections: t('chat.agentResources.noCollections', {
+              defaultValue: 'No collections configured for this agent.',
+            }),
+            noActions: t('chat.agentResources.noActions', {
+              defaultValue: 'No actions (toolsets) configured for this agent.',
+            }),
+            noMcpServers: t('chat.agentResources.noMcpServers', {
+              defaultValue: 'No MCP servers configured for this agent.',
+            }),
+            resetDefaults: t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' }),
+          },
+    [isProject, t]
   );
-
-  const internalSearchEnabled = agentHasInternalSearch ? scopedCaps.internalSearch : false;
 
   const eff = useMemo(() => effectiveKnowledge(scope, defaults), [scope, defaults]);
 
@@ -347,8 +458,8 @@ export function AgentScopedResourcesPanel({
 
   const toggleTool = useCallback(
     (fullName: string) => {
-      const cat = useChatStore.getState().agentToolCatalogFullNames;
-      const cur = useChatStore.getState().agentStreamTools;
+      const cat = getToolCatalog();
+      const cur = selectedTools;
 
       if (cur === null) {
         const next = cat.filter((x) => x !== fullName);
@@ -378,7 +489,7 @@ export function AgentScopedResourcesPanel({
         setTools(next);
       }
     },
-    [setTools]
+    [selectedTools, getToolCatalog, setTools]
   );
 
   const groupCheckState = useCallback(
@@ -393,8 +504,8 @@ export function AgentScopedResourcesPanel({
 
   const setGroupToolsEnabled = useCallback(
     (fullNames: string[], enabled: boolean) => {
-      const cat = useChatStore.getState().agentToolCatalogFullNames;
-      const explicit = useChatStore.getState().agentStreamTools;
+      const cat = getToolCatalog();
+      const explicit = selectedTools;
 
       if (explicit === null) {
         if (!enabled) {
@@ -427,7 +538,7 @@ export function AgentScopedResourcesPanel({
         setTools(arr);
       }
     },
-    [setTools]
+    [selectedTools, getToolCatalog, setTools]
   );
 
   const resetToAgentDefaults = useCallback(() => {
@@ -440,8 +551,11 @@ export function AgentScopedResourcesPanel({
     [internalSearchEnabled]
   );
   const hiddenTabs = useMemo<TabValue[]>(
-    () => [...(mcpEnabled ? [] : (['mcp'] as TabValue[])), ...(actionsEnabled ? [] : (['actions'] as TabValue[]))],
-    [mcpEnabled, actionsEnabled]
+    () => [
+      ...(mcpEnabled && projectToolsApplicable ? [] : (['mcp'] as TabValue[])),
+      ...(actionsEnabled && projectToolsApplicable ? [] : (['actions'] as TabValue[])),
+    ],
+    [mcpEnabled, actionsEnabled, projectToolsApplicable]
   );
 
   useEffect(() => {
@@ -779,9 +893,7 @@ export function AgentScopedResourcesPanel({
           <>
             {filteredConnectors.length === 0 ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noConnectors', {
-                  defaultValue: 'No connectors configured for this agent.',
-                })}
+                {copy.noConnectors}
               </Text>
             ) : (
               filteredConnectors.map((c) => (
@@ -824,9 +936,7 @@ export function AgentScopedResourcesPanel({
           <>
             {collectionRows.length === 0 ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noCollections', {
-                  defaultValue: 'No collections configured for this agent.',
-                })}
+                {copy.noCollections}
               </Text>
             ) : filteredCollections.length === 0 ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
@@ -853,9 +963,7 @@ export function AgentScopedResourcesPanel({
           renderToolGroupList({
             groups: filteredToolGroups,
             keyPrefix: 'toolset',
-            emptyText: t('chat.agentResources.noActions', {
-              defaultValue: 'No actions (toolsets) configured for this agent.',
-            }),
+            emptyText: copy.noActions,
             footerCaption: t('chat.agentResources.configureMoreActions', {
               defaultValue: 'Configure more actions',
             }),
@@ -883,9 +991,7 @@ export function AgentScopedResourcesPanel({
           renderToolGroupList({
             groups: filteredMcpGroups,
             keyPrefix: 'mcp',
-            emptyText: t('chat.agentResources.noMcpServers', {
-              defaultValue: 'No MCP servers configured for this agent.',
-            }),
+            emptyText: copy.noMcpServers,
             footerCaption: t('chat.agentResources.configureMoreMcp', {
               defaultValue: 'Configure more MCP servers',
             }),
@@ -903,7 +1009,7 @@ export function AgentScopedResourcesPanel({
 
       <Flex align="center" justify="between" gap="2" style={{ flexShrink: 0 }}>
         <Button type="button" size="1" variant="outline" color="gray" onClick={resetToAgentDefaults}>
-          {t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' })}
+          {copy.resetDefaults}
         </Button>
       </Flex>
     </Flex>

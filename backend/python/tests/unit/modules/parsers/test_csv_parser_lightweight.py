@@ -1,10 +1,11 @@
 """Unit tests for CSVParser.parse_to_blocks_lightweight."""
 
-from unittest.mock import MagicMock
+import io
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.blocks import BlockType, GroupType
+from app.models.blocks import BlocksContainer, BlockType, GroupType
 from app.modules.parsers.csv.csv_parser import CSVParser
 
 
@@ -59,3 +60,70 @@ async def test_parse_to_blocks_lightweight_tsv_delimiter():
     container = await tsv_parser.parse_to_blocks_lightweight(content, max_rows=500)
     assert len(container.blocks) == 2
     assert container.block_groups[0].data["column_headers"] == ["a", "b"]
+
+
+# Excel on Windows saves "CSV" as Windows-1252: 0x80 is the euro sign and
+# 0x93/0x94 are curly quotes, which Latin-1 would read as invisible control characters.
+DECODING_CASES = [
+    pytest.param(
+        b"item,note\nWidget,\x80 5\nQuote,\x93best\x94 \x96 top\n",
+        [["item", "note"], ["Widget", "€ 5"], ["Quote", "“best” – top"]],
+        id="windows-1252",
+    ),
+    # 0x81 is undefined in Windows-1252; the file must still be read, and its
+    # other characters must keep their Windows-1252 meaning.
+    pytest.param(
+        b"name,note\ncaf\xe9,\x81 \x80\n",
+        [["name", "note"], ["café", "� €"]],
+        id="undefined-windows-1252-byte",
+    ),
+    pytest.param(
+        "name,city\nZoë,Zürich €\n".encode(),
+        [["name", "city"], ["Zoë", "Zürich €"]],
+        id="utf-8",
+    ),
+    pytest.param(
+        b"\xef\xbb\xbf" + "name,city\nZoë,Zürich €\n".encode(),
+        [["name", "city"], ["Zoë", "Zürich €"]],
+        id="utf-8-with-bom",
+    ),
+]
+
+
+def _capture_rows(parser: CSVParser) -> list:
+    captured: list = []
+    real_read = parser.read_raw_rows
+
+    def _read(stream: io.StringIO) -> list:
+        rows = real_read(stream)
+        captured.append(rows)
+        return rows
+
+    parser.read_raw_rows = _read
+    return captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("content", "expected_rows"), DECODING_CASES)
+async def test_parse_to_blocks_lightweight_decodes_text(
+    parser: CSVParser, content: bytes, expected_rows: list
+) -> None:
+    captured = _capture_rows(parser)
+    await parser.parse_to_blocks_lightweight(content, max_rows=500)
+    assert captured == [expected_rows]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("content", "expected_rows"), DECODING_CASES)
+async def test_parse_decodes_text(parser: CSVParser, content: bytes, expected_rows: list) -> None:
+    captured = _capture_rows(parser)
+    parser.get_blocks_from_csv_with_multiple_tables = AsyncMock(
+        return_value=BlocksContainer(blocks=[], block_groups=[])
+    )
+    with patch(
+        "app.modules.parsers.csv.csv_parser.get_llm_for_role",
+        new_callable=AsyncMock,
+        return_value=(MagicMock(), {}),
+    ):
+        await parser.parse(content, "sheet.csv")
+    assert captured == [expected_rows]

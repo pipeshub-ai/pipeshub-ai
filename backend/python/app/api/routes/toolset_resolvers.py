@@ -5,18 +5,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
 from fastapi import HTTPException, Request
 
+from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints
+from app.config.redaction import REDACTED_PLACEHOLDER
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOOLSET_INSTANCES_PATH = "/services/toolset-instances"
 
-REDACTED_PLACEHOLDER: str | None = None
+_TOOLSET_SECRET_FIELDS = frozenset({"clientSecret", "client_secret", "clientsecret"})
 
 
 def _oauth_config_path(toolset_type: str) -> str:
@@ -168,38 +168,16 @@ async def check_user_is_admin(
     request: Request | None,
     config_service: ConfigurationService,
 ) -> bool:
-    """Admin check via Node.js CM backend."""
-    del org_id
+    """Whether the caller is an org admin, from the live role Node reports for the
+    caller's own token.
+
+    ``user_id``/``org_id`` stay for the edition seam's signature; the token identifies
+    the user, so no other user's status can be checked instead.
+    """
+    del user_id, org_id
     if request is None:
         return False
-    try:
-        try:
-            endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-            nodejs_url = (
-                endpoints.get("nodejs", {}).get("endpoint")
-                if isinstance(endpoints, dict)
-                else None
-            ) or DefaultEndpoints.NODEJS_ENDPOINT.value
-        except Exception:
-            nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
-
-        auth_headers: dict[str, str] = {}
-        for header_name in ("authorization", "x-organization-id", "cookie"):
-            val = request.headers.get(header_name)
-            if val:
-                auth_headers[header_name] = val
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{nodejs_url}/api/v1/users/{user_id}/adminCheck",
-                headers=auth_headers,
-            )
-            return resp.status_code == HttpStatusCode.OK.value
-    except Exception as e:
-        logger.warning(
-            f"Admin check via REST API failed for user {user_id}: {e}. Defaulting to non-admin."
-        )
-        return False
+    return (await fetch_caller_role(request, config_service)).is_admin
 
 
 async def resolve_inherited_from_org_id(
@@ -220,15 +198,13 @@ def mask_oauth_secrets(
     *,
     is_inherited: bool = False,
 ) -> dict[str, Any]:
-    """Return config unchanged."""
+    """Redact secret fields; OSS has no org inheritance, so ``is_inherited`` changes nothing."""
     del is_inherited
-    return dict(cfg_data)
+    return {k: (REDACTED_PLACEHOLDER if k in _TOOLSET_SECRET_FIELDS else v) for k, v in cfg_data.items()}
 
 
 def is_redacted_placeholder(value: Any) -> bool:
-    """Never redacts."""
-    del value
-    return False
+    return value == REDACTED_PLACEHOLDER
 
 
 async def load_instances_for_mutation(

@@ -57,11 +57,13 @@ def _make_service():
         logger=logger,
         graph_provider=graph_provider,
         kafka_service=kafka_service,
-        processor=AsyncMock(),
+        processor_for_kb=AsyncMock(return_value=AsyncMock()),
+        # A delete records its entity cleanup intent here first.
+        config_service=AsyncMock(),
     )
-    svc.processor.on_new_records = AsyncMock()
-    svc.processor.on_record_metadata_update = AsyncMock()
-    svc.processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+    svc.processor_for_kb.return_value.on_new_records = AsyncMock()
+    svc.processor_for_kb.return_value.on_record_metadata_update = AsyncMock()
+    svc.processor_for_kb.return_value.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
     return svc, graph_provider
 
 
@@ -90,7 +92,8 @@ class TestResolveUserAndKbAccess:
         assert user_role is None
         assert err is not None
         assert err["code"] == 404
-        assert "User not found" in err["reason"]
+        assert "Sign out and sign back in" in err["reason"]
+        assert "uid-1" not in err["reason"]
         # No subsequent DB calls when user is missing
         gp.get_user_kb_permission.assert_not_called()
         gp.kb_exists.assert_not_called()

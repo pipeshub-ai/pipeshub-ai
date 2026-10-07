@@ -55,9 +55,12 @@ def _running_sandbox_containers() -> set[str]:
 
     client = docker.from_env()
     try:
+        # Match on the image reference the container was created with. `c.image`
+        # re-fetches the image and 404s for any unrelated container whose image
+        # has since been deleted, which would fail every test on that machine.
         return {
             c.id for c in client.containers.list(all=True)
-            if DOCKER_TEST_IMAGE in (c.image.tags or [])
+            if c.attrs.get("Config", {}).get("Image") == DOCKER_TEST_IMAGE
         }
     finally:
         client.close()

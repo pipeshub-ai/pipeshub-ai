@@ -11,9 +11,12 @@ import { useSkillsStore } from '../store';
 import { SkillsApi } from '../api';
 import type { ImportPreview, ImportSourceTab } from '../types';
 
-// ========================================
-// Component
-// ========================================
+const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const MAX_SKILL_NAME_LENGTH = 64;
+
+function isValidSkillName(name: string): boolean {
+  return SKILL_NAME_RE.test(name) && name.length <= MAX_SKILL_NAME_LENGTH;
+}
 
 export function SkillImportDialog() {
   const { t } = useTranslation();
@@ -23,6 +26,7 @@ export function SkillImportDialog() {
   const [url, setUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [importName, setImportName] = useState('');
   const [previewing, setPreviewing] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +37,7 @@ export function SkillImportDialog() {
     setUrl('');
     setFile(null);
     setPreview(null);
+    setImportName('');
     setError(null);
     setTab('npm');
   }, []);
@@ -58,21 +63,23 @@ export function SkillImportDialog() {
         result = await SkillsApi.previewUploadImport(file);
       }
       setPreview(result);
+      setImportName(result.name);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(detail || t('workspace.skills.import.previewError'));
       setPreview(null);
+      setImportName('');
     } finally {
       setPreviewing(false);
     }
   }, [tab, npmCommand, url, file, t]);
 
   const handleFinalize = useCallback(async () => {
-    if (!preview || finalizing) return;
+    if (!preview || finalizing || !isValidSkillName(importName)) return;
     setFinalizing(true);
     try {
-      await SkillsApi.finalizeImport(preview);
-      toast.success(t('workspace.skills.toasts.imported', { name: preview.name }));
+      await SkillsApi.finalizeImport({ ...preview, name: importName });
+      toast.success(t('workspace.skills.toasts.imported', { name: importName }));
       const list = await SkillsApi.listSkills();
       setSkills(list);
       handleClose();
@@ -82,7 +89,7 @@ export function SkillImportDialog() {
     } finally {
       setFinalizing(false);
     }
-  }, [preview, finalizing, setSkills, handleClose, t]);
+  }, [preview, finalizing, importName, setSkills, handleClose, t]);
 
   const canPreview =
     (tab === 'npm' && npmCommand.trim().length > 0) ||
@@ -102,6 +109,7 @@ export function SkillImportDialog() {
           onValueChange={(v) => {
             setTab(v as ImportSourceTab);
             setPreview(null);
+            setImportName('');
             setError(null);
           }}
         >
@@ -170,7 +178,15 @@ export function SkillImportDialog() {
         )}
 
         {preview && (
-          <ImportPreviewCard preview={preview} onDiscard={() => setPreview(null)} />
+          <ImportPreviewCard
+            preview={preview}
+            importName={importName}
+            onImportNameChange={setImportName}
+            onDiscard={() => {
+              setPreview(null);
+              setImportName('');
+            }}
+          />
         )}
 
         <Flex justify="end" gap="2" style={{ marginTop: 16 }}>
@@ -178,7 +194,13 @@ export function SkillImportDialog() {
             {t('action.cancel')}
           </Button>
           {preview && (
-            <LoadingButton variant="solid" size="2" onClick={handleFinalize} loading={finalizing}>
+            <LoadingButton
+              variant="solid"
+              size="2"
+              onClick={handleFinalize}
+              loading={finalizing}
+              disabled={!isValidSkillName(importName)}
+            >
               {t('workspace.skills.import.confirmImport')}
             </LoadingButton>
           )}
@@ -188,13 +210,22 @@ export function SkillImportDialog() {
   );
 }
 
-// ========================================
-// Preview card
-// ========================================
-
-function ImportPreviewCard({ preview, onDiscard }: { preview: ImportPreview; onDiscard: () => void }) {
+function ImportPreviewCard({
+  preview,
+  importName,
+  onImportNameChange,
+  onDiscard,
+}: {
+  preview: ImportPreview;
+  importName: string;
+  onImportNameChange: (name: string) => void;
+  onDiscard: () => void;
+}) {
   const { t } = useTranslation();
   const resourceCount = Object.keys(preview.resources).length;
+  const nameError = importName.length > 0 && !isValidSkillName(importName)
+    ? t('workspace.skills.import.nameInvalid')
+    : undefined;
 
   return (
     <Flex
@@ -205,13 +236,30 @@ function ImportPreviewCard({ preview, onDiscard }: { preview: ImportPreview; onD
       <Flex align="center" justify="between">
         <Flex align="center" gap="2">
           <MaterialIcon name="psychology" size={16} color="var(--gray-10)" />
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>{preview.name}</Text>
           <Badge size="1" color="gray">v{preview.version}</Badge>
         </Flex>
         <Button variant="ghost" color="gray" size="1" onClick={onDiscard} style={{ cursor: 'pointer' }}>
           <MaterialIcon name="close" size={14} color="var(--gray-10)" />
         </Button>
       </Flex>
+
+      <FormField label={t('workspace.skills.form.name')} required error={nameError}>
+        <TextField.Root
+          size="2"
+          value={importName}
+          placeholder={t('workspace.skills.form.namePlaceholder')}
+          onChange={(e) => onImportNameChange(e.target.value.trim())}
+        />
+      </FormField>
+      <Text size="1" style={{ color: 'var(--gray-9)' }}>
+        {t('workspace.skills.import.nameHint')}
+      </Text>
+      {importName && importName !== preview.name && (
+        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          {t('workspace.skills.import.originalName', { name: preview.name })}
+        </Text>
+      )}
+
       <Text size="1" style={{ color: 'var(--gray-11)' }}>{preview.description}</Text>
       <Text size="1" style={{ color: 'var(--gray-9)' }}>
         {t('workspace.skills.import.source', { source: preview.sourceLabel })} · {t('workspace.skills.import.resourceCount', { count: resourceCount })}

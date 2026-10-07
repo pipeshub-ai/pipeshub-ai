@@ -28,6 +28,9 @@ fields:
   inherit_permissions:
     required: false
     type: boolean
+  is_deleted_at_source:
+    required: false
+    type: boolean
   is_internal:
     required: false
     type: boolean
@@ -41,6 +44,9 @@ fields:
     required: false
     type: string
   parent_record_group_id:
+    required: false
+    type: string
+  permission_model:
     required: false
     type: string
   short_name:

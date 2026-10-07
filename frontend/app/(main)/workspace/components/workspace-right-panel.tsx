@@ -305,7 +305,7 @@ export function WorkspaceRightPanel({
                 color="gray"
                 size="2"
                 onClick={onBack}
-                aria-label="Go back"
+                aria-label={t('common.back')}
                 style={{ cursor: 'pointer', flexShrink: 0 }}
               >
                 <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />

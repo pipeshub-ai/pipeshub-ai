@@ -1,7 +1,7 @@
-"""Unit tests for gitlab StreamingHelper and _stream_with_eager_first_chunk.
+"""Unit tests for gitlab StreamingHelper and stream_with_eager_first_chunk.
 
 Covers:
-- _stream_with_eager_first_chunk: empty source, first-chunk error, normal yield
+- stream_with_eager_first_chunk: empty source, first-chunk error, normal yield
 - stream_record: TICKET dispatch, PULL_REQUEST dispatch, FILE download, CODE_FILE download,
   unsupported type raises
 - reindex_records: source-changed triggers on_new_records, unchanged skips,
@@ -13,11 +13,11 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
-from app.connectors.sources.gitlab.streaming import (
-    StreamingHelper,
-    _stream_with_eager_first_chunk,
-)
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.gitlab.streaming import StreamingHelper
+from app.utils.streaming import stream_with_eager_first_chunk
 
 from .conftest import make_mock_connector
 
@@ -62,7 +62,7 @@ def _make_record(record_type: str, record_name: str = "file.py") -> MagicMock:
 
 
 # ===========================================================================
-# _stream_with_eager_first_chunk
+# stream_with_eager_first_chunk
 # ===========================================================================
 
 
@@ -72,23 +72,23 @@ class TestStreamWithEagerFirstChunk:
             return
             yield b""
 
-        result_gen = await _stream_with_eager_first_chunk(empty())
+        result_gen = await stream_with_eager_first_chunk(empty())
         chunks = [chunk async for chunk in result_gen]
         assert chunks == []
 
     async def test_single_chunk_yielded(self) -> None:
-        result_gen = await _stream_with_eager_first_chunk(_gen(b"hello"))
+        result_gen = await stream_with_eager_first_chunk(_gen(b"hello"))
         chunks = [chunk async for chunk in result_gen]
         assert chunks == [b"hello"]
 
     async def test_multiple_chunks_all_yielded(self) -> None:
-        result_gen = await _stream_with_eager_first_chunk(_gen(b"a", b"b", b"c"))
+        result_gen = await stream_with_eager_first_chunk(_gen(b"a", b"b", b"c"))
         chunks = [chunk async for chunk in result_gen]
         assert chunks == [b"a", b"b", b"c"]
 
     async def test_error_in_first_chunk_raised_before_return(self) -> None:
         with pytest.raises(RuntimeError, match="stream error"):
-            await _stream_with_eager_first_chunk(_failing_gen())
+            await stream_with_eager_first_chunk(_failing_gen())
 
     async def test_error_in_first_chunk_closes_source(self) -> None:
         closed = False
@@ -102,7 +102,7 @@ class TestStreamWithEagerFirstChunk:
                 closed = True
 
         with pytest.raises(RuntimeError, match="stream error"):
-            await _stream_with_eager_first_chunk(failing())
+            await stream_with_eager_first_chunk(failing())
         assert closed is True
 
 
@@ -173,16 +173,20 @@ class TestStreamRecord:
 
         record = _make_record("CODE_FILE")
         # Not a CodeFileRecord instance (is a generic MagicMock)
-        with pytest.raises(ValueError, match="CodeFileRecord"):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.stream_record(record)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert "CodeFileRecord" in exc_info.value.detail
 
     async def test_unsupported_type_raises(self) -> None:
         c = make_mock_connector()
         helper = StreamingHelper(c)
 
         record = _make_record("UNKNOWN_TYPE")
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await helper.stream_record(record)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert "Unsupported record type" in exc_info.value.detail
 
 
 # ===========================================================================

@@ -14,6 +14,7 @@ export enum BrokerTopic {
   HEALTH_CHECK = 'health-check',
   TOKEN_EVENTS = 'token-events',
   NOTIFICATION = 'notification',
+  MAIL_EVENTS = 'mail-events',
 }
 
 /**
@@ -30,6 +31,7 @@ export interface BrokerTopicPayloadMap {
   [BrokerTopic.HEALTH_CHECK]: { type: string; timestamp: number };
   [BrokerTopic.TOKEN_EVENTS]: Record<string, unknown>;
   [BrokerTopic.NOTIFICATION]: Record<string, unknown>;
+  [BrokerTopic.MAIL_EVENTS]: Record<string, unknown>;
 }
 
 export interface MessageBrokerConfig {
@@ -68,6 +70,12 @@ export interface RedisBrokerConfig extends MessageBrokerConfig {
   password?: string;
   db?: number;
   maxLen?: number;
+  // A pending entry idle this long is reclaimed by another consumer; it must
+  // exceed the longest handler run or in-progress messages get replayed.
+  claimMinIdleMs?: number;
+  // Entries fetched per read or reclaim. Every fetched entry starts idling in
+  // the pending list at once, so a slow handler wants a small batch.
+  readCount?: number;
 }
 
 export interface StreamMessage<T> {

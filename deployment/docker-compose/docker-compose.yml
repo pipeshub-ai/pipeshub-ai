@@ -18,11 +18,13 @@
 #   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
+#   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
 #
 # Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
-# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka
+# COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
 #
-# Always-on: pipeshub-ai, redis, mongodb, qdrant, sandbox-image
+# Always-on: pipeshub-ai, redis, mongodb, qdrant.
+# Eval omits the sandbox profile (run_code is unavailable).
 #
 # Requires Docker Compose v2.20+ for `required: false` on depends_on.
 
@@ -78,6 +80,8 @@ services:
     # int(os.getenv(KEY, default)) and crashes on "". Unset blanks so the key
     # is absent (slim uses its built-in default; new Python sizes from CPU).
     # A numeric value in .env is kept as an operator cap.
+    # Then hand over to the image entrypoint, which drops to the unprivileged
+    # user; images from earlier releases have none and start as before.
     entrypoint:
       - /bin/sh
       - -c
@@ -88,7 +92,9 @@ services:
         v=$$(printenv "$$k" || true);
         [ -z "$$v" ] && unset "$$k";
         done;
-        exec /app/process_monitor.sh
+        if [ -x /usr/local/bin/docker-entrypoint.sh ];
+        then exec /usr/local/bin/docker-entrypoint.sh /app/process_monitor.sh;
+        else exec /app/process_monitor.sh; fi
     logging:
       driver: local
       options:
@@ -101,10 +107,16 @@ services:
       - NODE_ENV=${NODE_ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - WEB_CONNECTOR_ALLOWED_HOSTS=${WEB_CONNECTOR_ALLOWED_HOSTS:-}
+      - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       - SECRET_KEY=${SECRET_KEY:-}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-}
+      - COOKIE_SECRET=${COOKIE_SECRET:-}
+      - ROTATE_SIGNING_SECRETS=${ROTATE_SIGNING_SECRETS:-}
 
       # Public endpoints
       - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
@@ -159,6 +171,7 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_USERNAME=${REDIS_USERNAME:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
@@ -198,19 +211,26 @@ services:
       # AWS Bedrock (optional)
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
 
       # Rate limits
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-2000}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+      - MAX_AUTH_REQUESTS_PER_MINUTE=${MAX_AUTH_REQUESTS_PER_MINUTE:-10}
+      - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
+      # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
+      - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
+      - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
 
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -255,7 +275,15 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Most characters one agent turn may stream before it is stopped as a
+      # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
+      - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
+
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       # Raising this above 1 gives /stream/record requests more headroom
@@ -265,9 +293,21 @@ services:
       - CONNECTOR_UVICORN_WORKERS=${CONNECTOR_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
+      - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
+      # How long a delete waits for a running sync to stop.
+      - CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=${CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC:-15}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
+      # Largest file from a code repository that is read as code or as plain
+      # text, in MB (default 5). Larger ones are marked "not supported" with
+      # the reason; CSV, JSON and YAML files keep their own parsers' limits.
+      - CODE_FILE_MAX_SIZE_MB=${CODE_FILE_MAX_SIZE_MB:-}
+      # Worker processes that parse large text, code and CSV files off the
+      # indexing event loop. Empty derives it from the CPU limit (1 on a
+      # 4-CPU host, at most 4); 0 parses in threads instead.
+      - PARSE_POOL_WORKERS=${PARSE_POOL_WORKERS:-}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
@@ -284,9 +324,30 @@ services:
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
 
+      # Custom (non-catalog) STDIO MCP servers run an admin-entered command on this
+      # host as the app user, with its network access. Off unless "true"; catalog
+      # and remote (HTTP) MCP servers are unaffected.
+      - MCP_ALLOW_CUSTOM_STDIO=${MCP_ALLOW_CUSTOM_STDIO:-false}
+
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # SANDBOX_MODE=local is refused unless this is "true" (single-user dev only).
+      - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
+      # Generated code gets no network unless set to true; even then private,
+      # link-local and cloud-metadata addresses are firewalled. CIDRs in
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
+      - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
+      # the storage driver supports it; logs a warning once otherwise.
+      - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # The app never sees the Docker socket; sandbox containers are created
+      # through docker-socket-proxy, which only admits sandbox-shaped requests.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      # Eval deploy type skips the Slack bot process inside the app container.
+      - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}
 
       # Standalone parsing / extraction services (opt-in)
       - PARSING_SERVICE_URL=http://localhost:8092
@@ -322,15 +383,24 @@ services:
         required: false
       sandbox-image:
         condition: service_completed_successfully
+        required: false
+      docker-socket-proxy:
+        # Not service_healthy: an older image (rollback.sh) has no proxy
+        # module, and that must cost run_code, not the whole app.
+        condition: service_started
+        required: false
+
+    security_opt:
+      - no-new-privileges:true
 
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
       - pipeshub_hf_cache:/root/.cache/huggingface
-      - /var/run/docker.sock:/var/run/docker.sock
 
     networks:
       - pipeshub
+      - sandbox-control
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -350,6 +420,44 @@ services:
       timeout: 10s
       retries: 5
       start_period: 300s
+
+  # The only container with the Docker socket. It forwards just the calls the
+  # coding sandbox makes, refuses any container create that would reach the
+  # host (privileged, binds, devices, host namespaces, other images or
+  # networks), and only acts on containers it created. See
+  # backend/python/app/sandbox/docker_proxy.py.
+  docker-socket-proxy:
+    profiles: ["sandbox"]
+    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    restart: always
+    # Root only to open the root-owned socket; it holds no capabilities.
+    user: "0:0"
+    working_dir: /app/python
+    # Bypasses the image entrypoint, which drops privileges for the app and
+    # needs capabilities this container deliberately does not have.
+    entrypoint: ["python", "-m", "app.docker_proxy_main"]
+    environment:
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # Always-on stateful services
@@ -446,7 +554,10 @@ services:
 
   # Pull-only helper: ensures the sandbox image exists before pipeshub-ai starts.
   # With --build it builds the sandbox image locally from deployment/sandbox/Dockerfile.
+  # Profile-gated so eval can skip the pull; slim/full include `sandbox` in
+  # COMPOSE_PROFILES. depends_on above is required:false for the same reason.
   sandbox-image:
+    profiles: ["sandbox"]
     image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
     build:
       context: ../../deployment/sandbox
@@ -625,3 +736,8 @@ volumes:
 networks:
   pipeshub:
     driver: bridge
+  # App <-> docker-socket-proxy only. Internal: no route out, and nothing else
+  # can reach the proxy.
+  sandbox-control:
+    driver: bridge
+    internal: true

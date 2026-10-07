@@ -2,6 +2,7 @@
 
 import importlib.abc
 import importlib.machinery
+import ipaddress
 import logging
 import os
 import sys
@@ -162,6 +163,20 @@ _OPTIONAL_PACKAGES = [
 _MOCK_PACKAGE_NAMES.add("docling_parse")
 _mock_finder.load_module("docling_parse")
 
+# talon imports cchardet, which has no Python 3.12 build and is excluded from installs
+# ([tool.uv] in pyproject.toml). Production aliases it to chardet before importing talon
+# (gmail/talon_utils.py); without the same alias here the talon probe below fails and
+# every Gmail test silently runs against a MagicMock talon.
+try:
+    import cchardet  # noqa: F401
+except ImportError:
+    try:
+        import chardet as _chardet
+    except ImportError:
+        _chardet = None
+    if _chardet is not None:
+        sys.modules["cchardet"] = _chardet
+
 for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)
 
@@ -237,22 +252,46 @@ def _reset_default_backpressure_coordinator():
     set_default_backpressure_coordinator(None)
 
 
+@pytest.fixture(autouse=True)
+def _no_dns_for_model_endpoints(monkeypatch):
+    """A model health check looks its endpoint's name up before calling it; unit tests must
+    not reach a resolver, so every name resolves to a public address. Tests of the lookup
+    set their own answers."""
+    aimodels = sys.modules.get("app.utils.aimodels")
+    if aimodels is not None:
+        monkeypatch.setattr(aimodels, "_resolved_addresses", lambda host: [ipaddress.ip_address("93.184.216.34")])
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""
     log = logging.getLogger("test")
+    previous_level = log.level
     log.setLevel(logging.CRITICAL)
-    return log
+    yield log
+    # "test" is the parent of every test.* logger, so a level left behind here
+    # silences them in every later test, and caplog then sees nothing.
+    log.setLevel(previous_level)
 
 
 @pytest.fixture
 def mock_graph_provider():
     """Mock IGraphDBProvider with common async methods."""
+    from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+
     provider = AsyncMock()
     provider.get_accessible_virtual_record_ids = AsyncMock(return_value={})
     provider.get_user_by_user_id = AsyncMock(return_value={"email": "test@example.com"})
     provider.get_records_by_record_ids = AsyncMock(return_value=[])
     provider.get_document = AsyncMock(return_value={})
+    # Stubbed explicitly rather than left to AsyncMock's auto-children: those
+    # return a MagicMock, whose `fallback_reason` is truthy and whose sets are
+    # empty, so the container path would take an arbitrary branch instead of an
+    # obviously-unstubbed one. A test that wants containers overrides these.
+    provider.get_accessible_containers = AsyncMock(
+        return_value=AccessibleContainers(fallback_reason="not stubbed in this test")
+    )
+    provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
     return provider
 
 

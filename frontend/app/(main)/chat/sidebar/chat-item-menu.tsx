@@ -16,6 +16,10 @@ interface ChatItemMenuProps {
   /** Agent-scoped sidebar: only delete is supported by the API */
   showRename?: boolean;
   showArchive?: boolean;
+  /** Opens the move-to-project picker. Omit to hide the option entirely. */
+  onMoveToProject?: () => void;
+  /** Unlinks the conversation from its current project. Only shown when the row is already linked. */
+  onRemoveFromProject?: () => void;
 }
 
 /**
@@ -32,6 +36,8 @@ export function ChatItemMenu({
   onDelete,
   showRename = true,
   showArchive = true,
+  onMoveToProject,
+  onRemoveFromProject,
 }: ChatItemMenuProps) {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
@@ -100,6 +106,32 @@ export function ChatItemMenu({
             <Flex align="center" gap="1">
               <MaterialIcon name="archive" size={16} color="var(--slate-11)" />
               <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.archive')}</Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
+        {onMoveToProject && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onMoveToProject();
+            }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name="drive_file_move" size={16} color="var(--slate-11)" />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.projects.moveToProject')}</Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
+        {onRemoveFromProject && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemoveFromProject();
+            }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name="folder_off" size={16} color="var(--slate-11)" />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.projects.removeFromProject')}</Text>
             </Flex>
           </DropdownMenu.Item>
         )}

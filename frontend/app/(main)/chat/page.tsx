@@ -3,7 +3,9 @@
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
-import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
+import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -30,8 +32,9 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { Flex, Box, Text, Avatar, Tooltip, IconButton } from '@radix-ui/themes';
+import { Flex, Box, Text, Avatar, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
@@ -43,15 +46,17 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useUserStore } from '@/lib/store/user-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
-import {
-  SIDEBAR_CONVERSATIONS_PAGE_SIZE,
-  chatContentColumnStyle,
-} from './constants';
+import { chatContentColumnStyle } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import { ProjectApi } from '@/chat/project-api';
+import type { ProjectDetail } from '@/chat/project-types';
+import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -63,6 +68,7 @@ const footerLinkStyle: React.CSSProperties = {
 };
 
 function ChatFooterLinks() {
+  const { t } = useTranslation();
   const stars = useGitHubStars();
 
   return (
@@ -124,7 +130,7 @@ function ChatFooterLinks() {
           style={{ flexShrink: 0 }}
         />
         <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
-          Docs
+          {t('common.docs')}
         </span>
       </a>
     </Flex>
@@ -159,6 +165,12 @@ function ChatContent() {
   const conversationId = searchParams.get('conversationId');
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
+  const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  // A thread can't be scoped to both an agent and a project — agentId wins.
+  // When the feature flag is off, projectId is always null so the UI degrades
+  // to a normal chat without project context.
+  const rawProjectParam = searchParams.get('projectId');
+  const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
   const threadRuntime = useThreadRuntime();
 
@@ -167,18 +179,11 @@ function ChatContent() {
   // prevents this component from re-rendering on background slot updates.
   const previewFile = useChatStore((s) => s.previewFile);
   const previewMode = useChatStore((s) => s.previewMode);
-  const setConversations = useChatStore((s) => s.setConversations);
-  const setSharedConversations = useChatStore((s) => s.setSharedConversations);
-  const setIsConversationsLoading = useChatStore((s) => s.setIsConversationsLoading);
-  const setConversationsError = useChatStore((s) => s.setConversationsError);
-  const setPagination = useChatStore((s) => s.setPagination);
-  const setSharedPagination = useChatStore((s) => s.setSharedPagination);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   const clearPreview = useChatStore((s) => s.clearPreview);
 
   // Nav sidebar collapse state — used to show the expand button when collapsed
   const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
-  const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
 
   // Slot-scoped state for rendering decisions.
   // CRITICAL: select individual PRIMITIVE fields — never select the full
@@ -251,18 +256,25 @@ function ChatContent() {
         store.clearSearchResults();
       }
 
-      const rawAgentInUrl =
+      const urlParams =
         typeof window !== 'undefined'
-          ? new URLSearchParams(window.location.search).get('agentId')
+          ? new URLSearchParams(window.location.search)
           : null;
+      const rawAgentInUrl = urlParams?.get('agentId');
       const agentIdInUrl = rawAgentInUrl?.trim() ? rawAgentInUrl : null;
+      const rawProjectInUrl = urlParams?.get('projectId');
+      const projectIdInUrl = !agentIdInUrl && rawProjectInUrl?.trim() ? rawProjectInUrl : null;
 
       // 1. Detach visible thread only — background streams keep running (parallel chats)
       store.clearActiveSlot();
 
-      // 2–3. Sync URL: stay on agent new-chat when agentId present, else main home
+      // 2–3. Sync URL: stay on agent/project new-chat when scoped, else main home
       if (agentIdInUrl) {
         const href = buildChatHref({ agentId: agentIdInUrl });
+        window.history.replaceState(null, '', href);
+        router.replace(href);
+      } else if (projectIdInUrl) {
+        const href = buildChatHref({ projectId: projectIdInUrl });
         window.history.replaceState(null, '', href);
         router.replace(href);
       } else {
@@ -311,43 +323,6 @@ function ChatContent() {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [router]);
-
-  // Fetch conversations from API
-  const loadConversations = useCallback(async () => {
-    setIsConversationsLoading(true);
-    setConversationsError(null);
-
-    try {
-      const [owned, shared] = await Promise.all([
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'owned' }),
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'shared' }),
-      ]);
-      setConversations(owned.conversations);
-      setSharedConversations(shared.conversations);
-      setPagination(owned.pagination);
-      setSharedPagination(shared.pagination);
-    } catch (error) {
-      if (useServicesHealthStore.getState().apiServerReachable) {
-        console.error('Failed to fetch conversations:', error);
-        setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
-      }
-    } finally {
-      setIsConversationsLoading(false);
-    }
-  }, [setConversations, setSharedConversations, setIsConversationsLoading, setConversationsError, setPagination, setSharedPagination]);
-
-  // Fetch conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
-
-  // Re-fetch conversations when a mutation bumps the version counter
-  const conversationsVersion = useChatStore((s) => s.conversationsVersion);
-  useEffect(() => {
-    if (conversationsVersion > 0) {
-      loadConversations();
-    }
-  }, [conversationsVersion, loadConversations]);
 
   // Populate agent side-effects (tools, display name) and kick off the model
   // fetch for the current context. The shared `fetchModelsForContext` handles
@@ -483,6 +458,12 @@ function ChatContent() {
     };
   }, [agentId, router, t]);
 
+  // Keep the store's `activeProjectId` (read by ProjectsSection /
+  // ProjectConversationsSidebar to highlight the open project) in sync with the URL.
+  useEffect(() => {
+    useChatStore.getState().setActiveProjectId(projectId);
+  }, [projectId]);
+
   // ── URL → Store sync ──────────────────────────────────────────────
   // When URL changes (sidebar click, browser back), create/reuse a slot.
   // useRef flag prevents the store→URL effect from bouncing back.
@@ -501,7 +482,11 @@ function ChatContent() {
     if (!conversationId) {
       const activeSlot = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (agentId) {
-        if (store.activeSlotId) {
+        const keepInFlight =
+          !!activeSlot &&
+          (activeSlot.isStreaming || activeSlot.stopping) &&
+          activeSlot.threadAgentId === agentId;
+        if (store.activeSlotId && !keepInFlight) {
           debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'agent-new-chat-url' });
           store.clearActiveSlot();
         }
@@ -509,6 +494,15 @@ function ChatContent() {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'leave-agent-for-main-home' });
         useChatStore.setState({ activeSlotId: null });
         store.bumpConversationsVersion();
+      } else if (
+        store.activeSlotId &&
+        activeSlot?.isTemp &&
+        activeSlot.projectId !== projectId
+      ) {
+        // Switched project workspace (or left it) while a draft new-chat slot
+        // for a *different* project scope was active — don't leak it here.
+        debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'switch-project-scope' });
+        store.clearActiveSlot();
       } else if (store.activeSlotId && (!activeSlot || !activeSlot.isTemp)) {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null });
         useChatStore.setState({ activeSlotId: null });
@@ -624,7 +618,7 @@ function ChatContent() {
     requestAnimationFrame(() => {
       urlSyncingRef.current = false;
     });
-  }, [conversationId, agentId]);
+  }, [conversationId, agentId, projectId]);
 
   // ── Store → URL sync ──────────────────────────────────────────────
   // When streaming completes and assigns a convId to a temp slot, update URL.
@@ -649,8 +643,13 @@ function ChatContent() {
         const loc = new URLSearchParams(window.location.search);
         const rawAid = slot.threadAgentId ?? loc.get('agentId');
         const aid = rawAid?.trim() ? rawAid : null;
+        // A thread can't be scoped to both an agent and a project — agentId wins,
+        // mirroring buildChatHref()'s precedence.
+        const rawPid = aid ? null : (slot.projectId ?? loc.get('projectId'));
+        const pid = rawPid?.trim() ? rawPid : null;
         const q = new URLSearchParams();
         if (aid) q.set('agentId', aid);
+        else if (pid) q.set('projectId', pid);
         q.set('conversationId', slot.convId);
         window.history.replaceState(null, '', `/chat/?${q.toString()}`);
       }
@@ -668,13 +667,32 @@ function ChatContent() {
     if (!convId) return;
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const generationOf = () => useChatStore.getState().slots[activeSlotId]?.refreshGeneration ?? 0;
+    // A notification can invalidate the conversation while this request is in flight; a response
+    // fetched before that is stale. Refetch at once a few times; past that, back off and start over,
+    // so a stale response (or error) never marks the slot initialized.
+    const MAX_REFETCHES = 3;
+    const RETRY_DELAY_MS = 500;
 
-    const loadHistory = async () => {
+    const retryStale = (attempt: number): Promise<void> | undefined => {
+      if (attempt < MAX_REFETCHES) return loadHistory(attempt + 1);
+      retryTimer = setTimeout(() => {
+        if (!cancelled) void loadHistory(0);
+      }, RETRY_DELAY_MS);
+      return undefined;
+    };
+
+    const loadHistory = async (attempt = 0): Promise<void> => {
+      const generation = generationOf();
       try {
         const detail = historyAndShareAgentId
           ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
           : await ChatApi.fetchConversation(convId);
         if (cancelled) return;
+        if (generationOf() !== generation) {
+          return retryStale(attempt);
+        }
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
@@ -742,11 +760,12 @@ function ChatContent() {
             isLoadingOlder: false,
           },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
-          ...(unansweredAskUserQuestion
-            ? { pendingAskUserQuestion: unansweredAskUserQuestion }
-            : {}),
+          pendingAskUserQuestion: unansweredAskUserQuestion,
         });
       } catch (error) {
+        if (!cancelled && generationOf() !== generation) {
+          return retryStale(attempt);
+        }
         console.error('Failed to load conversation history:', error);
         if (!cancelled) {
           // Mark as initialized to avoid infinite retries, but leave isOwner
@@ -755,6 +774,10 @@ function ChatContent() {
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
           });
+          // The API client already explains HTTP failures in its own toast.
+          if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
+            toast.error(t('chat.toasts.loadConversationFailed'));
+          }
         }
       }
     };
@@ -763,8 +786,9 @@ function ChatContent() {
 
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)
@@ -819,6 +843,8 @@ function ChatContent() {
           agentStreamTools:
             store.agentStreamTools === null ? null : [...store.agentStreamTools],
         });
+      } else if (projectId) {
+        store.updateSlot(newSlotId, { projectId });
       }
     }
 
@@ -828,6 +854,34 @@ function ChatContent() {
       startRun: true,
     });
   };
+
+  // ── Project new-chat resting state ──────────────────────────────────
+  // `/chat/?projectId=…` with no conversationId is the project's new-chat
+  // view. The composer lives in `ChatInputWrapper` (same as normal chat)
+  // and sends in-place — no navigation, no page transition. The project
+  // settings workspace (Instructions, Files, Tools, Members) is at
+  // `/projects?projectId=…` and linked from the sidebar.
+  //
+  // The loaded detail also drives the composer's allow-list (connectors,
+  // collections, tools) via `useProjectScopeHydration`. `projectsVersion`
+  // bumps whenever project settings are saved anywhere in the app, so the
+  // composer picks up changes without a reload.
+  const projectsVersion = useChatStore((s) => s.projectsVersion);
+  const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
+  useEffect(() => {
+    if (!projectId) { setProjectDetail(null); return; }
+    let cancelled = false;
+    ProjectApi.get(projectId).then((p) => {
+      if (!cancelled) setProjectDetail(p);
+    }).catch(() => {
+      if (!cancelled) setProjectDetail(null);
+      toast.error(t('chat.projects.workspace.failedToLoad'));
+    });
+    return () => { cancelled = true; };
+  }, [projectId, projectsVersion, t]);
+  useProjectScopeHydration(projectDetail);
+  const projectName = projectDetail?.name ?? null;
+  const projectColor = projectDetail?.color ?? null;
 
   // ── Consume pending chat context from widget ──────────────────────
   const pendingConsumedRef = useRef(false);
@@ -852,6 +906,8 @@ function ChatContent() {
         agentStreamTools:
           store.agentStreamTools === null ? null : [...store.agentStreamTools],
       });
+    } else if (projectId) {
+      store.updateSlot(slotId, { projectId });
     }
 
     // 1. Set collection filters so they scope the AI query
@@ -905,7 +961,7 @@ function ChatContent() {
       },
       startRun: true,
     });
-  }, [conversationId, threadRuntime, activeSlotId, agentId]);
+  }, [conversationId, threadRuntime, activeSlotId, agentId, projectId]);
 
   const isMobile = useIsMobile();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
@@ -944,6 +1000,10 @@ function ChatContent() {
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const demoDataActive = useDemoDataActive();
+  // Unknown reads as shown, as before the switch existed.
+  const demoHidden = useDemoDataStatus()?.include === false;
   const greetingName = useMemo(() => {
     if (!profile) return '';
     const full = profile.fullName?.trim();
@@ -957,13 +1017,6 @@ function ChatContent() {
     }
     return '';
   }, [profile]);
-
-  const defaultSuggestionsMap = t('chat.defaultSuggestions', { returnObjects: true }) as Record<string, { text: string; icons: ChatSuggestion['icons'] }>;
-  const defaultSuggestions: ChatSuggestion[] = Object.entries(defaultSuggestionsMap).map(([id, item]) => ({
-    id,
-    text: item.text,
-    icons: item.icons,
-  }));
 
   // Share state
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
@@ -1167,32 +1220,9 @@ function ChatContent() {
   // ── Chat column body (shared between split-pane and full-width modes) ──────
   const chatColumnBody = (
     <>
-      {/* Sidebar expand button — desktop only, shown when nav is collapsed.
-          Positioned at top-left of the chat column (position:relative parent)
-          so it never overlaps the agent header or share buttons on the right. */}
-      {!isMobile && isNavCollapsed && (
-        <Box
-          style={{
-            position: 'absolute',
-            top: 10,
-            left: 12,
-            zIndex: 25,
-          }}
-        >
-          <Tooltip content="Expand sidebar" side="right">
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size="2"
-              aria-label="Expand sidebar"
-              onClick={() => setNavCollapsed(false)}
-              style={{ margin: 0 }}
-            >
-              <MaterialIcon name="menu" size={20} color="var(--gray-11)" />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      )}
+      {/* Top-left of the chat column (position:relative parent) so it never
+          overlaps the agent header or share buttons on the right. */}
+      <SidebarExpandButton />
 
       {historyAndShareAgentId && (
         <AgentChatHeader
@@ -1310,35 +1340,67 @@ function ChatContent() {
           >
             <Box style={{ ...chatContentColumnStyle(isMobile) }}>
               <Flex direction="column" align="center" style={{ width: '100%' }}>
-                <Box style={{ marginBottom: 'var(--space-4)' }}>
-                  <LottieLoader
-                    autoplay
-                    loop
-                    style={{ width: isMobile ? 64 : 80, height: isMobile ? 64 : 80 }}
-                  />
-                </Box>
-                <Box
-                  style={{
-                    textAlign: 'center',
-                    marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)',
-                    fontFamily: 'Manrope, sans-serif',
-                  }}
-                >
-                  <Text
-                    size="4"
-                    weight="medium"
-                    style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-1)' }}
-                  >
-                    {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
-                  </Text>
-                  <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                    {t('chat.greeting')}
-                  </Text>
-                </Box>
+                {projectId ? (
+                  <>
+                    <Flex
+                      align="center"
+                      gap="2"
+                      style={{ marginBottom: 'var(--space-4)', cursor: 'pointer' }}
+                      onClick={() => router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`)}
+                    >
+                      <MaterialIcon
+                        name="folder"
+                        size={28}
+                        color={projectColor || 'var(--accent-9)'}
+                      />
+                      <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
+                        {projectName ?? '…'}
+                      </Text>
+                      <MaterialIcon name="settings" size={16} color="var(--slate-9)" />
+                    </Flex>
+                  </>
+                ) : (
+                  <>
+                    <Box style={{ marginBottom: 'var(--space-4)' }}>
+                      <LottieLoader
+                        autoplay
+                        loop
+                        style={{ width: isMobile ? 64 : 80, height: isMobile ? 64 : 80 }}
+                      />
+                    </Box>
+                    <Box
+                      style={{
+                        textAlign: 'center',
+                        marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)',
+                        fontFamily: 'Manrope, sans-serif',
+                      }}
+                    >
+                      <Text
+                        size="4"
+                        weight="medium"
+                        style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-1)' }}
+                      >
+                        {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
+                      </Text>
+                      <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                        {t('chat.greeting')}
+                      </Text>
+                    </Box>
+                  </>
+                )}
                 {isInputCentered && showChatInput && (
                   <Box style={{ width: '100%' }}>
                     <ChatInputWrapper />
                   </Box>
+                )}
+                {showChatInput && (
+                  // Shows itself only when it applies, including for a disabled demo
+                  // whose records are still searchable. Not tied to this admin's own
+                  // switch: others may still show it, and its sample accounts can sign in.
+                  <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
+                )}
+                {demoDataActive && showChatInput && !demoHidden && (
+                  <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}
               </Flex>
             </Box>
@@ -1415,7 +1477,7 @@ function ChatContent() {
             <Box
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize chat and preview panels"
+              aria-label={t('chat.resizePanels')}
               onPointerDown={beginSplitResize}
               style={{
                 width: '8px',

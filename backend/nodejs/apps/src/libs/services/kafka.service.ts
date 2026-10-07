@@ -194,6 +194,12 @@ export abstract class BaseKafkaConsumerConnection
     this.consumer = this.kafka.consumer({
       groupId: config.groupId ?? `${config.clientId ?? 'default'}-group`,
       maxWaitTimeInMs: 5000,
+      ...(config.sessionTimeout !== undefined && {
+        sessionTimeout: config.sessionTimeout,
+      }),
+      ...(config.rebalanceTimeout !== undefined && {
+        rebalanceTimeout: config.rebalanceTimeout,
+      }),
       retry: {
         initialRetryTime: config.initialRetryTime ?? 100,
         maxRetryTime: config.maxRetryTime ?? 30000,

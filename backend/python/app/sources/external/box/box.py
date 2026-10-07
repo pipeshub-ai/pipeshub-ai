@@ -24,6 +24,22 @@ from app.sources.client.box.box import BoxClient as CustomBoxClient
 from app.sources.client.box.box import BoxResponse
 
 
+def _without_credentials(error: Exception) -> Exception:
+    """Blank the bearer token a Box SDK error carries: printing the error prints the request headers."""
+    headers = getattr(getattr(error, "request_info", None), "headers", None)
+    if isinstance(headers, dict):
+        for name in headers:
+            if name.lower() == "authorization":
+                headers[name] = "[REDACTED]"
+    return error
+
+
+def _error_text(error: Exception) -> str:
+    """Box's status and message, without the request dump the SDK error prints."""
+    message = getattr(_without_credentials(error), "message", None)
+    return message if isinstance(message, str) and message else str(error)
+
+
 class BoxDataSource:
     """
     Complete Box API client wrapper using official Box SDK Gen
@@ -133,7 +149,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_file_by_id(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_delete_file_by_id(self, file_id: str, **kwargs) -> BoxResponse:
         """Delete a file by ID
@@ -161,7 +177,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_file_by_id(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_update_file_by_id(self, file_id: str, name: Optional[str] = None, parent: Optional[UpdateFileByIdParent] = None, **kwargs) -> BoxResponse:
         """Update file information
@@ -191,7 +207,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_file_by_id(file_id, name=name, parent=parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_copy_file(self, file_id: str, parent: CopyFileParent, **kwargs) -> BoxResponse:
         """Copy a file to a new location
@@ -220,7 +236,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.copy_file(file_id, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_get_file_thumbnail_by_id(self, file_id: str, extension: Optional[GetFileThumbnailByIdExtension] = None, **kwargs) -> BoxResponse:
         """Get thumbnail for a file
@@ -249,7 +265,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_file_thumbnail_by_id(file_id, extension=extension))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def downloads_get_download_file_url(self, file_id: str, version: Optional[str] = None, access_token: Optional[str] = None, **kwargs) -> BoxResponse:
         """Get download URL for a file (creates shared link if needed, expires in ~24 hours)
@@ -269,15 +285,20 @@ class BoxDataSource:
 
         Returns:
             BoxResponse: SDK response with download URL (string)
+
+        Raises:
+            Exception: SDK errors propagate. This feeds the user-facing streaming path,
+                which needs BoxAPIError's status to tell an expired token from a deleted
+                file; flattening it to a message made every failure look like a 404.
         """
         client = await self._get_client()
         manager = getattr(client, 'downloads', None)
         if manager is None:
             return BoxResponse(success=False, error="Manager 'downloads' not found")
 
+        loop = asyncio.get_running_loop()
+        # Get download URL (creates shared link if needed, expires ~24 hours)
         try:
-            loop = asyncio.get_running_loop()
-            # Get download URL (creates shared link if needed, expires ~24 hours)
             response = await loop.run_in_executor(
                 None,
                 lambda: manager.get_download_file_url(
@@ -286,9 +307,10 @@ class BoxDataSource:
                     access_token=access_token
                 )
             )
-            return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            _without_credentials(e)
+            raise
+        return BoxResponse(success=True, data=response)
 
     async def files_get_file_content(self, file_id: str, **kwargs) -> BoxResponse:
         """Get file content/download file
@@ -316,7 +338,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_file_content(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_get_file_versions(self, file_id: str, **kwargs) -> BoxResponse:
         """Get all versions of a file
@@ -344,7 +366,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_file_versions(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_promote_file_version(self, file_id: str, file_version_id: str, **kwargs) -> BoxResponse:
         """Promote a file version to current
@@ -373,7 +395,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.promote_file_version(file_id, file_version_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_restore_file_version(self, file_id: str, file_version_id: str, **kwargs) -> BoxResponse:
         """Restore a previous file version
@@ -402,7 +424,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.restore_file_version(file_id, file_version_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def files_delete_file_version(self, file_id: str, file_version_id: str, **kwargs) -> BoxResponse:
         """Delete a file version
@@ -431,7 +453,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_file_version(file_id, file_version_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def folders_get_folder_by_id(self, folder_id: str, **kwargs) -> BoxResponse:
         """Get folder information by ID
@@ -459,7 +481,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_folder_by_id(folder_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def folders_delete_folder_by_id(self, folder_id: str, **kwargs) -> BoxResponse:
         """Delete a folder by ID
@@ -487,7 +509,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_folder_by_id(folder_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def folders_update_folder_by_id(self, folder_id: str, name: Optional[str] = None, parent: Optional[UpdateFolderByIdParent] = None, **kwargs) -> BoxResponse:
         """Update folder information
@@ -517,7 +539,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_folder_by_id(folder_id, name=name, parent=parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def folders_create_folder(self, name: str, parent: CreateFolderParent, **kwargs) -> BoxResponse:
         """Create a new folder
@@ -546,7 +568,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_folder(name, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
 
     async def folders_get_folder_items(self, folder_id: str, limit: Optional[int] = None, offset: Optional[int] = None, fields: Optional[str] = None, **kwargs) -> BoxResponse:
@@ -590,7 +612,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def folders_copy_folder(self, folder_id: str, parent: CreateFolderParent, **kwargs) -> BoxResponse:
         """Copy a folder to a new location
@@ -619,7 +641,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.copy_folder(folder_id, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def users_get_user_me(self, **kwargs) -> BoxResponse:
         """Get current user information
@@ -644,7 +666,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_user_me())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def users_get_user_by_id(self, user_id: str, **kwargs) -> BoxResponse:
         """Get user information by ID
@@ -672,7 +694,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_user_by_id(user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def users_create_user(self, name: str, login: str, **kwargs) -> BoxResponse:
         """Create a new user
@@ -701,7 +723,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_user(name, login))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def users_update_user_by_id(self, user_id: str, name: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update user information
@@ -730,7 +752,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_user_by_id(user_id, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def users_delete_user_by_id(self, user_id: str, **kwargs) -> BoxResponse:
         """Delete a user by ID
@@ -758,7 +780,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_user_by_id(user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def users_get_users(self, limit: Optional[int] = None, offset: Optional[int] = None, **kwargs) -> BoxResponse:
         """Get all users in the enterprise
@@ -787,13 +809,17 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_users(limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
-    async def groups_get_groups(self, **kwargs) -> BoxResponse:
+    async def groups_get_groups(self, limit: int | None = None, offset: int | None = None, **kwargs) -> BoxResponse:
         """Get all groups
 
         API Endpoint: groups.get_groups
         Namespace: groups
+
+        Args:
+            limit (int, optional): The maximum number of groups to return
+            offset (int, optional): The offset for pagination
 
         Returns:
             BoxResponse: SDK response
@@ -809,10 +835,10 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_groups())
+            response = await loop.run_in_executor(None, lambda: manager.get_groups(limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def groups_get_group_by_id(self, group_id: str, **kwargs) -> BoxResponse:
         """Get group information by ID
@@ -840,7 +866,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_group_by_id(group_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def groups_create_group(self, name: str, **kwargs) -> BoxResponse:
         """Create a new group
@@ -868,7 +894,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_group(name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def groups_update_group_by_id(self, group_id: str, name: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update group information
@@ -897,7 +923,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_group_by_id(group_id, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def groups_delete_group_by_id(self, group_id: str, **kwargs) -> BoxResponse:
         """Delete a group by ID
@@ -925,9 +951,9 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_group_by_id(group_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
-    async def groups_get_group_memberships(self, group_id: str, **kwargs) -> BoxResponse:
+    async def groups_get_group_memberships(self, group_id: str, limit: int | None = None, offset: int | None = None, **kwargs) -> BoxResponse:
         """Get all members of a group
 
         API Endpoint: groups.get_group_memberships
@@ -935,6 +961,8 @@ class BoxDataSource:
 
         Args:
             group_id (str, required): The ID of the group
+            limit (int, optional): The maximum number of memberships to return
+            offset (int, optional): The offset for pagination
 
         Returns:
             BoxResponse: SDK response
@@ -950,10 +978,10 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id, limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def groups_add_user_to_group(self, group_id: str, user_id: str, **kwargs) -> BoxResponse:
         """Add a user to a group
@@ -982,7 +1010,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.add_user_to_group(group_id, user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def groups_remove_user_from_group(self, group_id: str, user_id: str, **kwargs) -> BoxResponse:
         """Remove a user from a group
@@ -1011,7 +1039,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.remove_user_from_group(group_id, user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaborations_create_collaboration(self, item_id: str, item_type: str, accessible_by: str, role: str, **kwargs) -> BoxResponse:
         """Create a collaboration on a file or folder
@@ -1042,7 +1070,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_collaboration(item_id, item_type, accessible_by, role))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaborations_get_collaboration_by_id(self, collaboration_id: str, **kwargs) -> BoxResponse:
         """Get collaboration information by ID
@@ -1070,7 +1098,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_collaboration_by_id(collaboration_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaborations_update_collaboration(self, collaboration_id: str, role: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update a collaboration
@@ -1099,7 +1127,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_collaboration(collaboration_id, role=role))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaborations_delete_collaboration(self, collaboration_id: str, **kwargs) -> BoxResponse:
         """Delete a collaboration
@@ -1127,9 +1155,9 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_collaboration(collaboration_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
-    async def collaborations_get_file_collaborations(self, file_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_get_file_collaborations(self, file_id: str, limit: int | None = None, marker: str | None = None, **kwargs) -> BoxResponse:
         """Get all collaborations on a file
 
         API Endpoint: collaborations.get_file_collaborations
@@ -1137,6 +1165,8 @@ class BoxDataSource:
 
         Args:
             file_id (str, required): The ID of the file
+            limit (int, optional): The maximum number of collaborations to return
+            marker (str, optional): The next_marker of the previous page
 
         Returns:
             BoxResponse: SDK response
@@ -1152,12 +1182,12 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id, limit=limit, marker=marker))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
-    async def collaborations_get_folder_collaborations(self, folder_id: str, **kwargs) -> BoxResponse:
+    async def collaborations_get_folder_collaborations(self, folder_id: str, limit: int | None = None, marker: str | None = None, **kwargs) -> BoxResponse:
         """Get all collaborations on a folder
 
         API Endpoint: collaborations.get_folder_collaborations
@@ -1165,6 +1195,8 @@ class BoxDataSource:
 
         Args:
             folder_id (str, required): The ID of the folder
+            limit (int, optional): The maximum number of collaborations to return
+            marker (str, optional): The next_marker of the previous page
 
         Returns:
             BoxResponse: SDK response
@@ -1180,10 +1212,10 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id))
+            response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id, limit=limit, marker=marker))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaborations_get_pending_collaborations(self, **kwargs) -> BoxResponse:
         """Get all pending collaborations for current user
@@ -1208,7 +1240,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_pending_collaborations())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shared_links_create_shared_link_for_file(self, file_id: str, access: Optional[str] = None, **kwargs) -> BoxResponse:
         """Create a shared link for a file
@@ -1256,7 +1288,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shared_links_create_shared_link_for_folder(self, folder_id: str, access: Optional[str] = None, **kwargs) -> BoxResponse:
         """Create a shared link for a folder
@@ -1303,7 +1335,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shared_links_get_shared_link(self, shared_link_url: str, **kwargs) -> BoxResponse:
         """Get information about a shared link
@@ -1331,7 +1363,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_shared_link(shared_link_url))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shared_links_remove_shared_link(self, item_id: str, item_type: str, **kwargs) -> BoxResponse:
         """Remove a shared link from an item
@@ -1360,7 +1392,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.remove_shared_link(item_id, item_type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def comments_create_comment(self, item_id: str, message: str, **kwargs) -> BoxResponse:
         """Create a comment on a file
@@ -1389,7 +1421,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_comment(item_id, message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def comments_get_comment_by_id(self, comment_id: str, **kwargs) -> BoxResponse:
         """Get comment information by ID
@@ -1417,7 +1449,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_comment_by_id(comment_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def comments_update_comment(self, comment_id: str, message: str, **kwargs) -> BoxResponse:
         """Update a comment
@@ -1446,7 +1478,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_comment(comment_id, message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def comments_delete_comment(self, comment_id: str, **kwargs) -> BoxResponse:
         """Delete a comment
@@ -1474,7 +1506,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_comment(comment_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def comments_get_file_comments(self, file_id: str, **kwargs) -> BoxResponse:
         """Get all comments on a file
@@ -1502,7 +1534,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_file_comments(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def comments_reply_to_comment(self, comment_id: str, message: str, **kwargs) -> BoxResponse:
         """Reply to a comment
@@ -1531,7 +1563,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.reply_to_comment(comment_id, message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def tasks_create_task(self, item_id: str, action: str, message: Optional[str] = None, **kwargs) -> BoxResponse:
         """Create a task on a file
@@ -1561,7 +1593,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_task(item_id, action, message=message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def tasks_get_task_by_id(self, task_id: str, **kwargs) -> BoxResponse:
         """Get task information by ID
@@ -1589,7 +1621,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_task_by_id(task_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def tasks_update_task(self, task_id: str, message: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update a task
@@ -1618,7 +1650,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_task(task_id, message=message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def tasks_delete_task(self, task_id: str, **kwargs) -> BoxResponse:
         """Delete a task
@@ -1646,7 +1678,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_task(task_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def tasks_get_file_tasks(self, file_id: str, **kwargs) -> BoxResponse:
         """Get all tasks on a file
@@ -1674,7 +1706,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_file_tasks(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def tasks_create_task_assignment(self, task_id: str, assign_to: str, **kwargs) -> BoxResponse:
         """Assign a task to a user
@@ -1703,7 +1735,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_task_assignment(task_id, assign_to))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def tasks_get_task_assignments(self, task_id: str, **kwargs) -> BoxResponse:
         """Get all assignments for a task
@@ -1731,7 +1763,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_task_assignments(task_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def webhooks_create_webhook(self, target_id: str, target_type: str, address: str, triggers: List[str], **kwargs) -> BoxResponse:
         """Create a webhook
@@ -1762,7 +1794,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_webhook(target_id, target_type, address, triggers))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def webhooks_get_webhook_by_id(self, webhook_id: str, **kwargs) -> BoxResponse:
         """Get webhook information by ID
@@ -1790,7 +1822,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_webhook_by_id(webhook_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def webhooks_get_webhooks(self, **kwargs) -> BoxResponse:
         """Get all webhooks
@@ -1815,7 +1847,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_webhooks())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def webhooks_update_webhook(self, webhook_id: str, address: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update a webhook
@@ -1844,7 +1876,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_webhook(webhook_id, address=address))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def webhooks_delete_webhook(self, webhook_id: str, **kwargs) -> BoxResponse:
         """Delete a webhook
@@ -1872,7 +1904,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_webhook(webhook_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def web_links_create_web_link(self, url: str, parent: CreateFolderParent, name: Optional[str] = None, **kwargs) -> BoxResponse:
         """Create a web link
@@ -1902,7 +1934,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_web_link(url, parent, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def web_links_get_web_link_by_id(self, web_link_id: str, **kwargs) -> BoxResponse:
         """Get web link information by ID
@@ -1930,7 +1962,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_web_link_by_id(web_link_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def web_links_update_web_link(self, web_link_id: str, name: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update a web link
@@ -1959,7 +1991,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_web_link(web_link_id, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def web_links_delete_web_link(self, web_link_id: str, **kwargs) -> BoxResponse:
         """Delete a web link
@@ -1987,7 +2019,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_web_link(web_link_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def retention_policies_create_retention_policy(self, policy_name: str, policy_type: str, retention_length: int, **kwargs) -> BoxResponse:
         """Create a retention policy
@@ -2017,7 +2049,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_retention_policy(policy_name, policy_type, retention_length))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def retention_policies_get_retention_policies(self, **kwargs) -> BoxResponse:
         """Get all retention policies
@@ -2042,7 +2074,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_retention_policies())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def retention_policies_get_retention_policy_by_id(self, policy_id: str, **kwargs) -> BoxResponse:
         """Get retention policy information by ID
@@ -2070,7 +2102,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_retention_policy_by_id(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def retention_policies_update_retention_policy(self, policy_id: str, policy_name: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update a retention policy
@@ -2099,7 +2131,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_retention_policy(policy_id, policy_name=policy_name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def retention_policies_delete_retention_policy(self, policy_id: str, **kwargs) -> BoxResponse:
         """Delete a retention policy
@@ -2127,7 +2159,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_retention_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def retention_policies_create_retention_policy_assignment(self, policy_id: str, assign_to: str, **kwargs) -> BoxResponse:
         """Assign a retention policy to a folder or enterprise
@@ -2156,7 +2188,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_retention_policy_assignment(policy_id, assign_to))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def retention_policies_get_retention_policy_assignments(self, policy_id: str, **kwargs) -> BoxResponse:
         """Get all assignments for a retention policy
@@ -2184,7 +2216,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_retention_policy_assignments(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def legal_hold_policies_create_legal_hold_policy(self, policy_name: str, description: Optional[str] = None, **kwargs) -> BoxResponse:
         """Create a legal hold policy
@@ -2213,7 +2245,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_legal_hold_policy(policy_name, description=description))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def legal_hold_policies_get_legal_hold_policies(self, **kwargs) -> BoxResponse:
         """Get all legal hold policies
@@ -2238,7 +2270,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_legal_hold_policies())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def legal_hold_policies_get_legal_hold_policy_by_id(self, policy_id: str, **kwargs) -> BoxResponse:
         """Get legal hold policy information by ID
@@ -2266,7 +2298,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_legal_hold_policy_by_id(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def legal_hold_policies_update_legal_hold_policy(self, policy_id: str, policy_name: Optional[str] = None, **kwargs) -> BoxResponse:
         """Update a legal hold policy
@@ -2295,7 +2327,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_legal_hold_policy(policy_id, policy_name=policy_name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def legal_hold_policies_delete_legal_hold_policy(self, policy_id: str, **kwargs) -> BoxResponse:
         """Delete a legal hold policy
@@ -2323,7 +2355,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_legal_hold_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def legal_hold_policies_create_legal_hold_policy_assignment(self, policy_id: str, assign_to: str, **kwargs) -> BoxResponse:
         """Assign a legal hold policy to an entity
@@ -2352,7 +2384,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_legal_hold_policy_assignment(policy_id, assign_to))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def classifications_get_classification_template(self, **kwargs) -> BoxResponse:
         """Get the classification metadata template
@@ -2377,7 +2409,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_classification_template())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def classifications_add_classification_to_file(self, file_id: str, classification: str, **kwargs) -> BoxResponse:
         """Add classification to a file
@@ -2406,7 +2438,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.add_classification_to_file(file_id, classification))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def classifications_add_classification_to_folder(self, folder_id: str, classification: str, **kwargs) -> BoxResponse:
         """Add classification to a folder
@@ -2435,7 +2467,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.add_classification_to_folder(folder_id, classification))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def classifications_update_classification_on_file(self, file_id: str, classification: str, **kwargs) -> BoxResponse:
         """Update classification on a file
@@ -2464,7 +2496,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_classification_on_file(file_id, classification))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def classifications_remove_classification_from_file(self, file_id: str, **kwargs) -> BoxResponse:
         """Remove classification from a file
@@ -2492,7 +2524,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.remove_classification_from_file(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shield_information_barriers_get_shield_information_barriers(self, **kwargs) -> BoxResponse:
         """Get all shield information barriers
@@ -2517,7 +2549,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_shield_information_barriers())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shield_information_barriers_get_shield_information_barrier_by_id(self, barrier_id: str, **kwargs) -> BoxResponse:
         """Get shield information barrier by ID
@@ -2545,7 +2577,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_shield_information_barrier_by_id(barrier_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shield_information_barriers_create_shield_information_barrier(self, enterprise: str, type: str, **kwargs) -> BoxResponse:
         """Create a shield information barrier
@@ -2574,7 +2606,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_shield_information_barrier(enterprise, type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def shield_information_barriers_update_shield_information_barrier_status(self, barrier_id: str, status: str, **kwargs) -> BoxResponse:
         """Update shield information barrier status
@@ -2603,7 +2635,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_shield_information_barrier_status(barrier_id, status))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def sign_requests_create_sign_request(self, source_files: List[str], signers: List[str], **kwargs) -> BoxResponse:
         """Create a sign request
@@ -2632,7 +2664,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_sign_request(source_files, signers))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def sign_requests_get_sign_requests(self, **kwargs) -> BoxResponse:
         """Get all sign requests
@@ -2657,7 +2689,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_sign_requests())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def sign_requests_get_sign_request_by_id(self, sign_request_id: str, **kwargs) -> BoxResponse:
         """Get sign request information by ID
@@ -2685,7 +2717,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_sign_request_by_id(sign_request_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def sign_requests_cancel_sign_request(self, sign_request_id: str, **kwargs) -> BoxResponse:
         """Cancel a sign request
@@ -2713,7 +2745,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.cancel_sign_request(sign_request_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def sign_requests_resend_sign_request(self, sign_request_id: str, **kwargs) -> BoxResponse:
         """Resend a sign request
@@ -2741,7 +2773,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.resend_sign_request(sign_request_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def workflows_get_workflows(self, **kwargs) -> BoxResponse:
         """Get all workflows
@@ -2766,7 +2798,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_workflows())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def workflows_start_workflow(self, workflow_id: str, files: List[str], folder: str, **kwargs) -> BoxResponse:
         """Start a workflow
@@ -2796,7 +2828,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.start_workflow(workflow_id, files, folder))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_templates_get_metadata_templates(self, scope: Optional[str] = None, **kwargs) -> BoxResponse:
         """Get all metadata templates
@@ -2824,7 +2856,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_metadata_templates(scope=scope))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_templates_get_metadata_template(self, scope: str, template_key: str, **kwargs) -> BoxResponse:
         """Get a specific metadata template
@@ -2853,7 +2885,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_metadata_template(scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_templates_create_metadata_template(self, scope: str, template_key: str, display_name: str, fields: List[Dict], **kwargs) -> BoxResponse:
         """Create a metadata template
@@ -2884,7 +2916,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_metadata_template(scope, template_key, display_name, fields))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_templates_update_metadata_template(self, scope: str, template_key: str, operations: List[Dict], **kwargs) -> BoxResponse:
         """Update a metadata template
@@ -2914,7 +2946,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_metadata_template(scope, template_key, operations))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_templates_delete_metadata_template(self, scope: str, template_key: str, **kwargs) -> BoxResponse:
         """Delete a metadata template
@@ -2943,7 +2975,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_metadata_template(scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_create_file_metadata(self, file_id: str, scope: str, template_key: str, metadata: Dict[str, str], **kwargs) -> BoxResponse:
         """Create metadata on a file
@@ -2974,7 +3006,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_file_metadata(file_id, scope, template_key, metadata))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_get_file_metadata(self, file_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
         """Get metadata on a file
@@ -3004,7 +3036,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_file_metadata(file_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_update_file_metadata(self, file_id: str, scope: str, template_key: str, operations: List[Dict], **kwargs) -> BoxResponse:
         """Update metadata on a file
@@ -3035,7 +3067,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_file_metadata(file_id, scope, template_key, operations))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_delete_file_metadata(self, file_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
         """Delete metadata from a file
@@ -3065,7 +3097,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_file_metadata(file_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_get_all_file_metadata(self, file_id: str, **kwargs) -> BoxResponse:
         """Get all metadata on a file
@@ -3093,7 +3125,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_all_file_metadata(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_create_folder_metadata(self, folder_id: str, scope: str, template_key: str, metadata: Dict[str, str], **kwargs) -> BoxResponse:
         """Create metadata on a folder
@@ -3124,7 +3156,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_folder_metadata(folder_id, scope, template_key, metadata))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_get_folder_metadata(self, folder_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
         """Get metadata on a folder
@@ -3154,7 +3186,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_folder_metadata(folder_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_cascade_policies_create_metadata_cascade_policy(self, folder_id: str, scope: str, template_key: str, **kwargs) -> BoxResponse:
         """Create a metadata cascade policy
@@ -3184,7 +3216,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_metadata_cascade_policy(folder_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_cascade_policies_get_metadata_cascade_policies(self, folder_id: str, **kwargs) -> BoxResponse:
         """Get metadata cascade policies for a folder
@@ -3212,7 +3244,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_metadata_cascade_policies(folder_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_cascade_policies_get_metadata_cascade_policy(self, policy_id: str, **kwargs) -> BoxResponse:
         """Get a metadata cascade policy by ID
@@ -3240,7 +3272,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_metadata_cascade_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_cascade_policies_delete_metadata_cascade_policy(self, policy_id: str, **kwargs) -> BoxResponse:
         """Delete a metadata cascade policy
@@ -3268,7 +3300,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_metadata_cascade_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def metadata_cascade_policies_force_apply_metadata_cascade_policy(self, policy_id: str, **kwargs) -> BoxResponse:
         """Force apply a metadata cascade policy
@@ -3296,7 +3328,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.force_apply_metadata_cascade_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def events_get_events(
         self,
@@ -3345,7 +3377,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def events_get_events_with_long_polling(self, stream_type: Optional[str] = None, stream_position: Optional[str] = None, **kwargs) -> BoxResponse:
         """Get events using long polling
@@ -3374,7 +3406,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_events_with_long_polling(stream_type=stream_type, stream_position=stream_position))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def enterprise_events_get_enterprise_events(self, stream_type: Optional[str] = None, created_after: Optional[str] = None, created_before: Optional[str] = None, **kwargs) -> BoxResponse:
         """Get enterprise events
@@ -3404,7 +3436,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_enterprise_events(stream_type=stream_type, created_after=created_after, created_before=created_before))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collections_get_collections(self, **kwargs) -> BoxResponse:
         """Get all collections
@@ -3429,7 +3461,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_collections())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collections_get_collection_items(self, collection_id: str, **kwargs) -> BoxResponse:
         """Get items in a collection
@@ -3457,7 +3489,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_collection_items(collection_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collections_add_to_collection(self, collection_id: str, item_id: str, item_type: str, **kwargs) -> BoxResponse:
         """Add an item to a collection
@@ -3487,7 +3519,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.add_to_collection(collection_id, item_id, item_type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collections_remove_from_collection(self, collection_id: str, item_id: str, item_type: str, **kwargs) -> BoxResponse:
         """Remove an item from a collection
@@ -3517,7 +3549,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.remove_from_collection(collection_id, item_id, item_type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def terms_of_service_get_terms_of_service(self, **kwargs) -> BoxResponse:
         """Get all terms of service
@@ -3542,7 +3574,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def terms_of_service_get_terms_of_service_by_id(self, tos_id: str, **kwargs) -> BoxResponse:
         """Get terms of service by ID
@@ -3570,7 +3602,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service_by_id(tos_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def terms_of_service_create_terms_of_service_user_status(self, tos_id: str, user_id: str, is_accepted: bool, **kwargs) -> BoxResponse:
         """Create terms of service user status
@@ -3600,7 +3632,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_terms_of_service_user_status(tos_id, user_id, is_accepted))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def terms_of_service_get_terms_of_service_user_statuses(self, tos_id: str, **kwargs) -> BoxResponse:
         """Get all user statuses for terms of service
@@ -3628,7 +3660,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service_user_statuses(tos_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def terms_of_service_update_terms_of_service_user_status(self, tos_user_status_id: str, is_accepted: bool, **kwargs) -> BoxResponse:
         """Update terms of service user status
@@ -3657,7 +3689,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.update_terms_of_service_user_status(tos_user_status_id, is_accepted))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaboration_allowlist_get_collaboration_allowlist_entries(self, **kwargs) -> BoxResponse:
         """Get all collaboration allowlist entries
@@ -3682,7 +3714,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_collaboration_allowlist_entries())
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaboration_allowlist_create_collaboration_allowlist_entry(self, domain: str, direction: str, **kwargs) -> BoxResponse:
         """Create a collaboration allowlist entry
@@ -3711,7 +3743,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_collaboration_allowlist_entry(domain, direction))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaboration_allowlist_get_collaboration_allowlist_entry(self, entry_id: str, **kwargs) -> BoxResponse:
         """Get collaboration allowlist entry by ID
@@ -3739,7 +3771,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.get_collaboration_allowlist_entry(entry_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def collaboration_allowlist_delete_collaboration_allowlist_entry(self, entry_id: str, **kwargs) -> BoxResponse:
         """Delete a collaboration allowlist entry
@@ -3767,7 +3799,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.delete_collaboration_allowlist_entry(entry_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def search_search_for_content(self, query: str, limit: Optional[int] = None, offset: Optional[int] = None, scope: Optional[str] = None, file_extensions: Optional[List[str]] = None, created_at_range: Optional[str] = None, updated_at_range: Optional[str] = None, size_range: Optional[str] = None, owner_user_ids: Optional[List[str]] = None, ancestor_folder_ids: Optional[List[str]] = None, content_types: Optional[List[str]] = None, type: Optional[str] = None, trash_content: Optional[str] = None, mdfilters: Optional[List[Dict]] = None, **kwargs) -> BoxResponse:
         """Search for content with advanced filters
@@ -3808,7 +3840,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.search_for_content(query, limit=limit, offset=offset, scope=scope, file_extensions=file_extensions, created_at_range=created_at_range, updated_at_range=updated_at_range, size_range=size_range, owner_user_ids=owner_user_ids, ancestor_folder_ids=ancestor_folder_ids, content_types=content_types, type=type, trash_content=trash_content, mdfilters=mdfilters))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def uploads_upload_file(self, attributes: UploadFileAttributes, file: BinaryIO, **kwargs) -> BoxResponse:
         """Upload a file
@@ -3837,7 +3869,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.upload_file(attributes, file))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def uploads_upload_file_version(self, file_id: str, file: BinaryIO, **kwargs) -> BoxResponse:
         """Upload a new version of a file
@@ -3866,7 +3898,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.upload_file_version(file_id, file))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def uploads_preflight_file_upload_check(self, name: str, size: int, parent: PreflightFileUploadCheckParent, **kwargs) -> BoxResponse:
         """Check if file can be uploaded
@@ -3896,7 +3928,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.preflight_file_upload_check(name, size, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def uploads_create_upload_session(self, folder_id: str, file_size: int, file_name: str, **kwargs) -> BoxResponse:
         """Create an upload session for large files
@@ -3926,7 +3958,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.create_upload_session(folder_id, file_size, file_name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def uploads_upload_part(self, upload_session_id: str, part_data: bytes, **kwargs) -> BoxResponse:
         """Upload a part for chunked upload
@@ -3955,7 +3987,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.upload_part(upload_session_id, part_data))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def uploads_commit_upload_session(self, upload_session_id: str, parts: List[Dict], **kwargs) -> BoxResponse:
         """Commit an upload session
@@ -3984,7 +4016,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.commit_upload_session(upload_session_id, parts))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def uploads_abort_upload_session(self, upload_session_id: str, **kwargs) -> BoxResponse:
         """Abort an upload session
@@ -4012,7 +4044,7 @@ class BoxDataSource:
             response = await loop.run_in_executor(None, lambda: manager.abort_upload_session(upload_session_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def get_client(self) -> BoxClient:
         """Get the underlying Box client."""
@@ -4060,7 +4092,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def get_folder_by_id(self, folder_id: str) -> BoxResponse:
         """Get folder by ID."""
@@ -4071,7 +4103,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def get_file_by_id(self, file_id: str) -> BoxResponse:
         """Get file by ID."""
@@ -4082,7 +4114,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     async def get_current_user(self) -> BoxResponse:
         """Get current authenticated user."""
@@ -4093,7 +4125,7 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))
 
     # Enterprise Administration Methods
     async def get_enterprise_info(self) -> BoxResponse:
@@ -4105,4 +4137,4 @@ class BoxDataSource:
             )
             return BoxResponse(success=True, data={"enterprise": getattr(user, 'enterprise', None)})
         except Exception as e:
-            return BoxResponse(success=False, error=str(e))
+            return BoxResponse(success=False, error=_error_text(e))

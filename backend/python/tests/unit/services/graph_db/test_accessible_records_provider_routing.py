@@ -121,8 +121,9 @@ class TestPermissionModelRouting:
         await provider.get_accessible_virtual_record_ids(USER, ORG)
 
         assert cache.routes == [("cusr", "conn-rec")]
+        # The loader is strict so that a failed read is never cached.
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-rec", None
+            USER, ORG, "conn-rec", None, raise_on_error=True
         )
         provider._get_all_virtual_ids_for_connector.assert_not_called()
 
@@ -171,10 +172,10 @@ class TestMetadataFilterBypass:
 
         assert cache.routes == []
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-app", {"departments": ["eng"]}, time_range=None
+            USER, ORG, "conn-app", {"departments": ["eng"]}, time_range=None, raise_on_error=False
         )
         provider._get_kb_virtual_ids.assert_awaited_once_with(
-            USER, ORG, None, {"departments": ["eng"]}, time_range=None
+            USER, ORG, None, {"departments": ["eng"]}, time_range=None, raise_on_error=False
         )
 
     async def test_time_range_takes_the_live_path(self) -> None:
@@ -188,10 +189,10 @@ class TestMetadataFilterBypass:
 
         assert cache.routes == []
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-app", {}, time_range=window
+            USER, ORG, "conn-app", {}, time_range=window, raise_on_error=False
         )
         provider._get_kb_virtual_ids.assert_awaited_once_with(
-            USER, ORG, None, {}, time_range=window
+            USER, ORG, None, {}, time_range=window, raise_on_error=False
         )
 
     async def test_time_range_bypasses_even_with_kb_and_apps_filters(self) -> None:
@@ -345,7 +346,9 @@ class TestKbAccessResolution:
         out = await provider.get_accessible_virtual_record_ids(USER, ORG)
 
         assert out == {"vr-1": "rec-1"}
-        provider._get_kb_virtual_ids.assert_awaited_once_with(USER, ORG, None, None)
+        provider._get_kb_virtual_ids.assert_awaited_once_with(
+            USER, ORG, None, None, raise_on_error=False
+        )
 
     async def test_per_kb_failure_falls_back_to_the_live_path(self) -> None:
         cache = RecordingCache()
@@ -374,8 +377,120 @@ class TestConnectorFallback:
 
         assert out == {"vr-1": "rec-1"}
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-app", None
+            USER, ORG, "conn-app", None, raise_on_error=False
         )
+
+
+class TestKbReclassificationFromAppsFilter:
+    """KB app IDs placed in the `apps` filter must be reclassified to the
+    `kb` filter so they reach the KB query path instead of being silently
+    dropped by Scenario 4.
+
+    This is the root cause of the MCP intermittent 404 bug: the MCP SDK
+    sends all source IDs (connectors + KB collections) in `filters.apps`
+    with `filters.kb = []`, which triggers Scenario 4 (connector-only)
+    and skips KB queries entirely.
+    """
+
+    async def test_kb_id_in_apps_reclassified_to_kb_filter(self) -> None:
+        """A KB app UUID in `apps` with empty `kb` must be moved to the KB
+        query path, not treated as a connector."""
+        cache = RecordingCache()
+        provider = _provider(cache, apps=[KB_APP])
+        provider._get_accessible_kb_ids = AsyncMock(return_value=["kb-1"])
+
+        await provider.get_accessible_virtual_record_ids(
+            USER, ORG, filters={"apps": ["kb-1"], "kb": []}
+        )
+
+        assert ("kb", "kb-1") in cache.routes
+        assert all(kind == "kb" for kind, _ in cache.routes)
+
+    async def test_mixed_ids_split_correctly(self) -> None:
+        """A mix of connector and KB IDs in `apps` must split: connector IDs
+        stay in apps, KB IDs move to kb."""
+        cache = RecordingCache()
+        provider = _provider(cache, apps=[APP_LEVEL_CONNECTOR, KB_APP])
+        provider._get_accessible_kb_ids = AsyncMock(return_value=["kb-1"])
+
+        await provider.get_accessible_virtual_record_ids(
+            USER, ORG, filters={"apps": ["conn-app", "kb-1"], "kb": []}
+        )
+
+        kinds = {kind for kind, _ in cache.routes}
+        assert "capp" in kinds, "connector should still be queried"
+        assert "kb" in kinds, "KB should be queried after reclassification"
+
+    async def test_kb_id_in_apps_merged_with_existing_kb_filter(self) -> None:
+        """KB IDs in `apps` are merged with any already-present `kb` filter,
+        preserving insertion order and deduplicating."""
+        cache = RecordingCache()
+        kb2 = _app("kb-2", Connectors.KNOWLEDGE_BASE.value)
+        provider = _provider(cache, apps=[KB_APP, kb2])
+        provider._get_accessible_kb_ids = AsyncMock(return_value=["kb-1", "kb-2"])
+
+        await provider.get_accessible_virtual_record_ids(
+            USER, ORG, filters={"apps": ["kb-2"], "kb": ["kb-1"]}
+        )
+
+        kb_routes = [rid for kind, rid in cache.routes if kind == "kb"]
+        assert "kb-1" in kb_routes
+        assert "kb-2" in kb_routes
+
+    async def test_inaccessible_kb_id_in_apps_is_dropped(self) -> None:
+        """A KB ID the user cannot access must not be reclassified — it must
+        be dropped during the access check, not leak into results."""
+        cache = RecordingCache()
+        provider = _provider(cache, apps=[KB_APP])
+        provider._get_accessible_kb_ids = AsyncMock(return_value=["kb-1"])
+
+        await provider.get_accessible_virtual_record_ids(
+            USER, ORG, filters={"apps": ["kb-not-mine"], "kb": []}
+        )
+
+        assert cache.routes == []
+
+    async def test_only_kb_collection_no_connectors_via_apps(self) -> None:
+        """The exact MCP bug scenario: user has only KB collections, MCP
+        sends the KB ID in `apps` with `kb: []`. Must return KB results."""
+        cache = RecordingCache()
+        provider = _provider(cache, apps=[KB_APP])
+        provider._get_accessible_kb_ids = AsyncMock(return_value=["kb-1"])
+        provider._get_kb_virtual_ids_for_kb = AsyncMock(return_value={"vr-1": "rec-1"})
+
+        out = await provider.get_accessible_virtual_record_ids(
+            USER, ORG, filters={"apps": ["kb-1"], "kb": []}
+        )
+
+        assert out == {"vr-1": "rec-1"}
+
+    async def test_kb_only_apps_filter_no_explicit_kb_key(self) -> None:
+        """When `kb` key is absent entirely (not just empty), KB IDs in
+        `apps` must still be reclassified."""
+        cache = RecordingCache()
+        provider = _provider(cache, apps=[KB_APP])
+        provider._get_accessible_kb_ids = AsyncMock(return_value=["kb-1"])
+
+        await provider.get_accessible_virtual_record_ids(
+            USER, ORG, filters={"apps": ["kb-1"]}
+        )
+
+        assert ("kb", "kb-1") in cache.routes
+
+    async def test_empty_apps_filter_not_affected(self) -> None:
+        """Empty `apps` with empty `kb` must still hit Scenario 3
+        (search everything), unchanged by the reclassification logic."""
+        cache = RecordingCache()
+        provider = _provider(cache, apps=[APP_LEVEL_CONNECTOR, KB_APP])
+        provider._get_accessible_kb_ids = AsyncMock(return_value=["kb-1"])
+
+        await provider.get_accessible_virtual_record_ids(
+            USER, ORG, filters={"apps": [], "kb": []}
+        )
+
+        kinds = {kind for kind, _ in cache.routes}
+        assert "capp" in kinds
+        assert "kb" in kinds
 
 
 class TestUnchangedPreconditions:

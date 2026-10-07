@@ -34,6 +34,9 @@ export interface GeneratedTokens {
 export interface GenerateTokensOptions {
   accessTokenLifetimeOverrideSeconds?: number
   name?: string
+  // User grants only: PAT and service pseudo-apps store allowedScopes once
+  // and validate against MCP_SCOPES instead.
+  recheckAppScopes?: boolean
 }
 
 // Token Response (RFC 6749 compliant)
@@ -54,13 +57,17 @@ export interface AuthorizeRequest {
   scope: string
   state: string
   code_challenge?: string
-  code_challenge_method?: 'S256' | 'plain'
+  code_challenge_method?: 'S256'
   nonce?: string
 }
 
 // Token Request Parameters
 export interface TokenRequest {
-  grant_type: 'authorization_code' | 'client_credentials' | 'refresh_token'
+  grant_type:
+    | 'authorization_code'
+    | 'client_credentials'
+    | 'refresh_token'
+    | 'urn:ietf:params:oauth:grant-type:device_code'
   code?: string
   redirect_uri?: string
   client_id: string
@@ -68,6 +75,7 @@ export interface TokenRequest {
   refresh_token?: string
   scope?: string
   code_verifier?: string
+  device_code?: string
 }
 
 // Revoke Request
@@ -177,8 +185,15 @@ export interface ConsentData {
     logoUrl?: string
     homepageUrl?: string
     privacyPolicyUrl?: string
+    isDynamic?: boolean
   }
   scopes: Array<{
+    name: string
+    description: string
+    category: string
+  }>
+  // Requested but outside the app's allowed scopes; shown, never granted.
+  notGrantedScopes?: Array<{
     name: string
     description: string
     category: string
@@ -213,6 +228,8 @@ export interface OAuthProtectedResourceMetadata {
   scopes_supported: string[]
   bearer_methods_supported: string[]
   resource_documentation?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
 }
 
 // OIDC Discovery Response
@@ -224,6 +241,10 @@ export interface OpenIDConfiguration {
   revocation_endpoint: string
   introspection_endpoint: string
   jwks_uri: string
+  registration_endpoint?: string
+  device_authorization_endpoint?: string
+  /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
+  pipeshub_device_client_id?: string
   scopes_supported: string[]
   response_types_supported: string[]
   grant_types_supported: string[]

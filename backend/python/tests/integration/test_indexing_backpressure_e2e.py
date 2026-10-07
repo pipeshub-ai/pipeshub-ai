@@ -58,6 +58,11 @@ def _make_response(status: int, body: dict | None = None, headers: dict | None =
     return httpx.Response(status, content=content, headers=headers or {})
 
 
+class _SecretsConfigService:
+    async def get_config(self, key, **kwargs):
+        return {"scopedJwtSecret": "scoped-secret-for-tests"}
+
+
 @contextmanager
 def _fake_http_client(client: ParsingClient, request_impl):
     """Same double as ``tests/unit/services/test_base_client_backpressure.py``
@@ -178,7 +183,10 @@ class TestIndexingBackpressureE2E:
         """429s that clear before ParsingClient's own backpressure budget is
         exhausted never surface as an exception at all — the record reaches
         COMPLETED from a single on_event() call."""
-        parsing_client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0)
+        parsing_client = ParsingClient(
+            service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+            config_service=_SecretsConfigService(),
+        )
         doc = _make_doc()
         graph_provider = _make_graph_provider(doc)
         ep = _make_event_processor(parsing_client, graph_provider, doc)
@@ -212,6 +220,7 @@ class TestIndexingBackpressureE2E:
         COMPLETED. The breaker never opens across either attempt."""
         parsing_client = ParsingClient(
             service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+            config_service=_SecretsConfigService(),
         )
         parsing_client.max_backpressure_attempts = 2
         doc = _make_doc()

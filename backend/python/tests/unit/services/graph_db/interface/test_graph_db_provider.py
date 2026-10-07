@@ -20,7 +20,6 @@ import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -192,6 +191,7 @@ class TestAbstractMethodInventory:
         "batch_upsert_nodes",
         "delete_nodes",
         "update_node",
+        "update_node_if_match",
         # Edge operations
         "batch_create_edges",
         "batch_create_entity_relations",
@@ -226,6 +226,12 @@ class TestAbstractMethodInventory:
         "get_record_key_by_external_id",
         "get_records_by_status",
         "get_app_needing_vector_membership_backfill",
+        "get_records_pending_duplicate_reconcile",
+        "move_taxonomy_edges",
+        "find_legacy_taxonomy_nodes",
+        "update_node_fields_if_match",
+        "get_entity_index_candidate",
+        "page_entity_index_source",
         "page_records_for_vector_membership_backfill",
         "get_records",
         "reindex_single_record",
@@ -239,12 +245,26 @@ class TestAbstractMethodInventory:
         "get_record_by_issue_key",
         "get_record_by_weburl",
         "get_records_by_parent",
+        "get_records_by_record_type",
         "get_records_by_record_group",
         "get_records_by_parent_record",
         # Record group operations
         "get_record_group_by_external_id",
         "get_record_group_by_id",
+        "get_record_group_path",
+        "get_record_path",
+        "get_record_path_segments",
+        "get_descendant_virtual_record_ids",
         "get_file_record_by_id",
+        # Knowledge-graph taxonomy entities
+        "get_taxonomy_entities_for_record",
+        "get_entity_candidate_records",
+        "get_permitted_entity_records",
+        "get_taxonomy_entity_membership",
+        "find_taxonomy_nodes",
+        "create_taxonomy_node_if_absent",
+        "add_taxonomy_aliases",
+        "ensure_taxonomy_hierarchy_edge",
         # User operations
         "get_user_by_email",
         "get_user_by_source_id",
@@ -272,12 +292,16 @@ class TestAbstractMethodInventory:
         "is_record_folder",
         "get_record_parent_info",
         "is_record_descendant_of",
+        "get_folder_depth",
+        "get_folder_subtree_height",
         "delete_parent_child_edge_to_record",
         "get_kb_permissions",
         "update_kb_permission",
         "list_kb_permissions",
         "list_all_records",
         "list_kb_records",
+        "list_accessible_artifacts",
+        "get_artifact_detail",
         # KB migration and legacy operations
         "find_file_by_name_in_parent",
         "get_legacy_kb_record_groups",
@@ -289,6 +313,11 @@ class TestAbstractMethodInventory:
         "get_user_group_by_external_id",
         "get_user_groups",
         "batch_upsert_people",
+        "get_person_by_email",
+        "upsert_person_by_email",
+        "ensure_app_membership",
+        "migrate_person_to_user",
+        "reap_stale_external_app_relations",
         "get_app_role_by_external_id",
         "get_app_creator_user",
         # Organization operations
@@ -310,11 +339,13 @@ class TestAbstractMethodInventory:
         "get_accessible_virtual_record_ids",
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
+        "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
         "get_file_permissions",
         "get_first_user_with_permission_to_node",
         "get_users_with_permission_to_node",
+        "get_groups_with_permission_to_node",
         "check_record_access_with_details",
         "get_record_owner_source_user_email",
         # File/parent operations
@@ -345,7 +376,19 @@ class TestAbstractMethodInventory:
         "delete_record_by_external_id",
         "remove_user_access_to_record",
         "delete_records_recursive",
+        "get_uploaded_document_ids",
         "delete_single_record",
+        "soft_delete_records",
+        "get_records_in_delete_batch",
+        "list_trashed_records",
+        "restore_records",
+        "get_purgeable_trashed_records",
+        "is_trash_walk_index_ready",
+        "take_back_kept_record_group",
+        "purge_trashed_records",
+        "record_purge_failure",
+        "get_trash_purge_stats",
+        "purge_trash_kept_record_groups",
         "delete_connector_instance",
         "get_key_by_external_file_id",
         "organization_exists",
@@ -400,6 +443,9 @@ class TestAbstractMethodInventory:
         "add_user_to_all_team",
         "ensure_all_team_with_users",
         "ensure_team_app_edge",
+        # Authenticated-as (creator -> source account)
+        "upsert_authenticated_as",
+        "remove_authenticated_as",
         # User operations
         "get_organization_users",
         # Agent permission operations
@@ -411,6 +457,8 @@ class TestAbstractMethodInventory:
         "validate_folder_for_upload",
         # Record location / permission-aware trails
         "filter_nodes_with_permission_role",
+        "filter_accessible_virtual_record_ids",
+        "filter_accessible_record_ids",
         "get_record_parent_adjacency",
     ]
 
@@ -489,7 +537,6 @@ class TestConcreteMethodCalls:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_people(self):
-        from app.models.entities import Person
         ConcreteProvider = _make_concrete_class()
         instance = ConcreteProvider()
         instance.batch_upsert_people.return_value = None
@@ -530,3 +577,158 @@ class TestConcreteMethodCalls:
         docs, total = result
         assert docs == []
         assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_returns_path(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = "Folder1/Subfolder/File.txt"
+        result = await instance.get_record_path("record123")
+        assert result == "Folder1/Subfolder/File.txt"
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_returns_none(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = None
+        result = await instance.get_record_path("nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_record_path_with_transaction(self):
+        ConcreteProvider = _make_concrete_class()
+        instance = ConcreteProvider()
+        instance.get_record_path.return_value = "Root/Child/File.pdf"
+        result = await instance.get_record_path("rec1", transaction="tx123")
+        assert result == "Root/Child/File.pdf"
+        instance.get_record_path.assert_called_once_with("rec1", transaction="tx123")
+
+
+class TestRecordLinkDefaults:
+    """What a provider with real transactions (ArangoDB) runs for the writes Neo4j does in one statement."""
+
+    @staticmethod
+    def _edge(record_id: str, group_id: str) -> dict:
+        return {"from_id": record_id, "from_collection": "records", "to_id": group_id,
+                "to_collection": "recordGroups"}
+
+    @pytest.mark.asyncio
+    async def test_replace_record_permissions_turning_inheritance_off(self) -> None:
+        instance = _make_concrete_class()()
+        edges = [{"from_id": "u1", "to_id": "r1"}]
+
+        await instance.replace_record_permissions("r1", edges, "g1", inherit=False, transaction="tx")
+
+        instance.delete_edges_to.assert_awaited_once_with("r1", "records", "permission", "tx")
+        instance.batch_create_edges.assert_awaited_once_with(edges, "permission", "tx")
+        # Every record group, not only g1: the edge to a group that can no longer be
+        # looked up must go too.
+        instance.delete_edges_between_collections.assert_awaited_once_with(
+            "r1", "records", "inheritPermissions", "recordGroups", "tx"
+        )
+        instance.delete_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inheritance_is_turned_off_without_a_group(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.replace_record_permissions("r1", [], None, inherit=False, transaction="tx")
+
+        instance.delete_edges_between_collections.assert_awaited_once_with(
+            "r1", "records", "inheritPermissions", "recordGroups", "tx"
+        )
+
+    @pytest.mark.asyncio
+    async def test_replace_record_permissions_turning_inheritance_on(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.replace_record_permissions("r1", [], "g1", inherit=True, transaction="tx")
+
+        instance.batch_create_edges.assert_not_awaited()
+        instance.create_inherit_permissions_relation_record_group.assert_awaited_once_with("r1", "g1", "tx")
+        instance.delete_edges_between_collections.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_between_groups(self) -> None:
+        instance = _make_concrete_class()()
+
+        await instance.link_record_to_group("r1", "new", inherit=None, leaving_group_id="old", transaction="tx")
+
+        assert [call.args[:2] for call in instance.batch_delete_edges.await_args_list] == [
+            ([self._edge("r1", "old")], "belongsTo"),
+            ([self._edge("r1", "old")], "inheritPermissions"),
+        ]
+        instance.create_record_group_relation.assert_awaited_once_with("r1", "new", "tx")
+        instance.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        instance.delete_edge.assert_not_awaited()
+
+    @staticmethod
+    def _recording(instance: IGraphDBProvider) -> list[tuple]:
+        """Every call to the three writes a move is made of, in the order they ran."""
+        calls: list[tuple] = []
+        for name in ("delete_parent_child_edge_to_record", "batch_upsert_records", "create_record_relation"):
+            getattr(instance, name).side_effect = (
+                lambda *args, _name=name, **kwargs: calls.append((_name, args, kwargs))
+            )
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_another_parent(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        record = MagicMock(id="r1")
+
+        await instance.upsert_record_under_parent(record, "folder-2", "tx")
+
+        instance.get_document.assert_awaited_once_with("folder-2", "records", "tx", raise_on_error=True)
+        assert calls == [
+            ("delete_parent_child_edge_to_record", ("r1", "tx"), {}),
+            ("batch_upsert_records", ([record], "tx"), {"release_trashed_external_ids": True}),
+            ("create_record_relation", ("folder-2", "r1", "PARENT_CHILD", "tx"), {}),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_to_the_root_creates_no_edge(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+
+        await instance.upsert_record_under_parent(MagicMock(id="r1"), None, "tx")
+
+        assert [name for name, _, _ in calls] == ["delete_parent_child_edge_to_record", "batch_upsert_records"]
+        instance.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_that_is_gone_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = None
+
+        # By name: other tests here reload the module, and its classes with it.
+        with pytest.raises(RuntimeError, match="Record r1 was not moved") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_in_the_trash_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = {"_key": "folder-2", "isDeleted": True}
+
+        with pytest.raises(RuntimeError, match="folder-2 is not in the graph or is in the trash") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_move_whose_old_edge_cannot_be_deleted_writes_nothing_more(self) -> None:
+        instance = _make_concrete_class()()
+        instance.delete_parent_child_edge_to_record.side_effect = RuntimeError("write-write conflict")
+
+        with pytest.raises(RuntimeError, match="write-write conflict"):
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        instance.batch_upsert_records.assert_not_awaited()
+        instance.create_record_relation.assert_not_awaited()

@@ -4,7 +4,7 @@ import type { ReadonlyURLSearchParams } from 'next/navigation';
 
 /** Case-insensitive connector type key (strip spaces, hyphens, underscores). */
 export function normalizeConnectorTypeKey(value: string): string {
-  return value.trim().toLowerCase();
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
 
 /**

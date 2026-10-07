@@ -6,6 +6,8 @@ import {
   resolveProtocol,
   isAGUI,
   frameAGUI,
+  aguiErrorCodeFromPayload,
+  aguiRunErrorMetadata,
 } from '../../../../src/modules/enterprise_search/utils/agui'
 
 describe('AG-UI protocol utils', () => {
@@ -84,6 +86,26 @@ describe('AG-UI protocol utils', () => {
       expect(AGUIEventType.RUN_ERROR).to.equal('RUN_ERROR')
       expect(AGUIEventType.STATE_SNAPSHOT).to.equal('STATE_SNAPSHOT')
       expect(AGUIEventType.CUSTOM).to.equal('CUSTOM')
+    })
+  })
+
+  describe('aguiErrorCodeFromPayload', () => {
+    it('should use the RUN_ERROR code from the payload', () => {
+      expect(aguiErrorCodeFromPayload({ code: 'accessible_records_not_found' })).to.equal(
+        'accessible_records_not_found',
+      )
+    })
+
+    it('should fall back to streaming_error when code is missing', () => {
+      expect(aguiErrorCodeFromPayload({ message: 'boom' })).to.equal('streaming_error')
+    })
+  })
+
+  describe('aguiRunErrorMetadata', () => {
+    it('should store AG-UI type and code', () => {
+      const meta = aguiRunErrorMetadata('no_response')
+      expect(meta.get('type')).to.equal('RUN_ERROR')
+      expect(meta.get('code')).to.equal('no_response')
     })
   })
 })

@@ -1,0 +1,19 @@
+# Confluence saturation sweep — run repeatedly with --units 1,2,3,4,6,8 and
+# watch the connector process's CPU. The question is not throughput but the N
+# at which one core pegs.
+#
+# Read-only against a live site: seeds nothing, creates nothing. Marked
+# non-deterministic, so `compare` will refuse an A/B verdict — correct, because
+# page content can change under us and Atlassian throttles.
+#
+# repeat is 2 (not 3) and profiling is on only for the steps we care about:
+# every extra iteration is another full pass over a production space.
+name: confluence-sweep
+source: confluence
+units: 1
+scale: 1            # ignored by this source: the count is whatever the space holds
+seed: 1337
+repeat: 2
+warmup: 1
+profile: true
+sync_timeout: 3600

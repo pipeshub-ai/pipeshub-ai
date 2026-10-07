@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import PermissionModel
 from app.sources.external.github.github_async import GhObject
 
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
@@ -119,7 +120,10 @@ class ProjectsSync:
             if permissions is None:
                 return
 
-        permissions.extend(self._visibility_permissions(repo))
+        visibility_permissions = self._visibility_permissions(repo)
+        if any(p.entity_type == EntityType.ORG for p in visibility_permissions):
+            await c.data_entities_processor.ensure_team_app_edge(c.connector_id)
+        permissions.extend(visibility_permissions)
         permissions = _dedupe_highest_permissions(permissions)
         self._accumulate_org_permissions(repo.owner, permissions)
         # Before the repo group, not after every repo: the org group is the only
@@ -379,14 +383,13 @@ class ProjectsSync:
         """
         c = self.c
         try:
-            async with c.data_store_provider.transaction() as tx_store:
-                user = await tx_store.get_user_by_source_id(
-                    source_user_id=source_user_id, connector_id=c.connector_id,
-                )
-                if user:
-                    return Permission(email=user.email, type=ptype, entity_type=EntityType.USER)
-                # Unbound identity — counted once per repo in _sync_repo_members.
-                return None
+            user = await c.data_entities_processor.get_user_by_source_id(
+                source_user_id=source_user_id, connector_id=c.connector_id,
+            )
+            if user:
+                return Permission(email=user.email, type=ptype, entity_type=EntityType.USER)
+            # Unbound identity — counted once per repo in _sync_repo_members.
+            return None
         except Exception as e:
             self.logger.error("Failed to create permission for GitHub user %s: %s", source_user_id, e)
             return None
@@ -429,6 +432,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Issues",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-work-items",
@@ -439,6 +443,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Pull requests",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-pull-requests",
@@ -449,6 +454,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Code repository",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-code-repository",

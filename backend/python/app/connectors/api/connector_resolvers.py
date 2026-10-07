@@ -15,6 +15,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.api.middlewares.auth import is_request_admin
+from app.utils.user_messages import not_found
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,9 @@ def build_graph_data_store(logger_: logging.Logger, graph_provider: Any, org_id:
 
 
 async def lookup_user_for_records(graph_provider: Any, user_id: str, org_id: Optional[str]) -> Any:
-    """OSS: lookup by external userId only."""
+    """OSS: lookup by external userId only. A failed lookup raises, not "user not found"."""
     del org_id
-    return await graph_provider.get_user_by_user_id(user_id=user_id)
+    return await graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
 
 
 def records_user_id_arg(user: dict[str, Any], external_user_id: str) -> str:
@@ -52,16 +53,20 @@ async def authorize_connector_stats(
     connector_id: str,
     org_id: str,
 ) -> None:
-    """OSS: KB role or can_user_view_connector (no is_connector_in_org)."""
-    del org_id
+    """OSS: the caller's org, then KB role or the connector read gate.
+
+    A connector the caller may not open answers 404 like every other read, so
+    stats never confirm that someone else's personal connector exists.
+    """
     user_id = request.state.user.get("userId")
     is_admin = is_request_admin(request)
 
     app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-    if not app_doc:
+    # Another org's connector answers like a missing one, so its id is not confirmed.
+    if not app_doc or not await connector_registry.belongs_to_org(app_doc, org_id):
         raise HTTPException(
-            status_code=404,
-            detail=f"Connector instance {connector_id} not found",
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=not_found("This connector"),
         )
 
     if app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
@@ -72,6 +77,12 @@ async def authorize_connector_stats(
                 detail=f"User not found for user_id: {user_id}",
             )
         user_role = await graph_provider.get_user_kb_permission(connector_id, user.get("_key"))
+        # No role at all means the caller cannot see the collection; the KB reads answer 404 there too.
+        if not user_role:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=not_found("This connector"),
+            )
         if user_role not in ("OWNER", "WRITER", "READER"):
             raise HTTPException(
                 status_code=403,
@@ -82,23 +93,14 @@ async def authorize_connector_stats(
             )
         return
 
-    can_view = await connector_registry.can_user_view_connector(
-        connector_id, app_doc, user_id, is_admin=is_admin
+    connector = await connector_registry.get_connector_instance(
+        connector_id, user_id, org_id, is_admin=is_admin
     )
-    if not can_view:
+    if not connector:
         raise HTTPException(
-            status_code=403,
-            detail=f"Insufficient permissions to access stats for connector {connector_id}",
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=not_found("This connector"),
         )
-
-
-async def assert_hard_delete_record_org(
-    request: Request,
-    graph_provider: Any,
-    record_id: str,
-) -> None:
-    """OSS: no extra tenant gate on hard delete."""
-    del request, graph_provider, record_id
 
 
 def strip_redacted_fields(data: dict[str, Any]) -> dict[str, Any]:
@@ -224,8 +226,10 @@ def annotate_oauth_inheritance(
     shared_oauth_config: dict[str, Any],
     org_id: str,
 ) -> None:
-    """OSS: no inheritance tracking needed."""
-    del auth_dict, shared_oauth_config, org_id
+    """OSS: no inheritance, so an owning org already stored on the connector is never valid."""
+    del shared_oauth_config, org_id
+    auth_dict.pop("inheritedFromOrgId", None)
+    auth_dict.pop("orgId", None)
 
 
 def filter_oauth_configs_for_list(

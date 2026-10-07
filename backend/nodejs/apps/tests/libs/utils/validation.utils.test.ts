@@ -179,7 +179,53 @@ describe('validation.utils', () => {
         { field: 'body.name', message: '', code: 'TOO_SMALL', value: '' },
       ])
 
-      expect(message).to.equal('Validation failed')
+      expect(message).to.equal("Some of the information sent isn't valid. Check the form and try again.")
+    })
+  })
+
+  describe('friendly wording for stock Zod messages', () => {
+    const messagesFor = (schema: z.ZodTypeAny, value: unknown): string[] => {
+      const result = schema.safeParse(value)
+      if (result.success) throw new Error('expected validation to fail')
+      return ValidationUtils.formatZodError(result.error).map((e) => e.message)
+    }
+
+    it('names the field and says what is wrong, without the request part', () => {
+      const schema = z.object({
+        body: z.object({
+          name: z.string(),
+          pageSize: z.number(),
+          email: z.string().email(),
+          title: z.string().min(1),
+          role: z.enum(['admin', 'member']),
+          tags: z.array(z.string()).min(2),
+        }),
+      })
+      expect(
+        messagesFor(schema, { body: { pageSize: 'x', email: 'no', title: '', role: 'boss', tags: ['a'] } }),
+      ).to.have.members([
+        'Name is required.',
+        'Page size must be a number.',
+        'Email must be a valid email address.',
+        "Title can't be empty.",
+        'Role must be one of: admin, member.',
+        'Add at least 2 items to tags.',
+      ])
+    })
+
+    it('treats only the first path entry as the request part', () => {
+      const schema = z.object({ query: z.object({ query: z.string() }) })
+      expect(messagesFor(schema, { query: {} })).to.deep.equal(['Query is required.'])
+    })
+
+    it('keeps a message the schema wrote itself', () => {
+      const schema = z.object({ colour: z.string({ required_error: 'Pick a colour first' }) })
+      expect(messagesFor(schema, {})).to.deep.equal(['Pick a colour first'])
+    })
+
+    it('falls back to "The request" when the whole body is wrong', () => {
+      const schema = z.object({ body: z.object({ name: z.string() }) })
+      expect(messagesFor(schema, { body: 'nope' })).to.deep.equal(['The request must be a group of fields.'])
     })
   })
 })

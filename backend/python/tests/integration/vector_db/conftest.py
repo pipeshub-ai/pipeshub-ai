@@ -2,7 +2,7 @@
 Shared fixtures for vector DB integration tests.
 
 These tests require running Docker services:
-  docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+  docker compose -f tests/integration/compose/vector-db.yml up -d
 
 Run integration tests explicitly:
   pytest tests/integration/vector_db/ -m integration --timeout=120
@@ -49,6 +49,10 @@ async def _connect_or_skip(svc, label: str, host: str, port: int) -> None:
     if health.status == HealthStatus.UNHEALTHY:
         pytest.skip(f"{label} not available at {host}:{port} — {health.message}")
 
+
+# The service fixtures are module-scoped and their clients bind to the loop
+# they were created on, so every test module that uses them must run on
+# ``pytest.mark.asyncio(loop_scope="module")``.
 
 # ---------------------------------------------------------------------------
 # Redis provider fixture

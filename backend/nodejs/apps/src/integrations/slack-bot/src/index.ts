@@ -7,10 +7,15 @@ import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
 import { marked } from "marked";
 // Disable marked's email mangling to prevent HTML entity encoding of email addresses.
-// @tryfabric/mack uses the same marked instance internally.
 marked.setOptions({ mangle: false } as any);
 import app from "./slackApp";
 import receiver from "./receiver";
+// Side-effect import: registers edition-specific Redis providers for this process.
+import "../../../redisProviders";
+import {
+  RedisConnectionProviderFactory,
+  getPreparedRedisProvider,
+} from "../../../libs/services/redis/connectionProviderFactory";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
 import { markdownToSlackMrkdwn } from "./utils/md_to_mrkdwn";
@@ -28,10 +33,15 @@ import {
   toolStatusLabel,
 } from "./utils/tool-display";
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
-import { rewriteCitationsForSlack, stripTinyRefCitationLinks } from "./utils/citations";
+import {
+  rewriteCitationsForSlack,
+  stripFragmentDirective,
+  stripTinyRefCitationLinks,
+} from "./utils/citations";
 
 import {
   type SlackBotConfig,
+  getCurrentMatchedSlackBot,
 } from "./botRegistry";
 
 import {
@@ -41,6 +51,7 @@ import {
   type SlackMessagePayload,
   type TypedSlackClient,
   type AttachmentRef,
+  type SlackAttachmentUploadResult,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
@@ -58,9 +69,12 @@ import {
   buildFinalSlackChunks,
   splitSlackBlocksByLimit,
   classifySlackFiles,
-  extractSupportedAttachments,
+  resolveSkippedAttachmentsAfterUpload,
   uploadSlackAttachments,
-  postUnsupportedAttachmentsNotice,
+  postSkippedAttachmentsNotice,
+  buildSkippedAttachmentsNotice,
+  handleIncomingAttachments,
+  messageHasQuestionText,
   resolveMentionsInText,
   resolveSlackErrorMessage,
   resolveSlackErrorMessageAsync,
@@ -182,8 +196,8 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     seenRecordIds.add(recordId);
 
     const recordName = citation.citationData.metadata.recordName || "Source";
-    // Strip text fragment directive (#:~:text=...) but preserve other fragments
-    const recordUrl = webUrl.replace(/#:~:text=[^#]*/, '');
+    // Slack does not implement text fragments, and sources are deduped per record
+    const recordUrl = stripFragmentDirective(webUrl);
     uniqueRecords.push({ name: recordName, url: recordUrl });
   }
 
@@ -302,7 +316,6 @@ async function processSlackMessage(
   // instead of falling back to the server clock.
   const userTimezone = lookupResult.user.tz || undefined;
   const configService = ConfigService.getInstance();
-  const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
   console.log("currentAgentId", currentAgentId);
@@ -310,6 +323,13 @@ async function processSlackMessage(
   if (!currentBotId) {
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");
   }
+
+  const accessToken = slackJwtGenerator(
+    email,
+    await configService.getScopedJwtSecret(),
+    undefined,
+    { configId: currentBotId },
+  );
 
   const conversation = await getFromDatabase(
     threadId,
@@ -480,14 +500,28 @@ async function processSlackMessage(
     // Handle file attachments for agents
     let attachmentRefs: AttachmentRef[] = [];
     if (typedMessage.files && typedMessage.files.length > 0) {
-      const supportedFiles = extractSupportedAttachments(typedMessage.files);
+      const classification = classifySlackFiles(typedMessage.files);
+      const supportedFiles = classification.supported;
       if (supportedFiles.length > 0) {
         try {
+          let upload: SlackAttachmentUploadResult = { attachments: [], unreadable: [], oversized: [] };
           const botToken = resolvedSlackBot?.botToken;
           if (botToken) {
-            attachmentRefs = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            upload = await uploadSlackAttachments(supportedFiles, botToken, accessToken, currentAgentId);
+            attachmentRefs = upload.attachments;
             console.log(`Uploaded ${attachmentRefs.length} attachment(s) for chat`);
           }
+          const { skipped, followUp, hasSkipped } = resolveSkippedAttachmentsAfterUpload(
+            classification,
+            upload,
+            messageHasQuestionText(typedMessage.text, typedContext.botUserId),
+          );
+          if (hasSkipped && followUp === "none") {
+            // Attachment-only and nothing usable is left: the notice is the reply.
+            await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, followUp));
+            return;
+          }
+          await postSkippedAttachmentsNotice(typedClient, typedMessage, skipped, followUp);
         } catch (uploadError) {
           const errData = (uploadError as any).response?.data;
           const errMsg = errData
@@ -1391,28 +1425,17 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
-  const hasAgent = Boolean(resolvedSlackBot?.agentId);
-  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
-
-  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postUnsupportedAttachmentsNotice(
-      typedClient,
-      typedMessage,
-      unsupported,
-      supported.length > 0,
-      oversized,
-    );
-    if (supported.length === 0) return;
-  }
-
-  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
-  if (filesPresent && !hasAgent && supported.length === 0) return;
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "See below attached file(s).";
+    if (hasSupported) query = "See below attached file(s).";
     else query = "Hi";
   }
 
@@ -1439,28 +1462,17 @@ app.event("app_mention", async ({ event, client, context }) => {
     return;
   }
 
-  const resolvedSlackBot = await resolveSlackBotForEvent();
-  const hasAgent = Boolean(resolvedSlackBot?.agentId);
-  const filesPresent = (typedMessage.files?.length ?? 0) > 0;
-  const { supported, unsupported, oversized } = classifySlackFiles(typedMessage.files);
-
-  if (filesPresent && hasAgent && (unsupported.length > 0 || oversized.length > 0)) {
-    await postUnsupportedAttachmentsNotice(
-      typedClient,
-      typedMessage,
-      unsupported,
-      supported.length > 0,
-      oversized,
-    );
-    if (supported.length === 0) return;
-  }
-
-  // Preserve legacy silent-ignore on non-agent path (out of scope to fix here).
-  if (filesPresent && !hasAgent && supported.length === 0) return;
+  const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
 
   let query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
-    if (supported.length > 0) query = "Attached file(s).";
+    if (hasSupported) query = "Attached file(s).";
     else query = "Hi";
   }
 
@@ -1484,6 +1496,12 @@ app.event("app_mention", async ({ event, client, context }) => {
 });
 
 (async () => {
+  // Same Redis bootstrap contract as Application.initialize(): this is its
+  // own process, so without it ConfigService -> KV store resolves REDIS_MODE
+  // against a registry that only knows the OSS modes.
+  await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
+  await getPreparedRedisProvider();
+
   await connect();
 
   // Drop legacy threadId + botId index if it exists

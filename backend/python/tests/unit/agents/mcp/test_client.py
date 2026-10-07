@@ -28,28 +28,6 @@ def _config(**overrides) -> MCPServerConfig:
     return MCPServerConfig(**defaults)
 
 
-class TestSanitizeUrlForDiagnostics:
-    def test_strips_userinfo_query_and_fragment(self) -> None:
-        from app.agents.mcp.client import _sanitize_url_for_diagnostics
-
-        raw = "https://user:pass@mcp.example.com:8443/v1/mcp?access_token=secret#frag"
-        assert _sanitize_url_for_diagnostics(raw) == "https://mcp.example.com:8443/v1/mcp"
-
-    def test_preserves_clean_url(self) -> None:
-        from app.agents.mcp.client import _sanitize_url_for_diagnostics
-
-        assert (
-            _sanitize_url_for_diagnostics("https://gitlab.com/api/v4/mcp")
-            == "https://gitlab.com/api/v4/mcp"
-        )
-
-    def test_ipv6_host_keeps_brackets_drops_userinfo(self) -> None:
-        from app.agents.mcp.client import _sanitize_url_for_diagnostics
-
-        raw = "https://token@[2001:db8::1]/mcp?key=abc"
-        assert _sanitize_url_for_diagnostics(raw) == "https://[2001:db8::1]/mcp"
-
-
 class TestLastHttpResponseRedaction:
     @pytest.mark.asyncio
     async def test_on_response_redacts_sensitive_url_components(self) -> None:
@@ -75,7 +53,13 @@ class TestLastHttpResponseRedaction:
         assert "access_token" not in message
 
 
+@pytest.fixture
+def allow_custom_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
+
+
 class TestBuildTransport:
+    @pytest.mark.usefixtures("allow_custom_stdio")
     def test_stdio_builds_stdio_transport(self) -> None:
         config = _config(transport=MCPTransport.STDIO, command="npx", args=["-y", "server"])
         with patch("app.agents.mcp.client.StdioTransport") as mock_cls:
@@ -84,6 +68,7 @@ class TestBuildTransport:
                 command="npx", args=["-y", "server"], env={"KEY": "value"}, log_file=None, keep_alive=None,
             )
 
+    @pytest.mark.usefixtures("allow_custom_stdio")
     def test_stdio_forwards_stderr_log_file_and_keep_alive(self) -> None:
         config = _config(transport=MCPTransport.STDIO, command="npx", args=["-y", "server"])
         with patch("app.agents.mcp.client.StdioTransport") as mock_cls:
@@ -92,6 +77,7 @@ class TestBuildTransport:
                 command="npx", args=["-y", "server"], env={}, log_file=Path("/tmp/mcp-stderr.log"), keep_alive=False,
             )
 
+    @pytest.mark.usefixtures("allow_custom_stdio")
     def test_stdio_without_command_raises(self) -> None:
         config = _config(transport=MCPTransport.STDIO, command=None)
         with pytest.raises(MCPConnectionError, match="no command"):
@@ -138,6 +124,47 @@ class TestBuildTransport:
         config.transport = "carrier_pigeon"
         with pytest.raises(MCPConnectionError, match="Unsupported MCP transport"):
             build_transport(config)
+
+
+class TestBuildTransportStdioPolicy:
+    @pytest.mark.asyncio
+    async def test_build_transport_refuses_legacy_custom_stdio_when_flag_off(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MCP_ALLOW_CUSTOM_STDIO", raising=False)
+        marker = tmp_path / "spawned"
+        config = _config(transport=MCPTransport.STDIO, command="touch", args=[str(marker)])
+        with pytest.raises(MCPConnectionError, match="MCP_ALLOW_CUSTOM_STDIO"):
+            await MCPClientManager(config).list_tools()
+        assert not marker.exists()
+
+    @pytest.mark.parametrize("flag", ["true", "false"])
+    def test_build_transport_uses_template_command_for_catalog(
+        self, flag: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", flag)
+        config = _config(transport=MCPTransport.STDIO, type_id="slack", command="touch", args=["/tmp/x"])
+        with patch("app.agents.mcp.client.StdioTransport") as mock_cls:
+            build_transport(config)
+        kwargs = mock_cls.call_args.kwargs
+        assert kwargs["command"] == "npx"
+        assert kwargs["args"] == ["-y", "@modelcontextprotocol/server-slack"]
+
+    def test_build_transport_refuses_catalog_http_template_flipped_to_stdio(self) -> None:
+        config = _config(transport=MCPTransport.STDIO, type_id="github", command="touch", args=["/tmp/x"])
+        with patch("app.agents.mcp.client.StdioTransport") as mock_cls:
+            with pytest.raises(MCPConnectionError, match="not a STDIO server"):
+                build_transport(config)
+        mock_cls.assert_not_called()
+
+    @pytest.mark.usefixtures("allow_custom_stdio")
+    @pytest.mark.parametrize("env_name", ["NODE_OPTIONS", "LD_PRELOAD", "PATH", "PYTHONPATH"])
+    def test_build_transport_refuses_dangerous_env_names(self, env_name: str) -> None:
+        config = _config(transport=MCPTransport.STDIO, command="npx", args=["-y", "server"])
+        with patch("app.agents.mcp.client.StdioTransport") as mock_cls:
+            with pytest.raises(MCPConnectionError, match=env_name):
+                build_transport(config, env={env_name: "x"})
+        mock_cls.assert_not_called()
 
 
 class TestAnnotateWithLastHttpResponse:
@@ -310,6 +337,7 @@ class TestMCPClientManagerConnect:
                     pass
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("allow_custom_stdio")
     async def test_connect_propagates_mcp_connection_error_unwrapped(self) -> None:
         config = _config(transport=MCPTransport.STDIO, command=None)
         manager = MCPClientManager(config)

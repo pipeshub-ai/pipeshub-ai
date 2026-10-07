@@ -7,9 +7,12 @@ import { useChatStore } from './store';
 export function buildChatHref(options: {
   agentId?: string | null;
   conversationId?: string | null;
+  /** Ignored when `agentId` is set — a thread can't be scoped to both an agent and a project. */
+  projectId?: string | null;
 }): string {
   const q = new URLSearchParams();
   if (options.agentId) q.set('agentId', options.agentId);
+  else if (options.projectId) q.set('projectId', options.projectId);
   if (options.conversationId) q.set('conversationId', options.conversationId);
   const qs = q.toString();
   return qs ? `/chat/?${qs}` : '/chat/';
@@ -22,6 +25,19 @@ export function buildChatHref(options: {
 export function openFreshAgentChat(agentId: string, router: { replace: (href: string) => void }): void {
   useChatStore.getState().clearActiveSlot();
   const href = buildChatHref({ agentId });
+  if (typeof window !== 'undefined') {
+    window.history.replaceState(null, '', href);
+  }
+  router.replace(href);
+}
+
+/** Same as {@link openFreshAgentChat}, scoped to a project instead of an agent. */
+export function openFreshProjectChat(
+  projectId: string,
+  router: { replace: (href: string) => void }
+): void {
+  useChatStore.getState().clearActiveSlot();
+  const href = buildChatHref({ projectId });
   if (typeof window !== 'undefined') {
     window.history.replaceState(null, '', href);
   }

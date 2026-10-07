@@ -1,4 +1,5 @@
-"""AQL and Cypher for vector membership backfill scans.
+"""AQL and Cypher for vector membership backfill scans, and the gate that says
+whether a connector's points can be found by their membership arrays at all.
 
 Paged by ``connectorId`` and a stable record key so a crash can resume.
 Does not join ``IS_OF_TYPE`` or load whole collections.
@@ -11,7 +12,23 @@ from app.config.constants.arangodb import CollectionNames
 _APPS = CollectionNames.APPS.value
 _RECORDS = CollectionNames.RECORDS.value
 _FLAG = "vectorMembershipBackfilled"
+_EXHAUSTED_FLAG = "vectorMembershipBackfillExhausted"
 _STATUS_DELETING = "DELETING"
+
+
+def can_use_membership_cleanup(app: dict) -> bool:
+    """Whether this app's vector points can be found by their membership arrays.
+
+    Both flags matter. The backfill sets ``vectorMembershipBackfilled`` when it
+    *gives up* as well as when it succeeds, so the completion flag alone cannot
+    tell a healthy connector from one whose points it never managed to tag —
+    and cleaning the latter by membership filter would silently orphan them.
+
+    Single source of truth for that decision: the graph providers use it to skip
+    collecting a VRID list nothing will read, and the connector services use it
+    to choose the cleanup event. Those two must never disagree.
+    """
+    return bool(app.get(_FLAG, False)) and not bool(app.get(_EXHAUSTED_FLAG, False))
 
 
 def build_app_needing_vector_membership_backfill_aql() -> str:

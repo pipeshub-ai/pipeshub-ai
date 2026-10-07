@@ -158,6 +158,18 @@ class AgentResult(BaseModel):
     turns: list[AgentTurn] = Field(default_factory=list)
     success: bool = True
     error: str | None = None
+    # Set by `Agent.fail(..., status="cancelled")` — an immutable snapshot
+    # of whether CANCELLATION was this run's own terminal outcome, taken at
+    # the moment the agent loop observed it (PRE_TURN's `RunCancelled` or
+    # `StopReason.CANCELLED` from the transport). Consumers that need to
+    # know if a run was cancelled should read this, not re-check a
+    # `CancellationToken` afterward — the token is a live, mutable flag
+    # that a `cancel()` call arriving after this result was already built
+    # (e.g. a late/duplicate stop request) can flip with no bearing on how
+    # THIS run actually ended. `success=False` alone does not disambiguate
+    # this either: `fail()` sets it for every non-success exit, cancelled
+    # or not.
+    cancelled: bool = False
     usage: RunUsage = Field(default_factory=RunUsage)
     # Optional structured contract a sub-agent's `task_complete` call can
     # populate on top of the always-present free-text `output` — never

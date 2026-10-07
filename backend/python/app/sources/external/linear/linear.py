@@ -2128,12 +2128,12 @@ class LinearDataSource:
                     response.raise_for_status()
                     async for chunk in response.aiter_bytes():
                         yield chunk
-        except httpx.HTTPStatusError as e:
-            raise ValueError(f"Failed to fetch file content: HTTP {e.response.status_code}")
+        except httpx.HTTPStatusError:
+            raise
         except httpx.RequestError as e:
-            raise ValueError(f"Failed to fetch file content: {str(e)}")
+            raise ValueError(f"Failed to fetch file content: {str(e)}") from e
         except Exception as e:
-            raise ValueError(f"Failed to fetch file content: {str(e)}")
+            raise ValueError(f"Failed to fetch file content: {str(e)}") from e
 
     async def get_file_size(self, file_url: str) -> Optional[int]:
         """

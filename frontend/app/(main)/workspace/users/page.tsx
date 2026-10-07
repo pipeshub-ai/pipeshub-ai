@@ -28,10 +28,11 @@ import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { isProcessedError } from '@/lib/api';
-import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../constants';
+import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage } from '../constants';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
 import { ProfileApi } from '../profile/api';
+import { SmtpApi } from '../mail/api';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 
@@ -127,6 +128,20 @@ function UsersPageContent() {
     newRole: string;
   } | null>(null);
   const [isChangingRole, setIsChangingRole] = useState(false);
+
+  // SMTP is required to send invite emails — the invite APIs 500 without it.
+  // `null` = not yet checked; block new invite sends until status is known.
+  const [isSmtpConfigured, setIsSmtpConfigured] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    SmtpApi.isConfigured().then((configured) => {
+      if (!cancelled) setIsSmtpConfigured(configured);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const smtpBlocksInvite = isSmtpConfigured !== true;
 
   const {
     users,
@@ -797,9 +812,13 @@ function UsersPageContent() {
       if (newRole === currentRole) return;
 
       try {
-        await ProfileApi.updateUser(user.userId, {
-          role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
-        });
+        await ProfileApi.updateUser(
+          user.userId,
+          {
+            role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+          },
+          { suppressErrorToast: true },
+        );
 
         addToast({
           variant: 'success',
@@ -818,13 +837,28 @@ function UsersPageContent() {
         // Refresh users list to reflect the change
         fetchUsers();
       } catch (err: unknown) {
-        const description = isProcessedError(err) ? err.message : undefined;
-        addToast({
-          variant: 'error',
-          title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
-          ...(description ? { description } : {}),
-          duration: 5000,
-        });
+        const apiMessage = isProcessedError(err) ? err.message : undefined;
+        if (isMaxOrgAdminsErrorMessage(apiMessage)) {
+          addToast({
+            variant: 'error',
+            title: t(
+              'workspace.users.actions.maxAdminsReachedTitle',
+              'Cannot add another admin'
+            ),
+            description: t(
+              'workspace.users.actions.maxAdminsReached',
+              'An organization can have at most 5 admins.'
+            ),
+            duration: 5000,
+          });
+        } else {
+          addToast({
+            variant: 'error',
+            title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
+            ...(apiMessage ? { description: apiMessage } : {}),
+            duration: 5000,
+          });
+        }
         throw err;
       }
     },
@@ -1103,6 +1137,15 @@ function UsersPageContent() {
         ctaLabel={t('workspace.users.inviteButton')}
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
+        ctaDisabled={smtpBlocksInvite}
+        ctaTooltip={
+          smtpBlocksInvite
+            ? t(
+                'workspace.users.inviteDisabledSmtp',
+                'SMTP is not configured. Set up email settings before inviting users.'
+              )
+            : undefined
+        }
         additionalActions={<UsersPageHeaderActions onMemberChanged={fetchUsers} />}
       />
 
@@ -1179,7 +1222,7 @@ function UsersPageContent() {
       </Flex>
 
       {/* Invite Users Sidebar */}
-      <InviteUsersSidebar onInviteSuccess={fetchUsers} />
+      <InviteUsersSidebar onInviteSuccess={fetchUsers} isSmtpConfigured={isSmtpConfigured === true} />
 
       {/* User Profile Sidebar */}
       <UserProfileSidebar />

@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.neo4j import collection_to_label
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppMetadata, AppRole, Record
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -124,6 +125,30 @@ class TestNeo4jProvider(Neo4jProvider):
             cypher = "MATCH (g:RecordGroup {connectorId: $cid}) RETURN count(DISTINCT g) AS c"
         result = await self.client.execute_query(cypher, {"cid": connector_id})
         return int(result[0]["c"]) if result else 0
+
+    async def fetch_record_group_names(
+        self, connector_id: str, group_type: str | None = None
+    ) -> List[str]:
+        """Names of a connector's RecordGroups, optionally of one type.
+
+        A source's containers — SharePoint sites, Drive shared drives, Jira
+        projects — become RecordGroups, so this is how a test asks "did site X
+        sync" by the site's own name rather than by searching record names for
+        a substring, which can match a file called after the site instead.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        params: Dict[str, Any] = {"cid": connector_id}
+        type_filter = ""
+        if group_type:
+            type_filter = " AND g.groupType = $gtype"
+            params["gtype"] = group_type
+        result = await self.client.execute_query(
+            f"MATCH (g:RecordGroup) WHERE g.connectorId = $cid{type_filter} "
+            "RETURN coalesce(g.name, g.groupName) AS name",
+            params,
+        )
+        return [str(row["name"]) for row in result if row.get("name")]
 
     async def count_user_groups(self, connector_id: str) -> int:
         """Count ``Group`` (Jira site user-group) nodes for this connector."""
@@ -1020,31 +1045,6 @@ class TestNeo4jProvider(Neo4jProvider):
         "userAppRelation": "USER_APP_RELATION",
     }
 
-    _ARANGO_COLLECTION_TO_NEO4J_LABEL: dict[str, str] = {
-        "users": "User",
-        "groups": "Group",
-        "roles": "Role",
-        "organizations": "Organization",
-        "records": "Record",
-        "recordGroups": "RecordGroup",
-        "apps": "App",
-        "tickets": "Ticket",
-        "files": "File",
-        "mails": "Mail",
-        "webpages": "Webpage",
-        "comments": "Comment",
-        "links": "Link",
-        "projects": "Project",
-        "products": "Product",
-        "deals": "Deal",
-        "meetings": "Meeting",
-        "artifacts": "Artifact",
-        "codeFiles": "CodeFile",
-        "prs": "PullRequest",
-        "sqlTables": "SqlTable",
-        "sqlViews": "SqlView",
-    }
-
     async def find_edges_between(
         self,
         from_collection: str,
@@ -1057,8 +1057,14 @@ class TestNeo4jProvider(Neo4jProvider):
         if not self.client:
             raise RuntimeError("Provider not connected")
 
-        from_label = self._ARANGO_COLLECTION_TO_NEO4J_LABEL.get(from_collection)
-        to_label = self._ARANGO_COLLECTION_TO_NEO4J_LABEL.get(to_collection)
+        # Delegate to the production resolver rather than keeping a second copy of
+        # the mapping here. A local copy silently drifted: it guessed "PullRequest"
+        # and "CodeFile" while production falls back to ``collection.capitalize()``
+        # for collections absent from COLLECTION_TO_LABEL, producing "Prs" and
+        # "Codefiles". Nothing asserted a PR or code-file edge until the GitHub Teams
+        # suite did, so the wrong labels matched zero rows and read as a missing edge.
+        from_label = collection_to_label(from_collection)
+        to_label = collection_to_label(to_collection)
         edge_label = self._ARANGO_TO_NEO4J_EDGE.get(edge_collection)
 
         if not from_label or not to_label or not edge_label:
@@ -1080,3 +1086,86 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return [dict(row["props"]) for row in result] if result else []
 
+    # =========================================================================
+    # Delete footprints. A handle is "<label>/<id>", the Neo4j counterpart of
+    # ArangoDB's "<collection>/<key>", so a node is named the same way on both.
+    # =========================================================================
+
+    async def connector_node_handles(self, connector_id: str) -> List[str]:
+        """Every node a connector (or knowledge base) owns: nodes carrying its
+        connectorId, the node whose id is the connector id, and its records' type nodes."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            CALL {
+                MATCH (n {connectorId: $cid}) RETURN n
+                UNION
+                MATCH (n {id: $cid}) RETURN n
+                UNION
+                MATCH (:Record {connectorId: $cid})-[:IS_OF_TYPE]->(n) RETURN n
+            }
+            WITH n WHERE n.id IS NOT NULL
+            RETURN DISTINCT labels(n)[0] + '/' + n.id AS handle
+            """,
+            {"cid": connector_id},
+        )
+        return sorted(row["handle"] for row in result or [])
+
+    async def record_node_handles(self, record_ids: Iterable[str]) -> List[str]:
+        """The given records and their type nodes (File, Mail, ...)."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record) WHERE r.id IN $ids
+            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(t)
+            WITH collect(DISTINCT r) + collect(DISTINCT t) AS nodes
+            UNWIND nodes AS n
+            WITH n WHERE n.id IS NOT NULL
+            RETURN DISTINCT labels(n)[0] + '/' + n.id AS handle
+            """,
+            {"ids": list(record_ids)},
+        )
+        return sorted(row["handle"] for row in result or [])
+
+    @staticmethod
+    def _handles_by_label(handles: Iterable[str]) -> Dict[str, List[str]]:
+        grouped: Dict[str, List[str]] = {}
+        for handle in handles:
+            label, _, node_id = handle.partition("/")
+            if not label.isidentifier():
+                raise ValueError(f"Not a node handle: {handle!r}")
+            grouped.setdefault(label, []).append(node_id)
+        return grouped
+
+    async def count_existing_nodes(self, handles: Iterable[str]) -> int:
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        total = 0
+        for label, ids in self._handles_by_label(handles).items():
+            result = await self.client.execute_query(
+                f"MATCH (n:`{label}`) WHERE n.id IN $ids RETURN count(DISTINCT n) AS c",
+                {"ids": ids},
+            )
+            total += int(result[0]["c"]) if result else 0
+        return total
+
+    async def count_edges_touching(self, handles: Iterable[str], *, excluding: Iterable[str] = ()) -> int:
+        """Relationships with either end on one of these nodes, each counted once.
+
+        *excluding* names edge collections, as on ArangoDB; their relationship types are left out.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        skipped = sorted({self._get_relationship_type(c) for c in excluding})
+        seen: set = set()
+        for label, ids in self._handles_by_label(handles).items():
+            result = await self.client.execute_query(
+                f"MATCH (n:`{label}`)-[r]-() WHERE n.id IN $ids AND NOT type(r) IN $skipped "
+                "RETURN collect(DISTINCT elementId(r)) AS rels",
+                {"ids": ids, "skipped": skipped},
+            )
+            if result:
+                seen.update(result[0]["rels"] or [])
+        return len(seen)

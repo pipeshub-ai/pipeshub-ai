@@ -5,8 +5,9 @@ whether its event loop is being blocked. The primary signal is HEALTH:probe
 latency: /health is a trivial async endpoint that does no I/O, so any time it
 takes more than a few milliseconds to answer, the loop was busy or blocked.
 
-Run against a resource-pinned Docker stack (see docker-compose.loadtest.yml).
-Numbers from an unpinned stack are not reproducible.
+Run against a resource-pinned Docker stack: give the app container fixed CPU
+and memory limits before measuring. Numbers from an unpinned stack are not
+reproducible, because a busy host changes them run to run.
 
 Usage:
     # Many identities (required to A/B anything cached per user — see seed_users.py)
@@ -14,10 +15,10 @@ Usage:
     # or a single one
     export PIPESHUB_TOKEN='<bearer token from browser devtools>'
     # PIPESHUB_TOKEN wins; TOKEN is the documented .env fallback (same as perftest.sh)
-    locust -f locustfile.py --headless -u 10 -r 2 -t 10m -H http://localhost:3000
+    locust -f locustfile_play.py --headless -u 10 -r 2 -t 10m -H http://localhost:3000
 
     # ramp to find the knee
-    PIPESHUB_SHAPE=stepramp locust -f locustfile.py --headless \
+    PIPESHUB_SHAPE=stepramp locust -f locustfile_play.py --headless \
         -t 25m -H http://localhost:3000
 
 Scenario classes (name them on the CLI to pin the mix):

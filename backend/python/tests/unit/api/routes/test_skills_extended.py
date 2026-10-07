@@ -1,5 +1,6 @@
 """Extended tests for app.api.routes.skills — covers lines 207-641."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from app.api.routes.skills import (
     _get_user_key,
     _handle_format_error,
     _handle_registry_error,
+    _require_skills_enabled,
 )
 
 MODULE = "app.api.routes.skills"
@@ -87,6 +89,10 @@ def _mock_request():
 
 def _mock_manager_and_ctx():
     manager = AsyncMock()
+    # `catalog_snapshot` is a SYNC read model on the real `SkillManager` (see
+    # `sync_builtin_skills`, called from `list_skills`); left as a bare
+    # AsyncMock attribute it would return a coroutine instead of a list.
+    manager.catalog_snapshot = MagicMock(return_value=[])
     ctx = {
         "retrieval_service": AsyncMock(),
         "graph_provider": AsyncMock(),
@@ -214,10 +220,55 @@ class TestHandleErrors:
 
 
 # ============================================================================
+# _require_skills_enabled
+# ============================================================================
+
+class TestRequireSkillsEnabled:
+    """Router-level `Depends(_require_skills_enabled)` — every Skills
+    endpoint is gated on this (see `router = APIRouter(dependencies=...)`
+    in `app.api.routes.skills`), mirroring `mcp_servers.py`'s
+    `_require_mcp_enabled`."""
+
+    def _request_with_config_service(self, config_service) -> MagicMock:
+        req = MagicMock()
+        req.app.container.config_service = MagicMock(return_value=config_service)
+        return req
+
+    @pytest.mark.asyncio
+    async def test_raises_403_when_the_platform_flag_is_disabled(self) -> None:
+        req = self._request_with_config_service(MagicMock())
+        with patch(f"{MODULE}.is_skills_enabled", new_callable=AsyncMock, return_value=False):
+            with pytest.raises(HTTPException) as exc:
+                await _require_skills_enabled(req)
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_passes_through_when_the_platform_flag_is_enabled(self) -> None:
+        req = self._request_with_config_service(MagicMock())
+        with patch(f"{MODULE}.is_skills_enabled", new_callable=AsyncMock, return_value=True):
+            await _require_skills_enabled(req)  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_reads_config_service_from_the_request_container(self) -> None:
+        config_service = MagicMock(name="config_service")
+        req = self._request_with_config_service(config_service)
+        with patch(f"{MODULE}.is_skills_enabled", new_callable=AsyncMock, return_value=True) as mock_enabled:
+            await _require_skills_enabled(req)
+        mock_enabled.assert_awaited_once_with(config_service)
+
+
+# ============================================================================
 # list_skills
 # ============================================================================
 
 class TestListSkills:
+    """`list_skills` is the one management route that also calls
+    `sync_builtin_skills` (see `app.api.routes.skills.list_skills`) — that
+    seeding path has its own dedicated tests against a real
+    `BuiltinSkillSeeder`/`GraphSkillStore`, so here it's patched to a no-op
+    to keep these tests focused on the route's own request/response
+    handling."""
+
     @pytest.mark.asyncio
     async def test_success(self):
         req = _mock_request()
@@ -225,7 +276,10 @@ class TestListSkills:
         metadata = _mock_metadata()
         manager.list_skills = AsyncMock(return_value=[metadata])
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.sync_builtin_skills", new_callable=AsyncMock),
+        ):
             from app.api.routes.skills import list_skills
             resp = await list_skills(req)
         assert resp.status_code == 200
@@ -236,10 +290,33 @@ class TestListSkills:
         manager, ctx = _mock_manager_and_ctx()
         manager.list_skills = AsyncMock(return_value=[])
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.sync_builtin_skills", new_callable=AsyncMock),
+        ):
             from app.api.routes.skills import list_skills
             resp = await list_skills(req, category="general", tag="test", q="search")
         assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_calls_sync_builtin_skills_for_a_fresh_org(self):
+        """A brand-new org's first `GET /api/v1/skills` must see builtin
+        skills without waiting for its first chat turn — see the
+        `builtin-seed-on-list` implementation note in
+        `app.api.routes.skills.list_skills`."""
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        manager.list_skills = AsyncMock(return_value=[])
+        sync_mock = AsyncMock()
+
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.sync_builtin_skills", sync_mock),
+        ):
+            from app.api.routes.skills import list_skills
+            await list_skills(req)
+
+        sync_mock.assert_awaited_once_with(ctx["graph_provider"], ctx["orgId"], manager)
 
 
 # ============================================================================
@@ -293,7 +370,7 @@ class TestGetSkill:
     async def test_success(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(return_value=_mock_skill())
+        manager.get_skill = AsyncMock(return_value=_mock_skill())
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import get_skill
@@ -304,7 +381,7 @@ class TestGetSkill:
     async def test_not_found(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(side_effect=RegistryError("skill 'x' not found"))
+        manager.get_skill = AsyncMock(side_effect=RegistryError("skill 'x' not found"))
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import get_skill
@@ -322,7 +399,7 @@ class TestExportSkill:
     async def test_success(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(return_value=_mock_skill())
+        manager.get_skill = AsyncMock(return_value=_mock_skill())
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
              patch(f"{MODULE}.render_skill_md", return_value="---\nname: test\n---\nbody"):
@@ -335,7 +412,7 @@ class TestExportSkill:
     async def test_not_found(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
-        manager.activate_skill = AsyncMock(side_effect=RegistryError("not found"))
+        manager.get_skill = AsyncMock(side_effect=RegistryError("not found"))
 
         with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import export_skill
@@ -409,6 +486,44 @@ class TestCreateSkill:
             with pytest.raises(HTTPException) as exc:
                 await create_skill(req, payload)
             assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_reserved_builtin_name_raises_409_before_touching_the_manager(self):
+        """A user must not be able to create a custom skill named `pdf`
+        before builtins are seeded — the seeder's `_is_unmodified` check
+        would then treat the real builtin as "has org edits" and never
+        seed it (see `_reject_if_builtin_name`)."""
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        payload = SkillWriteRequest(name="pdf", description="desc", body="body")
+        seeder = MagicMock(pack_versions={"pdf": "1.0.0", "office-utils": "1.0.0"})
+
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+        ):
+            from app.api.routes.skills import create_skill
+            with pytest.raises(HTTPException) as exc:
+                await create_skill(req, payload)
+        assert exc.value.status_code == 409
+        manager.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_reserved_name_is_unaffected_by_the_builtin_check(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        manager.create = AsyncMock(return_value=_mock_metadata())
+        payload = SkillWriteRequest(name="my-custom-skill", description="desc", body="body")
+        seeder = MagicMock(pack_versions={"pdf": "1.0.0"})
+
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}._build_content", return_value="content"),
+            patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+        ):
+            from app.api.routes.skills import create_skill
+            resp = await create_skill(req, payload)
+        assert resp.status_code == 201
 
 
 # ============================================================================
@@ -628,21 +743,22 @@ class TestDeleteSkill:
         manager, ctx = _mock_manager_and_ctx()
         manager.delete = AsyncMock(return_value=True)
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
-             patch(f"{MODULE}._check_usage", new_callable=AsyncMock,
-                   return_value={"usedByAgents": [], "requiredBySkills": []}):
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import delete_skill
             resp = await delete_skill(req, "test-skill")
         assert resp.status_code == 200
+        manager.delete.assert_awaited_once_with("test-skill", detach=False)
 
     @pytest.mark.asyncio
     async def test_required_by_skills_blocks_409(self):
+        from app.agent_loop_lib.modules.providers.skills.base import SkillInUseError
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
+        manager.delete = AsyncMock(side_effect=SkillInUseError(
+            "base-skill", used_by_agents=[], required_by_skills=["dep-skill"],
+        ))
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
-             patch(f"{MODULE}._check_usage", new_callable=AsyncMock,
-                   return_value={"usedByAgents": [], "requiredBySkills": ["dep-skill"]}):
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import delete_skill
             with pytest.raises(HTTPException) as exc:
                 await delete_skill(req, "base-skill")
@@ -651,12 +767,16 @@ class TestDeleteSkill:
 
     @pytest.mark.asyncio
     async def test_used_by_agents_without_detach_blocks_409(self):
+        from app.agent_loop_lib.modules.providers.skills.base import SkillInUseError
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
+        manager.delete = AsyncMock(side_effect=SkillInUseError(
+            "used-skill",
+            used_by_agents=[{"id": "a1", "name": "Agent1"}],
+            required_by_skills=[],
+        ))
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
-             patch(f"{MODULE}._check_usage", new_callable=AsyncMock,
-                   return_value={"usedByAgents": [{"id": "a1", "name": "Agent1"}], "requiredBySkills": []}):
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import delete_skill
             with pytest.raises(HTTPException) as exc:
                 await delete_skill(req, "used-skill", detach=False)
@@ -669,13 +789,11 @@ class TestDeleteSkill:
         manager, ctx = _mock_manager_and_ctx()
         manager.delete = AsyncMock(return_value=True)
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
-             patch(f"{MODULE}._check_usage", new_callable=AsyncMock,
-                   return_value={"usedByAgents": [{"id": "a1", "name": "Agent1"}], "requiredBySkills": []}):
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import delete_skill
             resp = await delete_skill(req, "used-skill", detach=True)
         assert resp.status_code == 200
-        ctx["graph_provider"].batch_delete_edges.assert_awaited_once()
+        manager.delete.assert_awaited_once_with("used-skill", detach=True)
 
     @pytest.mark.asyncio
     async def test_delete_not_found_raises_404(self):
@@ -683,9 +801,7 @@ class TestDeleteSkill:
         manager, ctx = _mock_manager_and_ctx()
         manager.delete = AsyncMock(return_value=False)
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
-             patch(f"{MODULE}._check_usage", new_callable=AsyncMock,
-                   return_value={"usedByAgents": [], "requiredBySkills": []}):
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import delete_skill
             with pytest.raises(HTTPException) as exc:
                 await delete_skill(req, "ghost")
@@ -982,6 +1098,64 @@ class TestImportRoutes:
             assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_preview_npm_url_spec_forwards_skill_filter(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        mock_preview = MagicMock()
+        mock_preview.name = "pptx"
+        mock_preview.description = "d"
+        mock_preview.version = "1.0.0"
+        mock_preview.content = "c"
+        mock_preview.resources = {}
+        mock_preview.warnings = []
+        mock_preview.skipped_binary_resources = []
+        mock_preview.source_label = "url"
+
+        from app.services.skills.npm_command_parser import UrlSpec
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
+             patch(f"{MODULE}.parse_npm_command", return_value=UrlSpec(
+                 url="https://github.com/anthropics/skills", skill_filter="pptx",
+             )), \
+             patch(f"{MODULE}.SkillPackageImporter") as MockImporter:
+            MockImporter.return_value.preview_url = AsyncMock(return_value=mock_preview)
+            payload = NpmImportRequest(command_or_name="npx skills add anthropics/skills --skill pptx")
+            from app.api.routes.skills import preview_npm_import
+            resp = await preview_npm_import(req, payload)
+        assert resp.status_code == 200
+        MockImporter.return_value.preview_url.assert_awaited_once_with(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+
+    @pytest.mark.asyncio
+    async def test_preview_npm_catalog_spec_uses_catalog_importer(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        mock_preview = MagicMock()
+        mock_preview.name = "frontend-slides"
+        mock_preview.description = "d"
+        mock_preview.version = "1.0.0"
+        mock_preview.content = "c"
+        mock_preview.resources = {}
+        mock_preview.warnings = []
+        mock_preview.skipped_binary_resources = []
+        mock_preview.source_label = "catalog"
+
+        from app.services.skills.npm_command_parser import CatalogSpec
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
+             patch(f"{MODULE}.parse_npm_command", return_value=CatalogSpec(
+                 slug="zarazhangrui-frontend-slides",
+             )), \
+             patch(f"{MODULE}.SkillPackageImporter") as MockImporter:
+            MockImporter.return_value.preview_catalog_slug = AsyncMock(return_value=mock_preview)
+            payload = NpmImportRequest(command_or_name="npx --yes https://example.com/cli.tgz add zarazhangrui-frontend-slides")
+            from app.api.routes.skills import preview_npm_import
+            resp = await preview_npm_import(req, payload)
+        assert resp.status_code == 200
+        MockImporter.return_value.preview_catalog_slug.assert_awaited_once_with(
+            "zarazhangrui-frontend-slides", skill_filter=None,
+        )
+
+    @pytest.mark.asyncio
     async def test_preview_url_success(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
@@ -1110,6 +1284,23 @@ class TestFinalizeImport:
             assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_reserved_builtin_name_raises_409_before_creating(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        payload = FinalizeImportRequest(content="---\nname: pdf\n---\nbody")
+        seeder = MagicMock(pack_versions={"pdf": "1.0.0"})
+
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+        ):
+            from app.api.routes.skills import finalize_import
+            with pytest.raises(HTTPException) as exc:
+                await finalize_import(req, payload)
+        assert exc.value.status_code == 409
+        manager.create.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_invalid_yaml_raises_400(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
@@ -1133,6 +1324,77 @@ class TestFinalizeImport:
             with pytest.raises(HTTPException) as exc:
                 await finalize_import(req, payload)
             assert exc.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_name_override_rewrites_frontmatter_past_reserved_original(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        manager.create = AsyncMock(return_value=_mock_metadata())
+        manager.write_resource = AsyncMock(return_value=True)
+        payload = FinalizeImportRequest(
+            content="---\nname: pdf\n---\nbody",
+            name="pdf-anthropic",
+        )
+        seeder = MagicMock(pack_versions={"pdf": "1.0.0"})
+
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+        ):
+            from app.api.routes.skills import finalize_import
+            resp = await finalize_import(req, payload)
+        assert resp.status_code == 201
+        called_name, called_content = manager.create.await_args.args[:2]
+        assert called_name == "pdf-anthropic"
+        assert "name: pdf-anthropic" in called_content
+
+    @pytest.mark.asyncio
+    async def test_invalid_name_override_raises_400(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        payload = FinalizeImportRequest(
+            content="---\nname: pdf\n---\nbody",
+            name="Not A Valid Name",
+        )
+
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
+            from app.api.routes.skills import finalize_import
+            with pytest.raises(HTTPException) as exc:
+                await finalize_import(req, payload)
+            assert exc.value.status_code == 400
+            manager.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preview_warns_when_name_is_reserved(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        mock_preview = MagicMock()
+        mock_preview.name = "pptx"
+        mock_preview.description = "d"
+        mock_preview.version = "1.0.0"
+        mock_preview.content = "c"
+        mock_preview.resources = {}
+        mock_preview.warnings = []
+        mock_preview.skipped_binary_resources = []
+        mock_preview.source_label = "url"
+        seeder = MagicMock(pack_versions={"pptx": "1.0.0"})
+
+        from app.services.skills.npm_command_parser import UrlSpec
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.parse_npm_command", return_value=UrlSpec(
+                url="https://github.com/anthropics/skills", skill_filter="pptx",
+            )),
+            patch(f"{MODULE}.SkillPackageImporter") as MockImporter,
+            patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+        ):
+            MockImporter.return_value.preview_url = AsyncMock(return_value=mock_preview)
+            payload = NpmImportRequest(command_or_name="npx skills add anthropics/skills --skill pptx")
+            from app.api.routes.skills import preview_npm_import
+            resp = await preview_npm_import(req, payload)
+        assert resp.status_code == 200
+        warnings = json.loads(resp.body)["warnings"]
+        assert any("built-in skill name" in w for w in warnings)
 
     @pytest.mark.asyncio
     async def test_format_error_on_create(self):

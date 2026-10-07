@@ -31,6 +31,10 @@ class GitHubResponse(BaseModel):
     # stringifying the exception into `error` loses that distinction.
     status_code: int | None = None
     exception_type: str | None = None
+    # GitHub's own explanation (its "message" plus any field errors), and how long
+    # it asked us to wait on a rate limit, so tools can explain a failure plainly.
+    api_message: str | None = None
+    retry_after_seconds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()
@@ -185,9 +189,9 @@ class GitHubClient(IClient):
             if not auth_config:
                 raise ValueError ("Auth configuration not found in Github connector configuration")
 
-            credentials_config  = config.get("credentials",{})
-            if not  credentials_config:
-                raise ValueError("Credentials configuration not found in Github connector configuration")
+            # Credentials are written by the OAuth flow. A token-only (API_TOKEN)
+            # connector has none, so they are required only for OAUTH below.
+            credentials_config = config.get("credentials") or {}
             # Extract configuration values
             auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
 
@@ -200,6 +204,8 @@ class GitHubClient(IClient):
                 client_via_token.create_client()
                 client =client_via_token
             elif auth_type == "OAUTH":
+                if not credentials_config:
+                    raise ValueError("Credentials configuration not found in Github connector configuration")
                 access_token =credentials_config.get("access_token","")
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")

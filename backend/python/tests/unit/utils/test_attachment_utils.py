@@ -326,6 +326,14 @@ class TestResolveAttachmentBlocksSimple:
 # ---------------------------------------------------------------------------
 
 class TestResolveAttachments:
+    @pytest.fixture(autouse=True)
+    def _grant_record_reads(self, monkeypatch):
+        """These cases cover mime and block shaping. Access is tested separately."""
+        monkeypatch.setattr(
+            "app.utils.attachment_utils.caller_can_read_virtual_record",
+            AsyncMock(return_value=True),
+        )
+
     @pytest.fixture
     def logger(self):
         return logging.getLogger("test_resolve_attachments")
@@ -549,11 +557,57 @@ class TestResolveAttachments:
         assert result == []
 
 
+class TestAttachmentContentRequiresAccess:
+    async def test_denied_record_is_not_fetched(self):
+        blob = AsyncMock()
+        graph = AsyncMock()
+        graph.get_records_by_virtual_record_id.return_value = ["rec-1"]
+        graph.check_record_access_with_details.return_value = None
+        att = {
+            "mimeType": "application/pdf",
+            "recordName": "secret.pdf",
+            "virtualRecordId": "vrid1",
+        }
+
+        result = await resolve_attachments(
+            [att], blob, "org1", False, _LOGGER,
+            user_id="user-1", graph_provider=graph,
+        )
+
+        assert result == []
+        blob.get_record_from_storage.assert_not_called()
+
+    async def test_missing_user_is_not_fetched_even_when_the_graph_would_allow(self):
+        blob = AsyncMock()
+        graph = AsyncMock()
+        graph.get_records_by_virtual_record_id.return_value = ["rec-1"]
+        graph.check_record_access_with_details.return_value = {"id": "rec-1"}
+        att = {
+            "mimeType": "text/plain",
+            "recordName": "notes.txt",
+            "virtualRecordId": "vrid1",
+        }
+
+        result = await resolve_attachments(
+            [att], blob, "org1", False, _LOGGER, graph_provider=graph,
+        )
+
+        assert result == []
+        blob.get_record_from_storage.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # ensure_attachment_blocks
 # ---------------------------------------------------------------------------
 
 class TestEnsureAttachmentBlocks:
+    @pytest.fixture(autouse=True)
+    def _grant_record_reads(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.utils.attachment_utils.caller_can_read_virtual_record",
+            AsyncMock(return_value=True),
+        )
+
     @pytest.fixture
     def logger(self):
         return logging.getLogger("test_ensure_attachment_blocks")

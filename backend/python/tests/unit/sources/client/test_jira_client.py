@@ -956,3 +956,20 @@ class TestJiraGetConnectorConfig:
         cs.get_config = AsyncMock(side_effect=Exception("etcd down"))
         with pytest.raises(ValueError, match="Failed to get Jira"):
             await JiraClient._get_connector_config(log, cs, "inst1")
+
+
+class TestConfigStoreFailure:
+    @pytest.mark.asyncio
+    async def test_a_store_failure_is_distinguishable_from_a_missing_config(self, logger, mock_config_service) -> None:
+        from app.sources.client.jira.jira import JiraConfigUnavailableError
+
+        mock_config_service.get_config = AsyncMock(side_effect=TimeoutError("etcd"))
+        with pytest.raises(JiraConfigUnavailableError) as exc_info:
+            await JiraClient._get_connector_config(logger, mock_config_service, "inst-1")
+        assert isinstance(exc_info.value, ValueError)
+        assert isinstance(exc_info.value.__cause__, TimeoutError)
+
+        mock_config_service.get_config = AsyncMock(return_value=None)
+        with pytest.raises(ValueError) as exc_info:
+            await JiraClient._get_connector_config(logger, mock_config_service, "inst-1")
+        assert not isinstance(exc_info.value, JiraConfigUnavailableError)

@@ -16,6 +16,7 @@ together, not just each link in isolation.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,6 +39,43 @@ def _mock_config_service() -> AsyncMock:
     config_service = AsyncMock()
     config_service.get_config.return_value = {"providers": []}
     return config_service
+
+
+def _mock_cancellation_registry() -> AsyncMock:
+    """A stand-in for the run-cancellation registry.
+
+    Calling `askAIStream` directly bypasses FastAPI, so its
+    `Depends(get_run_cancellation_registry)` default is never resolved. The
+    stream path registers and unregisters a run against this; `is_active`
+    returns False so a supplied runId (none of these tests set one) would not
+    short-circuit as already cancelled.
+    """
+    registry = AsyncMock()
+    registry.is_active = AsyncMock(return_value=False)
+    return registry
+
+
+def _successful_stream_result(output: str) -> SimpleNamespace:
+    # Not a MagicMock: missing names would be truthy (cancelled, confidence).
+    return SimpleNamespace(
+        success=True,
+        error=None,
+        cancelled=False,
+        confidence=None,
+        output=output,
+    )
+
+
+async def _fake_finalizer_run(
+    self, *, agent_success, agent_error, event_sink, agent_output=None,
+    streamed_answer="", reasoning_turns=None, agent_confidence=None,
+    agent_cancelled=False, **_,  # tolerate new AnswerFinalizer.run kwargs
+):
+    await event_sink.write({
+        "event": "complete",
+        "data": {"answer": agent_output, "answerMatchType": "Match Found"},
+    })
+    return {"answer": agent_output}
 
 
 def _mock_retrieval_service(search_results: list[dict] | None = None) -> AsyncMock:
@@ -111,7 +149,7 @@ def _fake_agent_run():
 
     async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
         agent = MagicMock()
-        agent.last_stream_result = MagicMock(success=True, error=None, output="The answer, with citations.")
+        agent.last_stream_result = _successful_stream_result("The answer, with citations.")
 
         async def _fake_stream(goal, **kwargs):
             return
@@ -119,13 +157,6 @@ def _fake_agent_run():
 
         agent.stream = _fake_stream
         return agent, MagicMock(), MagicMock(constraints=[]), []
-
-    async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
-        await event_sink.write({
-            "event": "complete",
-            "data": {"answer": agent_output, "answerMatchType": "Match Found"},
-        })
-        return {"answer": agent_output}
 
     with (
         patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
@@ -144,6 +175,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -164,6 +196,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=config_service,
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -179,6 +212,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -199,6 +233,7 @@ class TestChatStreamAgentLoopEndToEnd:
             retrieval_service=_mock_retrieval_service(),
             graph_provider=MagicMock(),
             config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
         )
         chunks = await _drain(response)
         events = _events_by_name(chunks)
@@ -215,7 +250,9 @@ class TestChatStreamAgentLoopEndToEnd:
 
         async def _fake_create_capturing_goal(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             agent = MagicMock()
-            agent.last_stream_result = MagicMock(success=True, error=None, output="Per the attached deck, revenue is up 12%.")
+            agent.last_stream_result = _successful_stream_result(
+                "Per the attached deck, revenue is up 12%."
+            )
 
             async def _fake_stream(goal, **kwargs):
                 captured_goal["goal"] = goal
@@ -225,10 +262,6 @@ class TestChatStreamAgentLoopEndToEnd:
             agent.stream = _fake_stream
             goal = MagicMock(constraints=[])
             return agent, MagicMock(), goal, []
-
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
-            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
-            return {"answer": agent_output}
 
         fake_record = {
             "id": "rec-attach-1",
@@ -244,6 +277,9 @@ class TestChatStreamAgentLoopEndToEnd:
                 {"virtualRecordId": "vr-attach-1", "mimeType": "application/pdf", "fileName": "board_deck.pdf"},
             ],
         })
+        graph = AsyncMock()
+        graph.get_records_by_virtual_record_id.return_value = ["rec-attach-1"]
+        graph.check_record_access_with_details.return_value = {"id": "rec-attach-1"}
 
         with (
             patch(
@@ -259,8 +295,9 @@ class TestChatStreamAgentLoopEndToEnd:
             response = await askAIStream(
                 request=request,
                 retrieval_service=_mock_retrieval_service(),
-                graph_provider=MagicMock(),
+                graph_provider=graph,
                 config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
             )
             chunks = await _drain(response)
 
@@ -280,6 +317,7 @@ class TestChatStreamAgentLoopEndToEnd:
                 retrieval_service=_mock_retrieval_service(),
                 graph_provider=MagicMock(),
                 config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
             )
             chunks = await _drain(response)
 
@@ -330,7 +368,7 @@ class TestWebSearchCitationEndToEnd:
             )
 
             agent = MagicMock()
-            agent.last_stream_result = MagicMock(success=True, error=None, output=answer)
+            agent.last_stream_result = _successful_stream_result(answer)
 
             async def _fake_stream(goal, **kwargs):
                 return
@@ -353,6 +391,7 @@ class TestWebSearchCitationEndToEnd:
                 retrieval_service=_mock_retrieval_service(),
                 graph_provider=MagicMock(),
                 config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
             )
             chunks = await _drain(response)
 
@@ -364,3 +403,50 @@ class TestWebSearchCitationEndToEnd:
         assert "[1]" in completion["answer"]
         assert completion["confidence"] == "High"
         assert "Confidence:" not in completion["answer"]
+
+
+def _non_streaming_request(body: dict) -> MagicMock:
+    request = _mock_request(body)
+    request.is_disconnected = AsyncMock(return_value=False)
+    return request
+
+
+@pytest.mark.usefixtures("_no_connectors", "_agent_loop_llm", "_fake_agent_run")
+class TestChatNonStreamingAgentLoopEndToEnd:
+    """`POST /chat` (`askAI`) over the same real chain as `/chat/stream`: the
+    JSON body must be the stream's final completion, not a second pipeline."""
+
+    @pytest.mark.parametrize("chat_mode", ["internal_search", "web_search", "agent", "quick"])
+    async def test_returns_the_completion_as_json(self, chat_mode):
+        from app.api.routes.chatbot import askAI
+
+        response = await askAI(
+            request=_non_streaming_request({"query": "What is our refund policy?", "chatMode": chat_mode}),
+            retrieval_service=_mock_retrieval_service(),
+            graph_provider=MagicMock(),
+            config_service=_mock_config_service(),
+            cancellation_registry=_mock_cancellation_registry(),
+        )
+
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        assert body["answer"] == "The answer, with citations."
+        assert body["answerMatchType"] == "Match Found"
+
+    async def test_missing_llm_is_a_424_with_a_user_facing_message(self):
+        from app.api.routes.chatbot import askAI
+
+        with patch("app.api.routes.chatbot.get_llm_for_chat", new=AsyncMock(return_value=None)):
+            response = await askAI(
+                request=_non_streaming_request({"query": "hello"}),
+                retrieval_service=_mock_retrieval_service(),
+                graph_provider=MagicMock(),
+                config_service=_mock_config_service(),
+                cancellation_registry=_mock_cancellation_registry(),
+            )
+
+        assert response.status_code == 424
+        body = json.loads(response.body)
+        assert body["status"] == "error"
+        assert body["code"] == "llm_initialization_failed"
+        assert body["message"]

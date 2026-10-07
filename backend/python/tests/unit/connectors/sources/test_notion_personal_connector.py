@@ -23,6 +23,7 @@ def _make_connector() -> NotionPersonalConnector:
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
+    data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
 
     data_store_provider = MagicMock()
     mock_tx = MagicMock()
@@ -104,7 +105,7 @@ class TestNotionPersonalIdentity:
         build = AsyncMock(return_value=MagicMock())
         with patch(
             "app.connectors.sources.notion.connector.NotionClient.build_from_services", build
-        ), patch("app.connectors.sources.notion.connector.NotionDataSource"), patch.object(
+        ), patch("app.connectors.sources.notion.connector.NotionDataSource"        ), patch.object(
             NotionPersonalConnector, "_load_creator_email", new=AsyncMock()
         ):
             assert await connector.init() is True
@@ -237,6 +238,8 @@ class TestNotionPersonalPermissions:
             side_effect=lambda: calls.append("ensure_group")
         )
         connector._sync_users = AsyncMock(side_effect=lambda: calls.append("sync_users"))
+        connector._get_fresh_datasource = AsyncMock()
+        connector._assert_required_capabilities = AsyncMock()
         connector._sync_objects_by_type = AsyncMock(
             side_effect=lambda kind: calls.append(f"sync_{kind}")
         )
@@ -245,12 +248,15 @@ class TestNotionPersonalPermissions:
         connector._sweep_placeholder_records = AsyncMock(
             side_effect=lambda: calls.append("sweep")
         )
+        connector._retire_leftover_database_records = AsyncMock(
+            side_effect=lambda: calls.append("retire")
+        )
 
         with patch(_FILTERS, new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
             await connector.run_sync()
 
         assert calls == [
-            "ensure_group", "sync_users", "sync_data_source", "sync_page", "sweep",
+            "ensure_group", "sync_users", "sync_data_source", "sync_page", "sweep", "retire",
         ]
 
     @pytest.mark.asyncio
@@ -258,6 +264,8 @@ class TestNotionPersonalPermissions:
         connector = _make_connector()
         connector.creator_email = None
         connector._load_creator_email = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector._assert_required_capabilities = AsyncMock()
         connector.ensure_connector_group_permission = AsyncMock()
         connector._sync_users = AsyncMock()
         connector._sync_objects_by_type = AsyncMock()

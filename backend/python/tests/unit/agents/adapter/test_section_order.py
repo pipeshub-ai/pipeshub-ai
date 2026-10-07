@@ -140,6 +140,33 @@ class TestSectionOrderModule:
         names = [name for name, _ in PIPESHUB_SECTION_ORDER]
         assert len(names) == len(set(names))
 
+    def test_preloaded_skills_and_preloaded_tools_are_turn(self) -> None:
+        """Both hook-written preloaded sections change per turn — never CONV."""
+        order_dict = dict(PIPESHUB_SECTION_ORDER)
+        assert order_dict.get("preloaded_skills") == Volatility.TURN
+        assert order_dict.get("preloaded_tools") == Volatility.TURN
+
+    def test_preloaded_skills_is_first_turn_section(self) -> None:
+        """`preloaded_skills` must be the first Band C entry so it renders
+        immediately after `skills_overview` (the last Band B entry) — the
+        two skill-related sections must be adjacent, not separated by
+        time_context/request_context/attachments/extra_sections."""
+        first_turn_name = next(
+            name for name, volatility in PIPESHUB_SECTION_ORDER
+            if volatility == Volatility.TURN
+        )
+        assert first_turn_name == "preloaded_skills"
+
+    def test_skills_overview_is_last_non_turn_section(self) -> None:
+        """`skills_overview` must be the last Band A/B entry so nothing
+        else (answer_confidence, worked_traces, ...) sits between it and
+        `preloaded_skills` in the rendered prompt."""
+        non_turn_names = [
+            name for name, volatility in PIPESHUB_SECTION_ORDER
+            if volatility != Volatility.TURN
+        ]
+        assert non_turn_names[-1] == "skills_overview"
+
 
 # ---------------------------------------------------------------------------
 # build() == "\n\n".join(build_blocks())
@@ -209,3 +236,53 @@ class TestCacheSplit:
         stable, volatile = _run_build_blocks(ctx, time_output="", extra_sections=extra)
         assert "Hook Output" not in stable
         assert "Hook Output" in volatile
+
+    def test_preloaded_skills_promoted_out_of_extra_sections_catchall(self) -> None:
+        """`preloaded_skills` must render as its own section — before the
+        generic extra_sections blob and before time_context — not get
+        merged into the `my_hook_section` catch-all content."""
+        ctx = make_context()
+        extra = {
+            "preloaded_skills": (
+                "The following skill(s) look directly relevant to this "
+                "request and have already been loaded in full: pdf"
+            ),
+            "my_hook_section": "## Hook Output\nSome hook content.",
+        }
+        stable, volatile = _run_build_blocks(ctx, extra_sections=extra)
+
+        assert "already been loaded in full" not in stable
+        assert "already been loaded in full" in volatile
+        assert "Hook Output" in volatile
+
+        # preloaded_skills is the first Band C section — it must precede
+        # both time_context and the generic extra_sections blob within
+        # the volatile block, keeping it adjacent to skills_overview at
+        # the tail end of the stable block.
+        skills_idx = volatile.index("already been loaded in full")
+        time_idx = volatile.index("Current time:")
+        hook_idx = volatile.index("Hook Output")
+        assert skills_idx < time_idx < hook_idx
+
+    def test_preloaded_tools_promoted_out_of_extra_sections_catchall(self) -> None:
+        ctx = make_context()
+        extra = {"preloaded_tools": "The following toolset(s) are already loaded: jira"}
+        stable, volatile = _run_build_blocks(ctx, extra_sections=extra)
+        assert "already loaded: jira" not in stable
+        assert "already loaded: jira" in volatile
+
+    def test_build_blocks_does_not_mutate_extra_sections_input(self) -> None:
+        """The builder must read `extra_sections` with `.get()`, never
+        `.pop()` — `AgentTool._inherit_parent_skills` reads
+        `extra_prompt_sections["preloaded_skills"]` later in the same
+        turn to forward it to a delegated child; a mutated dict would
+        silently break that hand-off."""
+        ctx = make_context()
+        extra = {
+            "preloaded_skills": "### Skill: pdf\nFull pdf instructions.",
+            "preloaded_tools": "jira toolset loaded",
+            "my_hook_section": "## Hook Output\nSome hook content.",
+        }
+        original = dict(extra)
+        _run_build_blocks(ctx, extra_sections=extra)
+        assert extra == original

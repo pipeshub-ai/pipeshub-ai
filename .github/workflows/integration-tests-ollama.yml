@@ -1,0 +1,181 @@
+name: Integration Tests (Ollama models)
+
+# The AI model settings tests (-m ai_models) against a small local model, so a
+# second provider is covered without a paid key. Opt-in: weekly and on demand,
+# never on a pull request. The nightly runs the same tests on Azure OpenAI.
+#
+# Measured on a 4-CPU, 4 GB container: the Ollama image pulls in about 4 min on
+# a slow link, qwen2.5:0.5b (397 MB) and nomic-embed-text (274 MB) download in
+# about 40 s together, and a short chat answers in about 5 s. The stack build
+# is the same as the nightly's.
+on:
+  # Sundays 20:30 UTC, clear of the nightly at 18:30.
+  schedule:
+    - cron: '30 20 * * 0'
+  workflow_dispatch:
+    inputs:
+      commit_hash:
+        description: 'Commit hash to check out (defaults to HEAD)'
+        required: false
+        default: ''
+      llm_model:
+        description: 'Ollama chat model to pull and test'
+        required: true
+        default: 'qwen2.5:0.5b'
+      embedding_model:
+        description: 'Ollama embedding model to pull and use for indexing'
+        required: true
+        default: 'nomic-embed-text'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-tests-ollama-${{ github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ollama-models:
+    name: AI model tests on Ollama (neo4j)
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 120
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+
+    env:
+      PIPESHUB_BASE_URL: http://localhost:3000
+      PIPESHUB_TEST_ENV: local
+      TEST_GRAPH_DB_TYPE: neo4j
+      DOCKER_BUILDKIT: "1"
+      COMPOSE_PROFILES: ollama
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      SCOPED_JWT_SECRET: ${{ secrets.TEST_SCOPED_JWT_SECRET || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
+      PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+      PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+      TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+      TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+      TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+      TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
+      # Ollama is the only provider on this run; the app reaches it by service name.
+      TEST_AI_MODEL_PROVIDER: ollama
+      TEST_OLLAMA_ENDPOINT: http://ollama:11434
+      TEST_OLLAMA_LLM_MODEL: ${{ github.event.inputs.llm_model || 'qwen2.5:0.5b' }}
+      TEST_OLLAMA_EMBEDDING_MODEL: ${{ github.event.inputs.embedding_model || 'nomic-embed-text' }}
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_FROM_EMAIL: no-reply@example.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.inputs.commit_hash || github.sha }}
+          persist-credentials: false
+
+      - name: Pull pre-built base images
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+
+      - name: Build the stack
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install test dependencies
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      - name: Start services
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+
+      - name: Pull the Ollama models
+        working-directory: deployment/docker-compose
+        run: |
+          for model in "$TEST_OLLAMA_LLM_MODEL" "$TEST_OLLAMA_EMBEDDING_MODEL"; do
+            timeout 900 docker compose -f docker-compose.integration.neo4j.yml exec -T ollama ollama pull "$model"
+          done
+          docker compose -f docker-compose.integration.neo4j.yml exec -T ollama ollama list
+
+      - name: Wait for the stack
+        run: |
+          for path in /api/v1/health /api/v1/health/services; do
+            timeout 300 bash -c "
+              delay=1
+              until curl -sf ${PIPESHUB_BASE_URL}${path} | grep -q '\"status\":\"healthy\"'; do
+                sleep \$delay; delay=\$((delay * 2)); if [ \$delay -gt 64 ]; then delay=64; fi
+              done
+            "
+          done
+
+      - name: Create organization and admin user
+        run: |
+          jq -n --arg name "Integration Test" --arg short "INTTEST" '{
+              accountType: "business",
+              adminFullName: "\($name) Admin",
+              contactEmail: $ENV.PIPESHUB_TEST_USER_EMAIL,
+              password: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              confirmPassword: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              registeredName: "\($name) Org",
+              shortName: $short
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+            -H "Content-Type: application/json" --data-binary @- > /dev/null
+
+      - name: Skip onboarding
+        run: |
+          HEADERS=$(mktemp)
+          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+            -H "Content-Type: application/json" --data-binary @- -D "${HEADERS}" -o /dev/null
+          SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
+          rm -f "${HEADERS}"
+          ACCESS_TOKEN=$(jq -n '{
+              method: "password",
+              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
+              email: $ENV.PIPESHUB_TEST_USER_EMAIL
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+            -H "Content-Type: application/json" -H "x-session-token: ${SESSION_TOKEN}" \
+            --data-binary @- | jq -r '.accessToken')
+          curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
+            -H "Content-Type: application/json" -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -d '{"status": "configured"}' > /dev/null
+
+      - name: Run the AI model tests on Ollama
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports
+          pytest -m ai_models -v --tb=short -n 0 --junitxml=reports/ollama-results.xml 2>&1
+
+      - name: Dump docker logs
+        if: always()
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/docker-logs
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
+              > "../../integration-tests/reports/docker-logs/${svc}.log" 2>&1 || true
+          done
+
+      - name: Tear down services
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml down -v
+
+      - name: Upload reports artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-ollama
+          path: integration-tests/reports/
+          if-no-files-found: ignore

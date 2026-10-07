@@ -59,7 +59,7 @@
 - 📝 **Respuestas explicables:** PipesHub ofrece respuestas fundamentadas con citas precisas de bloques a los documentos originales.
 - 🔒 **Búsqueda con reconocimiento de permisos:** Aplica controles de acceso a nivel de fuente para que los usuarios solo vean aquello a lo que están autorizados.
 - 🕸️ **Recuperación con grafo de conocimiento:** Recuperación basada en grafos que captura las relaciones entre los datos empresariales.
-- 🔌 **Conectores empresariales:** Más de 30 conectores con indexación en tiempo real y programada, listos para usar.
+- 🔌 **Conectores empresariales:** Más de 50 conectores con indexación en tiempo real y programada, listos para usar.
 - 🔍 **Búsqueda unificada, investigación profunda y agentes:** Búsqueda, preguntas y respuestas, investigación profunda, búsqueda web y agentes de IA sobre una única capa de contexto.
 - 📊 **Artefactos y ejecución de código:** Genera informes, gráficos y paneles en un entorno de ejecución aislado y seguro.
 - 🎙️ **Soporte multimodal:** Comprensión de imágenes, diagramas y archivos escaneados, además de interacción por voz.
@@ -86,51 +86,6 @@
 <p align="center">
 <a href="https://pipeshub.com/connectors"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/images/Github%20Connector%20Readme.png" alt="PipesHub Connectors" width="900"/></a>
 </p>
-
-## Formatos de archivo compatibles
-
-| Formato | Detalles |
-|--------|---------|
-| PDF | Incluidos los PDF escaneados |
-| Docx / Doc | Microsoft Word |
-| XLSX / XLS | Microsoft Excel |
-| PPTX / PPT | Microsoft PowerPoint |
-| CSV | Valores separados por comas |
-| Markdown | Archivos .md |
-| HTML | Páginas web |
-| Text | Archivos de texto plano |
-| Google Docs, Sheets, Slides | Formatos de Google Workspace |
-| Imágenes | PNG, JPG, etc. |
-| Audio | Archivos de audio |
-| Vídeo | Archivos de vídeo |
-
-## Stack tecnológico
-
-### Frontend
-
-| Tecnología | Descripción |
-|-----------|-------------|
-| Next.js | UI con App Router (React renderizado en el cliente) |
-| TypeScript | Superconjunto de JavaScript con tipado fuerte |
-| Radix UI Themes | Primitivos de componentes accesibles y estilos |
-| Zod | Validación y análisis de esquemas |
-| React Hook Form | Gestión flexible del estado de formularios |
-
-### Backend
-
-| Tecnología | Descripción |
-|-----------|-------------|
-| FastAPI | Framework web de Python de alto rendimiento |
-| LangChain | Framework para pipelines de LLM |
-| Qdrant | Motor de búsqueda por similitud vectorial |
-| Neo4j / ArangoDB | Base de datos de grafos |
-| Kafka / Redis Streams | Plataforma de streaming de eventos distribuida |
-| Redis | Almacenamiento en caché |
-| Redis / etcd3 | Almacén de configuración clave-valor distribuido |
-| Celery | Sistema de colas de tareas distribuidas |
-| Docling | Kit de herramientas de análisis y extracción de documentos |
-| PyMuPDF | Biblioteca de procesamiento de PDF |
-| pandas | Análisis y manipulación de datos |
 
 ## 🚀 Guía de despliegue
 
@@ -246,25 +201,37 @@ PipesHub es totalmente de código abierto (Apache 2.0) y autoalojable: tus datos
 
 ### ¿Qué conectores admite PipesHub?
 
-PipesHub cuenta con más de 30 conectores empresariales con indexación en tiempo real y programada. Admite formatos de archivo como PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, imágenes, audio y vídeo.
+PipesHub cuenta con más de 50 conectores empresariales con indexación en tiempo real y programada. Consulta la [visión general de conectores](https://docs.pipeshub.com/connectors/overview).
+
+### ¿Qué formatos de archivo puede indexar PipesHub?
+
+PDF (incluidos los escaneados), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, texto plano e imágenes. El audio y el vídeo se pueden almacenar, pero aún no se indexan. El servicio de almacenamiento acepta un conjunto más amplio de tipos MIME — consulta [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
 
 ### ¿Cómo despliego PipesHub?
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables (refer to env.template)
-# Start production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-Nota: Usa HTTPS para los despliegues en la nube. HTTP puede provocar bloqueos de seguridad en el frontend.
+Esto escribe los archivos de Compose en `./pipeshub` e inicia el instalador interactivo. Abre **http://localhost:3000** cuando termine. Usa HTTPS para los despliegues en la nube; HTTP puede provocar bloqueos de seguridad en el frontend.
+
+Los desarrolladores que compilen desde el código fuente deben clonar el repositorio y ejecutar `./install.sh` (o `./install.sh --build`) desde la raíz del repositorio. Consulta la [Guía de despliegue](#-guía-de-despliegue).
 
 ### ¿Qué proveedores de LLM admite PipesHub?
 
-PipesHub funciona con el modelo "Usa tu propio modelo": puedes usar cualquier proveedor de LLM. Despliega en tu VPC con los modelos que prefieras. El stack tecnológico incluye LangChain para pipelines y flujos de trabajo de LLM.
+PipesHub funciona con el modelo "Usa tu propio modelo": puedes usar cualquier proveedor de LLM. Despliega en tu VPC con los modelos que prefieras.
+
+### ¿Cuál es el stack tecnológico?
+
+PipesHub tiene tres partes:
+
+- **Aplicación web** (Next.js) — búsqueda, chat y administración en el navegador.
+- **API** (Node.js) — cuentas, permisos, bases de conocimiento y archivos.
+- **Servicios Python** — los conectores sincronizan tus fuentes; la indexación analiza documentos; la consulta responde con citas.
+
+Esos servicios llaman a **modelos de IA que tú aportas**. Un **modelo de embeddings** convierte el texto en vectores para buscar. Un **LLM** escribe la respuesta citada. Usa cualquier proveedor o un modelo local (Ollama); un servidor local de embeddings es el valor por defecto.
+
+Los datos están en un grafo de conocimiento (Neo4j por defecto, o ArangoDB), un almacén de vectores (Qdrant) y MongoDB. Redis es la caché. Los archivos viven en disco o en almacenamiento de objetos. Los servicios se pasan trabajo por Redis en una máquina local, o por Kafka en un despliegue más grande. Consulta la [visión general del sistema](https://docs.pipeshub.com/system-overview).
 
 ### ¿Qué es la función de recuperación con grafo de conocimiento?
 

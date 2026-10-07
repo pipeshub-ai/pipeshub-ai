@@ -16,9 +16,10 @@ import type { SelectOption, CheckboxOption, TagItem } from '../../components';
 import { useUsersStore } from '../store';
 import { UsersApi } from '../api';
 import { GroupsApi } from '../../groups/api';
-import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../../constants';
+import { USER_ROLES, INVITE_ROLE_OPTIONS, isMaxOrgAdminsErrorMessage } from '../../constants';
 import { GroupType, type Group } from '../../groups/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { isProcessedError } from '@/lib/api';
 
 // ========================================
 // Constants
@@ -61,8 +62,11 @@ function validateEmail(value: string): string | null {
 
 export function InviteUsersSidebar({
   onInviteSuccess,
+  isSmtpConfigured = true,
 }: {
   onInviteSuccess?: () => void;
+  /** False when SMTP creds aren't set up — sending a new invite email would 500 server-side. */
+  isSmtpConfigured?: boolean;
 }) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
@@ -157,6 +161,10 @@ export function InviteUsersSidebar({
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
   const isFormValid = hasValidEmails && Boolean(inviteRole);
 
+  // Edit mode only updates role/groups for an existing pending user — it never
+  // sends a new invite email, so it doesn't depend on SMTP being configured.
+  const smtpBlocksSend = !isEditMode && !isSmtpConfigured;
+
   const adminGroupId = groups.find((g) => g.type === GroupType.ADMIN)?._id;
   const isGrantingAdmin =
     inviteRole === USER_ROLES.ADMIN ||
@@ -170,7 +178,7 @@ export function InviteUsersSidebar({
 
   // Handle submit — create invite or update existing invite
   const handleSubmit = useCallback(async () => {
-    if (!isFormValid) return;
+    if (!isFormValid || smtpBlocksSend) return;
 
     const validEmails = inviteEmails
       .filter((tag) => tag.isValid !== false)
@@ -188,9 +196,13 @@ export function InviteUsersSidebar({
 
         // Update role if changed (stored on User.role, not admin group)
         if (newRole !== currentRole) {
-          await UsersApi.updateUser(userId, {
-            role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
-          });
+          await UsersApi.updateUser(
+            userId,
+            {
+              role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+            },
+            { suppressErrorToast: true },
+          );
         }
 
         // Update group memberships
@@ -229,7 +241,7 @@ export function InviteUsersSidebar({
         });
       } else {
         // ── Create mode: send new invite ──
-        await UsersApi.inviteUsers(
+        const { queued } = await UsersApi.inviteUsers(
           validEmails,
           inviteGroupIds.length > 0 ? inviteGroupIds : undefined,
           isAdmin ? inviteRole || USER_ROLES.MEMBER : USER_ROLES.MEMBER,
@@ -239,33 +251,63 @@ export function InviteUsersSidebar({
           validEmails.length === 1
             ? validEmails[0]
             : `${validEmails.length} users`;
-        addToast({
-          variant: 'success',
-          title: t('workspace.users.invite.successTitle', 'Invite sent!'),
-          description: t('workspace.users.invite.successDescription', {
-            email: emailDisplay,
-            defaultValue: `${emailDisplay} has been invited`,
-          }),
-          duration: 3000,
-        });
+        addToast(
+          queued
+            ? {
+                variant: 'success',
+                title: t('workspace.users.invite.queuedTitle', 'Invites queued'),
+                description: t('workspace.users.invite.queuedDescription', {
+                  email: emailDisplay,
+                  defaultValue: `Emails to ${emailDisplay} are being sent in the background. You'll get a notification if any can't be delivered.`,
+                }),
+                duration: 5000,
+              }
+            : {
+                variant: 'success',
+                title: t('workspace.users.invite.successTitle', 'Invite sent!'),
+                description: t('workspace.users.invite.successDescription', {
+                  email: emailDisplay,
+                  defaultValue: `${emailDisplay} has been invited`,
+                }),
+                duration: 3000,
+              },
+        );
       }
 
       // Close panel and refresh parent list
       closeInvitePanel();
       onInviteSuccess?.();
-    } catch {
-      addToast({
-        variant: 'error',
-        title: isEditMode
-          ? t('workspace.users.invite.editError', 'Failed to update invite')
-          : t('workspace.users.invite.errorGeneric', 'Failed to send invite'),
-        duration: 5000,
-      });
+    } catch (err: unknown) {
+      const apiMessage = isProcessedError(err) ? err.message : undefined;
+      if (isMaxOrgAdminsErrorMessage(apiMessage)) {
+        addToast({
+          variant: 'error',
+          title: t(
+            'workspace.users.actions.maxAdminsReachedTitle',
+            'Cannot add another admin'
+          ),
+          description: t(
+            'workspace.users.actions.maxAdminsReached',
+            'An organization can have at most 5 admins.'
+          ),
+          duration: 5000,
+        });
+      } else {
+        addToast({
+          variant: 'error',
+          title: isEditMode
+            ? t('workspace.users.invite.editError', 'Failed to update invite')
+            : t('workspace.users.invite.errorGeneric', 'Failed to send invite'),
+          ...(apiMessage ? { description: apiMessage } : {}),
+          duration: 5000,
+        });
+      }
     } finally {
       setIsInviting(false);
     }
   }, [
     isFormValid,
+    smtpBlocksSend,
     inviteEmails,
     inviteRole,
     inviteGroupIds,
@@ -436,6 +478,13 @@ export function InviteUsersSidebar({
     ? t('workspace.users.invite.update', 'Update Invite')
     : t('workspace.users.invite.send', 'Send Invite');
 
+  const primaryTooltip = smtpBlocksSend
+    ? t(
+        'workspace.users.invite.smtpNotConfiguredTooltip',
+        'SMTP is not configured. Set up email settings before sending invites.'
+      )
+    : undefined;
+
   return (
     <WorkspaceRightPanel
       open={isInvitePanelOpen}
@@ -534,8 +583,9 @@ export function InviteUsersSidebar({
       }
       primaryLabel={primaryLabel}
       secondaryLabel={t('workspace.users.invite.cancel', 'Cancel')}
-      primaryDisabled={!isFormValid}
+      primaryDisabled={!isFormValid || smtpBlocksSend}
       primaryLoading={isInviting}
+      primaryTooltip={primaryTooltip}
       onPrimaryClick={handleSubmit}
     >
       {/* Form card */}

@@ -9,7 +9,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlparse, urlunparse
 
 import httpx
 from fastmcp import Client
@@ -21,6 +20,8 @@ from fastmcp.client.transports import (
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 from app.agents.mcp.models import MCPServerConfig, MCPTransport
+from app.agents.mcp.stdio_policy import StdioPolicyError, rejected_env_names, resolve_stdio_launch
+from app.utils.url_redaction import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -48,20 +49,6 @@ class MCPConnectionError(Exception):
     """Raised when an MCP server cannot be reached or its transport config is invalid."""
 
 
-def _sanitize_url_for_diagnostics(url: str) -> str:
-    """Scheme + host[:port] + path only — strip userinfo, query, and fragment so
-    credentials never land in logs or `MCPConnectionError` messages."""
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return "<unparseable-url>"
-    if not parsed.scheme or not parsed.netloc:
-        return "<redacted-url>"
-    # Drop userinfo (`user:pass@`) while keeping host/port, including bracketed IPv6.
-    netloc = parsed.netloc.rsplit("@", 1)[-1]
-    return urlunparse((parsed.scheme, netloc, parsed.path or "", "", "", ""))
-
-
 class _LastHttpResponse:
     """Records the most recent HTTP status/URL seen on an HTTP transport's httpx
     client, purely for diagnostics.
@@ -81,7 +68,7 @@ class _LastHttpResponse:
 
     async def _on_response(self, response: httpx.Response) -> None:
         self.status_code = response.status_code
-        self.url = _sanitize_url_for_diagnostics(str(response.request.url))
+        self.url = redact_url(str(response.request.url))
 
     def httpx_client_factory(
         self,
@@ -134,11 +121,19 @@ def build_transport(
     since nothing else will ever call `disconnect()` on it.
     """
     if config.transport == MCPTransport.STDIO:
-        if not config.command:
-            raise MCPConnectionError(f"MCP instance {config.id} is STDIO but has no command configured")
+        try:
+            command, args = resolve_stdio_launch(config)
+        except StdioPolicyError as e:
+            raise MCPConnectionError(str(e)) from e
+        # Credential records saved before env-name validation existed can still carry these.
+        rejected = rejected_env_names(env or {})
+        if rejected:
+            raise MCPConnectionError(
+                f"MCP instance {config.id} has env vars that are not allowed for STDIO servers: {rejected}"
+            )
         return StdioTransport(
-            command=config.command,
-            args=list(config.args or []),
+            command=command,
+            args=args,
             env=dict(env or {}),
             log_file=stderr_log_file,
             keep_alive=keep_alive,

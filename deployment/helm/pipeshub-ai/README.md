@@ -18,13 +18,16 @@ your own values file layered on top).
 | Preset | File | Use for | Footprint |
 |--------|------|---------|-----------|
 | Local  | `values-local.yaml` | kind, minikube, k3d, k3s, Docker Desktop | 1× app, 1× Mongo/Kafka/Redis/Qdrant/Neo4j, RWO storage |
-| Cloud HA | `values-cloud.yaml` | EKS, GKE, AKS, any managed K8s | 3× app + HPA, 3-node Mongo replica set, 3× Kafka/Zookeeper/Qdrant, RWX storage |
+| AWS EKS | `values-eks.yaml` | Amazon EKS. No NFS. One command: `deployment/helm/aws/deploy.sh --domain HOST --region REGION`. Guide: [docs/deployment/aws-eks.md](../../../docs/deployment/aws-eks.md) | gp3 per database, MongoDB ×3, Redis master+replica, Qdrant ×3, Neo4j ×1 |
+| Cloud HA | `values-cloud.yaml` | GKE, AKS, any cluster that already has RWX storage | 2× app + HPA, Bitnami Mongo, Kafka. Not for EKS |
 
 Both files document the required `--set` overrides at the top.
 
 ## Quick start
 
 ### 1. Build chart dependencies
+
+MongoDB and Redis are vendored in `deployment/helm/vendor`. This packages those local charts. It does not log in to Docker Hub.
 
 ```bash
 helm dependency build ./deployment/helm/pipeshub-ai
@@ -145,7 +148,7 @@ Provider-specific values for the storage classes:
 
 | Provider | `global.storageClass` (block, stateful pods) | `persistence.storageClass` (RWX, shared app PVC) |
 |----------|----------------------------------------------|--------------------------------------------------|
-| AWS EKS  | `gp3`                                        | `efs-sc` (EFS CSI)                               |
+| AWS EKS | use [values-eks.yaml](values-eks.yaml); do not create an EFS class | not used |
 | GCP GKE  | `standard-rwo`                               | `filestore-csi`                                  |
 | Azure AKS| `managed-csi`                                | `azurefile-csi`                                  |
 | On-prem  | any block (Longhorn/Ceph)                    | any RWX (NFS, CephFS, GlusterFS)                 |
@@ -220,6 +223,48 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set secretManagement.externalSecrets.remoteRefs.qdrantApiKey="pipeshub/qdrant/api-key"
 ```
 
+## Coding sandbox
+
+`config.sandboxMode` picks where `run_code` executes: `docker` (default),
+`e2b` (off-cluster), or `local` (no isolation, development only, needs
+`config.sandboxAllowLocal=true`). `docker` needs a daemon, and the chart
+refuses to install without one:
+
+- `sandbox.dind.enabled=true` (the `values-eks.yaml` default) adds two sidecars.
+  `dind` is a **privileged** Docker daemon that listens only on a unix socket
+  in the `dind-sock` emptyDir. `docker-proxy` runs `python -m app.docker_proxy_main`
+  from the application image, which is the same policy proxy the Compose
+  stacks use. It listens on `127.0.0.1:<sandbox.dind.port>` (the app's
+  `DOCKER_HOST`) and admits only sandbox-shaped requests: creates from the
+  allowed images (`config.sandboxDockerImage`, or `sandbox.proxy.allowedImages`)
+  with no privileged mode, host mounts, devices or host namespaces, acting
+  only on containers it created. Only `dind` and `docker-proxy` mount
+  `dind-sock`. The application container cannot reach the daemon directly.
+- `config.dockerHost` points at a daemon you run. Put the same proxy in front
+  of it. Never expose a raw dockerd.
+
+Mounting a container-runtime socket into the application container would give
+the app, and any code it runs, root on the node. At render time the chart refuses
+`extraVolumes`/`volumes` and `extraVolumeMounts`/`volumeMounts` that:
+
+- use a `hostPath` of type `Socket`;
+- use a `hostPath` that is a Docker, containerd (including k3s), CRI-O, podman or
+  cri-dockerd socket, or a directory that holds one, such as `/`, `/run` or
+  `/var/run`;
+- name one of those sockets in `mountPath`, `subPath` or `subPathExpr`.
+
+These checks are best-effort, not a security boundary. A runtime socket in an
+unusual place, or one reached through a symlink, is not recognised. Review any
+custom `hostPath`. Where you can, enforce it in the cluster too, for example with
+a Kyverno or Gatekeeper policy that forbids `hostPath` volumes on the application
+pod.
+
+**Image requirement:** the `docker-proxy` sidecar needs an application image
+that contains `app.docker_proxy_main` (the release that added the Compose
+Docker proxy, or later). On an older `image.tag` the sidecar crash-loops and
+`run_code` fails. Upgrade `image.tag`, or set `sandbox.proxy.image` to a newer
+image.
+
 ## High-Value Features
 
 - Secret validation with fail-fast messages
@@ -242,6 +287,20 @@ helm template pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=test" \
   --set "mongodb.auth.databases[0]=pipeshub"
+```
+
+CI runs two broader checks on every pull request that touches the chart, and
+weekly (`.github/workflows/helm-chart.yml`). Both run locally too:
+
+```bash
+# Lint, render and schema-check every supported configuration, and confirm
+# the misconfigurations the chart refuses are still refused (helm, kubeconform)
+bash deployment/helm/tests/check_chart.sh
+
+# Install into a throwaway single-node kind cluster and wait for every core
+# service to report healthy (kind, kubectl, helm, docker)
+bash deployment/helm/tests/kind_smoke.sh
+SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
 ```
 
 ## Production Checklist

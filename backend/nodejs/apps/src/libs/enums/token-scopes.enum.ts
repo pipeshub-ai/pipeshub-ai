@@ -6,10 +6,32 @@ export const TokenScopes = Object.freeze({
   TOKEN_REFRESH: 'token:refresh',
   STORAGE_TOKEN: 'storage:token',
   CONVERSATION_CREATE: 'conversation:create',
+  CONVERSATION_PERMISSIONS: 'conversation:permissions',
   VALIDATE_EMAIL: 'email:validate',
   ORG_EMAIL_VERIFY: 'org:email:verify',
   EMAIL_VERIFIED: 'email:verified',
+  DESKTOP_COMMAND: 'desktop:command',
+  // Held only by the Python services, on their caller-role lookups, so the
+  // global rate limiter can tell those from client traffic (rate-limit.middleware).
+  CALLER_ROLE: 'caller:role',
+  // Slack bot process only. Narrower than FETCH_CONFIG because the route it
+  // guards returns Slack workspace credentials for every org.
+  SLACK_BOT_VERIFY: 'slack-bot:verify',
 } as const);
 
 // Create a type for the TokenScopes keys
 export type TokenScopes = (typeof TokenScopes)[keyof typeof TokenScopes];
+
+// Scopes on tokens held by end users; these are signed with the derived
+// user-action key (libs/utils/jwtKeys.ts), never the raw scoped secret.
+export const USER_ACTION_TOKEN_SCOPES: ReadonlySet<TokenScopes> =
+  new Set<TokenScopes>([
+    TokenScopes.PASSWORD_RESET,
+    TokenScopes.VALIDATE_EMAIL,
+    TokenScopes.TOKEN_REFRESH,
+    TokenScopes.ORG_EMAIL_VERIFY,
+    TokenScopes.EMAIL_VERIFIED,
+  ]);
+
+export const isUserActionScope = (scope: string): boolean =>
+  (USER_ACTION_TOKEN_SCOPES as ReadonlySet<string>).has(scope);

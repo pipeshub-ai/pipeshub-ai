@@ -12,11 +12,12 @@ import { ChatInputExpansionPanel } from '@/chat/components/chat-panel/expansion-
 import { ChatInputOverlayPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-overlay-panel';
 import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/connectors-collections-panel';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
+import { bareToolFullName } from '@/chat/tool-groups';
 import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import {
   ModelSelectorPanel,
-  getReasoningEffortLabel,
+  getAppliedReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -30,10 +31,16 @@ import {
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
 import { getQueryModeConfig } from '@/chat/constants';
-import { useChatStore, ctxKeyFromAgent, isModelReasoningCapable } from '@/chat/store';
+import {
+  useChatStore,
+  ctxKeyFromAgent,
+  isModelReasoningCapable,
+  getModelDefaultReasoningEffort,
+} from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
+import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
@@ -53,7 +60,7 @@ import type {
   AppliedFilters,
   AttachmentRef,
 } from '@/chat/types';
-import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, DEFAULT_REASONING_EFFORT } from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
 import {
   SUPPORTED_FILE_TYPES,
   ACCEPTED_MIME_TYPES,
@@ -95,6 +102,13 @@ interface ChatInputProps {
   isAgentChat?: boolean;
   /** Agent ID for filtering models to only those configured for the agent */
   agentId?: string | null;
+  /**
+   * Seeds the composer's text once per unique `key` (e.g. a quick-start
+   * suggestion chip rendered outside this component). Bump `key` to re-seed
+   * with the same `text` twice in a row; typing in the composer afterwards
+   * is never overwritten since the effect only fires on `key` changes.
+   */
+  prefill?: { text: string; key: number } | null;
 }
 
 function formatFileSize(bytes: number): string {
@@ -164,6 +178,7 @@ export function ChatInput({
   expandable = false,
   isAgentChat = false,
   agentId,
+  prefill,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -199,6 +214,17 @@ export function ChatInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chipsScrollRef = useRef<HTMLDivElement>(null);
+
+  // `prefill` seeds the composer from an external suggestion chip. Keyed by
+  // `prefill.key` (not `prefill.text`) so clicking the same suggestion twice
+  // re-seeds even if the user hadn't changed the text.
+  const lastPrefillKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!prefill || prefill.key === lastPrefillKeyRef.current) return;
+    lastPrefillKeyRef.current = prefill.key;
+    setMessage(prefill.text);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [prefill]);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   /**
@@ -280,6 +306,18 @@ export function ChatInput({
   const scopedInternalSearch = scopedAgentCapabilities?.internalSearch ?? true;
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
+  // Project-scoped chat (`/chat?projectId=` or the /projects workspace). Hydrated by
+  // `useProjectScopeHydration`; null everywhere else.
+  const projectScope = useChatStore((s) => s.projectScope);
+  const projectKnowledgeScope = useChatStore((s) => s.projectKnowledgeScope);
+  const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
+  const projectStreamToolsSel = useChatStore((s) => s.projectStreamTools);
+  const isProjectChat = !isAgentChat && projectScope !== null;
+  /**
+   * The composer shows the scoped Connectors·Collections·Actions·MCP panel (agent or project
+   * allow-list) instead of the org-wide pickers. Web search has no knowledge scope.
+   */
+  const usesScopedPanel = isAgentChat || (isProjectChat && settings.queryMode !== 'web-search');
 
   // Shared capability wiring for the desktop "+" popover (PlusMenuButton) and
   // the mobile "+" sheet (PlusMenuSheet) — kept in one place so the two
@@ -352,7 +390,11 @@ export function ChatInput({
   const reasoningEffortOverride = settings.reasoningEffort[modelCtxKey] ?? null;
   const agentDefault = useChatStore((s) => s.settings.agentDefaultReasoningEffort[modelCtxKey] ?? null);
   const reasoningEffortLabel = activeModelSupportsReasoning
-    ? getReasoningEffortLabel(t, reasoningEffortOverride ?? agentDefault ?? DEFAULT_REASONING_EFFORT)
+    ? getAppliedReasoningEffortLabel(t, {
+        picked: reasoningEffortOverride,
+        agentDefault,
+        modelDefault: getModelDefaultReasoningEffort(modelCtxKey, displayModel),
+      })
     : null;
 
   // Expansion panel view mode (inline vs overlay) from store
@@ -366,10 +408,17 @@ export function ChatInput({
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? (s.slots[s.activeSlotId]?.isStreaming ?? false) : false
   );
+  // True from the moment Stop is clicked until the run actually ends —
+  // disables the stop button so a second click can't fire another cancel
+  // POST / restart the grace timer (see `cancelStreamForSlot`).
+  const isStopping = useChatStore((s) =>
+    s.activeSlotId ? (s.slots[s.activeSlotId]?.stopping ?? false) : false
+  );
 
   const handleStopStream = useCallback(() => {
     const sid = useChatStore.getState().activeSlotId;
-    if (sid) cancelStreamForSlot(sid);
+    if (!sid || useChatStore.getState().slots[sid]?.stopping) return;
+    cancelStreamForSlot(sid);
     toast.info(t('chat.toasts.stopStreamTitle'), {
       description: t('chat.toasts.stopStreamDescription'),
     });
@@ -392,12 +441,22 @@ export function ChatInput({
         agentToolCatalogLen > 0 &&
         (agentStreamToolsSel.length === 0 || agentStreamToolsSel.length < agentToolCatalogLen)));
 
+  const projectToolCatalogLen = projectScope?.toolCatalogFullNames.length ?? 0;
+  const projectResourcesCustomized =
+    isProjectChat &&
+    (projectKnowledgeScope !== null ||
+      (projectStreamToolsSel !== null &&
+        projectToolCatalogLen > 0 &&
+        (projectStreamToolsSel.length === 0 || projectStreamToolsSel.length < projectToolCatalogLen)));
+  /** Scoped panel narrowed below its defaults (agent or project). */
+  const scopedResourcesCustomized = isAgentChat ? agentResourcesCustomized : projectResourcesCustomized;
+
   /** Universal agent mode: tools explicitly customized OR connectors/collections selected. */
   const universalAgentResourcesCustomized =
-    !isAgentChat && settings.queryMode === 'agent' && (universalAgentStreamTools !== null || selectedKbCount > 0);
+    !usesScopedPanel && settings.queryMode === 'agent' && (universalAgentStreamTools !== null || selectedKbCount > 0);
 
-  const showResourcesFilterBadge = isAgentChat
-    ? agentResourcesCustomized
+  const showResourcesFilterBadge = usesScopedPanel
+    ? scopedResourcesCustomized
     : settings.queryMode === 'agent'
       ? universalAgentResourcesCustomized
       : selectedKbCount > 0;
@@ -408,17 +467,19 @@ export function ChatInput({
   const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('chat')!;
   /** Internal-search / chat modes: `settings.filters` drives the connectors & collections picker. */
   const hubFilterQueryMode =
-    !isAgentChat && settings.queryMode !== 'agent' && settings.queryMode !== 'web-search';
+    !usesScopedPanel && settings.queryMode !== 'agent' && settings.queryMode !== 'web-search';
   /** Assistant collections overlay is active (web search never uses this chrome). */
   const assistantCollectionsOverlayActive =
-    !isAgentChat && isCollectionsPanelOpen && settings.queryMode !== 'web-search';
+    !usesScopedPanel && isCollectionsPanelOpen && settings.queryMode !== 'web-search';
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
   const agentStrategyToolbarColors = agentQueryToolbarConfig.colors;
   /** Agent-strategy or agent resources panel — chrome + outside click (agent chat only; no mode picker anymore). */
   const modeChromeOpen = isAgentChat
     ? isAgentStrategyPanelOpen || isAgentResourcesPanelOpen
-    : false;
+    : usesScopedPanel
+      ? isAgentResourcesPanelOpen
+      : false;
 
   const dismissExpansionPanels = useCallback(() => {
     setIsPlusMenuOpen(false);
@@ -468,7 +529,9 @@ export function ChatInput({
 
     const source = isAgentChat
       ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
-      : settings.filters;
+      : isProjectChat
+        ? (projectKnowledgeScope ?? projectScope.knowledgeDefaults)
+        : settings.filters;
     const hubApps = source?.apps ?? [];
     const groups = source?.kb ?? [];
     return [
@@ -495,6 +558,9 @@ export function ChatInput({
   }, [
     regenAppliedFilters,
     isAgentChat,
+    isProjectChat,
+    projectKnowledgeScope,
+    projectScope,
     agentKnowledgeScope,
     agentKnowledgeDefaults,
     settings.filters,
@@ -520,6 +586,12 @@ export function ChatInput({
           new Set(nextKb).size === new Set(agentKnowledgeDefaults.kb).size &&
           nextKb.every((x) => agentKnowledgeDefaults.kb.includes(x));
         setAgentKnowledgeScope(appsMatch && kbMatch ? null : { apps: nextApps, kb: nextKb });
+      } else if (isProjectChat) {
+        const eff = projectKnowledgeScope ?? projectScope.knowledgeDefaults;
+        setProjectKnowledgeScope({
+          apps: eff.apps.filter((aid) => aid !== id),
+          kb: eff.kb.filter((gid) => gid !== id),
+        });
       } else {
         const hubApps = settings.filters?.apps ?? [];
         const groups = settings.filters?.kb ?? [];
@@ -536,7 +608,18 @@ export function ChatInput({
         }
       }
     },
-    [isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, setAgentKnowledgeScope, settings.filters, setFilters]
+    [
+      isAgentChat,
+      isProjectChat,
+      agentKnowledgeScope,
+      agentKnowledgeDefaults,
+      setAgentKnowledgeScope,
+      projectKnowledgeScope,
+      projectScope,
+      setProjectKnowledgeScope,
+      settings.filters,
+      setFilters,
+    ]
   );
 
   // Toolbar icon color follows the active query mode / search-view state.
@@ -642,7 +725,9 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
-    if (isStreaming || isUniversalAgentLoading) return;
+    const sid = useChatStore.getState().activeSlotId;
+    const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
+    if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
     // Block submit while any chip is still uploading — every chip must be
     // either `uploaded` (forwarded as a ref) or removed by the user before
     // we hand off to the runtime.
@@ -668,13 +753,17 @@ export function ChatInput({
       return;
     }
     if (isUrlAgent || isUniversalAgentMode) {
-      const groups = isUniversalAgentMode ? universalAgentToolGroups : agentChatToolGroups;
-      const toolsSel = isUniversalAgentMode ? universalAgentStreamTools : agentStreamToolsSel;
-
-      const stripPrefix = (key: string) => {
-        const colon = key.indexOf(':');
-        return colon >= 0 ? key.slice(colon + 1) : key;
-      };
+      const isProjectAgentMode = isUniversalAgentMode && isProjectChat;
+      const groups = isProjectAgentMode
+        ? [...projectScope.toolGroups, ...projectScope.mcpGroups]
+        : isUniversalAgentMode
+          ? universalAgentToolGroups
+          : agentChatToolGroups;
+      const toolsSel = isProjectAgentMode
+        ? projectStreamToolsSel
+        : isUniversalAgentMode
+          ? universalAgentStreamTools
+          : agentStreamToolsSel;
 
       // `toolsSel === null` means "everything selected" (no explicit
       // filter) — the wire format (runtime.ts) omits `tools` entirely in
@@ -691,7 +780,7 @@ export function ChatInput({
         // Count resolved (stripped + deduped) tools — mirrors the wire
         // format in runtime.ts where prefixed keys are stripped then deduped
         // via Set.
-        const resolvedCount = new Set(toolsSel.map(stripPrefix)).size;
+        const resolvedCount = new Set(toolsSel.map(bareToolFullName)).size;
 
         if (resolvedCount > 1024) {
           toast.error(
@@ -728,10 +817,10 @@ export function ChatInput({
       } else {
         const selectedKeys = new Set(toolsSel);
         for (const group of groups) {
-          const hasSelected = isUniversalAgentMode
+          const hasSelected = isUniversalAgentMode && !isProjectAgentMode
             // Universal: keys are `${instanceId}:${fullName}`
             ? group.fullNames.some((fn) => selectedKeys.has(`${group.instanceId ?? ''}:${fn}`))
-            // URL-scoped: keys are bare fullNames
+            // URL-scoped agent and project: group keys already match the selection keys
             : group.fullNames.some((fn) => selectedKeys.has(fn));
           if (hasSelected) {
             instanceCountBySlug.set(
@@ -758,12 +847,10 @@ export function ChatInput({
     }
 
     // ── Normal send flow ──────────────────────────────────────
-    // Only forward chips whose upload completed successfully. Errored
-    // chips are dropped silently here — `canSubmit` lets them through
-    // (otherwise the send button would be stuck), but the user has
-    // already seen a toast per failed upload and the chip exposes a
-    // retry icon if they want to recover.
-    if ((message.trim() || uploadedFiles.length > 0) && onSend) {
+    // Only forward chips whose upload completed. A failed chip stays, with
+    // its retry, and does not by itself enable send.
+    const hasUploaded = uploadedFiles.some((f) => f.status === 'uploaded');
+    if ((message.trim() || hasUploaded) && onSend) {
       const refs = uploadedFiles
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
@@ -821,19 +908,13 @@ export function ChatInput({
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        const errorMessage =
-          (err as { message?: string })?.message ??
-          t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' });
+        const errorMessage = attachmentErrorMessage(file.name, err, t);
         setUploadedFiles((prev) =>
           prev.map((f) =>
             f.id === file.id ? { ...f, status: 'error', errorMessage, ref: undefined } : f,
           ),
         );
-        toast.error(
-          t('chat.attachments.uploadFailedNamed', {
-            defaultValue: `Failed to upload ${file.name}: ${errorMessage}`,
-          }),
-        );
+        toast.error(errorMessage);
       })
       .finally(() => {
         if (uploadControllersRef.current.get(file.id) === controller) {
@@ -865,7 +946,8 @@ export function ChatInput({
     if (typeRejected.length > 0) {
       toast.error(
         t('chat.attachments.unsupportedType', {
-          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Supported types: ${SUPPORTED_FILE_TYPES.join(', ')}.`,
+          names: typeRejected.map((f) => f.name).join(', '),
+          types: SUPPORTED_FILE_TYPES.join(', '),
         })
       );
     }
@@ -882,7 +964,8 @@ export function ChatInput({
     if (sizeRejected.length > 0) {
       toast.error(
         t('chat.attachments.fileTooLarge', {
-          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB per file.`,
+          names: sizeRejected.map((f) => f.name).join(', '),
+          maxMb: Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024)),
         })
       );
     }
@@ -901,7 +984,7 @@ export function ChatInput({
     if (toAdd.length < sizeValid.length) {
       toast.error(
         t('chat.attachments.tooManyFiles', {
-          defaultValue: `Maximum ${CHAT_ATTACHMENT_MAX_FILES} attachments per message.`,
+          max: CHAT_ATTACHMENT_MAX_FILES,
         })
       );
     }
@@ -1190,7 +1273,8 @@ export function ChatInput({
     setShowUploadArea(next);
   };
 
-  const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
+  const hasSendableAttachment = uploadedFiles.some((f) => f.status === 'uploaded');
+  const hasContent = Boolean(message.trim()) || hasSendableAttachment || isListening;
   const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
   const canSubmit =
     (hasContent || activeMessageAction !== null) &&
@@ -1333,9 +1417,14 @@ export function ChatInput({
               variant="solid"
               size="2"
               onClick={handleStopStream}
+              disabled={isStopping}
+              aria-label={t('chat.stopGenerating', { defaultValue: 'Stop generating' })}
+              data-testid="chat-stop-button"
               style={{
                 margin: 0,
                 backgroundColor: activeToggleColor,
+                opacity: isStopping ? 0.6 : 1,
+                cursor: isStopping ? 'default' : 'pointer',
               }}
             >
               <MaterialIcon name="stop" size={ICON_SIZES.PRIMARY} color="white" />
@@ -1346,6 +1435,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage')}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
@@ -1470,7 +1560,7 @@ export function ChatInput({
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
-              aria-label="Scroll attachments left"
+              aria-label={t('chat.scrollAttachmentsLeft')}
             >
               <MaterialIcon name="chevron_left" size={16} color="var(--slate-11)" />
             </Box>
@@ -1663,7 +1753,7 @@ export function ChatInput({
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
-              aria-label="Scroll attachments right"
+              aria-label={t('chat.scrollAttachmentsRight')}
             >
               <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" />
             </Box>
@@ -1791,7 +1881,7 @@ export function ChatInput({
             agentId={agentId}
           />
         </ChatInputExpansionPanel>
-      ) : isAgentChat && isAgentResourcesPanelOpen && expansionViewMode === 'inline' ? (
+      ) : usesScopedPanel && isAgentResourcesPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
           open={isAgentResourcesPanelOpen}
           onClose={() => {
@@ -1799,9 +1889,13 @@ export function ChatInput({
             setExpansionViewMode('inline');
           }}
         >
-          <AgentScopedResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
+          <AgentScopedResourcesPanel
+            viewMode="inline"
+            onToggleView={handleToggleView}
+            scope={isAgentChat ? 'agent' : 'project'}
+          />
         </ChatInputExpansionPanel>
-      ) : !isAgentChat && settings.queryMode === 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
+      ) : !usesScopedPanel && settings.queryMode === 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
           open={isCollectionsPanelOpen}
           onClose={() => {
@@ -1833,7 +1927,7 @@ export function ChatInput({
             onToggleView={handleToggleView}
           />
         </ChatInputExpansionPanel>
-      ) : ((isAgentChat && isAgentResourcesPanelOpen) || assistantCollectionsOverlayActive) &&
+      ) : ((usesScopedPanel && isAgentResourcesPanelOpen) || assistantCollectionsOverlayActive) &&
         expansionViewMode === 'overlay' ? (
         /* Render textarea underneath while overlay is open */
         <textarea
@@ -1860,7 +1954,7 @@ export function ChatInput({
           onFocus={() => setIsInputFocused(true)}
           onBlur={() => setIsInputFocused(false)}
           placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
-          disabled={isRegenerateMode}
+          readOnly={isRegenerateMode}
           rows={1}
           style={{
             ...textareaLayoutStyle,
@@ -1993,7 +2087,7 @@ export function ChatInput({
                   color="gray"
                   size="2"
                   style={{ margin: 0, cursor: 'pointer' }}
-                  aria-label="More options"
+                  aria-label={t('common.moreOptions')}
                 >
                   <MaterialIcon name="tune" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
                 </IconButton>
@@ -2019,7 +2113,7 @@ export function ChatInput({
                       onClick={() => {
                         if (isRegenerateMode) return;
                         setIsCompactMenuOpen(false);
-                        if (isAgentChat) {
+                        if (usesScopedPanel) {
                           const next = !isAgentResourcesPanelOpen;
                           if (isAgentResourcesPanelOpen) setExpansionViewMode('inline');
                           dismissExpansionPanels();
@@ -2037,14 +2131,14 @@ export function ChatInput({
                         cursor: isRegenerateMode ? 'default' : 'pointer',
                         opacity: isRegenerateMode ? 0.5 : 1,
                         backgroundColor:
-                          (isAgentChat ? isAgentResourcesPanelOpen || agentResourcesCustomized : isCollectionsPanelOpen || (settings.queryMode === 'agent' ? universalAgentResourcesCustomized : selectedKbCount > 0))
+                          (usesScopedPanel ? isAgentResourcesPanelOpen || scopedResourcesCustomized : isCollectionsPanelOpen || (settings.queryMode === 'agent' ? universalAgentResourcesCustomized : selectedKbCount > 0))
                             ? 'var(--olive-3)'
                             : 'transparent',
                       }}
                     >
                       <Box style={{ position: 'relative', display: 'inline-flex' }}>
                         <MaterialIcon name="apps" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
-                        {showResourcesFilterBadge && !(isAgentChat ? isAgentResourcesPanelOpen : isCollectionsPanelOpen) && (
+                        {showResourcesFilterBadge && !(usesScopedPanel ? isAgentResourcesPanelOpen : isCollectionsPanelOpen) && (
                           <Box
                             aria-hidden
                             style={{
@@ -2075,6 +2169,7 @@ export function ChatInput({
                   <Flex
                     align="center"
                     gap="2"
+                    data-testid="chat-model-selector"
                     onClick={() => {
                       setIsCompactMenuOpen(false);
                       const next = !isModelPanelOpen;
@@ -2150,7 +2245,7 @@ export function ChatInput({
               {/* Action buttons group */}
               <Flex align="center" gap="1">
                   
-                {!isAgentChat && settings.queryMode !== 'web-search' ? (
+                {!usesScopedPanel && settings.queryMode !== 'web-search' ? (
                   <Tooltip
                   content={
                     settings.queryMode === 'agent'
@@ -2204,11 +2299,18 @@ export function ChatInput({
                       </Box>
                     </IconButton>
                   </Tooltip>
-                ) : isAgentChat ? (
-                  <Tooltip content={t('chat.agentResourcesTooltip')} side="top">
+                ) : usesScopedPanel ? (
+                  <Tooltip
+                    content={
+                      isAgentChat || settings.queryMode === 'agent'
+                        ? t('chat.agentResourcesTooltip')
+                        : t('chat.connectorsTooltip')
+                    }
+                    side="top"
+                  >
                     <IconButton
                       variant={
-                        isAgentResourcesPanelOpen || agentResourcesCustomized ? 'soft' : 'ghost'
+                        isAgentResourcesPanelOpen || scopedResourcesCustomized ? 'soft' : 'ghost'
                       }
                       color="gray"
                       size="2"
@@ -2253,6 +2355,7 @@ export function ChatInput({
                   <Flex
                     align="center"
                     gap="2"
+                    data-testid="chat-model-selector"
                     onClick={() => {
                       const next = !isModelPanelOpen;
                       dismissExpansionPanels();
@@ -2331,9 +2434,14 @@ export function ChatInput({
               variant="solid"
               size="2"
               onClick={handleStopStream}
+              disabled={isStopping}
+              aria-label={t('chat.stopGenerating', { defaultValue: 'Stop generating' })}
+              data-testid="chat-stop-button"
               style={{
                 margin: 0,
                 backgroundColor: activeToggleColor,
+                opacity: isStopping ? 0.6 : 1,
+                cursor: isStopping ? 'default' : 'pointer',
               }}
             >
               <MaterialIcon
@@ -2348,6 +2456,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage')}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
@@ -2440,12 +2549,16 @@ export function ChatInput({
     <ChatInputOverlayPanel
       open={
         expansionViewMode === 'overlay' &&
-        (assistantCollectionsOverlayActive || (isAgentChat && isAgentResourcesPanelOpen))
+        (assistantCollectionsOverlayActive || (usesScopedPanel && isAgentResourcesPanelOpen))
       }
       onCollapse={() => setExpansionViewMode('inline')}
     >
-      {isAgentChat ? (
-        <AgentScopedResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
+      {usesScopedPanel ? (
+        <AgentScopedResourcesPanel
+          viewMode="overlay"
+          onToggleView={handleToggleView}
+          scope={isAgentChat ? 'agent' : 'project'}
+        />
       ) : settings.queryMode === 'agent' ? (
         <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : hubFilterQueryMode ? (

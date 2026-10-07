@@ -33,6 +33,7 @@ const REQUIRED_COLLECTIONS = [
   'agentconversations',
   'chatSessions',
   'chatSessionMessages',
+  'projects',
   'connectorsConfig',
   'citation',
   'citations',

@@ -1,0 +1,183 @@
+import 'reflect-metadata'
+import { expect } from 'chai'
+import sinon from 'sinon'
+import { Types } from 'mongoose'
+import { OAuthDcrService } from '../../../../src/modules/oauth_provider/services/oauth.dcr.service'
+import { OAuthGrantType } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { BadRequestError, ForbiddenError } from '../../../../src/libs/errors/http.errors'
+import { createMockLogger } from '../../../helpers/mock-logger'
+
+describe('OAuthDcrService', () => {
+  let service: OAuthDcrService
+  let mockOAuthAppService: any
+  let mockScopeValidatorService: any
+  const orgId = new Types.ObjectId()
+  const userId = new Types.ObjectId()
+
+  beforeEach(() => {
+    delete process.env.PIPESHUB_ENABLE_DCR
+    mockOAuthAppService = {
+      createDynamicClient: sinon.stub().resolves({
+        clientId: 'cid',
+        clientSecret: 'secret',
+        name: 'Cursor',
+        redirectUris: ['http://127.0.0.1/cb'],
+        allowedGrantTypes: [
+          OAuthGrantType.AUTHORIZATION_CODE,
+          OAuthGrantType.REFRESH_TOKEN,
+        ],
+        allowedScopes: ['user:read'],
+      }),
+    }
+    mockScopeValidatorService = {
+      parseScopes: sinon.stub().callsFake((s: string) => s.split(' ').filter(Boolean)),
+      getAllowedScopeNamesForRole: sinon.stub().returns([
+        'conversation:chat',
+        'semantic:write',
+        'kb:read',
+        'user:read',
+        'connector:read',
+      ]),
+    }
+    service = new OAuthDcrService(
+      createMockLogger(),
+      mockOAuthAppService,
+      mockScopeValidatorService,
+      {
+        mcpScopes: [
+          'conversation:chat',
+          'semantic:write',
+          'kb:read',
+          'user:read',
+          'connector:read',
+        ],
+      } as any,
+    )
+    const orgQuery: any = {
+      sort: sinon.stub().returnsThis(),
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().resolves([{ _id: orgId }]),
+    }
+    sinon.stub(Org, 'find').returns(orgQuery)
+    const userQuery: any = {
+      sort: sinon.stub().returnsThis(),
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().resolves({ _id: userId }),
+    }
+    sinon.stub(Users, 'findOne').returns(userQuery)
+  })
+
+  afterEach(() => {
+    sinon.restore()
+    delete process.env.PIPESHUB_ENABLE_DCR
+  })
+
+  it('should refuse when DCR is unset', async () => {
+    try {
+      await service.register({ client_name: 'Cursor' })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(ForbiddenError)
+    }
+  })
+
+  it('should register a public client without returning a secret', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    const result = await service.register({
+      client_name: 'Cursor',
+      redirect_uris: ['http://127.0.0.1/cb'],
+      token_endpoint_auth_method: 'none',
+      scope: 'user:read',
+    })
+    expect(result.client_id).to.equal('cid')
+    expect(result.client_secret).to.equal(undefined)
+    expect(result.token_endpoint_auth_method).to.equal('none')
+    expect(result.response_types).to.deep.equal(['code'])
+    expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].isConfidential).to.be.false
+  })
+
+  it('should omit response_types code when authorization_code is not granted', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    mockOAuthAppService.createDynamicClient.resolves({
+      clientId: 'cid',
+      clientSecret: 'secret',
+      name: 'CLI',
+      redirectUris: [],
+      allowedGrantTypes: [OAuthGrantType.REFRESH_TOKEN],
+      allowedScopes: ['user:read'],
+    })
+    const result = await service.register({
+      client_name: 'CLI',
+      grant_types: ['refresh_token'],
+      token_endpoint_auth_method: 'none',
+      scope: 'user:read',
+    })
+    expect(result.response_types).to.deep.equal([])
+    expect(result.grant_types).to.deep.equal([OAuthGrantType.REFRESH_TOKEN])
+  })
+
+  it('should reject response_type code without authorization_code', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    try {
+      await service.register({
+        client_name: 'CLI',
+        grant_types: ['refresh_token'],
+        response_types: ['code'],
+      })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(BadRequestError)
+    }
+  })
+
+  it('should reject unsupported response_types', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    try {
+      await service.register({
+        client_name: 'Cursor',
+        response_types: ['token'],
+      })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(BadRequestError)
+    }
+  })
+
+  it('should reject client_credentials', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    try {
+      await service.register({
+        grant_types: ['client_credentials'],
+        client_name: 'bad',
+      })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(BadRequestError)
+    }
+  })
+
+  it('should refuse when DCR is disabled', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'false'
+    try {
+      await service.register({ client_name: 'Cursor' })
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect(err).to.be.instanceOf(ForbiddenError)
+    }
+  })
+
+  it('should refuse when DCR is a truthy string other than true', async () => {
+    for (const value of ['TRUE', '1', 'yes']) {
+      process.env.PIPESHUB_ENABLE_DCR = value
+      try {
+        await service.register({ client_name: 'Cursor' })
+        expect.fail(`should have thrown for ${value}`)
+      } catch (err) {
+        expect(err).to.be.instanceOf(ForbiddenError)
+      }
+    }
+    expect(mockOAuthAppService.createDynamicClient.called).to.be.false
+  })
+})

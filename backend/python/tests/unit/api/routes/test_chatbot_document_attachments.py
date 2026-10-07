@@ -88,7 +88,8 @@ async def test_upload_rejects_unsupported_xls():
     ), pytest.raises(HTTPException) as exc:
         await upload_chat_attachments(req, gp, AsyncMock())
     assert exc.value.status_code == 400
-    assert "Unsupported" in str(exc.value.detail)
+    assert "legacy.xls can't be attached" in str(exc.value.detail)
+    assert "XLSX" in str(exc.value.detail)
 
 
 @pytest.mark.asyncio

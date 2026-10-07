@@ -92,6 +92,10 @@ def build_sub_agent_prompt(
         parts.append(extra_instructions)
 
     if context is not None:
+        demo_note = context.get_source_catalog().demo_note()
+        # The exploration agent already gets the note inside its source table.
+        if demo_note and demo_note not in (extra_instructions or ""):
+            parts.append(demo_note)
         user_block = build_user_context_block(context)
         if user_block:
             parts.append(user_block)
@@ -108,6 +112,8 @@ def build_sub_agent_prompt(
 def build_user_context_block(context: "AgentContext") -> str:
     """The child needs user identity to resolve 'my tickets', 'assigned to
     me' — mirrors the legacy `deep/sub_agent.py::_build_sub_agent_instructions`."""
+    if not context.send_user_info:
+        return ""
     user_info = context.user_info or {}
     email = context.user_email or user_info.get("userEmail") or user_info.get("email") or ""
     name = (

@@ -6,12 +6,11 @@ import logging
 import math
 import multiprocessing
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -27,19 +26,33 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    RecordTypes,
+    get_mime_type_for_extension,
     normalize_file_extension,
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
-from app.events.dedup import DedupDecision, select_duplicate
+from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
+from app.events.dedup import (
+    DedupDecision,
+    DuplicateMatch,
+    is_finished,
+    select_duplicate,
+    will_promote_queued_copies,
+)
 from app.services.base_client import ServiceUnavailableError
+from app.services.cache.invalidation_hooks import notify_record_indexed
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    messaging_env,
 )
 from app.services.parsing.interface import ParserProvider
 from app.services.resource_governor import classify
@@ -52,8 +65,8 @@ from app.services.vector_db.strategy import (
 )
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
-from app.utils.libreoffice_convert import convert_with_libreoffice
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import ENRICHMENT_FAILED
 
 
 def _get_pdf_ocr_detection_worker_count() -> int:
@@ -205,6 +218,48 @@ class EventProcessor:
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
 
+    async def _cleanup_abandoned_vrid_storage(
+        self, org_id: str, virtual_record_id: str
+    ) -> None:
+        """Delete blob storage documents and the VRID mapping for an abandoned VRID.
+
+        Retries up to 3 times with exponential backoff on transient failures
+        (HTTP timeouts, connection errors) to prevent orphaned storage docs
+        from accumulating when the Node.js service is momentarily unavailable.
+        """
+        blob_storage = getattr(
+            getattr(self.processor, "sink_orchestrator", None),
+            "blob_storage",
+            None,
+        )
+        if blob_storage is None:
+            self.logger.error(
+                "No blob storage available — storage docs for abandoned VRID %s "
+                "were not cleaned up",
+                virtual_record_id,
+            )
+            return
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await blob_storage.delete_storage_docs_for_vrid(org_id, virtual_record_id)
+                return
+            except Exception as e:
+                if attempt < max_attempts:
+                    delay = 2 ** attempt
+                    self.logger.warning(
+                        "Cleanup attempt %d/%d for abandoned VRID %s failed: %s — "
+                        "retrying in %ds",
+                        attempt, max_attempts, virtual_record_id, e, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    self.logger.error(
+                        "Failed to clean up storage docs for abandoned VRID %s "
+                        "after %d attempts: %s",
+                        virtual_record_id, max_attempts, e,
+                    )
+
     async def _pdf_needs_ocr(self, file_content: bytes) -> bool:
         if PDF_OCR_DETECTION_WORKERS <= 1:
             return await asyncio.to_thread(_detect_pdf_needs_ocr, file_content)
@@ -231,10 +286,7 @@ class EventProcessor:
         prev_virtual_record_id: str | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
-        existing PDF pipeline would pick for a native PDF. Shared by the native
-        PDF branch and the EPUB branch (EPUB is converted to PDF via LibreOffice
-        before reaching here) so both stay on the identical Docling/pdfplumber
-        selection logic.
+        existing PDF pipeline would pick for a native PDF.
         """
         self.logger.info("🔍 Checking if PDF needs OCR processing")
         try:
@@ -319,6 +371,26 @@ class EventProcessor:
             ):
                 yield event
 
+    @staticmethod
+    def _reads_as_code_file(
+        record_type: str | None, mime_type: str, code_ext: str | None, record_name: str
+    ) -> bool:
+        """True when ``Processor.process_code_document`` decides how a record is read.
+
+        Source code always does. So does a repository file that would otherwise
+        be parsed whole as text, or that is a generated file whatever its type
+        (``package-lock.json`` would reach the JSON parser): that method caps
+        the first and skips the second.
+        """
+        if (
+            mime_type in CODE_FILE_MIME_TYPE_VALUES
+            or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
+        ):
+            return True
+        return record_type == RecordTypes.CODE_FILE.value and (
+            mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
+        )
+
     def _use_service_pipeline(self) -> bool:
         """Return True when the new HTTP service pipeline should be used."""
         return (
@@ -375,7 +447,11 @@ class EventProcessor:
         )
 
         record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+            record_id,
+            CollectionNames.RECORDS.value,
+            # Otherwise a graph that cannot be read raises "not found after
+            # parsing", which sends whoever reads it looking for a deletion.
+            raise_on_error=True,
         )
         if record_doc is None:
             raise RuntimeError(f"Record {record_id} not found after parsing")
@@ -430,16 +506,19 @@ class EventProcessor:
             ctx, self.logger, self.sink_orchestrator
         )
 
+        defer_extraction = (
+            ctx.settings.get("defer_extraction")
+            or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
+        )
+        if not defer_extraction:
+            ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
+
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
         self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
         await self.sink_orchestrator.index(ctx)
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
-        defer_extraction = (
-            ctx.settings.get("defer_extraction")
-            or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
-        )
         if defer_extraction:
             await self.update_record_fields(
                 record_doc,
@@ -449,19 +528,21 @@ class EventProcessor:
                 "📨 Deferring graph enrichment for record %s", record_id
             )
         else:
-            await self.update_record_fields(
-                record_doc,
-                {"extractionStatus": ProgressStatus.IN_PROGRESS.value},
-            )
             try:
                 departments = await self.graph_provider.get_departments(org_id)
                 semantic_metadata = await self.extraction_client.classify(
                     block_container=block_container,
                     org_id=org_id,
                     departments=departments or [],
+                    record_name=record.record_name,
+                    record_type=record.record_type.value,
                 )
 
                 record.semantic_metadata = semantic_metadata
+                if semantic_metadata:
+                    # Canonical taxonomy names must be decided before the
+                    # summary, blob and graph writes below all consume them.
+                    await self.sink_orchestrator.resolve_entities(ctx)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     await self.sink_orchestrator.vector_store.index_record_summary(
                         record_id,
@@ -470,9 +551,6 @@ class EventProcessor:
                         semantic_metadata,
                         record,
                     )
-
-                if semantic_metadata:
-                    await self.sink_orchestrator.blob_storage.apply(ctx)
 
                 await self.sink_orchestrator.enrich(ctx)
                 self.logger.info(
@@ -483,14 +561,25 @@ class EventProcessor:
                     "❌ Enrichment failed for record %s (document remains searchable): %s",
                     record_id,
                     enrich_exc,
+                    exc_info=True,
                 )
                 await self.update_record_fields(
                     record_doc,
                     {
                         "extractionStatus": ProgressStatus.FAILED.value,
-                        "reason": f"Enrichment failed: {enrich_exc}",
+                        "reason": ENRICHMENT_FAILED,
+                        "processingStartedAt": None,
                     },
                 )
+
+        try:
+            await self.sink_orchestrator.blob_storage.apply(ctx)
+        except Exception as blob_exc:
+            self.logger.error(
+                "❌ Blob storage status update failed for record %s (document remains searchable): %s",
+                record_id,
+                blob_exc,
+            )
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
@@ -682,6 +771,15 @@ class EventProcessor:
             return False
         return self._resolve_write_collection(duplicate_doc) == current_collection
 
+    async def _vrid_has_stored_content(self, org_id: str, virtual_record_id: str) -> bool:
+        blob_storage = getattr(
+            getattr(self.processor, "sink_orchestrator", None), "blob_storage", None
+        )
+        if blob_storage is None:
+            # Cannot check; keep reusing the duplicate as before.
+            return True
+        return await blob_storage.get_actual_content_path(org_id, virtual_record_id) is not None
+
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str | dict | list | None,
@@ -746,8 +844,14 @@ class EventProcessor:
             return DedupDecision(virtual_record_id=None, skip_indexing=False)
 
         current_collection = self._resolve_write_collection(doc)
+        enrichment_live_after_ms = get_epoch_timestamp_in_ms() - int(
+            messaging_env.stale_recovery_after_seconds * 1000
+        )
         match = select_duplicate(
-            duplicate_records, current_collection, self._resolve_write_collection
+            duplicate_records,
+            current_collection,
+            self._resolve_write_collection,
+            enrichment_live_after_ms=enrichment_live_after_ms,
         )
         if match is None:
             self.logger.info(
@@ -756,64 +860,8 @@ class EventProcessor:
             )
             return DedupDecision()
 
-        attached_vrid = match.record.get("virtualRecordId")
-
         if match.is_processed:
-            if match.same_collection:
-                # The vectors this record needs already exist. Take the
-                # duplicate's state wholesale and skip indexing.
-                duplicate_fields = {
-                    "isDirty": False,
-                    "summaryDocumentId": match.record.get("summaryDocumentId"),
-                    "virtualRecordId": attached_vrid,
-                    "indexingStatus": match.record.get("indexingStatus"),
-                    "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                    # EMPTY duplicates never ran extraction, so this can be
-                    # missing/None on the source record — don't propagate None.
-                    "extractionStatus": (
-                        match.record.get("extractionStatus")
-                        or ProgressStatus.NOT_STARTED.value
-                    ),
-                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                }
-            elif attached_vrid:
-                # Same content, different collection: reuse the content
-                # identity (and with it the stored blob), but leave
-                # indexingStatus alone so this record still gets vectors of its
-                # own in its own collection.
-                duplicate_fields = {"virtualRecordId": attached_vrid}
-            else:
-                # A finished duplicate with no virtualRecordId has no content
-                # identity to lend. Writing the None would blank whatever this
-                # record already had.
-                duplicate_fields = {}
-
-            if duplicate_fields:
-                self._require_persisted(
-                    await self.update_record_fields(doc, duplicate_fields),
-                    "Failed to persist duplicate record fields",
-                    doc,
-                )
-
-            # Copy all relationships from the duplicate to this document
-            self._require_persisted(
-                await self.graph_provider.copy_document_relationships(
-                    _record_key(match.record),
-                    _record_key(doc),
-                ),
-                "Failed to copy duplicate record relationships",
-                doc,
-            )
-            if attached_vrid and match.same_collection:
-                await self.sync_vector_membership(attached_vrid)
-            self.logger.debug(
-                "✅ Duplicate record %s resolved (same_collection=%s)",
-                _record_key(match.record),
-                match.same_collection,
-            )
-            return DedupDecision(
-                virtual_record_id=attached_vrid, skip_indexing=match.same_collection
-            )
+            return await self._reuse_finished_duplicate(doc, match)
 
         if not match.same_collection:
             # In flight, but for a different collection — waiting would buy
@@ -833,7 +881,254 @@ class EventProcessor:
             "Failed to persist QUEUED status for duplicate record",
             doc,
         )
-        return DedupDecision(skip_indexing=True)
+        # The twin's completion promotes only the copies already QUEUED, so a
+        # twin that finished between the read above and this write would leave
+        # this record parked until the stranded-record sweep. Applying the
+        # finished twin twice is harmless: the reuse writes are idempotent.
+        # A failed read must not ack: the stranded sweep skips a QUEUED row
+        # with an md5 and a vrid, so nothing would revisit this record. The
+        # redelivery decides again, and its QUEUED write and reuse are idempotent.
+        twin_key = _record_key(match.record)
+        try:
+            twin = await self.graph_provider.get_document(
+                twin_key, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+        except Exception as e:
+            raise IndexingError(
+                f"Could not re-read duplicate {twin_key} after queueing {_record_key(doc)}",
+                details={"record_id": _record_key(doc), "duplicate_id": twin_key},
+            ) from e
+        if twin is None or not self._still_a_same_collection_copy(twin, doc, md5_checksum, current_collection):
+            # Deleted, or its content or org changed since it was selected: no
+            # completion of it will promote this record, and its identity is
+            # not this record's to copy.
+            self.logger.info("Duplicate %s no longer stands for %s; indexing it itself", twin_key, _record_key(doc))
+            return DedupDecision()
+        if is_finished(twin):
+            self.logger.info("Duplicate %s finished while %s was being queued; reusing it now", twin_key, _record_key(doc))
+            return await self._reuse_finished_duplicate(
+                doc, DuplicateMatch(record=twin, same_collection=True, is_processed=True)
+            )
+        if will_promote_queued_copies(twin, enrichment_live_after_ms):
+            return DedupDecision(skip_indexing=True)
+        # Ended without finishing (FAILED, or an end state such as an
+        # unsupported type) and already past promoting its copies. Indexed
+        # here rather than failed: whether the twin's failure would repeat on
+        # this content is not known here, and this record's own message can
+        # still find out.
+        self.logger.info(
+            "Duplicate %s ended %s while %s was being queued; indexing it itself",
+            twin_key, twin.get("indexingStatus"), _record_key(doc),
+        )
+        return DedupDecision()
+
+    def _still_a_same_collection_copy(
+        self,
+        twin: dict[str, Any],
+        doc: dict[str, Any],
+        md5_checksum: str,
+        current_collection: str | None,
+    ) -> bool:
+        return (
+            # A twin moved to the trash meanwhile is losing its vectors.
+            is_live_record(twin)
+            and twin.get("md5Checksum") == md5_checksum
+            and (twin.get("orgId") or "") == (doc.get("orgId") or "")
+            and self._resolves_to_same_collection(twin, current_collection)
+        )
+
+    async def _reuse_finished_duplicate(
+        self, doc: dict[str, Any], match: DuplicateMatch
+    ) -> DedupDecision:
+        attached_vrid = match.record.get("virtualRecordId")
+
+        if (
+            attached_vrid
+            and match.record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and not await self._vrid_has_stored_content(doc.get("orgId") or "", attached_vrid)
+        ):
+            # The twin's stored content is gone (e.g. deleted with the connector
+            # that indexed it first). Reusing its VRID would leave this record
+            # unreadable, and every re-index would skip against the same twin.
+            # Indexing instead rewrites the content and re-points the mapping,
+            # which heals every record sharing that VRID.
+            self.logger.warning(
+                "Duplicate %s has no stored content for VRID %s; indexing %s instead of reusing it",
+                _record_key(match.record), attached_vrid, _record_key(doc),
+            )
+            return DedupDecision(
+                rebuild_shared_vrid=doc.get("virtualRecordId") == attached_vrid
+            )
+
+        if match.same_collection:
+            # The vectors this record needs already exist.
+            await self._attach_to_finished_twin(match.record, doc)
+        else:
+            if attached_vrid:
+                # Same content, different collection: reuse the content
+                # identity (and with it the stored blob), but leave
+                # indexingStatus alone so this record still gets vectors of its
+                # own in its own collection. A twin with no virtualRecordId has
+                # no identity to lend, and writing its None would blank ours.
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"virtualRecordId": attached_vrid}),
+                    "Failed to persist duplicate record fields",
+                    doc,
+                )
+            await self._copy_twin_edges(match.record, doc)
+        if match.same_collection and self.sink_orchestrator is not None:
+            # The copy above only touched the graph — this record still
+            # has no `record`/`record_group` point, and the taxonomy
+            # points it now shares carry only the other record's
+            # connectorId/recordGroupId. Different-collection duplicates
+            # skip this: they continue to full indexing and get entity
+            # sync from SinkOrchestrator.index()/enrich() there instead.
+            # sync_entities_for_duplicate is already best-effort
+            # internally; caught again here so a mock/mis-wired sink in
+            # a caller can never turn dedup's own bookkeeping into a
+            # failed event.
+            try:
+                await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+            except Exception as exc:
+                self.logger.warning(
+                    "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                    _record_key(doc),
+                    exc,
+                )
+        self.logger.debug(
+            "✅ Duplicate record %s resolved (same_collection=%s)",
+            _record_key(match.record),
+            match.same_collection,
+        )
+        return DedupDecision(
+            virtual_record_id=attached_vrid, skip_indexing=match.same_collection
+        )
+
+    async def _copy_twin_edges(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
+        self._require_persisted(
+            await self.graph_provider.copy_document_relationships(
+                _record_key(twin),
+                _record_key(doc),
+            ),
+            "Failed to copy duplicate record relationships",
+            doc,
+        )
+
+    async def _attach_to_finished_twin(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
+        """Make ``doc`` a copy of a finished twin in the same collection.
+
+        Status is written last. The handler acknowledges a redelivered event
+        for a COMPLETED record, so writing it first turned any failure in the
+        edge copy or the membership sync into a permanent one: the record
+        claimed to be indexed while its connectorId was missing from the
+        VRID's points.
+        """
+        target_key = _record_key(doc)
+        vrid = twin.get("virtualRecordId")
+        prior_identity = {
+            "virtualRecordId": doc.get("virtualRecordId"),
+            "summaryDocumentId": doc.get("summaryDocumentId"),
+        }
+
+        # A QUEUED record with this md5 is what a finishing twin promotes. Left
+        # QUEUED for the length of the attach, this one could be promoted to
+        # COMPLETED underneath it, and a failure afterwards would then undo the
+        # identity of a record nothing retries. IN_PROGRESS takes it out of
+        # the promotion's reach; a failed attempt is retried by the handler,
+        # as for any record.
+        await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+
+        await self._copy_twin_edges(twin, doc)
+        sync_attempted = False
+        try:
+            # Inside the try: a write whose answer is lost has still landed.
+            self._require_persisted(
+                await self.update_record_fields(
+                    doc,
+                    {
+                        "virtualRecordId": vrid,
+                        "summaryDocumentId": twin.get("summaryDocumentId"),
+                    },
+                ),
+                "Failed to persist duplicate record fields",
+                doc,
+            )
+            if vrid:
+                # Set first: a sync that raises or is cancelled may already
+                # have written some of the points.
+                sync_attempted = True
+                await self.sync_vector_membership(vrid)
+            self._require_persisted(
+                await self.update_record_fields(
+                    doc,
+                    {
+                        "isDirty": False,
+                        "indexingStatus": twin.get("indexingStatus"),
+                        "processingStartedAt": None,
+                        "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                        # EMPTY duplicates never ran extraction, so this can be
+                        # missing/None on the source record — don't propagate None.
+                        "extractionStatus": (
+                            twin.get("extractionStatus") or ProgressStatus.NOT_STARTED.value
+                        ),
+                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                ),
+                "Failed to persist duplicate record fields",
+                doc,
+            )
+        except (Exception, asyncio.CancelledError):
+            # Left holding the twin's VRID after a failure, the record would
+            # keep its connectorId on that VRID's points, and a later reindex
+            # of it would overwrite the twin's vectors.
+            await self._restore_identity_after_failed_attach(
+                target_key, prior_identity, vrid if sync_attempted else None
+            )
+            raise
+
+    async def _restore_identity_after_failed_attach(
+        self,
+        record_key: str,
+        prior_identity: dict[str, Any],
+        attached_vrid: str | None,
+    ) -> None:
+        """Best effort: the event is already failing, and its retry redoes the attach."""
+        try:
+            current = await self.graph_provider.get_document(
+                record_key, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if (current or {}).get("indexingStatus") in (
+                ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value,
+            ):
+                # The status write landed and only its answer was lost. The
+                # attach is complete; taking its identity away now would leave
+                # a finished record with no VRID and nothing to retry it.
+                return
+            if not await self.graph_provider.update_node(
+                record_key, CollectionNames.RECORDS.value, prior_identity
+            ):
+                raise IndexingError("record no longer exists")
+        except Exception as e:
+            self.logger.error(
+                "Could not restore the previous content identity of %s after a failed "
+                "duplicate attach; it may still hold VRID %s until its retry: %s",
+                record_key,
+                attached_vrid,
+                e,
+            )
+            return
+        if not attached_vrid:
+            return
+        try:
+            await self.sync_vector_membership(attached_vrid)
+        except Exception as e:
+            self.logger.error(
+                "Could not re-sync VRID %s after a failed duplicate attach; its points may "
+                "still list %s until its retry or the next sync of that VRID: %s",
+                attached_vrid,
+                record_key,
+                e,
+            )
 
     async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """
@@ -888,7 +1183,14 @@ class EventProcessor:
                 )
 
             record = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id,
+                CollectionNames.RECORDS.value,
+                # None below drains the message, so it has to mean "deleted" and
+                # nothing else. Without this a graph that is restarting answers
+                # None for every record in flight, each one is drained as though
+                # it had been deleted, and they sit at QUEUED until the stranded
+                # sweep notices an hour later.
+                raise_on_error=True,
             )
 
             if record is None:
@@ -952,14 +1254,22 @@ class EventProcessor:
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
 
+            rebuild_shared_vrid = False
             # Calculate MD5 hash and check for duplicates for ALL record types
             try:
                 dedup_decision = await self._check_duplicate_by_md5(file_content, doc)
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
+                    await notify_record_indexed(
+                        connector_name=doc.get("connectorName"),
+                        connector_id=doc.get("connectorId"),
+                        external_record_group_id=doc.get("externalGroupId"),
+                        org_id=doc.get("orgId"),
+                    )
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
+                rebuild_shared_vrid = dedup_decision.rebuild_shared_vrid
                 if dedup_decision.virtual_record_id:
                     # Different-collection duplicate: content identity was copied
                     # onto `doc` inside _check_duplicate_by_md5; pick it up here
@@ -988,6 +1298,18 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            if self._use_service_pipeline():
+                # The parsing and extraction services act for the org named in
+                # the service token, and refuse a token that names none.
+                org_id = org_id or doc.get("orgId")
+                if not org_id:
+                    raise ProcessingError(
+                        f"Record {record_id} has no organisation: neither the event "
+                        "nor the stored record carries an orgId",
+                        record_id=record_id,
+                        details={"event_type": event_type},
+                    )
 
             # Fail fast, before writing IN_PROGRESS, if the parsing service's
             # circuit breaker is already open. This is an in-memory check (no
@@ -1026,7 +1348,16 @@ class EventProcessor:
 
             prev_virtual_record_id = None
             abandoned_virtual_record_id = None
-            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+            if rebuild_shared_vrid:
+                # Identical content under a VRID that lost its stored content:
+                # isolating would fix only this record and leave the others
+                # sharing that VRID unreadable, so rebuild it in place.
+                virtual_record_id = doc.get("virtualRecordId")
+                self.logger.info(
+                    f"📊 Rebuilding shared vrid {virtual_record_id} whose stored content is missing"
+                )
+                prev_virtual_record_id = virtual_record_id
+            elif event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
                 # For reconciliation-enabled types, decide whether to keep or generate new vrid
                 from app.config.constants.arangodb import (
                     RECONCILIATION_ENABLED_EXTENSIONS,
@@ -1081,6 +1412,9 @@ class EventProcessor:
                 abandoned_virtual_record_id
                 and abandoned_virtual_record_id != virtual_record_id
             ):
+                await self._cleanup_abandoned_vrid_storage(
+                    org_id, abandoned_virtual_record_id
+                )
                 await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
 
             # Ask the consumer for a nested parsing slot only after the record
@@ -1105,6 +1439,10 @@ class EventProcessor:
                 ),
             )
 
+            reads_as_code_file = self._reads_as_code_file(
+                record_type, mime_type, code_ext, record_name
+            )
+
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():
                 if isinstance(file_content, str):
@@ -1112,13 +1450,50 @@ class EventProcessor:
                 else:
                     content_bytes = file_content
 
+                service_mime_type, service_extension = mime_type, extension
+                if reads_as_code_file:
+                    # The parsing service picks a parser from mime and extension
+                    # alone, so the decision the in-process code path makes is
+                    # made here before the bytes are sent.
+                    plan = plan_code_file(
+                        record_name,
+                        event_data.get("filePath"),
+                        code_ext,
+                        content_bytes,
+                        repository_file=record_type == RecordTypes.CODE_FILE.value,
+                    )
+                    if plan.route is CodeFileRoute.SKIP:
+                        async for event in self.processor.process_code_document(
+                            recordName=record_name,
+                            recordId=record_id,
+                            code_binary=content_bytes,
+                            virtual_record_id=virtual_record_id,
+                            extension=code_ext,
+                            file_path=event_data.get("filePath"),
+                            event_type=event_type,
+                            prev_virtual_record_id=prev_virtual_record_id,
+                        ):
+                            yield event
+                        return
+                    if plan.route in (CodeFileRoute.DELIMITED, CodeFileRoute.STRUCTURED):
+                        service_extension = plan.parser
+                        service_mime_type = get_mime_type_for_extension(
+                            plan.parser, fallback=mime_type
+                        )
+                    elif plan.route is CodeFileRoute.CODE:
+                        # The event may carry no extension, or one that
+                        # disagrees with the file's name. The one the grammar
+                        # was chosen by is what makes the service pick the code
+                        # parser over the text one a text/plain mime implies.
+                        service_extension = plan.extension
+
                 async for event in self._orchestrate_via_services(
                     record_id=record_id,
                     org_id=org_id,
                     virtual_record_id=virtual_record_id,
                     record_name=record_name,
-                    mime_type=mime_type,
-                    extension=extension,
+                    mime_type=service_mime_type,
+                    extension=service_extension,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                     file_content=content_bytes,
@@ -1192,10 +1567,7 @@ class EventProcessor:
 
             # Must precede the PLAIN_TEXT branch: code files routinely arrive as
             # text/plain, and that branch returns early.
-            if (
-                mime_type in CODE_FILE_MIME_TYPE_VALUES
-                or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
-            ):
+            if reads_as_code_file:
                 async for event in self.processor.process_code_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -1273,16 +1645,13 @@ class EventProcessor:
                     yield event
 
             elif extension == ExtensionTypes.EPUB.value or mime_type == MimeTypes.EPUB.value:
-                self.logger.info("📚 Converting EPUB to PDF via LibreOffice for record: %s", record_name)
-                pdf_binary = await convert_with_libreoffice(file_content, "epub", "pdf")
-                pdf_record_name = f"{Path(record_name).stem}.pdf" if record_name else "converted.pdf"
-                async for event in self._dispatch_pdf_binary(
-                    record_name=pdf_record_name,
-                    record_id=record_id,
-                    record_version=record_version,
-                    connector=connector,
-                    org_id=org_id,
-                    pdf_binary=pdf_binary,
+                async for event in self.processor.process_epub_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    epub_binary=file_content,
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,

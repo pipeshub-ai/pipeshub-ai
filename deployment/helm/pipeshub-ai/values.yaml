@@ -1,4 +1,7 @@
 replicaCount: 2
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
 terminationGracePeriodSeconds: 300
 
 # Global configuration
@@ -12,6 +15,9 @@ global:
   
   # Storage class for persistent volumes
   storageClass: ""
+  # Existing StatefulSets cannot change volumeClaimTemplates. Only new installs
+  # that set this true render global.storageClass onto those claims.
+  applyStorageClassToStatefulSets: false
 
 # Secret management configuration
 secretManagement:
@@ -113,6 +119,16 @@ telemetry:
       enabled: false
       insecure: false
 
+# Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
+# may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
+# means "1" when ingress.enabled, otherwise trust no proxy. Use "2" when an L7
+# load balancer sits in front of the ingress controller (e.g. GCE, which adds
+# its own X-Forwarded-For entry). Never "true".
+trustProxy: ""
+
+# Per-IP limit for login, OTP and password endpoints.
+maxAuthRequestsPerMinute: 10
+
 ingress:
   enabled: false
   className: "" # Fill
@@ -159,6 +175,21 @@ extraVolumes: []
 #   - name: branding
 #     mountPath: /app/public/branding
 extraVolumeMounts: []
+
+# Extra env entries for the app container. Use a secretKeyRef for values that
+# must not sit in the release, such as E2B_API_KEY.
+# extraEnv:
+#   - name: E2B_API_KEY
+#     valueFrom:
+#       secretKeyRef:
+#         name: pipeshub-e2b
+#         key: api-key
+extraEnv: []
+extraEnvFrom: []
+
+# aws-sdk v2 presigns us-east-1 with Signature V2. SSE-KMS buckets reject those
+# URLs. Images that set signatureVersion on the S3 client do not need this.
+s3SignatureV4Preload: false
 
 volumes: {}
 
@@ -291,68 +322,60 @@ config:
   accessibleRecordsCacheTtl: 300
   # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
   signedUrlCacheSeconds: 0
+  # Most characters one agent turn may stream (text, reasoning and tool-call
+  # arguments together) before it is stopped as a runaway. "" keeps the
+  # built-in 1000000; 0 removes the limit.
+  agentMaxTurnOutputChars: ""
+  # Custom (non-catalog) MCP servers with the STDIO transport run the command an
+  # org admin enters as a process in this pod, with the app's identity, network
+  # and service-account token. Leave false unless every org admin is trusted
+  # with a shell in this pod; with sandbox.dind.enabled=true that extends to
+  # root on the node. Catalog and remote (HTTP) MCP servers work either way.
+  mcpAllowCustomStdio: false
   # Which coding sandbox `run_code` executes in. Left unset the service falls
   # back to "local", which runs model-generated code as a subprocess of the
   # query service itself — no network namespace and no filesystem boundary
   # beyond rlimits. Pinned here so a chart install is isolated by default,
   # matching what every docker-compose file already does.
   #
-  # "docker" needs a reachable Docker daemon: mount the host socket via
-  # `extraVolumes`/`extraVolumeMounts`, or point DOCKER_HOST at a
-  # daemon/DinD sidecar. Without one, `run_code` fails at provision with a
-  # daemon error — set sandboxMode to "local" deliberately if that is what
-  # you want on this cluster, and understand the isolation you are giving up.
+  # "docker" needs a reachable Docker daemon: enable the DinD sidecar
+  # (`sandbox.dind`) or set `dockerHost`. The chart refuses to install
+  # without one, and refuses a Docker socket mounted into the application
+  # container through `extraVolumeMounts`.
   sandboxMode: "docker"
+  # Required alongside sandboxMode "local", which the service refuses
+  # otherwise: local runs generated code with this pod's identity, network
+  # and filesystem. Development clusters only.
+  sandboxAllowLocal: false
   # Image `run_code` containers are started from (SANDBOX_MODE=docker only).
-  sandboxDockerImage: "pipeshub/sandbox:latest"
+  sandboxDockerImage: "pipeshubai/pipeshub-sandbox:latest"
+  # false: generated code runs with no network. Allowlisted package installs
+  # still reach the configured registries from a separate install container.
+  # true: generated code may reach public internet addresses only. Each
+  # sandbox container firewalls private, CGNAT, link-local (cloud metadata)
+  # and bridge addresses before the code starts; if the image can't, the
+  # code runs offline instead.
+  sandboxAllowNetwork: false
+  # Comma-separated IPv4 CIDRs exempt from that firewall, e.g. a private
+  # package mirror. Link-local and metadata addresses stay blocked.
+  sandboxEgressAllowCidrs: ""
+  sandboxEgressNetwork: "pipeshub_sandbox_egress"
+  # Writable-layer cap for EACH docker-mode sandbox container (default 10g;
+  # 0/off disables), so one run cannot fill the daemon's storage. This is a
+  # per-container limit, not an aggregate cap: many containers and image layers
+  # can still exhaust the daemon's storage (under the DinD sidecar, the
+  # sidecar's storage). Enforced only where the daemon's storage driver
+  # supports it (overlay2 on xfs+pquota, or btrfs/zfs/devicemapper); otherwise
+  # the service logs a warning once and runs continue uncapped.
+  sandboxDiskQuota: "10g"
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
-  # reach a daemon you run yourself, e.g. "tcp://docker-daemon.svc:2375".
+  # reach a daemon you run yourself, e.g. "tcp://docker-proxy.svc:2375".
+  # The chart cannot secure that daemon: put the same policy proxy in front of
+  # it (`python -m app.docker_proxy_main` from this image, as the DinD sidecar
+  # does) and never point this at a raw, unauthenticated dockerd.
   dockerHost: ""
 
-# --- Coding sandbox execution ------------------------------------------------
-sandbox:
-  # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
-  #
-  # Off by default, and that is deliberate. DinD needs a PRIVILEGED container,
-  # which is the one exception to this chart's otherwise uniform posture
-  # (runAsNonRoot, drop ALL capabilities, no privilege escalation). A
-  # privileged container can escape to the node, so enabling this trades a
-  # node-level risk for the isolation that keeps model-generated code off the
-  # application pod. Make that trade knowingly:
-  #
-  #   - Pod Security Admission `restricted` and OpenShift's default SCC will
-  #     REJECT this pod. You need a `privileged`/`baseline` namespace label or
-  #     a matching SCC.
-  #   - Every container in this pod can reach the daemon on localhost:2375 and
-  #     therefore has root on the node. Do not co-locate untrusted sidecars.
-  #
-  # Alternatives that avoid a privileged container entirely:
-  #   - SANDBOX_MODE=e2b with E2B_API_KEY (execution moves off-cluster)
-  #   - config.dockerHost pointing at a daemon you run and secure yourself
-  #   - a rootless image (docker:<ver>-dind-rootless) via `image` below, which
-  #     needs its own cgroup/seccomp accommodations — verify on your cluster
-  dind:
-    enabled: false
-    image: "docker:27-dind"
-    pullPolicy: "IfNotPresent"
-    # The daemon listens on plain TCP bound to the pod's localhost. TLS is
-    # off because the socket never leaves the pod's network namespace;
-    # exposing this port beyond the pod would be handing out node root.
-    port: 2375
-    resources:
-      requests:
-        cpu: "250m"
-        memory: "512Mi"
-      limits:
-        cpu: "2"
-        memory: "4Gi"
-    # /var/lib/docker. emptyDir means the sandbox image is re-pulled after
-    # every pod restart; size this for that image plus the layers a run
-    # creates. Set `existingClaim` to keep the cache across restarts.
-    storage:
-      sizeLimit: "20Gi"
-      existingClaim: ""
   # Light records take their own cluster-wide indexing lease pool. Leave false
   # for one release: a previous-build replica admits every record into the
   # shared "indexing" pool at the full budget, so during a rolling upgrade a
@@ -390,6 +413,12 @@ sandbox:
   allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
   # Example: "https://app.example.com,https://admin.example.com"
   # For development: --set config.allowedOrigins="http://localhost:3001"
+  # SECURITY: "true" refuses AI model endpoints on private/internal addresses (localhost,
+  # RFC 1918, cluster DNS names), checked when a model is saved and on every connection.
+  # Turn it on when organisations that don't trust each other share this install. Link-local
+  # and cloud metadata addresses are refused either way; OLLAMA_API_URL stays allowed.
+  # Model traffic sent through HTTP(S)_PROXY is not address-checked: filter it on the proxy.
+  blockPrivateAddresses: ""
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
@@ -400,6 +429,84 @@ sandbox:
   # Override with --set config.samlSpEntityId="https://app.example.com"
   samlSpEntityId: "pipeshub"
 
+# --- Coding sandbox execution ------------------------------------------------
+sandbox:
+  # Pod-level RuntimeClass (empty = cluster default). It applies to the whole
+  # pod, including the privileged DinD sidecar, so an escape lands in the
+  # sandboxed runtime rather than on the node. The RuntimeClass must already
+  # exist in the cluster; left empty nothing changes. This chart does NOT
+  # configure gVisor's required DinD daemon flags or nested-container
+  # networking, so do not combine gVisor with sandbox.dind.enabled until that
+  # is set up and smoke-tested; a VM runtime (Kata) or e2b avoids that gap.
+  runtimeClassName: ""
+
+  # Docker-in-Docker sidecar, so SANDBOX_MODE=docker has a daemon to talk to.
+  #
+  # Off by default, and that is deliberate. DinD needs a PRIVILEGED container,
+  # which is the one exception to this chart's otherwise uniform posture
+  # (runAsNonRoot, drop ALL capabilities, no privilege escalation). A
+  # privileged container can escape to the node, so enabling this trades a
+  # node-level risk for the isolation that keeps model-generated code off the
+  # application pod. Make that trade knowingly:
+  #
+  #   - Pod Security Admission `restricted` and OpenShift's default SCC will
+  #     REJECT this pod. You need a `privileged`/`baseline` namespace label or
+  #     a matching SCC.
+  #   - The application container never talks to the daemon. dockerd listens
+  #     only on a unix socket in an emptyDir that is mounted into `dind` and
+  #     the `docker-proxy` sidecar (see `sandbox.proxy`), and nothing else.
+  #     Anything that can mount that volume, or that runs in those two
+  #     containers, has root on the node.
+  #
+  # Alternatives that avoid a privileged container entirely:
+  #   - SANDBOX_MODE=e2b with E2B_API_KEY (execution moves off-cluster)
+  #   - config.dockerHost pointing at a daemon you run and secure yourself
+  #   - a rootless image (docker:<ver>-dind-rootless) via `image` below, which
+  #     needs its own cgroup/seccomp accommodations — verify on your cluster
+  dind:
+    enabled: false
+    image: "docker:27-dind"
+    pullPolicy: "IfNotPresent"
+    # Loopback port of the policy proxy the application connects to
+    # (DOCKER_HOST). The daemon itself has no TCP listener.
+    port: 2375
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    # /var/lib/docker. emptyDir means the sandbox image is re-pulled after
+    # every pod restart; size this for that image plus the layers a run
+    # creates. Set `existingClaim` to keep the cache across restarts.
+    storage:
+      sizeLimit: "20Gi"
+      existingClaim: ""
+
+  # Docker API policy proxy, deployed with the DinD sidecar. It runs
+  # app.docker_proxy_main from the application image (`image` above), so that
+  # image must include it. It admits only the calls the coding sandbox makes:
+  # creates from the allowed images with no privileged mode, host mounts,
+  # devices or host namespaces, acting only on containers it created.
+  proxy:
+    # Full image reference. Empty runs the application image, which keeps the
+    # proxy and the app on one version; set it only when `image.tag` predates
+    # the proxy.
+    image: ""
+    logLevel: "INFO"
+    # Comma-separated images sandbox containers may be created from. Empty
+    # allows only config.sandboxDockerImage; a value replaces it, so list
+    # that image too.
+    allowedImages: ""
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
+
 # IMPORTANT: Set a stable secret key for production deployments!
 # If not set, a random key is generated on each install. This causes issues
 # because encrypted data (OAuth tokens, etc.) cannot be decrypted after restart.
@@ -407,6 +514,20 @@ sandbox:
 secretKey: "" # Fill
 
 mongodb:
+  # Bitnami subchart. Existing installs keep this. New AWS installs set it false
+  # and use mongodb.builtin instead (official mongo image, chart-owned StatefulSet).
+  enabled: true
+  builtin:
+    enabled: false
+    image:
+      repository: mongo
+      tag: "8.0.17"
+      pullPolicy: IfNotPresent
+    cacheSizeGB: 1
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+    topologySpreadConstraints: []
   architecture: replicaset
   replicaSetName: rs0
   replicaCount: 2  # 2 data nodes + 1 arbiter = quorum with less storage than 3 full copies
@@ -429,6 +550,7 @@ mongodb:
   persistence:
     enabled: true
     storageClass: "" # Fill
+    size: 8Gi
   arbiter:
     enabled: true  # Provides the quorum vote without storing a full data copy
   podSecurityContext:
@@ -444,12 +566,27 @@ mongodb:
       - ALL
 
 redis:
-  # Set to false (with redis.external.enabled=true) to skip deploying the
-  # bundled Bitnami subchart entirely, e.g. when pointing at AWS MemoryDB or a
-  # self-hosted Redis Cluster. Wired via `condition: redis.enabled` in
-  # Chart.yaml, so this must stay a plain boolean the chart can read before
-  # dependency resolution.
+  # Set to false (with redis.external.enabled=true, or redis.builtin.enabled=true)
+  # to skip deploying the bundled Bitnami subchart entirely. Wired via
+  # `condition: redis.enabled` in Chart.yaml, so this must stay a plain boolean
+  # the chart can read before dependency resolution.
   enabled: true
+  # Chart-owned Redis (official redis image). New AWS installs use this and set
+  # enabled=false. Do not enable both.
+  builtin:
+    enabled: false
+    image:
+      repository: redis
+      tag: "7.4-bookworm"
+      pullPolicy: IfNotPresent
+    maxmemory: 2gb
+    maxmemoryPolicy: noeviction
+    resources: {}
+    persistence:
+      size: 8Gi
+    nodeSelector: {}
+    tolerations: []
+    topologySpreadConstraints: []
   architecture: replication  # 1 master + 1 replica for minimal read failover
   master:
     count: 1
@@ -664,6 +801,8 @@ kafka:
 
 qdrant:
   replicaCount: 2  # 2 nodes: one can fail while the other keeps serving
+  # Existing releases were created with Parallel. OrderedReady is immutable to change.
+  orderedStartup: false
   image:
     repository: qdrant/qdrant
     tag: v1.15
@@ -705,6 +844,7 @@ qdrant:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  topologySpreadConstraints: []
   apiKey: "api_key"
 
 # Neo4j (enabled by default). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
@@ -729,6 +869,7 @@ neo4j:
   persistence:
     enabled: true
     size: 10Gi
+    logsSize: 5Gi
     accessModes:
       - ReadWriteOnce
     storageClass: "" # Fill
@@ -751,6 +892,8 @@ neo4j:
     capabilities:
       drop:
       - ALL
+  nodeSelector: {}
+  tolerations: []
   # apoc plugin and memory tuning for production (4Gi K8s limit).
   # heap (2g) + pagecache (1g) + JVM overhead (~500m) fits within 4Gi limit.
   env:

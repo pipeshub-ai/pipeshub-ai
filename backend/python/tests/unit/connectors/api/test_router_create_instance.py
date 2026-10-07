@@ -524,7 +524,51 @@ class TestCreateInstanceInDB:
             with pytest.raises(HTTPException) as exc:
                 await create_connector_instance(req, gp)
             assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
-            assert "Duplicate instance name" in exc.value.detail
+            # the person is told what failed and what to do, not the exception text
+            assert exc.value.detail == "We couldn't set up this connector with those details. Check the settings and try again."
+            assert "Duplicate instance name" not in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_taken_name_keeps_its_own_advice(self) -> None:
+        """A name already in use tells the person to pick another one."""
+        body = _base_body(authType="NONE")
+        registry = _default_registry()
+        registry.create_connector_instance_on_configuration = AsyncMock(
+            side_effect=ValueError(
+                "Connector instance name 'Sales Drive' already exists. Please choose a different name."
+            ),
+        )
+        req = _mock_request(body=body, is_admin=True, connector_registry=registry)
+        gp = _default_graph_provider()
+
+        with _common_patches():
+            with pytest.raises(HTTPException) as exc:
+                await create_connector_instance(req, gp)
+            assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+            assert exc.value.detail == (
+                "That name is already used by another connector. Pick a different name."
+            )
+            assert "Sales Drive" not in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_missing_sign_in_method_says_to_choose_one(self) -> None:
+        """A missing auth type names the choice to make, not the field."""
+        body = _base_body(authType="NONE")
+        registry = _default_registry()
+        registry.create_connector_instance_on_configuration = AsyncMock(
+            side_effect=ValueError(
+                "selected_auth_type is required when creating connector 'drive'. "
+                "User must select one of the supported auth types: ['OAUTH']"
+            ),
+        )
+        req = _mock_request(body=body, is_admin=True, connector_registry=registry)
+        gp = _default_graph_provider()
+
+        with _common_patches():
+            with pytest.raises(HTTPException) as exc:
+                await create_connector_instance(req, gp)
+            assert exc.value.detail == "Choose how this connector signs in, then try again."
+            assert "selected_auth_type" not in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_none_instance_from_registry_raises_500(self) -> None:
@@ -752,6 +796,40 @@ class TestStoreInitialConfig:
         assert result["success"] is True
         config_service.set_config.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_new_oauth_app_is_created_with_the_connector_scope(self) -> None:
+        body = _base_body(
+            authType="OAUTH",
+            scope="team",
+            config={"auth": {"clientId": "cid", "clientSecret": "secret"}},
+        )
+        registry = _default_registry()
+        config_service = AsyncMock()
+        req = _mock_request(
+            body=body,
+            is_admin=True,
+            connector_registry=registry,
+            config_service=config_service,
+        )
+        gp = _default_graph_provider()
+
+        with _common_patches(), patch(
+            f"{_ROUTER}.resolve_config_service", return_value=config_service
+        ), patch(
+            f"{_ROUTER}._validate_admin_oauth_config_before_creation", new_callable=AsyncMock
+        ), patch(
+            f"{_ROUTER}._handle_oauth_config_creation",
+            new_callable=AsyncMock,
+            return_value="oauth-new",
+        ) as mock_handle, patch(
+            f"{_ROUTER}._prepare_connector_config",
+            new_callable=AsyncMock,
+            return_value={"auth": {"oauthConfigId": "oauth-new"}},
+        ):
+            await create_connector_instance(req, gp)
+
+        assert mock_handle.call_args.kwargs["connector_scope"] == "team"
+
 
 class TestSuccessResponse:
     """Lines 2490-2503: verify the shape of the success response."""
@@ -882,4 +960,6 @@ class TestGenericExceptionHandling:
             with pytest.raises(HTTPException) as exc:
                 await create_connector_instance(req, gp)
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            assert "Unexpected DB failure" in exc.value.detail
+            # the person is told what failed and what to do, not the exception text
+            assert exc.value.detail == "We couldn't set up this connector. Please try again; if it keeps failing, contact your admin."
+            assert "Unexpected DB failure" not in exc.value.detail

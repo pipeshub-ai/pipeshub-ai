@@ -9,7 +9,10 @@ import {
   UploadNextVersionSchema,
   DirectUploadSchema,
   RollBackToPreviousVersionSchema,
+  DocumentIdParamsWithVersion,
 } from '../../../../src/modules/storage/validators/validators'
+
+const DOCUMENT_ID = '64d000000000000000000b01'
 
 describe('storage/validators/validators', () => {
   afterEach(() => {
@@ -64,12 +67,37 @@ describe('storage/validators/validators', () => {
   describe('DocumentIdParams', () => {
     it('should accept valid documentId params', () => {
       const data = {
-        params: { documentId: 'abc123' },
+        params: { documentId: DOCUMENT_ID },
         headers: { authorization: 'Bearer token' },
         body: { fileBuffer: {} },
       }
       const result = DocumentIdParams.safeParse(data)
       expect(result.success).to.be.true
+    })
+
+    // A malformed id used to reach Mongoose, which failed to cast it and answered 500.
+    for (const documentId of ['abc123', 'not-an-object-id', '64d000000000000000000b0z', '']) {
+      it(`should reject the malformed documentId ${JSON.stringify(documentId)} with a message that says what to send`, () => {
+        const result = DocumentIdParams.safeParse({
+          params: { documentId },
+          headers: { authorization: 'Bearer token' },
+          body: { fileBuffer: {} },
+        })
+        expect(result.success).to.be.false
+        if (result.success) return
+        expect(result.error.issues[0]?.path).to.deep.equal(['params', 'documentId'])
+        expect(result.error.issues[0]?.message).to.contain('24-character id')
+      })
+    }
+
+    it('should reject a malformed documentId on every schema that takes one', () => {
+      const params = { documentId: 'abc123' }
+      const headers = { authorization: 'Bearer token' }
+      expect(GetBufferSchema.safeParse({ body: {}, query: {}, params, headers }).success).to.be.false
+      expect(RollBackToPreviousVersionSchema.safeParse({ body: { note: 'n' }, query: {}, params, headers }).success).to.be.false
+      expect(DirectUploadSchema.safeParse({ query: {}, params, headers }).success).to.be.false
+      expect(UploadNextVersionSchema.safeParse({ params, body: { fileBuffer: {} } }).success).to.be.false
+      expect(DocumentIdParamsWithVersion.safeParse({ params, headers, query: {} }).success).to.be.false
     })
   })
 
@@ -78,7 +106,7 @@ describe('storage/validators/validators', () => {
       const data = {
         body: {},
         query: { version: '2' },
-        params: { documentId: 'abc123' },
+        params: { documentId: DOCUMENT_ID },
         headers: { authorization: 'Bearer token' },
       }
       const result = GetBufferSchema.safeParse(data)
@@ -89,7 +117,7 @@ describe('storage/validators/validators', () => {
       const data = {
         body: {},
         query: {},
-        params: { documentId: 'abc123' },
+        params: { documentId: DOCUMENT_ID },
         headers: { authorization: 'Bearer token' },
       }
       const result = GetBufferSchema.safeParse(data)
@@ -164,7 +192,7 @@ describe('storage/validators/validators', () => {
     const baseData = {
       body: { note: 'rollback' },
       query: {},
-      params: { documentId: 'abc123' },
+      params: { documentId: DOCUMENT_ID },
       headers: { authorization: 'Bearer token' },
     }
 
@@ -236,7 +264,7 @@ describe('storage/validators/validators', () => {
     it('should accept version "0"', () => {
       const data = {
         query: { version: '0' },
-        params: { documentId: 'abc123' },
+        params: { documentId: DOCUMENT_ID },
         headers: { authorization: 'Bearer token' },
       }
       const result = DocumentIdParamsWithVersion.safeParse(data)
@@ -249,7 +277,7 @@ describe('storage/validators/validators', () => {
     it('should reject negative version "-1"', () => {
       const data = {
         query: { version: '-1' },
-        params: { documentId: 'abc123' },
+        params: { documentId: DOCUMENT_ID },
         headers: { authorization: 'Bearer token' },
       }
       const result = DocumentIdParamsWithVersion.safeParse(data)
@@ -261,7 +289,7 @@ describe('storage/validators/validators', () => {
     it('should accept valid direct upload schema', () => {
       const data = {
         query: {},
-        params: { documentId: 'abc123' },
+        params: { documentId: DOCUMENT_ID },
         headers: { authorization: 'Bearer token' },
       }
       const result = DirectUploadSchema.safeParse(data)

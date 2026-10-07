@@ -22,6 +22,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import extract_source_status
 from app.sources.client.github.github import GitHubResponse
 
 from .constants import (
@@ -79,6 +81,11 @@ class RuntimeHelper:
     def _is_retryable_error(response: GitHubResponse | None) -> bool:
         """True for transient failures (429/5xx) worth a backed-off retry."""
         if response is None or response.success:
+            return False
+        # The 504 on a wall-clock timeout is stamped locally for status
+        # mapping, not reported by GitHub — retrying an op that already burned
+        # its full budget would multiply the stall by _GITHUB_MAX_RETRIES.
+        if response.exception_type == asyncio.TimeoutError.__name__:
             return False
         return response.status_code in _RETRYABLE_STATUS_CODES
 
@@ -203,6 +210,8 @@ class RuntimeHelper:
                 success=False,
                 data=None,
                 error=f"GitHub op timed out after {budget:.0f}s",
+                status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
+                exception_type=asyncio.TimeoutError.__name__,
             )
         except Exception as e:
             # Data-source methods normally convert exceptions to success=False,
@@ -213,7 +222,7 @@ class RuntimeHelper:
                 success=False,
                 data=None,
                 error=str(e),
-                status_code=getattr(e, "status", None),
+                status_code=extract_source_status(e),
                 exception_type=type(e).__name__,
             )
 

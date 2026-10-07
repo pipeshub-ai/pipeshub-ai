@@ -1,23 +1,8 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import {
-  createLocalFsConnectorUploadMulter,
-  isLocalFsConnector,
-} from '../../src/utils/local-fs-utils'
+import { isLocalFsConnector } from '../../src/utils/local-fs-utils'
 
 describe('local-fs-utils', () => {
-  describe('createLocalFsConnectorUploadMulter', () => {
-    it('returns a Multer instance with standard handlers', () => {
-      const upload = createLocalFsConnectorUploadMulter({
-        maxFileSizeBytes: 2048,
-        maxFiles: 7,
-      })
-      expect(upload.any).to.be.a('function')
-      expect(upload.array).to.be.a('function')
-      expect(upload.single).to.be.a('function')
-    })
-  })
-
   describe('isLocalFsConnector', () => {
     describe('canonical spellings', () => {
       const accepted = ['Local FS', 'localFs', 'LOCALFS']

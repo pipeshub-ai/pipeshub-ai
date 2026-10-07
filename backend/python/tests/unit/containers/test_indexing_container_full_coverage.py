@@ -96,6 +96,7 @@ class TestInitializeContainer:
         logger = MagicMock()
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
+        mock_graph_provider.ensure_schema = AsyncMock()
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
         return container, logger
 
@@ -115,6 +116,7 @@ class TestInitializeContainer:
     async def test_stores_resolved_graph_provider(self, mock_sys_health, mock_conn_health):
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock()
         container.graph_provider = AsyncMock(return_value=mock_gp)
         await initialize_container(container)
         assert container._graph_provider is mock_gp

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from docling_core.types.doc.document import DoclingDocument
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer
 from app.services.base_client import (
     BaseServiceClient,
@@ -115,10 +116,11 @@ class ParsingClient(BaseServiceClient):
             max_retries=max_retries,
             retry_delay=retry_delay,
             backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
+            config_service=config_service,
+            service_scope=TokenScopes.DOCUMENT_PARSE,
         )
         # Docling-backed providers defer block construction to keep the Parsing
         # service stateless; this client completes that phase locally on demand.
-        self._config_service = config_service
         self._docling_processor: DoclingProcessor | None = None
 
     def _get_docling_processor(self) -> DoclingProcessor:
@@ -173,6 +175,7 @@ class ParsingClient(BaseServiceClient):
                 data=form_data,
                 operation="parse",
                 budget_seconds=messaging_env.record_processing_timeout,
+                org_id=org_id,
             )
         except ServiceBackpressureError as exc:
             raise ParsingClientError(

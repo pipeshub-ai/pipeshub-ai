@@ -50,6 +50,16 @@ class IRedisConnectionProvider(ABC):
         """
 
     @abstractmethod
+    async def publish(self, channel: str, message: str) -> int:
+        """Regular (non-sharded) ``PUBLISH``; returns the receiver count (R13).
+
+        The counterpart of :meth:`create_pubsub_client`. redis-py's *async*
+        ``RedisCluster`` has no ``publish()`` method and no routing rule for
+        the keyless ``PUBLISH`` command, so callers cannot simply invoke it on
+        :meth:`get_client`; each provider knows how to send it.
+        """
+
+    @abstractmethod
     def scan_keys(self, pattern: str, count: int = 100) -> AsyncIterator[str]:
         """Keyspace-wide SCAN (R2). Cluster implementations fan out over every master."""
 

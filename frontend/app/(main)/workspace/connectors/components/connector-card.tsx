@@ -51,6 +51,7 @@ export function ConnectorCard({
   return (
     <Flex
       direction="column"
+      data-testid={`connector-card-${connector.type}`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClick={() => {
@@ -150,6 +151,7 @@ function SetupButton({
   return (
     <button
       type="button"
+      data-testid="connector-setup"
       onClick={(e) => {
         e.stopPropagation();
         if (permissionDenied) return;
@@ -269,6 +271,8 @@ function ActiveInstanceBar({
       {/* Add button */}
       <button
         type="button"
+        data-testid="connector-add-instance"
+        aria-label={t('workspace.connectors.addInstance')}
         onClick={(e) => {
           e.stopPropagation();
           onAdd?.();

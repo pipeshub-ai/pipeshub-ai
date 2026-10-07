@@ -18,9 +18,12 @@ from app.connectors.core.registry.filters import (
     FilterField,
     FilterOption,
     FilterType,
+    ListOperator,
     MultiselectOperator,
     OptionSourceType,
+    SyncFilterKey,
 )
+from app.connectors.core.registry.oauth_config_registry import CONNECTOR_SOURCE
 from app.edition_services import get_oauth_config_registry
 from app.connectors.core.registry.types import AuthField, CustomField, DocumentationLink
 
@@ -119,9 +122,18 @@ class ConnectorConfigBuilder:
         creator-USER permission per record). Leaving the ``RECORD_LEVEL``
         default is always safe; declaring ``APP_LEVEL`` wrongly would widen
         who can see the connector's records.
+
+        ``RECORD_GROUP_LEVEL`` is rejected: it describes a RecordGroup, and the
+        registry would persist it onto the app document where the query path
+        would read it as "not APP_LEVEL" and silently mean RECORD_LEVEL.
         """
         if not isinstance(model, PermissionModel):
             raise ValueError(f"permission model must be a PermissionModel, got {type(model).__name__}")
+        if model is PermissionModel.RECORD_GROUP_LEVEL:
+            raise ValueError(
+                "RECORD_GROUP_LEVEL applies to a RecordGroup, not a connector; "
+                "use APP_LEVEL or leave the RECORD_LEVEL default"
+            )
         self.config["permissionModel"] = model.value
         return self
 
@@ -380,6 +392,11 @@ class ConnectorBuilder:
         """
         if not isinstance(model, PermissionModel):
             raise ValueError(f"permission model must be a PermissionModel, got {type(model).__name__}")
+        if model is PermissionModel.RECORD_GROUP_LEVEL:
+            raise ValueError(
+                "RECORD_GROUP_LEVEL applies to a RecordGroup, not a connector; "
+                "use APP_LEVEL or leave the RECORD_LEVEL default"
+            )
         self.permission_model = model
         return self
 
@@ -514,9 +531,9 @@ class ConnectorBuilder:
             # Ensure connector name matches final builder name
             if oauth_config.connector_name != self.name:
                 # Remove old registration if name changed and it's the same object
-                old_config = oauth_registry.get_config(oauth_config.connector_name)
+                old_config = oauth_registry.get_config(oauth_config.connector_name, source=CONNECTOR_SOURCE)
                 if old_config is oauth_config:
-                    del oauth_registry._configs[oauth_config.connector_name]
+                    oauth_registry.remove_config(oauth_config.connector_name, source=CONNECTOR_SOURCE)
                 oauth_config.connector_name = self.name
 
             # Auto-populate metadata from connector builder if not already set
@@ -548,8 +565,7 @@ class ConnectorBuilder:
                     for link in config.get("documentationLinks", [])
                 ]
 
-            # Register with final name (overwrites if already registered - allows sharing between connector/toolset)
-            oauth_registry.register(oauth_config)
+            oauth_registry.register(oauth_config, source=CONNECTOR_SOURCE)
 
         # Validate OAuth requirements for all OAuth supported auth types
         for auth_type in self.supported_auth_types:
@@ -769,6 +785,27 @@ class CommonFields:
             description=f"The base URL of your {service_name} instance",
             field_type="URL",
             max_length=2000
+        )
+
+    @staticmethod
+    def folder_paths_filter(container: str = "bucket") -> FilterField:
+        """Folders inside a bucket, container or share to sync (typed paths).
+
+        Empty syncs everything, as before. See FolderScope for the matching rules.
+        """
+        return FilterField(
+            name=SyncFilterKey.FOLDER_PATHS.value,
+            display_name="Folders",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description=(
+                f"Folder paths inside each {container} to sync, such as reports/2026. "
+                "Press Enter after each folder; names may contain spaces. "
+                "Include syncs only these folders; Exclude syncs everything except them. "
+                f"Leave empty to sync the whole {container}."
+            ),
+            default_operator=ListOperator.IN.value,
+            option_source_type=OptionSourceType.MANUAL,
         )
 
     @staticmethod

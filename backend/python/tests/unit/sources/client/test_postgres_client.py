@@ -33,6 +33,10 @@ from app.sources.client.postgres.postgres import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+class _DriverError(Exception):
+    """Stands in for an asyncpg exception class the stream path maps by type."""
+
+
 def _make_pool_mock():
     """Build an asyncpg-style pool mock with sensible defaults."""
     pool = MagicMock()
@@ -272,6 +276,18 @@ class TestPostgreSQLClientConnection:
         assert call_kwargs["ssl"] == "require"
 
     @pytest.mark.asyncio
+    async def test_pool_disables_statement_cache(self, asyncpg_module):
+        # Cached statements are named; behind a transaction-mode pooler a name
+        # can resolve to nothing, or to another client's statement.
+        asyncpg_module.create_pool.return_value = _make_pool_mock()
+
+        with patch.object(_pg_mod, "asyncpg", asyncpg_module):
+            client = PostgreSQLClient(host="h", database="d", user="u", password="p")
+            await client.connect()
+
+        assert asyncpg_module.create_pool.call_args.kwargs["statement_cache_size"] == 0
+
+    @pytest.mark.asyncio
     async def test_connect_already_connected_returns_self(self, asyncpg_module):
         with patch.object(_pg_mod, "asyncpg", asyncpg_module):
             client = PostgreSQLClient(
@@ -459,6 +475,24 @@ class TestPostgreSQLClientExecuteQuery:
         pool.acquire.assert_called_once_with(timeout=client.pool_acquire_timeout)
 
     @pytest.mark.asyncio
+    async def test_prepare_and_fetch_share_one_transaction(self):
+        # A transaction-mode pooler keeps a transaction on one server
+        # connection; outside one, the fetch can land where nothing was prepared.
+        events = []
+        statement = _make_statement_mock(attributes=[_make_attribute("id")], rows=[_FakeRecord({"id": 1})])
+        statement.fetch = AsyncMock(side_effect=lambda *a: events.append("fetch") or [_FakeRecord({"id": 1})])
+        client, _, conn = self._make_pooled_client(statement=statement)
+        conn.prepare = AsyncMock(side_effect=lambda q: events.append("prepare") or statement)
+        tx = MagicMock()
+        tx.__aenter__ = AsyncMock(side_effect=lambda *a: events.append("begin"))
+        tx.__aexit__ = AsyncMock(side_effect=lambda *a: events.append("commit") or False)
+        conn.transaction = MagicMock(return_value=tx)
+
+        await client.execute_query("SELECT id FROM t")
+
+        assert events == ["begin", "prepare", "fetch", "commit"]
+
+    @pytest.mark.asyncio
     async def test_execute_query_with_params(self):
         statement = _make_statement_mock(
             attributes=[_make_attribute("id")],
@@ -510,10 +544,12 @@ class TestPostgreSQLClientExecuteQuery:
     @pytest.mark.asyncio
     async def test_execute_query_failure_raises(self):
         statement = _make_statement_mock(attributes=[_make_attribute("id")])
-        statement.fetch.side_effect = Exception("syntax error")
+        statement.fetch.side_effect = _DriverError("syntax error")
         client, _, _ = self._make_pooled_client(statement=statement)
 
-        with pytest.raises(RuntimeError, match="Query execution failed"):
+        # The driver's own class must survive: the streaming path maps
+        # permission/missing-table errors by type, not by message.
+        with pytest.raises(_DriverError, match="syntax error"):
             await client.execute_query("BAD SQL")
 
 
@@ -617,10 +653,10 @@ class TestPostgreSQLClientExecuteQueryRaw:
     @pytest.mark.asyncio
     async def test_failure_raises(self):
         statement = _make_statement_mock(attributes=[_make_attribute("id")])
-        statement.fetch.side_effect = Exception("bad query")
+        statement.fetch.side_effect = _DriverError("bad query")
         client, _, _ = self._make_pooled_client(statement=statement)
 
-        with pytest.raises(RuntimeError, match="Query execution failed"):
+        with pytest.raises(_DriverError, match="bad query"):
             await client.execute_query_raw("BAD SQL")
 
 
@@ -779,6 +815,25 @@ class TestAuthConfig:
         assert cfg.database == "db2"
         # Fields not explicitly set still come from the connection string.
         assert cfg.user == "a"
+
+    def test_url_encoded_database_is_decoded(self):
+        cfg = AuthConfig.model_validate({"connection_string": "postgresql://u:p@h/my%20db"})
+        assert cfg.database == "my db"
+
+    def test_sslmode_from_connection_string(self):
+        # Ignoring it connected with "prefer": no certificate check, and a
+        # silent fallback to an unencrypted connection.
+        cfg = AuthConfig.model_validate({
+            "connection_string": "postgresql://u:p@h/db?sslmode=verify-full",
+        })
+        assert cfg.sslmode == "verify-full"
+
+    def test_explicit_sslmode_wins_over_connection_string(self):
+        cfg = AuthConfig.model_validate({
+            "connection_string": "postgresql://u:p@h/db?sslmode=disable",
+            "sslmode": "require",
+        })
+        assert cfg.sslmode == "require"
 
     def test_missing_required_fields_raises(self):
         with pytest.raises(ValidationError):

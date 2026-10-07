@@ -22,22 +22,13 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import PropertyMock
 from uuid import uuid4
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
-from app.connectors.sources.atlassian.jira_cloud.connector import (
-    BATCH_PROCESSING_SIZE,
-    DEFAULT_MAX_RESULTS,
-    ISSUE_SEARCH_FIELDS,
-    JiraConnector,
-)
+from app.config.constants.arangodb import MimeTypes, OriginTypes, RecordRelations
 from app.models.entities import (
     AppRole,
-    AppUser,
-    AppUserGroup,
     FileRecord,
     RecordGroupType,
-    RecordType,
     TicketRecord,
 )
 
@@ -177,8 +168,9 @@ class TestGetFreshDatasource:
         connector = _make_connector()
         connector.external_client = None
 
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_api_token_returns_existing_datasource(self):
@@ -198,8 +190,9 @@ class TestGetFreshDatasource:
         connector.external_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
 
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================
@@ -631,7 +624,7 @@ class TestSyncUserGroups:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_group_error_continues(self):
+    async def test_group_error_maps_the_group_to_none(self):
         connector = _make_connector()
         connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "devs"},
@@ -639,16 +632,16 @@ class TestSyncUserGroups:
         connector._fetch_group_members = AsyncMock(side_effect=Exception("API error"))
 
         result = await connector._sync_user_groups([])
-        assert result == {}
+        assert result == {"g1": None, "devs": None}, "members unknown, not empty"
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_exception(self):
+    async def test_returns_none_on_exception(self):
         connector = _make_connector()
         connector._fetch_groups = AsyncMock(side_effect=Exception("total failure"))
         connector.notify = AsyncMock()
 
         result = await connector._sync_user_groups([])
-        assert result == {}
+        assert result is None
         connector.notify.assert_awaited_once()
 
 
@@ -1175,8 +1168,9 @@ class TestStreamRecord:
             side_effect=Exception("fetch failed")
         )
 
-        with pytest.raises(Exception, match="fetch failed"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 class TestReindexRecords:
@@ -2128,11 +2122,11 @@ class TestFetchProjectPermissionScheme:
         assert len(permissions) == 0
 
     @pytest.mark.asyncio
-    async def test_application_role_forbidden_grants_creator(self):
-        """When 403 flag is set, grant configuring user instead of ORG."""
+    async def test_application_role_forbidden_grants_authenticated_jira_account(self):
+        """When 403 flag is set, grant the authenticated Jira account instead of ORG."""
         connector = _make_connector()
         connector._app_roles_forbidden = True
-        connector.creator_email = "admin@example.com"
+        connector._authenticated_jira_email = "admin@example.com"
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response_fullcov(200, {
@@ -2156,7 +2150,7 @@ class TestFetchProjectPermissionScheme:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_project_permission_scheme("PROJ")
-        assert permissions == []
+        assert permissions is None, "no owner email to fall back to: keep what is stored"
 
     @pytest.mark.asyncio
     async def test_grants_fetch_failure(self):
@@ -2295,5 +2289,6 @@ class TestGetFreshDatasourceOAuth:
             "credentials": {},
         })
 
-        with pytest.raises(Exception, match="No OAuth access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409

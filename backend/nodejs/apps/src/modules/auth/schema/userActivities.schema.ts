@@ -12,6 +12,9 @@ const {
   REFRESH_TOKEN,
   PASSWORD_CHANGED,
   ROLE_CHANGED,
+  ACCOUNT_BLOCKED,
+  ACCOUNT_DELETED,
+  ACCOUNT_RESTORED,
 } = userActivitiesType;
 
 // 🔹 Define TypeScript Interfaces
@@ -28,7 +31,10 @@ export interface IUserActivity extends Document {
     | typeof WRONG_PASSWORD
     | typeof REFRESH_TOKEN
     | typeof PASSWORD_CHANGED
-    | typeof ROLE_CHANGED;
+    | typeof ROLE_CHANGED
+    | typeof ACCOUNT_BLOCKED
+    | typeof ACCOUNT_DELETED
+    | typeof ACCOUNT_RESTORED;
   loginMode?:
     | 'OTP'
     | 'PASSWORD'
@@ -72,6 +78,9 @@ const UserActivitySchema = new Schema<IUserActivity>(
         REFRESH_TOKEN,
         PASSWORD_CHANGED,
         ROLE_CHANGED,
+        ACCOUNT_BLOCKED,
+        ACCOUNT_DELETED,
+        ACCOUNT_RESTORED,
       ],
       required: true,
     },
@@ -99,6 +108,14 @@ const UserActivitySchema = new Schema<IUserActivity>(
     },
   },
   { timestamps: true },
+);
+
+// Every authenticated request looks up the caller's latest session-ending
+// activity: equality on userId, orgId and isDeleted, activityType in a set,
+// newest createdAt first. Without this each lookup scanned the collection.
+UserActivitySchema.index(
+  { userId: 1, orgId: 1, isDeleted: 1, activityType: 1, createdAt: -1 },
+  { name: 'session_ending_activity_lookup' },
 );
 
 // 🔹 Ensure Validation Runs on `findOneAndUpdate`

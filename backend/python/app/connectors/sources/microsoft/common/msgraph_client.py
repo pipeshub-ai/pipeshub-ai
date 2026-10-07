@@ -177,12 +177,15 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching groups: {ex}")
             raise ex
 
-    async def get_group_members(self, group_id: str) -> List[dict]:
+    async def get_group_members(self, group_id: str, *, raise_on_error: bool = False) -> List[dict]:
         """
         Get all members of a specific group.
 
         Args:
             group_id: The ID of the group
+            raise_on_error: Raise instead of returning [] when the members can't be read.
+                Saving [] replaces the group's stored members, so a caller that can keep
+                what is stored should ask for the error.
 
         Returns:
             List of user IDs who are members of the group
@@ -206,6 +209,8 @@ class MSGraphClient:
 
         except Exception as e:
             self.logger.error(f"Error fetching group members for {group_id}: {e}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_all_users(self) -> List[AppUser]:
@@ -481,13 +486,17 @@ class MSGraphClient:
             raise ex
 
 
-    async def get_file_permission(self, drive_id: str, item_id: str) -> List['Permission']:
+    async def get_file_permission(
+        self, drive_id: str, item_id: str, *, raise_on_error: bool = False
+    ) -> List['Permission']:
         """
         Retrieves permissions for a specified file by Drive ID and File ID.
 
         Args:
             drive_id (str): The ID of the drive containing the file
             item_id (str): The ID of the file
+            raise_on_error (bool): Raise instead of returning [] when the permissions can't
+                be read, so a caller replacing stored access can keep it instead.
 
         Returns:
             List[Permission]: A list of Permission objects associated with the file
@@ -512,18 +521,26 @@ class MSGraphClient:
             return permissions
         except ODataError as e:
             self.logger.error(f"Error fetching file permissions for File ID {item_id}: {e}")
+            if raise_on_error:
+                raise
             return []
         except Exception as ex:
             self.logger.error(f"Unexpected error fetching file permissions for File ID {item_id}: {ex}")
+            if raise_on_error:
+                raise
             return []
 
-    async def list_folder_children(self, drive_id: str, folder_id: str) -> List[DriveItem]:
+    async def list_folder_children(
+        self, drive_id: str, folder_id: str, *, raise_on_error: bool = False
+    ) -> List[DriveItem]:
         """
         List all children of a folder.
 
         Args:
             drive_id: The drive ID
             folder_id: The folder ID
+            raise_on_error: Raise instead of returning [] when the listing, or any of
+                its later pages, can't be read, so a caller can tell it from an empty folder.
 
         Returns:
             List of DriveItem objects
@@ -548,18 +565,28 @@ class MSGraphClient:
 
         except ODataError as e:
             self.logger.error(f"Error listing folder children for {folder_id}: {e}")
+            if raise_on_error:
+                raise
             return []
         except Exception as ex:
             self.logger.error(f"Unexpected error listing folder children for {folder_id}: {ex}")
+            if raise_on_error:
+                raise
             return []
 
-    async def get_signed_url(self, drive_id: str, item_id: str) -> Optional[str]:
+    async def get_signed_url(
+        self, drive_id: str, item_id: str, raise_on_error: bool = False
+    ) -> Optional[str]:
         """
         Creates a signed URL (sharing link) for a file or folder, valid for the specified duration.
 
         Args:
             drive_id (str): The ID of the drive.
             item_id (str): The ID of the file or folder.
+            raise_on_error (bool): Propagate the Graph error instead of returning None.
+                Sync treats the URL as optional and must not fail a whole crawl over one
+                item; the streaming path needs the ODataError so an expired token isn't
+                reported to the user as a deleted file.
 
         Returns:
             str: The signed URL or None if not available.
@@ -574,6 +601,8 @@ class MSGraphClient:
 
         except Exception as ex:
             self.logger.error(f"Error creating signed URL for item {item_id} in drive {drive_id}: {ex}")
+            if raise_on_error:
+                raise
             return None
 
     async def search_query(
@@ -681,5 +710,10 @@ class MSGraphClient:
                                 f"Error: {ex.error.message}"
                             )
 
-            self.logger.error(f"Error searching entities {entity_types}: {ex}")
+            error_msg = type(ex).__name__
+            try:
+                error_msg = str(ex)
+            except Exception:
+                pass
+            self.logger.error(f"Error searching entities {entity_types}: {error_msg}")
             raise

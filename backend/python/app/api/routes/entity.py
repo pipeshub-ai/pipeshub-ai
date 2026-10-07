@@ -9,6 +9,7 @@ from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
@@ -201,7 +202,9 @@ async def create_team(request: Request) -> JSONResponse:
                 chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # the provider names the missing ids; people only need to know who to remove
+            logger.error("Team member lookup failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=400, detail=PEOPLE_GONE) from exc
 
     for user_role in user_roles:
         mongo_id = user_role.get("userId")
@@ -247,7 +250,7 @@ async def create_team(request: Request) -> JSONResponse:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
         if transaction_id:
             await graph_provider.rollback_transaction(transaction_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=action_failed("create this team"))
 
     return JSONResponse(
         status_code=200,
@@ -372,7 +375,8 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     chunk_size=MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE,
                 )
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                logger.error("Team member lookup failed: %s", exc, exc_info=True)
+                raise HTTPException(status_code=400, detail=PEOPLE_GONE) from exc
 
         # Remove users if specified
         if remove_user_mongo_ids:
@@ -413,7 +417,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                         logger.info(f"Updated {len(updated_permissions)} user roles in batch")
                     except Exception as e:
                         logger.error(f"Error updating user roles in batch: {str(e)}")
-                        raise HTTPException(status_code=500, detail=f"Failed to update user roles: {str(e)}")
+                        raise HTTPException(status_code=500, detail=action_failed("update these people's roles"))
 
         # Add users if specified (excluding creator to preserve OWNER role)
         if add_user_roles:
@@ -476,7 +480,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     if org_id and team_id == f"all_{org_id}":
         raise HTTPException(status_code=403, detail="The default All team cannot be deleted")
 
-    # Check if user has permission to delete the team (OWNER only)
+    team = await graph_provider.get_document(team_id, CollectionNames.TEAMS.value)
     permission = await graph_provider.get_edge(
         user['_key'],
         CollectionNames.USERS.value,
@@ -484,9 +488,17 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         CollectionNames.TEAMS.value,
         CollectionNames.PERMISSION.value
     )
-    if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to delete this team")
 
+    # A team that is not there and a team this caller has nothing to do with get
+    # the same answer, so the status code cannot be used to discover which team
+    # ids exist. It also makes deleting twice a plain "not found" rather than an
+    # apparent permissions failure: deleting a team removes its permission edges
+    # with it, so afterwards both of these are empty.
+    if not team or not permission:
+        raise HTTPException(status_code=404, detail=not_found("This team"))
+
+    # Someone with a role on the team already knows it exists, so telling them
+    # they are not the owner gives nothing away and is the honest answer.
     if permission.get("role") != "OWNER":
         raise HTTPException(status_code=403, detail="User does not have permission to delete this team")
 
@@ -550,7 +562,7 @@ async def get_user_teams(
             ):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Users not found in graph: [{created_by}]",
+                    detail=not_found("This person"),
                 )
             graph_created_by = creator_user["_key"]
 

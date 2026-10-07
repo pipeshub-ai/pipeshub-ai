@@ -12,7 +12,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable, TypeVar, Dict, Any
 
-from app.config.constants.arangodb import AppStatus
+from app.config.constants.arangodb import AppStatus, ProgressStatus
 if TYPE_CHECKING:
     from app.models.entities import Record
     from helper.graph_provider import GraphProviderProtocol
@@ -304,6 +304,46 @@ async def wait_for_record_by_external_id(
         description=f"{description} (external id {external_record_id})",
     )
 
+
+
+_INDEXING_UNSETTLED = frozenset({
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+})
+
+
+async def wait_for_records_indexed(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    external_record_ids: list[str],
+    *,
+    timeout: int = 300,
+    interval: int = 5,
+) -> dict[str, str]:
+    """Wait until indexing has finished with each record, however it ended; return the statuses.
+
+    For a test that must not share the source with the indexer: a connector
+    whose indexing re-reads the source would otherwise take a fault meant for
+    the next sync.
+    """
+    if not external_record_ids:
+        return {}
+
+    async def _settled() -> dict[str, str] | None:
+        statuses: dict[str, str] = {}
+        for external_id in external_record_ids:
+            record = await graph_provider.get_record_by_external_id(connector_id, external_id)
+            status = getattr(record, "indexing_status", None) if record else None
+            if status is None or status in _INDEXING_UNSETTLED:
+                return None
+            statuses[external_id] = status
+        return statuses
+
+    return await async_poll_until(
+        _settled, timeout=timeout, interval=interval,
+        description=f"indexing of {len(external_record_ids)} record(s) to finish",
+    )
 
 
 # =============================================================================

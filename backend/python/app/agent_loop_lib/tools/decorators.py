@@ -84,7 +84,12 @@ def _default_terminal_outcome(
     from app.agent_loop_lib.tools.builtin.planning.task_complete import (
         TaskCompletionOutcome,
     )
-    return TaskCompletionOutcome(task_done=True, final_output=fallback_text or "")
+    needs_input = None
+    if "ask_user_question" in (getattr(call, "name", None) or ""):
+        needs_input = "Waiting for user answers"
+    return TaskCompletionOutcome(
+        task_done=True, final_output=fallback_text or "", needs_input=needs_input,
+    )
 
 ToolFunction = Callable[..., Awaitable[ToolOutput]]
 

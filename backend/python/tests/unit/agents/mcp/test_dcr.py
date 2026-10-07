@@ -1,5 +1,6 @@
 """Unit tests for app.agents.mcp.dcr."""
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -325,6 +326,29 @@ class TestAssertDiscoveryTargetAllowed:
         with pytest.raises(DiscoveryBlockedError):
             await assert_discovery_target_allowed("http://169.254.169.254/latest/meta-data")
 
+    @pytest.mark.asyncio
+    async def test_keeps_non_global_hosts_reachable_for_admin_configured_servers(self) -> None:
+        url = "https://mcp.tailnet.example/.well-known/oauth-authorization-server"
+        with patch("app.agents.mcp.dcr.validate_public_http_url", return_value=None) as mock_validate:
+            await assert_discovery_target_allowed(url)
+        mock_validate.assert_called_once_with(url, block_non_global=False)
+
+    @pytest.mark.asyncio
+    async def test_allows_cgnat_literal_without_network_access(self) -> None:
+        await assert_discovery_target_allowed("http://100.64.1.1:8080/register")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://100.100.100.200/latest/meta-data",
+            "http://168.63.129.16/machine?comp=goalstate",
+        ],
+    )
+    async def test_rejects_cloud_metadata_despite_the_cgnat_exception(self, url: str) -> None:
+        with pytest.raises(DiscoveryBlockedError):
+            await assert_discovery_target_allowed(url)
+
 
 class TestRegisterDynamicClient:
     @pytest.mark.asyncio
@@ -471,3 +495,64 @@ class TestBuildAuthorizationUrl:
             state="state123",
         )
         assert "code_challenge" not in url
+
+    def test_includes_extra_params(self) -> None:
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+            extra_params={"access_type": "offline", "prompt": "consent"},
+        )
+        params = parse_qs(urlparse(url).query)
+        assert params["access_type"] == ["offline"]
+        assert params["prompt"] == ["consent"]
+
+    def test_omits_extra_params_when_not_provided(self) -> None:
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+        )
+        assert "access_type" not in parse_qs(urlparse(url).query)
+
+    def test_extra_params_cannot_override_protocol_params(self) -> None:
+        """Catalog metadata must not be able to redirect the flow or replay a state."""
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+            scopes=["read"],
+            extra_params={
+                "client_id": "attacker",
+                "redirect_uri": "https://evil.example.com/steal",
+                "response_type": "token",
+                "state": "replayed",
+                "scope": "admin",
+                "prompt": "consent",
+            },
+        )
+        params = parse_qs(urlparse(url).query)
+        assert params["client_id"] == ["cid"]
+        assert params["redirect_uri"] == ["https://app.example.com/callback"]
+        assert params["response_type"] == ["code"]
+        assert params["state"] == ["state123"]
+        assert params["scope"] == ["read"]
+        assert "evil.example.com" not in url
+        # Non-reserved extras still pass through alongside the rejected ones.
+        assert params["prompt"] == ["consent"]
+
+    def test_extra_params_cannot_downgrade_pkce(self) -> None:
+        url = build_authorization_url(
+            authorization_url="https://example.com/authorize",
+            client_id="cid",
+            redirect_uri="https://app.example.com/callback",
+            state="state123",
+            code_challenge="challenge123",
+            extra_params={"code_challenge": "attacker", "code_challenge_method": "plain"},
+        )
+        params = parse_qs(urlparse(url).query)
+        assert params["code_challenge"] == ["challenge123"]
+        assert params["code_challenge_method"] == ["S256"]

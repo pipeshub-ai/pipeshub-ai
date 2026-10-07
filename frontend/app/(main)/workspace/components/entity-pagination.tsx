@@ -115,6 +115,7 @@ export function EntityPagination({
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
               <Flex
+                data-testid="page-size-trigger"
                 align="center"
                 gap="1"
                 style={{

@@ -15,7 +15,7 @@ interface FeatureFlagsActions {
   fetchFlags: () => Promise<void>;
 }
 
-type FeatureFlagsStore = FeatureFlagsState & FeatureFlagsActions;
+export type FeatureFlagsStore = FeatureFlagsState & FeatureFlagsActions;
 
 const EFFECTIVE_FLAGS_URL =
   '/api/v1/configurationManager/platform/feature-flags/effective';
@@ -90,3 +90,16 @@ export const selectActionsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_AC
 /** Vector store rebuild defaults to disabled; admins opt in from Labs. */
 export const selectVectorStoreRebuildEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_VECTOR_STORE_REBUILD === true;
+/** Projects defaults to disabled; admins opt in from Labs. */
+export const selectProjectsEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_PROJECTS === true;
+/** Skills default to enabled (Beta); admins opt out from Labs. */
+export const selectSkillsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_SKILLS !== false;
+/** The trash ("Move Deleted Records to the Trash") defaults to disabled; admins opt in from Labs. */
+export const selectSoftDeleteEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_SOFT_DELETE === true;
+/** User/org prompt context defaults to enabled; admins opt out from Labs. */
+export const selectUserContextEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_USER_CONTEXT !== false;
+
+export type FeatureFlagGate = 'mcp' | 'actions' | 'skills';

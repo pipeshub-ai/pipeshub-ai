@@ -60,6 +60,31 @@ class ConversationsClient(APIClient):
         """Delete a conversation."""
         return self.delete(f"/{conversation_id}", **kwargs)
 
+    def create_conversation(
+        self,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Start a conversation and wait for the full answer (POST /create)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post("/create", json=body, **options)
+
+    def add_message(
+        self,
+        conversation_id: str,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Add a message and wait for the full answer (POST /{id}/messages)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post(f"/{conversation_id}/messages", json=body, **options)
+
     def stream_conversation(
         self,
         *,
@@ -185,6 +210,30 @@ class ConversationsClient(APIClient):
             **options,
         )
 
+    def set_project(
+        self,
+        conversation_id: str,
+        project_id: str | None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Link/unlink a conversation to a project (PUT /{id}/project)."""
+        return self.put(
+            f"/{conversation_id}/project", json={"projectId": project_id}, **kwargs
+        )
+
+    def set_project_visibility(
+        self,
+        conversation_id: str,
+        visibility: str,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Override a conversation's project visibility (PATCH /{id}/project-visibility)."""
+        return self.patch(
+            f"/{conversation_id}/project-visibility",
+            json={"visibility": visibility},
+            **kwargs,
+        )
+
     def _list_get(self, path: str, **kwargs: Any) -> requests.Response:
         options, params = _request_options(kwargs)
         if params:
@@ -268,6 +317,37 @@ class AgentConversationsClient(APIClient):
         body.update(payload)
         return self.patch(
             f"/{agent_key}/conversations/{conversation_id}/title",
+            json=body,
+            **options,
+        )
+
+    def create_conversation(
+        self,
+        agent_key: str,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Start an agent conversation and wait for the full answer (POST /{agentKey}/conversations)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post(f"/{agent_key}/conversations", json=body, **options)
+
+    def add_message(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Add a message and wait for the full answer (POST /{agentKey}/conversations/{id}/messages)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post(
+            f"/{agent_key}/conversations/{conversation_id}/messages",
             json=body,
             **options,
         )
@@ -376,6 +456,34 @@ class AgentConversationsClient(APIClient):
         """Delete an uploaded attachment by record id."""
         return self.delete(
             f"/{agent_key}/conversations/attachments/{record_id}",
+            **kwargs,
+        )
+
+    def set_project(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        project_id: str | None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Link/unlink an agent conversation to a project (PUT .../project)."""
+        return self.put(
+            f"/{agent_key}/conversations/{conversation_id}/project",
+            json={"projectId": project_id},
+            **kwargs,
+        )
+
+    def set_project_visibility(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        visibility: str,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Override an agent conversation's project visibility (PATCH .../project-visibility)."""
+        return self.patch(
+            f"/{agent_key}/conversations/{conversation_id}/project-visibility",
+            json={"visibility": visibility},
             **kwargs,
         )
 

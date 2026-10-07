@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { z } from 'zod'
 import {
   enterpriseSearchCreateSchema,
   enterpriseSearchStreamCreateSchema,
@@ -509,6 +510,43 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = addMessageParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  describe('follow-up query length', () => {
+    const params = { conversationId: '507f1f77bcf86cd799439011' }
+    const tooLong = 'a'.repeat(100001)
+    const message = 'Query exceeds maximum length of 100000 characters'
+
+    const followUpSchemas = [
+      ['addMessageParamsSchema', addMessageParamsSchema, {}],
+      ['addMessageStreamParamsSchema', addMessageStreamParamsSchema, { chatMode: 'internal_search' }],
+      ['agentAddMessageParamsSchema', agentAddMessageParamsSchema, { chatMode: 'quick' }],
+    ] as const
+
+    for (const [name, schema, extra] of followUpSchemas) {
+      it(`${name} refuses a query over 100000 characters like a new chat does`, () => {
+        const result = (schema as z.ZodTypeAny).safeParse({
+          params: { ...params, agentKey: 'agent-1' },
+          body: { query: tooLong, ...extra },
+        })
+        expect(result.success).to.be.false
+        expect(result.error!.issues.map((i: z.ZodIssue) => i.message)).to.include(message)
+      })
+
+      it(`${name} accepts a query of exactly 100000 characters`, () => {
+        const result = (schema as z.ZodTypeAny).safeParse({
+          params: { ...params, agentKey: 'agent-1' },
+          body: { query: 'a'.repeat(100000), ...extra },
+        })
+        expect(result.success).to.be.true
+      })
+    }
+
+    it('a new chat gives the same message for the same query', () => {
+      const result = enterpriseSearchCreateSchema.safeParse({ body: { query: tooLong } })
+      expect(result.success).to.be.false
+      expect(result.error!.issues.map((i) => i.message)).to.include(message)
     })
   })
 
@@ -1845,6 +1883,26 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('should accept sendUserContext true and false', () => {
+      expect(
+        createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], sendUserContext: true },
+        }).success,
+      ).to.be.true
+      expect(
+        createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], sendUserContext: false },
+        }).success,
+      ).to.be.true
+    })
+
+    it('should reject non-boolean sendUserContext', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], sendUserContext: 'yes' },
+      })
+      expect(result.success).to.be.false
+    })
+
     it('should accept a valid mcpServers list', () => {
       const result = createAgentSchema.safeParse({
         body: {
@@ -2124,6 +2182,14 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { defaultReasoningEffort: 'ultra' },
       })
       expect(result.success).to.be.false
+    })
+
+    it('should accept sendUserContext false on update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { sendUserContext: false },
+      })
+      expect(result.success).to.be.true
     })
   })
 

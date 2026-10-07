@@ -7,7 +7,7 @@ These tests exercise the full path:
 A deterministic FakeEmbedder produces reproducible dense vectors so the tests
 are not dependent on a real embedding model.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d
+Requires: docker compose -f tests/integration/compose/vector-db.yml up -d
 Run: pytest tests/integration/vector_db/test_e2e_pipeline.py -m integration --timeout=120
 
 Note: these tests skip automatically when optional packages (langchain_core, etc.)
@@ -18,10 +18,13 @@ import asyncio
 import logging
 import pytest
 
-from tests.integration.vector_db.helpers import DIM
+from tests.integration.vector_db.helpers import DIM, point_id
 from tests.integration.vector_db.conftest import make_collection
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+# loop_scope matches the module-scoped provider fixtures in conftest.
+# Without it each test gets its own loop and the shared client raises
+# "Event loop is closed" on first use.
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 langchain_core = pytest.importorskip("langchain_core", reason="langchain_core not installed")
 
@@ -75,7 +78,7 @@ async def _index_documents(vector_db_service, collection: str, documents, embedd
     dense_vecs = await embedder.aembed_documents([d.page_content for d in documents])
     points = []
     for i, (doc, dense) in enumerate(zip(documents, dense_vecs)):
-        pid = doc.metadata.get("id", str(i))
+        pid = point_id(doc.metadata.get("id", str(i)))
         points.append(
             VectorPoint(
                 id=pid,
@@ -143,7 +146,7 @@ class TestRedisE2E:
             results = (await redis_service.query_nearest_points(col, [req]))[0]
             assert len(results) > 0
             top_id = results[0].id
-            assert top_id == "p1"  # Python doc should rank highest
+            assert top_id == point_id("p1")  # Python doc should rank highest
         finally:
             await redis_service.delete_collection(col)
 
@@ -228,17 +231,17 @@ class TestOpenSearchE2E:
         dense_c = await embedder.aembed_query("completely different topic")
         points = [
             VectorPoint(
-                id="doc-a",
+                id=point_id("doc-a"),
                 dense_vector=dense_a,
                 payload={"page_content": "Python artificial intelligence", "metadata": {"orgId": "x", "virtualRecordId": "x1"}},
             ),
             VectorPoint(
-                id="doc-b",
-                dense_vector=[0.0] * DIM,  # far from query
+                id=point_id("doc-b"),
+                dense_vector=dense_c,  # far from query
                 payload={"page_content": "Python artificial intelligence", "metadata": {"orgId": "x", "virtualRecordId": "x2"}},
             ),
             VectorPoint(
-                id="doc-c",
+                id=point_id("doc-c"),
                 dense_vector=dense_a,  # close to query
                 payload={"page_content": "topic unrelated to query", "metadata": {"orgId": "x", "virtualRecordId": "x3"}},
             ),
@@ -256,7 +259,7 @@ class TestOpenSearchE2E:
             results = (await opensearch_service.query_nearest_points(col, [req]))[0]
             ids = [r.id for r in results]
             # doc-a matches both legs and should rank first or very near top
-            assert "doc-a" in ids[:2], f"Expected doc-a near top, got {ids}"
+            assert point_id("doc-a") in ids[:2], f"Expected doc-a near top, got {ids}"
         finally:
             await opensearch_service.delete_collection(col)
 
@@ -278,7 +281,9 @@ class TestQdrantE2E:
             docs = _sample_docs("org-e2e-qdrant")
             await _index_documents(qdrant_service, col, docs, embedder)
 
-            query_vec = await embedder.aembed_query("Python AI language")
+            # Dense-only, and the fake embedder hashes text with no notion of
+            # meaning, so only the document's own text is guaranteed nearest.
+            query_vec = await embedder.aembed_query(docs[0].page_content)
 
             from app.services.vector_db.models import HybridSearchRequest, FilterExpression, FieldCondition
 
@@ -291,6 +296,6 @@ class TestQdrantE2E:
             )
             results = (await qdrant_service.query_nearest_points(col, [req]))[0]
             assert len(results) > 0
-            assert results[0].id == "p1"
+            assert results[0].id == point_id("p1")
         finally:
             await qdrant_service.delete_collection(col)

@@ -67,6 +67,9 @@ class TestTheCallSiteMatches:
             is_multimodal_llm=True,
             image_budget=ImageBudget(),
             image_admission=_admission(),
+            user_id="user-1",
+            graph_provider=MagicMock(),
+            is_service_account=False,
         )
 
 

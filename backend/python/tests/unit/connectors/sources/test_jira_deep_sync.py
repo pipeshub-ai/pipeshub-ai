@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
@@ -1762,9 +1763,9 @@ class TestPermissionSchemeIdGuard:
 class TestBuildProjectRecordGroupDegradation:
 
     @pytest.mark.asyncio
-    async def test_scheme_unavailable_syncs_project_with_empty_permissions(self):
-        # A transient scheme failure must not drop the project — sync it with an empty ACL
-        # so its issues keep flowing; the next successful fetch refreshes permissions.
+    async def test_scheme_unavailable_keeps_project_with_permissions_none(self):
+        # A transient scheme failure must not drop the project (its issues keep flowing), and
+        # must not become an empty ACL, which would replace the stored one.
         connector = _make_connector()
         connector._fetch_project_permission_scheme = AsyncMock(return_value=None)
 
@@ -1775,7 +1776,7 @@ class TestBuildProjectRecordGroupDegradation:
         assert result is not None
         record_group, permissions = result
         assert record_group.short_name == "PROJ"
-        assert permissions == []
+        assert permissions is None
 
     @pytest.mark.asyncio
     async def test_returns_none_when_record_group_build_fails(self):
@@ -1897,7 +1898,9 @@ class TestStreamAttachmentErrors:
         ds.download_attachment_content = MagicMock(side_effect=boom)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        with pytest.raises(RuntimeError, match="connection reset"):
+        # A statusless transport fault has no source status to report, so it
+        # maps to a generic 500 rather than escaping as a raw RuntimeError.
+        with pytest.raises(HTTPException) as exc_info:
             async for _ in connector._stream_attachment_content("123", "attachment_123"):
                 pass
 
@@ -2196,7 +2199,7 @@ class TestProcessGroupEdges:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_membership_failure_syncs_group_with_no_members(self):
+    async def test_membership_failure_returns_members_none(self):
         connector = _make_connector()
         connector._fetch_group_members = AsyncMock(return_value=([], False))
 
@@ -2204,7 +2207,7 @@ class TestProcessGroupEdges:
 
         assert result is not None
         _gid, _name, _group, members = result
-        assert members == []
+        assert members is None
 
 
 class TestPaginationBounds:
@@ -2286,7 +2289,9 @@ class TestStreamingFailures:
         ds.download_attachment_content = MagicMock(side_effect=boom)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        with pytest.raises(RuntimeError, match="connection reset"):
+        # A statusless transport fault has no source status to report, so it
+        # maps to a generic 500 rather than escaping as a raw RuntimeError.
+        with pytest.raises(HTTPException) as exc_info:
             async for _ in connector._stream_attachment_content("123", "attachment_123"):
                 pass
 

@@ -12,6 +12,7 @@ from qdrant_client.http.models import (  # type: ignore
     Prefetch,
     QueryRequest,
     SparseVector as QdrantSparseVector,
+    ValuesCount,
 )
 
 from app.services.vector_db.filters import canonical_filter_key
@@ -119,6 +120,19 @@ class QdrantUtils:
 
     @staticmethod
     def _generic_to_qdrant(cond: GenericFieldCondition) -> FieldCondition:
+        if cond.values_count_lte is not None:
+            # Qdrant expresses an array-length bound natively, alongside an
+            # optional match on the same key.
+            match = None
+            if cond.values is not None:
+                match = MatchAny(any=cond.values)
+            elif cond.value is not None:
+                match = MatchValue(value=cond.value)
+            return FieldCondition(
+                key=cond.key,
+                match=match,
+                values_count=ValuesCount(lte=cond.values_count_lte),
+            )
         if cond.values is not None:
             return FieldCondition(key=cond.key, match=MatchAny(any=cond.values))
         return FieldCondition(key=cond.key, match=MatchValue(value=cond.value))

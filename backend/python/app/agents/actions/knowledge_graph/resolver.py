@@ -31,6 +31,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from app.config.constants.arangodb import CollectionNames
 from app.models.entities import Record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -182,8 +183,10 @@ class RecordResolver:
         agent_connector_ids: list[str] | None = None,
         connector_name_hint: str | None = None,
         frontend_url: str | None = None,
+        excluded_app_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._graph = graph_provider
+        self._excluded_app_ids = excluded_app_ids
         self._catalog = catalog
         self._org_id = org_id
         self._user_id = user_id
@@ -267,7 +270,9 @@ class RecordResolver:
                 org_id=self._org_id,
                 folder_mime_types=self._folder_mime_types,
             )
-            if node:
+            if node and await self._in_excluded_app(match.id):
+                logger.debug("resolve_one(%r): candidate %s is switched-off demo data", raw, match.id)
+            elif node:
                 if not match.record_type:
                     match.record_type = node.get("recordType")
                 if not match.connector_name:
@@ -283,6 +288,12 @@ class RecordResolver:
                 )
 
         return gated, searched
+
+    async def _in_excluded_app(self, record_id: str) -> bool:
+        if not self._excluded_app_ids:
+            return False
+        doc = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
+        return bool(doc) and doc.get("connectorId") in self._excluded_app_ids
 
     async def _fetch_candidates(
         self, raw: str, ref: CanonicalRef

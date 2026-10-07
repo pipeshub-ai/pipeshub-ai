@@ -352,6 +352,80 @@ describe('XSS Sanitization Middleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
+    it('should skip validation for POST to /api/v1/skills/import/finalize', () => {
+      const req = createMockRequest({
+        path: '/api/v1/skills/import/finalize',
+        method: 'POST',
+        body: {
+          content: '<html><body><script>alert(1)</script></body></html>',
+          resources: [{ path: 'scripts/preview.js', content: '<div onclick="x()">hi</div>' }],
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      xssSanitizationMiddleware(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.body.content).to.include('<script>')
+    })
+
+    it('should skip validation for POST to /api/v1/skills (create)', () => {
+      const req = createMockRequest({
+        path: '/api/v1/skills',
+        method: 'POST',
+        body: { name: 'pptx', content: 'Use <html> slides' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      xssSanitizationMiddleware(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args).to.have.length(0)
+    })
+
+    it('should skip validation for PUT and PATCH to /api/v1/skills/:name', () => {
+      const res = createMockResponse()
+
+      const putReq = createMockRequest({
+        path: '/api/v1/skills/pptx',
+        method: 'PUT',
+        body: { content: '<svg></svg>' },
+      })
+      const putNext = createMockNext()
+      xssSanitizationMiddleware(putReq, res, putNext)
+      expect(putNext.calledOnce).to.be.true
+      expect(putNext.firstCall.args).to.have.length(0)
+
+      const patchReq = createMockRequest({
+        path: '/api/v1/skills/pptx/body',
+        method: 'PATCH',
+        body: { content: '<iframe src="x"></iframe>' },
+      })
+      const patchNext = createMockNext()
+      xssSanitizationMiddleware(patchReq, res, patchNext)
+      expect(patchNext.calledOnce).to.be.true
+      expect(patchNext.firstCall.args).to.have.length(0)
+    })
+
+    it('should NOT skip validation for GET to /api/v1/skills', () => {
+      const req = createMockRequest({
+        path: '/api/v1/skills',
+        method: 'GET',
+        query: { q: '<script>alert(1)</script>' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      xssSanitizationMiddleware(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(BadRequestError)
+    })
+
     it('should NOT skip validation for GET to /api/v1/agents/ paths', () => {
       const req = createMockRequest({
         path: '/api/v1/agents/',

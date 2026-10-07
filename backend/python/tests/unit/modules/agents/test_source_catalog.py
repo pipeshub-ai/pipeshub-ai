@@ -15,12 +15,14 @@ import re
 
 import pytest
 
+from app.modules.agents.context.retrieval_routing import build_routing_guidance
 from app.modules.agents.context.source_catalog import (
+    DEMO_ONLY_SOURCE_NOTE,
+    DEMO_SOURCE_NOTE,
+    ORG_HAS_REAL_DATA_KEY,
     SourceCatalog,
     SourceKind,
 )
-from app.modules.agents.context.retrieval_routing import build_routing_guidance
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -298,6 +300,48 @@ class TestCanonicalKnowledgeBlock:
         rendered = catalog.render()
         assert "Combining them" in rendered
 
+    def test_entities_paragraph_absent_without_search_entities_grant(self) -> None:
+        """The exploration child renders the catalog without tool names and
+        has no entity tools, so it must not be told to call them."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        assert "**Entities.**" not in catalog.render()
+        assert "search_entities" not in catalog.render(tool_names=["knowledgegraph__search"])
+
+    def test_entities_paragraph_names_both_tools_when_granted(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(
+            tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"],
+        )
+        assert "**Entities.**" in rendered
+        assert "knowledgegraph__search_entities(query=...)" in rendered
+        assert "knowledgegraph__find_records_by_entity(entity_id=...)" in rendered
+        assert "`knowledgegraph__search(query=..., entity_ids=[...])`" in rendered
+
+    def test_entities_paragraph_is_stable_when_find_records_unlocks(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        before = catalog.render(tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"])
+        after = catalog.render(tool_names=[
+            "knowledgegraph__search",
+            "knowledgegraph__search_entities",
+            "knowledgegraph__find_records_by_entity",
+        ])
+        assert before == after
+
+    def test_entities_paragraph_only_names_real_entity_types_and_tools(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(
+            tool_names=["knowledgegraph__search", "knowledgegraph__search_entities"],
+        )
+        for stale in ("people", "expand_neighbors", "get_relationships", "connectedEntities"):
+            assert stale not in rendered
+
+    def test_composed_top_level_delegates_entity_content_search(self) -> None:
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(
+            tool_names=["knowledgegraph__search_entities", "internal_exploration_agent"],
+        )
+        assert "ask `internal_exploration_agent`" in rendered
+
 
 class TestBuildRoutingGuidance:
     """`build_routing_guidance` now states ONLY the duplicate-connector
@@ -343,3 +387,111 @@ class TestRenderEmbedsRoutingGuidance:
         catalog = _catalog_from_knowledge([_make_app_entry("Jira", "jira", JIRA_ID)])
         rendered = catalog.render()
         assert "Multiple connectors of the same type" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Demo data note
+# ---------------------------------------------------------------------------
+
+DEMO_ID = "aabbccdd-7777-7777-7777-aabbccdd0007"
+
+
+class TestDemoSourceNote:
+    """The sample data describes Acme Corp, whatever the workspace's organization is called.
+
+    The prompt names the workspace's organization, and a model can decline to
+    answer from records about a differently named company.
+    """
+
+    def test_agent_route_explains_the_demo_source(self) -> None:
+        cat = _catalog_from_knowledge([
+            _make_app_entry("Acme Corp demo data: GitHub, Jira, Slack, Google Drive and ServiceNow", "Demo", DEMO_ID),
+            _make_app_entry("Engineering Jira", "JIRA", JIRA_ID),
+        ])
+        text = cat.render()
+        assert DEMO_SOURCE_NOTE in text
+        assert text.count(DEMO_SOURCE_NOTE) == 1
+
+    def test_chat_route_explains_it_too(self) -> None:
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "Demo"}, {"type": "SLACK"}]})
+        assert DEMO_SOURCE_NOTE in cat.render()
+
+    def test_no_note_without_the_demo(self) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Engineering Jira", "JIRA", JIRA_ID)])
+        assert "Acme Corp" not in cat.render()
+
+    def test_only_demo_records_are_acme_corps(self) -> None:
+        # Asked about Acme Corp, a model labelled the user's own uploaded policy as Acme's.
+        assert "Only records from the Demo source are Acme Corp's" in DEMO_SOURCE_NOTE
+        assert "never call a record from any other source" in DEMO_SOURCE_NOTE
+
+    def test_the_note_sits_with_the_sources_not_in_place_of_them(self) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)])
+        text = cat.render()
+        assert text.index(DEMO_ID) < text.index(cat.demo_note())
+
+
+class TestDemoOnly:
+    """With nothing real to search, the demo answers "our" questions; beside real
+    data it stays #3500's named fallback, so Acme facts never pass as the org's."""
+
+    def test_an_agent_on_the_demo_alone(self) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)])
+        assert cat.demo_only()
+        assert DEMO_ONLY_SOURCE_NOTE in cat.render()
+        assert DEMO_SOURCE_NOTE not in cat.render()
+
+    @pytest.mark.parametrize("other", [_make_kb_entry("Policies", KB_ID), _make_app_entry("Engineering Jira", "JIRA", JIRA_ID)])
+    def test_an_agent_with_a_real_source_too(self, other: dict) -> None:
+        cat = _catalog_from_knowledge([_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID), other])
+        assert not cat.demo_only()
+        assert DEMO_SOURCE_NOTE in cat.render()
+        assert DEMO_ONLY_SOURCE_NOTE not in cat.render()
+
+    def test_chat_in_a_workspace_with_no_real_data(self) -> None:
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "Demo"}], ORG_HAS_REAL_DATA_KEY: False})
+        assert cat.demo_only()
+        assert DEMO_ONLY_SOURCE_NOTE in cat.render()
+
+    @pytest.mark.parametrize("state_extra", [{}, {ORG_HAS_REAL_DATA_KEY: True}])
+    def test_chat_assumes_real_collections_unless_told_otherwise(self, state_extra: dict) -> None:
+        # The chat route searches Collections without listing them.
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "Demo"}], **state_extra})
+        assert not cat.demo_only()
+        assert DEMO_SOURCE_NOTE in cat.render()
+
+    def test_the_assistants_empty_collection_does_not_count(self) -> None:
+        # The universal agent lists every Collection, and every user owns one.
+        knowledge = [_make_kb_entry("Bob's Private", KB_ID), _make_app_entry("Acme Corp demo data", "Demo", DEMO_ID)]
+        empty = SourceCatalog.from_state({"agent_knowledge": knowledge, ORG_HAS_REAL_DATA_KEY: False})
+        assert empty.demo_only()
+        for state_extra in ({}, {ORG_HAS_REAL_DATA_KEY: True}):
+            assert not SourceCatalog.from_state({"agent_knowledge": knowledge, **state_extra}).demo_only()
+
+    def test_another_connector_counts_even_with_nothing_indexed(self) -> None:
+        knowledge = [_make_app_entry("Acme Corp demo data", "Demo", DEMO_ID), _make_app_entry("Engineering Jira", "JIRA", JIRA_ID)]
+        assert not SourceCatalog.from_state({"agent_knowledge": knowledge, ORG_HAS_REAL_DATA_KEY: False}).demo_only()
+
+    def test_chat_with_another_connector(self) -> None:
+        cat = SourceCatalog.from_state(
+            {"available_connectors": [{"type": "Demo"}, {"type": "SLACK"}], ORG_HAS_REAL_DATA_KEY: False}
+        )
+        assert not cat.demo_only()
+
+    def test_no_demo(self) -> None:
+        cat = SourceCatalog.from_state({"available_connectors": [{"type": "SLACK"}], ORG_HAS_REAL_DATA_KEY: False})
+        assert not cat.demo_only()
+        assert cat.demo_note() == ""
+
+    def test_both_notes_keep_the_org_name_out_of_demo_searches_only(self) -> None:
+        for note in (DEMO_SOURCE_NOTE, DEMO_ONLY_SOURCE_NOTE):
+            assert note.endswith("Leave the organization's name out of searches of the Demo source.")
+
+    def test_the_mixed_note_keeps_3500s_rules(self) -> None:
+        assert "never present an Acme Corp fact as the user's organization's" in DEMO_SOURCE_NOTE
+        assert "name Acme Corp" in DEMO_SOURCE_NOTE
+
+    def test_the_demo_only_note_answers_our_questions_and_says_it_is_demo_data(self) -> None:
+        assert "as from this workspace's own data" in DEMO_ONLY_SOURCE_NOTE
+        assert "In the Acme Corp demo data" in DEMO_ONLY_SOURCE_NOTE
+        assert "never decline Demo records" in DEMO_ONLY_SOURCE_NOTE

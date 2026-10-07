@@ -40,7 +40,9 @@ def _method_source(path: str, name: str) -> str:
     """
     import pathlib
 
-    text = pathlib.Path(path).read_text()
+    # Explicit encoding: the providers carry emoji in log strings, and the
+    # platform default is cp1252 on Windows.
+    text = pathlib.Path(path).read_text(encoding="utf-8")
     start = text.index(f"async def {name}(")
     # Next sibling method at the same indentation ends it.
     rest = text[start:]
@@ -55,22 +57,26 @@ def source(request) -> str:
 
 
 class TestExcludesSoftDeletedRecords:
-    def test_the_query_filters_is_deleted(self, source):
+    def test_the_query_filters_by_visibility(self, source) -> None:
         """A tombstone answering "still referenced" strands its vectors."""
-        assert "isDeleted" in source
+        assert "_record_visibility(" in source
+        assert "visibility: RecordVisibility = RecordVisibility.LIVE" in source
 
-    def test_arango_uses_a_null_safe_comparison(self):
-        src = _method_source(*QUERY_SOURCES["arango"])
-        # AQL: `!= true` is already null-safe, so records predating the field pass.
-        assert "isDeleted != true" in src
+    def test_live_is_null_safe_on_both_backends(self) -> None:
+        """Records predating the field have no isDeleted; both forms keep them.
 
-    def test_neo4j_uses_a_null_safe_comparison(self):
-        """`<> true` is NOT null-safe in Cypher — `null <> true` is null, which
-        WHERE treats as false, silently dropping every record that predates the
-        field. coalesce is what keeps them."""
-        src = _method_source(*QUERY_SOURCES["neo4j"])
-        assert "coalesce(r.isDeleted, false) = false" in src
-        assert "r.isDeleted <> true" not in src
+        `<> true` is not null-safe in Cypher: `null <> true` is null, which WHERE
+        treats as false.
+        """
+        from app.services.graph_db.common.record_visibility import (
+            RecordVisibility,
+            aql_record_visibility,
+            cypher_record_visibility,
+        )
+
+        assert aql_record_visibility("r", RecordVisibility.LIVE) == "r.isDeleted != true"
+        assert cypher_record_visibility("r", RecordVisibility.LIVE) == "(r.isDeleted IS NULL OR r.isDeleted = false)"
+        assert "r.isDeleted <> true" not in _method_source(*QUERY_SOURCES["neo4j"])
 
 
 class TestNotScopedByTenantOrConnector:

@@ -73,6 +73,9 @@ from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
 from app.utils.streaming import parse_confidence_from_answer
 
@@ -139,6 +142,8 @@ class AnswerFinalizer:
         streamed_answer: str = "",
         reasoning_turns: list[dict[str, Any]] | None = None,
         agent_confidence: str | None = None,
+        agent_cancelled: bool = False,
+        agent_needs_input: str | None = None,
     ) -> dict[str, Any]:
         """Produce `completion_data` from the completed agent run.
 
@@ -154,9 +159,30 @@ class AnswerFinalizer:
         `agent_confidence` is the normalized confidence level from
         `AgentResult.confidence` (populated by `final_answer` when the tool is
         enabled). Takes precedence over the legacy text-trailer parser.
+
+        `agent_cancelled` (Stop Generation, Phase 3b) is `AgentResult.
+        cancelled` — an immutable snapshot `Agent.fail(..., status=
+        "cancelled")` took the moment the agent loop itself observed
+        cancellation, NOT a live re-check of `context.cancellation_token.
+        is_cancelled` (a late cancel() arriving after the run already
+        finished, successfully or with an unrelated failure, must not
+        relabel that outcome "stopped" — see `AgentResult.cancelled`'s
+        docstring). Also not derived from `agent_success`/`agent_error`
+        directly: `Agent.fail(..., status="cancelled")` still sets
+        `success=False` with a generic `error="Cancelled"` string
+        `AgentResult` has no OTHER way to distinguish from any other
+        failure. Checked BEFORE `agent_success` below: a cancelled run is
+        always `agent_success=False` too, but must route to
+        `_run_cancelled_path`, never `_emit_error_response` — the run was
+        stopped on purpose, not because it failed.
         """
         state = self._context.tool_state
         log = self._context.logger or logger
+
+        if agent_cancelled:
+            return await self._run_cancelled_path(
+                state, log, event_sink, streamed_answer, reasoning_turns or [],
+            )
 
         if not agent_success:
             return await self._emit_error_response(
@@ -178,6 +204,7 @@ class AnswerFinalizer:
                     "" if agent_output is None else str(agent_output),
                     streamed_answer, reasoning_turns or [],
                     agent_confidence=agent_confidence,
+                    agent_needs_input=agent_needs_input,
                 )
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
@@ -254,7 +281,36 @@ class AnswerFinalizer:
         streamed_answer: str,
         reasoning_turns: list[dict[str, Any]],
         agent_confidence: str | None = None,
+        agent_needs_input: str | None = None,
     ) -> dict[str, Any]:
+        streamed = (streamed_answer or "").strip()
+        is_resume = bool(state.get("ask_user_question_resume"))
+        if (
+            not (agent_output or "").strip()
+            and streamed
+            and streamed != _EMPTY_ANSWER_FALLBACK
+            and (is_resume or not agent_needs_input)
+        ):
+            # Resume can stream a follow-up while result.output stays empty.
+            agent_output = streamed
+
+        if (not agent_output or not agent_output.strip()) and agent_needs_input:
+            waiting_response: dict[str, Any] = {
+                "answer": "",
+                "citations": [],
+                "status": "waiting_input",
+            }
+            waiting_response.update(_tool_names_from_state(state))
+            self._attach_parts(waiting_response, final_text="")
+            await self._emit_ask_user_question_fallback(state, event_sink)
+            for evt in self._context.formatter.answer_final(
+                self._context, completion_data=waiting_response,
+            ):
+                await event_sink.write(evt)
+            state["response"] = ""
+            state["completion_data"] = waiting_response
+            return waiting_response
+
         if not agent_output or not agent_output.strip():
             log.warning("AnswerFinalizer: empty response, using fallback")
             answer_text = _EMPTY_ANSWER_FALLBACK
@@ -276,6 +332,9 @@ class AnswerFinalizer:
                 await event_sink.write(evt)
             state["response"] = answer_text
             state["completion_data"] = fallback_response
+            # The user received an answer, sourceless. Leaving it out would
+            # make the "answers with sources" ratio look better than it is.
+            _record_answer_generated(self._context, state, [])
             return fallback_response
 
         final_results = self._collector.final_results
@@ -391,6 +450,92 @@ class AnswerFinalizer:
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
+        _record_answer_generated(self._context, state, citations)
+        return completion_data
+
+    async def _run_cancelled_path(
+        self,
+        state: dict[str, Any],
+        log: logging.Logger,
+        event_sink: EventSink,
+        streamed_answer: str,
+        reasoning_turns: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Cooperative-cancel branch (Stop Generation, Phase 3b): finalizes
+        whatever text `TerminalAnswerStreamer` already put on screen as a
+        first-class (if partial) answer — `completion_data["status"] =
+        "stopped"` propagates through `AGUIFormatter.answer_final`'s
+        `STATE_SNAPSHOT`/`RUN_FINISHED` (and `LegacyFormatter`'s `complete`)
+        so Node's `buildAIResponseMessage`/`saveCompleteConversation` persist
+        a `Stopped` message/conversation instead of `Failed`.
+
+        Deliberately NOT `_run_success_path` with `streamed_answer`
+        substituted for `agent_output`: that method falls back to
+        `_EMPTY_ANSWER_FALLBACK`'s apologetic text when the answer is empty,
+        which is right for a genuine empty completion but wrong here — a
+        cancel during "Thinking" (before any text streamed) should persist
+        an empty answer, which Node's save path already treats as valid
+        exactly when `status == "stopped"`.
+        """
+        final_results = self._collector.final_results
+        virtual_record_map = self._collector.virtual_records
+        ref_mapper = self._collector.citation_ref_mapper
+        ref_to_url = ref_mapper.ref_to_url if ref_mapper is not None else None
+        prior_web_records = self._collector.web_records
+
+        clean_output, _ = parse_confidence_from_answer(streamed_answer)
+        completion_data: dict[str, Any] = {"status": "stopped"}
+        self._attach_parts(completion_data, final_text=clean_output)
+
+        parts = completion_data.get("parts")
+        if parts:
+            from app.utils.streaming import (  # noqa: PLC0415
+                strip_llm_authored_markers_in_parts,
+            )
+
+            strip_llm_authored_markers_in_parts(parts)
+            normalized, citations = self._normalize_all_parts_citations(
+                parts, final_results, self._collector.tool_records,
+                ref_to_url, virtual_record_map, prior_web_records,
+            )
+            for part in reversed(parts):
+                if part.get("isFinal") and part.get("type") == "text":
+                    normalized = part["content"]
+                    break
+        else:
+            normalized, citations = normalize_citations_and_chunks(
+                clean_output, final_results, self._collector.tool_records,
+                ref_to_url=ref_to_url,
+                virtual_record_id_to_result=virtual_record_map,
+                web_records=prior_web_records,
+            )
+
+        for evt in self._context.formatter.answer_delta(
+            self._context,
+            chunk=normalized if normalized.strip() else "",
+            accumulated=normalized, citations=citations,
+            raw_length=len(streamed_answer),
+        ):
+            await event_sink.write(evt)
+
+        completion_data["answer"] = normalized
+        completion_data["citations"] = citations
+        reasoning_payload = build_reasoning_payload(reasoning_turns)
+        if reasoning_payload is not None:
+            completion_data["reasoning"] = reasoning_payload
+        completion_data.update(_tool_names_from_state(state))
+        state["response"] = normalized
+        state["completion_data"] = completion_data
+        await self._emit_ask_user_question_fallback(state, event_sink)
+        for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
+            await event_sink.write(evt)
+        log.info(
+            "AnswerFinalizer: finalized STOPPED response (%d chars, %d citations)",
+            len(normalized), len(citations),
+        )
+        # A stop during "Thinking" left nothing on screen, so it is not an answer.
+        if normalized.strip():
+            _record_answer_generated(self._context, state, citations, stopped=True)
         return completion_data
 
     async def _emit_ask_user_question_fallback(self, state: dict[str, Any], event_sink: EventSink) -> None:
@@ -445,3 +590,68 @@ class AnswerFinalizer:
 
 
 __all__ = ["AnswerFinalizer"]
+
+
+def _record_answer_generated(
+    context: "AgentContext", state: dict[str, Any], citations: list[dict[str, Any]],
+    *, stopped: bool = False,
+) -> None:
+    """Activation signal: an answer with (or without) sources reached the user.
+
+    Records counts and source *types* only — never the question, the answer,
+    or record names. ``demo_sources`` is true when any cited record comes from
+    the bundled Demo connector, which is how "demo query run" is measured.
+    """
+    try:
+        # The agent route describes its sources in `agent_knowledge`
+        # ({connectorId, type}); the chat route in `available_connectors`
+        # ({id, type}). Either may be present, so read both.
+        demo_ids: set[str] = set()
+        sources: list[object] = list(state.get("agent_knowledge") or []) + list(
+            state.get("available_connectors") or []
+        )
+        for entry in sources:
+            if not isinstance(entry, dict):
+                continue
+            typed: dict[str, object] = dict(entry)  # type: ignore[arg-type]
+            if str(typed.get("type") or "").lower() == "demo":
+                demo_ids.add(str(typed.get("connectorId") or typed.get("id") or ""))
+        demo_ids.discard("")
+        connectors: set[str] = set()
+        demo_sources = False
+        for citation in citations:
+            meta_obj: object = citation.get("metadata")
+            if not isinstance(meta_obj, dict):
+                continue
+            meta: dict[str, object] = dict(meta_obj)  # type: ignore[arg-type]
+            name = meta.get("connector") or meta.get("origin")
+            if name:
+                connectors.add(str(name))
+            if str(meta.get("connectorId") or "") in demo_ids:
+                demo_sources = True
+        # The address itself stays out: the domain says which organisation
+        # without naming a person, and the user id already identifies them.
+        record_event("answer_generated", {
+            "orgId": context.org_id,
+            "userId": context.user_id,
+            "domain": domain_from_email(str(context.user_email or "")),
+            "chat_mode": state.get("chat_mode"),
+            "citation_count": len(citations),
+            "connectors": sorted(connectors),
+            "demo_sources": demo_sources,
+            # Stopped by the person after text was on screen: kept apart so
+            # the cited ratio of finished answers stays comparable.
+            "stopped": stopped,
+        })
+        # The Grafana counter for the same step: org and domain only. The
+        # connector label marks demo answers so the demo funnel has its own line.
+        record_service_activity(
+            "query_service",
+            "answer_generated",
+            connector="demo" if demo_sources else "none",
+            status="stopped" if stopped else ("cited" if citations else "uncited"),
+            org=str(context.org_id or "unknown"),
+            domain=domain_from_email(str(context.user_email or "")),
+        )
+    except Exception as exc:  # telemetry must never break an answer
+        logging.getLogger(__name__).debug("telemetry: answer_generated not recorded: %s", exc)

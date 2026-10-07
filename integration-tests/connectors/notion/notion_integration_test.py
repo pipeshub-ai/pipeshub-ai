@@ -212,6 +212,10 @@ class TestNotionFullSync:
         foreign_pages, foreign_data_sources = await foreign_run_object_ids(
             notion_source_helper, notion_seed
         )
+        # Only what actually landed in the graph counts. Search also returns trashed data
+        # sources from earlier runs; they never sync, and counting them broke the total below.
+        foreign_pages &= graph_pages
+        foreign_data_sources &= graph_data_sources
         if foreign_pages or foreign_data_sources:
             logger.warning(
                 "TC-SYNC-001: ignoring %d page(s) and %d data source(s) from a concurrent "

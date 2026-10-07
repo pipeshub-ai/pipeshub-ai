@@ -319,6 +319,32 @@ describe('configuration_manager/validator/validators', () => {
     })
   })
 
+  describe('configurationSchema defaultReasoningEffort', () => {
+    it('should keep a valid default so it is saved with the model', () => {
+      const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'low' })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.defaultReasoningEffort).to.equal('low')
+      }
+    })
+
+    it('should accept an empty or null default, which means none is set', () => {
+      expect(configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: '' }).success).to.be.true
+      expect(configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: null }).success).to.be.true
+    })
+
+    it('should reject an unknown effort with a message naming the valid choices', () => {
+      const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'extreme' })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0].path).to.deep.equal(['defaultReasoningEffort'])
+        expect(result.error.issues[0].message).to.equal(
+          'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
+        )
+      }
+    })
+  })
+
   describe('githubAuthConfigSchema', () => {
     it('should accept valid GitHub auth config', () => {
       const result = githubAuthConfigSchema.safeParse({

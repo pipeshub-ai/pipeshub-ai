@@ -3,7 +3,7 @@
 // shapes 1:1 so the frontend never has to reshape payloads.
 // ========================================
 
-export type SkillStatus = 'active' | 'deprecated' | 'candidate';
+export type SkillStatus = 'active' | 'deprecated' | 'candidate' | 'disabled';
 export type SkillSourceType = 'builtin' | 'manual' | 'imported' | 'learned';
 
 export interface SkillMetadata {

@@ -3,6 +3,8 @@ import { injectable } from 'inversify';
 import { createPublicKey, createSecretKey, KeyObject } from 'node:crypto';
 import { UnauthorizedError } from '../errors/http.errors';
 import { Logger } from '../services/logger.service';
+import { isUserActionScope } from '../enums/token-scopes.enum';
+import { deriveUserActionSecret } from '../utils/jwtKeys';
 import jwt, { SignOptions } from 'jsonwebtoken';
 
 interface TokenPayload extends Record<string, any> {}
@@ -54,6 +56,13 @@ function algorithmsFor(key: KeyObject): jwt.Algorithm[] {
       ];
 }
 
+function isSignatureMismatch(error: unknown): boolean {
+  return (
+    error instanceof jwt.JsonWebTokenError &&
+    error.message === 'invalid signature'
+  );
+}
+
 @injectable()
 export class AuthTokenService {
   private readonly logger = Logger.getInstance();
@@ -61,6 +70,7 @@ export class AuthTokenService {
   private readonly scopedJwtSecret: string;
   private readonly jwtVerificationKey: KeyObject;
   private readonly scopedJwtVerificationKey: KeyObject;
+  private readonly userActionVerificationKey: KeyObject;
   private readonly jwtAlgorithms: jwt.Algorithm[];
   private readonly scopedJwtAlgorithms: jwt.Algorithm[];
 
@@ -69,6 +79,11 @@ export class AuthTokenService {
     this.scopedJwtSecret = scopedJwtSecret;
     this.jwtVerificationKey = toVerificationKey(jwtSecret);
     this.scopedJwtVerificationKey = toVerificationKey(scopedJwtSecret);
+    // A PEM public key has no shared secret to derive a subkey from.
+    this.userActionVerificationKey =
+      this.scopedJwtVerificationKey.type === 'secret'
+        ? toVerificationKey(deriveUserActionSecret(scopedJwtSecret))
+        : this.scopedJwtVerificationKey;
     this.jwtAlgorithms = algorithmsFor(this.jwtVerificationKey);
     this.scopedJwtAlgorithms = algorithmsFor(this.scopedJwtVerificationKey);
   }
@@ -87,15 +102,17 @@ export class AuthTokenService {
   }
 
   async verifyScopedToken(token: string, scope: string): Promise<TokenPayload> {
-    let decoded: TokenPayload;
-    try {
-      decoded = jwt.verify(token, this.scopedJwtVerificationKey, {
-        algorithms: this.scopedJwtAlgorithms,
-      }) as TokenPayload;
-    } catch (error) {
-      this.logger.error('Token verification failed', { error });
-      throw new UnauthorizedError('Invalid token');
-    }
+    const keys = isUserActionScope(scope)
+      ? [
+          this.userActionVerificationKey,
+          // Accepts user-held tokens signed with the raw key before the key split.
+          // Remove once the longest of those has expired everywhere: the deploy of
+          // this change plus REFRESH_TOKEN_EXPIRY / EMAIL_VERIFIED_TOKEN_EXPIRY
+          // (both 30d by default).
+          this.scopedJwtVerificationKey,
+        ]
+      : [this.scopedJwtVerificationKey];
+    const decoded = this.verifyWithKeys(token, keys, this.scopedJwtAlgorithms);
     const { scopes } = decoded;
     if (!scopes || !scopes.includes(scope)) {
       throw new UnauthorizedError('Invalid scope');
@@ -118,5 +135,26 @@ export class AuthTokenService {
     return jwt.sign(payload, this.scopedJwtSecret, {
       expiresIn,
     } as SignOptions);
+  }
+
+  private verifyWithKeys(
+    token: string,
+    keys: KeyObject[],
+    algorithms: jwt.Algorithm[],
+  ): TokenPayload {
+    let failure: unknown;
+    for (const key of keys) {
+      try {
+        return jwt.verify(token, key, { algorithms }) as TokenPayload;
+      } catch (error) {
+        // A signature mismatch only means "not this key"; any other error came
+        // from the key that matched and says why the token was refused.
+        if (failure === undefined || !isSignatureMismatch(error)) {
+          failure = error;
+        }
+      }
+    }
+    this.logger.error('Token verification failed', { error: failure });
+    throw new UnauthorizedError('Invalid token');
   }
 }

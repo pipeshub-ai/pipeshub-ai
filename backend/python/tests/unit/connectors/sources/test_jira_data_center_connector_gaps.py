@@ -11,6 +11,8 @@ from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import ListOperator, SyncFilterKey
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    GroupMemberships,
+    GroupPickerPage,
     JiraDataCenterConnector,
 )
 from app.models.entities import AppUser, RecordGroupType, RecordType, TicketRecord
@@ -100,7 +102,7 @@ class TestRunSyncAndInitGaps:
         )
 
         with patch.object(conn, "_fetch_users", new=AsyncMock(return_value=[])), patch.object(
-            conn, "_sync_user_groups", new=AsyncMock(return_value={}),
+            conn, "_sync_user_groups", new=AsyncMock(return_value=GroupMemberships({})),
         ), patch.object(
             conn, "_fetch_application_roles_to_groups_mapping", new=AsyncMock(return_value={}),
         ), patch.object(
@@ -157,7 +159,7 @@ class TestIssueDeletionGaps:
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
-            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
+            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) is None
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_empty_entities_breaks(self):
@@ -468,10 +470,10 @@ class TestUserAndGroupGaps:
         conn = _make_connector()
         conn.data_source = MagicMock()
 
-        with patch.object(conn, "_fetch_groups", new=AsyncMock(return_value=[])):
+        with patch.object(conn, "_fetch_groups", new=AsyncMock(return_value=GroupPickerPage([]))):
             result = await conn._sync_user_groups([])
 
-        assert result == {}
+        assert result == GroupMemberships({})
         conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -482,11 +484,11 @@ class TestUserAndGroupGaps:
         ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp([]))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            assert await conn._fetch_groups() == []
+            assert await conn._fetch_groups() == GroupPickerPage([])
 
         ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": "bad"}))
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            assert await conn._fetch_groups() == []
+            assert await conn._fetch_groups() is None, "an unreadable list is not an empty one"
 
     @pytest.mark.asyncio
     async def test_fetch_group_members_requires_name_and_datasource(self):

@@ -2,7 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton, Badge } from '@radix-ui/themes';
+import { Box, Flex, Text, IconButton, Badge, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import type { FlowNodeData } from '../types';
@@ -63,8 +63,9 @@ function NodeCardShell(props: {
   header: React.ReactNode;
   body?: React.ReactNode;
   children?: React.ReactNode;
+  warning?: boolean;
 }) {
-  const { selected, header, body, children } = props;
+  const { selected, header, body, children, warning } = props;
   return (
     <Box
       className="flow-node-surface"
@@ -72,7 +73,11 @@ function NodeCardShell(props: {
         width: 276,
         boxSizing: 'border-box',
         borderRadius: FLOW_NODE_CARD.radius,
-        border: selected ? '1px solid var(--gray-11)' : FLOW_NODE_CARD.borderIdle,
+        border: warning
+          ? '1px solid var(--amber-8)'
+          : selected
+            ? '1px solid var(--gray-11)'
+            : FLOW_NODE_CARD.borderIdle,
         background: FLOW_NODE_PANEL_BG,
         boxShadow: selected ? FLOW_NODE_CARD.shadowSelected : FLOW_NODE_CARD.shadow,
         position: 'relative',
@@ -248,6 +253,7 @@ export const FlowNode = React.memo(function FlowNode({
     <div className="flow-node-card">
       <NodeCardShell
         selected={selected}
+        warning={Boolean(data.warning)}
         body={groupBody}
         header={
           <Flex align="center" justify="between" gap="2" px="3" py="2">
@@ -297,6 +303,16 @@ export const FlowNode = React.memo(function FlowNode({
                   </Text>
                 ) : null}
               </Flex>
+              {data.warning ? (
+                <Tooltip content={data.warning}>
+                  <span
+                    data-testid="flow-node-warning"
+                    style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}
+                  >
+                    <MaterialIcon name="warning" size={16} color="var(--amber-11)" />
+                  </span>
+                </Tooltip>
+              ) : null}
             </Flex>
             {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
               <span className="flow-node-delete" style={{ flexShrink: 0 }}>

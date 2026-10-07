@@ -2,7 +2,7 @@
 import pytest
 
 from app.modules.parsers.code_parser import CodeFileParser
-from app.modules.parsers.code_parser.engine import parse_code
+from app.modules.parsers.code_parser.engine import decode_source, parse_code
 
 NESTED_PY = b'''
 class Outer:
@@ -112,3 +112,33 @@ def test_docstring_extraction_with_annotated_signature():
     container = CodeFileParser().parse_to_blocks(src, "m.py", "src/m.py", "python")
     func = next(b for b in container.blocks if b.name == "process")
     assert func.code_metadata.docstring == "Transform data into strings."
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(b"# \x93price\x94 \x80 5\n", "# “price” € 5\n", id="windows-1252"),
+        pytest.param("# Zoë €\n".encode(), "# Zoë €\n", id="utf-8"),
+    ],
+)
+def test_decode_source_reads_windows_1252(raw: bytes, expected: str) -> None:
+    assert decode_source(raw) == expected.encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_parse_uses_the_extension_it_was_given_when_the_name_has_none() -> None:
+    """The parsing service picks this parser by extension. A record whose name
+    carries none ("build-script", declared as py) must not come back empty."""
+    source = b"def main():\n    return 1\n"
+
+    result = await CodeFileParser().parse(source, "build-script", {"extension": "py"})
+
+    assert result.metadata["language"] == "python"
+    assert result.block_container.blocks
+
+
+@pytest.mark.asyncio
+async def test_parse_prefers_the_file_name_over_the_extension_it_was_given() -> None:
+    result = await CodeFileParser().parse(b"x = 1\n", "main.py", {"extension": "go"})
+
+    assert result.metadata["language"] == "python"

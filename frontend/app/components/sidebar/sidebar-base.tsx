@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { useRef, useCallback, useEffect, useState } from 'react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -25,6 +27,7 @@ import type { SidebarBaseProps } from './types';
  * This is used for "More Chats", "More items", etc.
  */
 export function SidebarBase({ header, children, footer, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
+  const { t } = useTranslation();
   // ── Mobile full-screen drawer ─────────────────────────────────
   // On mobile, render nothing when closed; a fixed full-width panel when open.
   if (isMobile) {
@@ -85,7 +88,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
                   size="2"
                   onClick={onMobileClose}
                   style={{ margin: 0 }}
-                  aria-label="Close sidebar"
+                  aria-label={t('sidebar.close')}
                 >
                   <MaterialIcon name="close" size={20} color="var(--gray-11)" />
                 </IconButton>
@@ -228,7 +231,8 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         </Box>
       )}
 
-      {/* Drag handle */}
+      {/* Drag handle — kept fully inside the sidebar; the app shell clips the
+          slot (overflow: hidden) so anything past the border edge is unreachable. */}
       <Box
         onMouseDown={handleMouseDown}
         onMouseEnter={() => setDragHandleHovered(true)}
@@ -236,7 +240,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         style={{
           position: 'absolute',
           top: 0,
-          right: -2,
+          right: 0,
           width: 4,
           height: '100%',
           cursor: 'col-resize',
@@ -247,7 +251,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
           style={{
             position: 'absolute',
             top: 0,
-            left: 1,
+            right: 0,
             width: 2,
             height: '100%',
             borderRadius: 1,

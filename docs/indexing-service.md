@@ -10,6 +10,8 @@ Section 5 is the root-cause analysis of the "indexing starts fast, then drops to
 
 Indexing is one Python process (`app.indexing_main`, port 8091) that consumes record events from the broker, downloads each record's bytes, parses them into a `BlocksContainer`, embeds the blocks into the vector store, stores the blocks in blob storage, and enriches the graph with LLM-extracted metadata. It does not talk to a source system directly: the Connectors service owns source access and streams bytes on request.
 
+Indexing needs a language model configured before records can finish, not only for the enrichment step at the end. The model assigned to the `indexing` role (or the default LLM) is read while records are processed: images check whether it is multimodal, spreadsheets, CSVs and tables in documents are summarised with it while they are parsed, and the inline enrichment step runs inside the same processing call, so its failure fails the record. With no LLM configured, records fail with "No AI model is set up for this workspace yet…" (`app/utils/llm.py::LLM_MISSING_FOR_FILE`), stored as the failure reason as-is.
+
 ```mermaid
 flowchart LR
     subgraph Producers
@@ -50,7 +52,9 @@ flowchart LR
 
 **Two parsing modes exist.** With `USE_PARSING_SERVICE=false` (the shipped default) the handler parses in-process via `app/events/processor.py` (`Processor.process_*`), which itself calls the Docling service for PDF layout. With `USE_PARSING_SERVICE=true` it POSTs the bytes to the Parsing service. Both paths yield the same three pipeline events to the consumer (`START_PARSING`, `PARSING_COMPLETE`, `INDEXING_COMPLETE`), which is what the admission control below keys on.
 
-**One worker thread.** The consumer runs a second event loop on a dedicated thread. Broker I/O (XREADGROUP/XACK, Kafka poll/commit, producer sends) stays on the main loop; every record's handler, the governor gates, the Neo4j driver, the lease renewer and the recovery loops run on the worker loop. Anything that must cross loops goes through `consumer_concurrency.bridge_to_main_loop`.
+**One worker thread.** The consumer runs a second event loop on a dedicated thread. Broker I/O (XREADGROUP/XACK, Kafka poll/commit, producer sends) stays on the main loop; every record's handler, the governor gates, the Neo4j driver, the lease renewer and the recovery loops run on the worker loop. Anything that must cross loops goes through `consumer_concurrency.bridge_to_main_loop`. The producers do that for themselves: `RedisStreamsProducer` and `KafkaMessagingProducer` remember the loop they were started on and hand a send from any other loop back to it (`app/utils/loop_bridge.run_on_loop`), so a handler on the worker loop can call them directly. Redis clients that both loops use directly are held one per loop (`app/services/redis/loop_clients.LoopBoundClients`): `RedisClientRegistry` for leases and retry counts, and the accessible-records cache, which the worker loop invalidates when a knowledge-base record finishes indexing.
+
+**Parse workers.** Parsing a large text, code or CSV file is seconds of CPU, and on the worker loop that is seconds in which no other record's graph, vector or embedding call can make progress. Those parses run in separate worker processes owned by `app/modules/parsers/parse_pool.py`; section 4.7 says which step runs where and why a thread is not enough. The parsing service uses the same pool for the same parsers.
 
 Related services and ports are listed in `AGENTS.md`.
 
@@ -60,7 +64,7 @@ Related services and ports are listed in `AGENTS.md`.
 
 ### 2.1 Status state machine
 
-Status lives on the record node in the graph (`records` collection) as three fields: `indexingStatus`, `parsingStatus`, `extractionStatus`, plus `processingStartedAt` and `reason`.
+Status lives on the record node in the graph (`records` collection) as three fields: `indexingStatus`, `parsingStatus`, `extractionStatus`, plus `processingStartedAt` and `reason`. A primary whose queued md5-duplicates were just promoted also carries `duplicateReconcilePending` until their taxonomy edges and entity membership have been copied (see `docs/entity-resolution.md`).
 
 ```mermaid
 stateDiagram-v2
@@ -142,7 +146,7 @@ Every record is classified once, from the event payload's `extension` and `mimeT
 | Tier | Formats | Why it is separate |
 | --- | --- | --- |
 | **HEAVY** | pdf, doc/docx, ppt/pptx, xls/xlsx, png/jpg/jpeg/webp/svg, and **anything unrecognised** | Docling layout analysis, OCR, LibreOffice, VLM image description: CPU-bound for minutes, ~1.5 GiB RSS per parse. |
-| **LIGHT** | txt, md, html, csv/tsv, json/yaml, source code, `application/blocks` (Jira/Confluence/Slack-shaped payloads), `text/gmail_content` | Milliseconds of CPU on a few KB; wall time is I/O (embedding, graph, vector writes). |
+| **LIGHT** | txt, md, html, csv/tsv, json/yaml, source code, `application/blocks` (Jira/Confluence/Slack-shaped payloads), `text/gmail_content` | Milliseconds of CPU on a few KB; wall time is I/O (embedding, graph, vector writes). The exception is a large text, code or CSV file, which is seconds of CPU: from 256 KiB up those parse steps run in a parse worker process when the process has a pool (section 4.7); JSON, YAML and HTML stay on threads at any size. |
 
 Jira issues and Confluence pages are published as `application/blocks` (Jira) or blocks/HTML (Confluence), so they are LIGHT. Their **attachments** are published with the attachment's real media type: PDFs, screenshots, Office files. Those are HEAVY. A Jira/Confluence sync is therefore a mixed stream: mostly light records with a heavy minority interleaved. That mix is the precondition for the bug in section 5.
 
@@ -269,8 +273,82 @@ Responsibilities by layer:
 | --- | --- | --- |
 | `ResourceGovernor.run` | 15s ± 1s | sample cgroup/CPU/memory, adjust pool limits |
 | `LeaseRenewer` (worker loop) | 30s | renew every held Redis lease in one pipeline; marks holders lost after ~90s of failures |
-| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS for longer than `RECORD_PROCESSING_TIMEOUT + lease` (~32 min); park records of gone/inactive connectors as AUTO_INDEX_OFF; optional stranded-record republish |
+| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS for longer than `RECORD_PROCESSING_TIMEOUT + lease` (~32 min); park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
 | `run_vector_membership_backfill_loop` | 30s | repair `connectorIds`/`recordGroupIds` on vector points |
+| `run_entity_index_rebuild_loop` | 2s while working, 60s idle, after a 60s startup grace | project the graph into the `entities` collection, one page per tick under its own Redis leader key; see `docs/entity-resolution.md` (Entity index rebuild) |
+
+### 4.6 Stranded-record sweep
+
+A record on a live connector whose event was lost (dropped by the broker, discarded by a consumer, or never published because the send failed after the graph write committed) sits in QUEUED or NOT_STARTED for ever: the stale scan only looks at IN_PROGRESS, and the inactive-connector sweep only at connectors that are gone. `indexing_main._republish_stranded_records` re-sends its event. It runs inside `run_stale_recovery_loop`, so once a minute under the cluster-wide `recovery` lock.
+
+The record's status cannot say whether its event is still on the broker, because QUEUED is written before the publish as well as by it. Age cannot say either: a record waiting behind a long backlog is exactly as old as one whose event was lost, and re-sending it makes that backlog longer. (Aged alone, a consumer more than an hour behind had every healthy record still in line sent another copy each hour: about 185,000 duplicate events for about 43,000 records in a day on one install.) So the sweep asks the broker. For each record, in order:
+
+1. **Minimum age.** The newest of `queuedAtTimestamp`, `updatedAtTimestamp` and `lastRepublishedAt` must be older than `STRANDED_RECORD_REPUBLISH_AFTER_SECONDS` (1h; `0` disables the sweep). `queuedAtTimestamp` is the platform's own "put in line" time; `updatedAtTimestamp` cannot carry this alone because connectors may fill it with source-system time. This is the youngest a record can be before it is looked at, not a promise to re-send at that age, so it does not need to be sized to the backlog.
+2. **The existing guards.** Connector-origin records only (plus a restored upload still NOT_STARTED); the connector must be readable and active; a duplicate parked behind an in-flight md5 twin is left to its twin.
+3. **Back-off.** Each re-send is counted on the record (`republishCount`), and the wait before the next one doubles: 1h, 2h, 4h, 8h, 16h, then 24h (`STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS`, or the minimum age if that is longer). A fresh `queuedAtTimestamp` starts the count over. No record is ever re-sent every period.
+4. **Is its event still waiting?** `IMessagingConsumer.lane_backlog(topic)` returns, per lane, the publish time of the oldest event the consumer group has not finished with (`lanes/backlog.py::LaneBacklog`). If a lane this record's event could be on still holds work at least as old as the record's own queue time, the consumer has not reached that event yet and the record is left alone. If those lanes have moved past it, or are empty, and the record is still waiting, its event is not coming and it is re-sent.
+
+The claim (`lastRepublishedAt`, `republishCount`) is written before the send and put back if the send fails, so a record can never be sent without a persisted claim.
+
+**What "not finished with" means.** An event that was read and is buffered in the scheduler, parked because its key is at its cap, waiting behind a lane the consumer has paused, sleeping out a retry back-off, or being processed right now is still waiting from the record's point of view. Both brokers report it that way, which is why the sweep reads the broker and not the consumer's memory (the answer is also the same from any replica):
+
+| Broker | Lane | Oldest unfinished event | Cost per pass |
+| --- | --- | --- | --- |
+| Redis Streams (`redis_streams/backlog.py`) | each subscribed stream of the topic | the older of the head of the group's pending list (`XPENDING`) and the first entry after `last-delivered-id` (`XINFO GROUPS`, `XRANGE … COUNT 1`); the entry id's millisecond half is the publish time on Redis's clock | 3 commands per stream |
+| Kafka (`kafka/consumer/backlog.py`) | each partition | the timestamp of the record at the group's committed offset, where that is below the end offset. Read by a short-lived consumer assigned by hand, which looks up the group's committed offsets without joining the group (no rebalance) and never commits | one offset lookup per partition, one fetch per partition that is behind |
+
+The broker is read once per pass, and only if some record got as far as step 4, so an idle system never asks. The Redis group `lag` field is not used: it is absent before Redis 7.0, null after deletions, and has been wrong in several releases.
+
+**Which lanes a record's event could be on.** On Redis: its own lane (`stable_lane(connectorId)`), the base stream (anything published before lanes were enabled or by a producer that is not laned, which the consumer still drains), the shared default lane (events published without `connectorId`, such as the stale-recovery requeue), and any lane outside the configured range that the consumer adopted after a lane-count reduction. Another connector's backlog on another lane does not hold a record back. On Kafka the broker's partitioner places each message and nothing in this codebase recomputes it (see `lanes/interface.py`), so every partition counts: a record is re-sent once the whole topic has been consumed past its queue time.
+
+**Clocks.** Queue times come from the application host and event timestamps from the broker (Redis) or the producing host (Kafka), and a record is stamped before its event is sent. An event up to 5 minutes newer than the record's queue time (`STRANDED_QUEUE_CLOCK_ALLOWANCE_MS`) is therefore still treated as possibly the record's own. Skew beyond that costs at most one early re-send per record, after which the back-off applies.
+
+**When the broker cannot be read** (unreachable, timed out, a stream or group missing) the pass logs one warning and decides on steps 1–3 alone.
+
+**Known limits.** Raising the Redis lane count moves a connector to a different lane while its older events are still on the previous one, which is inside the configured range and so indistinguishable from any other lane; such a record can be re-sent once before the back-off takes over. The re-sent event is idempotent either way: the handler skips a record that is already COMPLETED and the per-record lease stops two deliveries running at once.
+
+**Log line.** One per pass, at INFO when any record was considered: `Stranded-record sweep: N considered, N left alone because their queue still holds older work, N re-published, N waiting out a back-off`, with `(queue not readable; decided on age alone)` appended on a fallback pass. A steadily high "left alone" count is a backlog, not a fault.
+
+### 4.7 Where parsing CPU runs
+
+Every record's handler shares one event loop with every other in-flight record and with the lease renewer. A parse that holds that loop does not look slow, it looks like an outage somewhere else: the Neo4j, Redis, vector-store and embedding calls waiting on the same loop time out. `asyncio.to_thread` only helps while the work releases the GIL (the lock that lets one Python thread run at a time). markdown-it, the tree-sitter walk and CSV table detection are Python and hold it; `csv.reader`, `json.loads` and a regex pass over a whole document are single C calls that hold it from start to finish. So a parse step runs in one of three places:
+
+| Where | Steps | Why there |
+| --- | --- | --- |
+| **Parse worker process** | For payloads of 256 KiB and up: markdown-it conversion and image-reference extraction (`.md`, `.txt`, and the text fallback for repository files), the tree-sitter parse and walk, CSV/TSV row reading and table detection | Seconds of GIL-holding CPU, bytes in, and a result that pickles (a `BlocksContainer`, or rows) |
+| **Thread** | The same steps below 256 KiB, or when the process has no pool. CSV row conversion and plain row-block building for tables of 1,000 rows and more. JSON, YAML, HTML, Excel, EPUB and image parsing | Short, or not worth a process: a JSON result costs as much to rebuild in this process as it did to parse, CSV rows are plain lists whose pickling itself holds the GIL, and the Excel and EPUB parsers keep state that does not pickle |
+| **Event loop** | LLM calls, graph/vector/blob I/O, decoding and stripping the text | I/O, or a few milliseconds |
+
+How the pool behaves (`parse_pool.py`, worker entry point `parse_worker.py`):
+
+- **Lanes, not a shared pool.** A lane is one thread and the one worker process it talks to, running one job at a time; a free lane takes the next job from a shared queue. Because a worker never holds two jobs, a worker that dies (OOM-killed, segfault) is the fault of exactly the job it was running. That record fails with "PipesHub ran out of memory while reading this file…" as its reason, the lane starts a fresh worker, and the jobs queued behind it run normally. A worker found dead while idle costs no record.
+- **A worker never outlives its record.** If the record is cancelled (lease lost, shutdown) or the parse runs past `RECORD_PROCESSING_TIMEOUT`, the lane kills the worker instead of letting it hold the lane.
+- **Small and short-lived.** Workers are started on first use with `python -m app.modules.parsers.parse_worker` and import only the parser they are asked to run: about 60 MB to start with, rising to about 450 MB while one parses a 20 MB text file or a 5 MB source file. They are deliberately not `multiprocessing` workers: those re-import the service's main module, which was measured at 1.3 GB and fifteen to twenty seconds per worker. A worker idle for 60 seconds exits and gives its memory back. `tests/unit/modules/parsers/test_parse_pool.py::test_what_a_worker_imports_stays_light` fails if a worker-side module starts importing the LLM or Docling stack.
+- **Sized from the governor.** Only a process that owns a `ResourceGovernor` (indexing, parsing) has a pool; the query service and anything else keeps using threads. The default width is half the governor's heavy-parse ceiling, at most 4, so a 4-CPU host gets one worker: the same single core light parsing could already burn, moved off the loop. `PARSE_POOL_WORKERS` overrides it, never above the heavy-parse ceiling; `0` turns the pool off. Jobs are submitted from inside a record's parse step, between `START_PARSING` and `PARSING_COMPLETE`, while the record holds a parse permit: the governor's parse limits bound what can be queued, and the pool's width bounds how many cores it uses. A dead worker is reported through `report_memory_incident`, like a dead Docling or rasterizer worker.
+- **As closed as the service.** A worker inherits the service's environment, secrets included. `exec` resets the non-dumpable mark the service sets on itself (`app/utils/process_hardening.py`), so each worker sets it again before it reads its first job; otherwise a same-uid process could read `/proc/<pid>/environ`.
+- **POSIX only.** Workers are handed their pipes with `pass_fds`; elsewhere the pool stays off and parsing uses threads.
+
+What still pauses the loop, measured with a 50 ms heartbeat on a 20 MB CSV and a 4.9 MB source file: one full garbage collection of about 0.3 s when tens of thousands of parsed blocks are rebuilt in the indexing process (the cost of holding that many objects, there before this change too), up to 0.6 s of the same while a 290,000-row CSV becomes row blocks, and 0.1–0.3 s while that CSV's rows are unpickled. Before, the source file held the loop for 3–7 s, reading the CSV for 2 s, and building its row blocks for 9.7 s.
+
+### 4.8 Files from code repositories
+
+GitLab and GitHub sync every file of a repository as a `CODE_FILE` record, and a repository holds more than source code. `app/modules/parsers/code_parser/routing.py::plan_code_file` decides how each one is read. `Processor.process_code_document` applies it in-process; with `USE_PARSING_SERVICE=true`, `EventProcessor` applies it before the bytes are sent, because the parsing service chooses a parser from mime type and extension alone.
+
+| File | Read by | Limit |
+| --- | --- | --- |
+| Source with a tree-sitter grammar | Code parser | `CODE_FILE_MAX_SIZE_MB` (5) |
+| `.csv`, `.tsv` | CSV parser | What an uploaded CSV gets: rows past `MAX_TABLE_ROWS_FOR_LLM` are indexed in plain "column: value" form. No size limit |
+| `.json`, `.yaml`, `.yml` | JSON / YAML parser | What an upload gets. No size limit |
+| Lock files, `*.min.js`, `*.min.css`, `*.map`, `*.snap` (the name list in `file_role.py`) | Skipped: `FILE_TYPE_NOT_SUPPORTED` with the reason "This is a generated file…" | |
+| `.ndjson`, `.jsonl` | Skipped: `FILE_TYPE_NOT_SUPPORTED`, no parser for them | |
+| Anything else (`.sh`, `.sql`, `.css`, `.proto`, …) | Text (Markdown) parser | `CODE_FILE_MAX_SIZE_MB`. Over it: `FILE_TYPE_NOT_SUPPORTED` with the file's size and the limit as the reason, and a log line naming the file and its size. Nothing is truncated |
+| Binary content under a text name (a NUL byte in the first 8,000 bytes and no UTF-16/32 byte-order mark, the test git uses) | Skipped: `FILE_TYPE_NOT_SUPPORTED` | |
+
+Before this, a file with no grammar was parsed whole as Markdown whatever it was. The skips and the text limit apply to `CODE_FILE` records only (`repository_file=True`). A source file someone uploaded goes through the same planner and keeps what it had: the code parser's size limit when it has a grammar, an unlimited text fallback when it does not, and no filtering by name or content, so an uploaded `app.min.js` is still parsed as JavaScript.
+
+A skipped file's status write also takes `parsingStatus` off `IN_PROGRESS` (`Processor._mark_record`). The parsing-service path sets it before dispatch, and a record left there with `processingStartedAt` cleared reads as a crashed parse that stale recovery republishes on every pass.
+
+The reason on an oversized repository file ends "…ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then choose Index all on the repository", because a **File Type Not Supported** record has no Reindex action of its own and a sync skips a repository whose head has not moved. **Index all** is the action on the repository's *Code repository* row: record groups carry no indexing status, so the row offers "Index all" rather than "Re-index all", and it is the unfiltered action ("Re-index failed" only retries `FAILED` records). The GitLab connector already leaves generated files out when it lists a repository, and the GitHub connector already switches content indexing off for files over its own fixed 5 MB when it knows the size; this is the same decision made again at parse time, where every connector and the size-unknown incremental path pass through.
 
 ---
 
@@ -403,12 +481,15 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | Shared admission, gate-waiter ceiling, leases, parse wait | `backend/python/app/services/messaging/consumer_concurrency.py` |
 | Env knobs, retry backoff, event models | `backend/python/app/services/messaging/config.py` |
 | DRR scheduler, lanes, Kafka offset tracker | `backend/python/app/services/messaging/scheduling/`, `lanes/` |
+| Lane backlog (what the stranded sweep asks the broker) | `lanes/backlog.py`, `redis_streams/backlog.py`, `kafka/consumer/backlog.py` |
 | Distributed leases, renewer, retry counters | `distributed_concurrency.py`, `lease.py`, `retry_manager.py` |
 | 429 backpressure, HTTP retry/circuit breaker | `messaging/backpressure.py`, `services/base_client.py` |
 | Tiers, gates, control law, probe, feedback | `backend/python/app/services/resource_governor/` |
 | Record handler, status writes, disposition sink | `backend/python/app/services/messaging/kafka/handlers/record.py` |
 | Dedup, IN_PROGRESS, START_PARSING, format dispatch | `backend/python/app/events/events.py` |
 | Per-format parsers (in-process path) | `backend/python/app/events/processor.py` |
+| Parse worker pool and worker entry point | `backend/python/app/modules/parsers/parse_pool.py`, `parse_worker.py` |
+| How a repository file is read or skipped | `backend/python/app/modules/parsers/code_parser/routing.py` |
 | Parsing / extraction / docling HTTP clients | `backend/python/app/services/parsing/client.py`, `extraction/client.py`, `docling/client.py` |
 | Parsing service route with its own gate + 429 | `backend/python/app/api/routes/parsing.py` |
 | Pipeline and sinks | `backend/python/app/modules/transformers/{pipeline,sink_orchestrator,vectorstore,blob_storage,graphdb}.py` |
@@ -428,3 +509,6 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `GOVERNOR_EMBEDDING_CPU_RESERVATION` | 2 (≤ 25% of quota) | CPUs withheld from heavy parse when embeddings are local |
 | `INDEXING_SPLIT_LEASE_POOLS` | false | separate cluster-wide light indexing lease |
 | `MAX_DELIVERY_ATTEMPTS` / `REDIS_MAX_DELIVERIES` | 3 / 10 | failure retries / delivery backstop |
+| `PARSE_POOL_WORKERS` | derived (half the heavy-parse ceiling, 1–4) | worker processes for large text, code and CSV parses; capped at the heavy-parse ceiling; `0` parses in threads instead (section 4.7) |
+| `CODE_FILE_MAX_SIZE_MB` | 5 | largest repository file read as code or as plain text; larger ones are marked `FILE_TYPE_NOT_SUPPORTED` with the reason (section 4.8). Read at startup |
+| `STRANDED_RECORD_REPUBLISH_AFTER_SECONDS` | 3600 | youngest a waiting record can be before the stranded sweep looks at it; `0` disables the sweep. Not a backlog-sized threshold (section 4.6) |

@@ -17,12 +17,14 @@ export function CustomSyncFieldsSection({
   errors,
   onChange,
   connectorConfig,
+  readOnly = false,
 }: {
   fields: SyncCustomField[];
   values: Record<string, unknown>;
   errors: Record<string, string>;
   onChange: (key: string, value: unknown) => void;
   connectorConfig: ConnectorConfig | null;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -54,9 +56,11 @@ export function CustomSyncFieldsSection({
             value={values[field.name]}
             onChange={onChange}
             error={errors[field.name]}
-            disabled={locked}
+            disabled={locked || readOnly}
             disabledTooltip={
-              locked
+              readOnly
+                ? t('workspace.connectors.configTab.localFsDesktopOnlySaveTooltip')
+                : locked
                 ? field.fieldType === 'URL'
                   ? t('workspace.connectors.configTab.nonEditableUrlFieldTooltip')
                   : t('workspace.connectors.configTab.nonEditableLockedFieldTooltip')

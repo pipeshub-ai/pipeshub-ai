@@ -50,11 +50,16 @@ def _make_success_result():
     return result
 
 
-def _make_error_result(error_msg="Failed"):
-    """Build a failed KnowledgeHubNodesResponse."""
+def _make_error_result(error_msg="Failed", error_code=500):
+    """Build a failed KnowledgeHubNodesResponse.
+
+    ``error_code`` is how the service flags text it wrote for the reader: a 4xx
+    means the message is theirs to see, anything else means it is ours to explain.
+    """
     result = MagicMock()
     result.success = False
     result.error = error_msg
+    result.errorCode = error_code
     return result
 
 
@@ -303,7 +308,7 @@ class TestHandleGetNodes:
     async def test_error_result_not_found(self):
         request = _make_request()
         svc = _make_knowledge_hub_service()
-        svc.get_nodes = AsyncMock(return_value=_make_error_result("Resource not found"))
+        svc.get_nodes = AsyncMock(return_value=_make_error_result("Resource not found", 404))
 
         with pytest.raises(HTTPException) as exc_info:
             await _handle_get_nodes(
@@ -335,7 +340,7 @@ class TestHandleGetNodes:
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(
-            return_value=_make_error_result("Type mismatch error")
+            return_value=_make_error_result("Type mismatch error", 400)
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -368,7 +373,7 @@ class TestHandleGetNodes:
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(
-            return_value=_make_error_result("Invalid request parameter")
+            return_value=_make_error_result("Invalid request parameter", 400)
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -490,7 +495,12 @@ class TestHandleGetNodes:
                 include=None,
             )
         assert exc_info.value.status_code == 500
-        assert "unexpected" in str(exc_info.value.detail).lower()
+        # the person gets advice; the exception text goes to the log, not the toast
+        assert exc_info.value.detail == (
+            "We couldn't open this collection. Please try again; if it keeps failing, "
+            "contact your admin."
+        )
+        assert "unexpected" not in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
     async def test_with_all_filters(self):
@@ -620,11 +630,16 @@ def _make_success_result():
     return result
 
 
-def _make_error_result(error_msg="Failed"):
-    """Build a failed KnowledgeHubNodesResponse."""
+def _make_error_result(error_msg="Failed", error_code=500):
+    """Build a failed KnowledgeHubNodesResponse.
+
+    ``error_code`` is how the service flags text it wrote for the reader: a 4xx
+    means the message is theirs to see, anything else means it is ours to explain.
+    """
     result = MagicMock()
     result.success = False
     result.error = error_msg
+    result.errorCode = error_code
     return result
 
 
@@ -873,7 +888,7 @@ class TestHandleGetNodesCoverage:
     async def test_error_result_not_found(self):
         request = _make_request()
         svc = _make_knowledge_hub_service()
-        svc.get_nodes = AsyncMock(return_value=_make_error_result("Resource not found"))
+        svc.get_nodes = AsyncMock(return_value=_make_error_result("Resource not found", 404))
 
         with pytest.raises(HTTPException) as exc_info:
             await _handle_get_nodes(
@@ -905,7 +920,7 @@ class TestHandleGetNodesCoverage:
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(
-            return_value=_make_error_result("Type mismatch error")
+            return_value=_make_error_result("Type mismatch error", 400)
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -938,7 +953,7 @@ class TestHandleGetNodesCoverage:
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(
-            return_value=_make_error_result("Invalid request parameter")
+            return_value=_make_error_result("Invalid request parameter", 400)
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -1060,7 +1075,12 @@ class TestHandleGetNodesCoverage:
                 include=None,
             )
         assert exc_info.value.status_code == 500
-        assert "unexpected" in str(exc_info.value.detail).lower()
+        # the person gets advice; the exception text goes to the log, not the toast
+        assert exc_info.value.detail == (
+            "We couldn't open this collection. Please try again; if it keeps failing, "
+            "contact your admin."
+        )
+        assert "unexpected" not in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
     async def test_with_all_filters(self):

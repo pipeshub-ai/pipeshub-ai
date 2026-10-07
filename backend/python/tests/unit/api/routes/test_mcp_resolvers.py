@@ -152,23 +152,6 @@ class TestResolveInstanceOwnerConfigService:
 
 
 # ---------------------------------------------------------------------------
-# build_mcp_fallback_config_services
-# ---------------------------------------------------------------------------
-
-
-class TestBuildMcpFallbackConfigServices:
-    """OSS edition returns None (no parent tenant fallback)."""
-
-    async def test_returns_none(self) -> None:
-        from app.api.routes.mcp_resolvers import build_mcp_fallback_config_services
-
-        instance = {"_id": "i1"}
-        config_service = AsyncMock()
-        result = await build_mcp_fallback_config_services(instance, config_service)
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # build_schedule_refresh_kwargs
 # ---------------------------------------------------------------------------
 

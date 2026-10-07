@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import re
+import urllib.parse
 import uuid
 
 # from datetime import datetime
@@ -33,7 +34,6 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -92,9 +92,31 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 
 # from dropbox.team import GroupSelector
+
+
+class GroupAccessRemovalError(Exception):
+    """A member removal or group deletion in the group event log that could not be saved.
+
+    Dropbox lists an event once, so the handlers let this one through instead of
+    logging it: the group is then queued, and what the event should have removed
+    is removed on a later run.
+    """
+
+    def __init__(self, message: str, group_id: str, *, group_deleted: bool) -> None:
+        super().__init__(message)
+        self.group_id = group_id
+        self.group_deleted = group_deleted
+
 
 # Add these helper functions at the top of the file
 def get_parent_path_from_path(path: str) -> Optional[str]:
@@ -444,9 +466,7 @@ class DropboxConnector(BaseConnector):
                     signed_url = temp_link_result.data.link
 
             #5.5 Get preview URL
-            self.logger.info("=" * 50)
-            self.logger.info("Processing weburl for path: %s", entry.path_lower)
-            self.logger.info("=" * 50)
+            self.logger.debug("Processing weburl for path: %s", entry.path_lower)
 
             preview_url = None
             link_settings = SharedLinkSettings(
@@ -462,19 +482,19 @@ class DropboxConnector(BaseConnector):
                 settings=link_settings
             )
 
-            self.logger.info("Result 1: %s", shared_link_result)
+            self.logger.debug("Result 1: %s", shared_link_result)
 
             if shared_link_result.success:
                 # Successfully created new link
                 preview_url = shared_link_result.data.url
-                self.logger.info("Successfully created new link: %s", preview_url)
+                self.logger.debug("Successfully created new link: %s", preview_url)
             else:
                 # First call failed - check if link already exists
                 error_str = str(shared_link_result.error)
-                self.logger.info("First call failed with error type")
+                self.logger.debug("First call failed with error type: %s", error_str)
 
                 if 'shared_link_already_exists' in error_str:
-                    self.logger.info("Link already exists, making second call to retrieve it")
+                    self.logger.debug("Link already exists, making second call to retrieve it")
 
                     # Make second call with settings=None to get the existing link
                     second_result = await self.data_source.sharing_create_shared_link_with_settings(
@@ -484,12 +504,12 @@ class DropboxConnector(BaseConnector):
                         settings=None
                     )
 
-                    self.logger.info("Result 2 received")
+                    self.logger.debug("Result 2 received")
 
                     if second_result.success:
                         # Unexpectedly succeeded
                         preview_url = second_result.data.url
-                        self.logger.info("Second call succeeded: %s", preview_url)
+                        self.logger.debug("Second call succeeded: %s", preview_url)
                     else:
                         # Expected to fail - extract URL from error string
                         second_error_str = str(second_result.error)
@@ -503,20 +523,27 @@ class DropboxConnector(BaseConnector):
 
                             if url_match:
                                 preview_url = url_match.group(1)
-                                self.logger.info("Successfully extracted URL from error: %s", preview_url)
+                                self.logger.debug("Successfully extracted URL from error: %s", preview_url)
                             else:
                                 self.logger.error("Could not extract URL from second error string")
                                 self.logger.debug("Error string: %s", second_error_str[:500])  # Log first 500 chars
                         else:
                             self.logger.error("Unexpected error on second call (not shared_link_already_exists)")
                 else:
-                    self.logger.error("Unexpected error type on first call (not shared_link_already_exists)")
+                    self.logger.error("Unexpected error type on first call (not shared_link_already_exists): %s", error_str)
 
-            # Final check
+            # Final check - fall back to a direct Dropbox web link if we couldn't
+            # create/retrieve a shared link (e.g. access_denied on nested shared
+            # folders with a restrictive shared_link_policy, or path/not_found
+            # for content whose path doesn't resolve in this namespace context).
             if preview_url is None:
-                self.logger.error("Failed to retrieve preview URL for %s", entry.path_lower)
+                encoded_path = urllib.parse.quote(entry.path_display, safe="/")
+                preview_url = f"https://www.dropbox.com/home{encoded_path}"
+                self.logger.warning(
+                    "Falling back to home URL for %s: %s", entry.path_lower, preview_url
+                )
             else:
-                self.logger.info("Final preview_url: %s", preview_url)
+                self.logger.debug("Final preview_url: %s", preview_url)
 
             # 6. Get parent record ID
             parent_path = None
@@ -581,10 +608,18 @@ class DropboxConnector(BaseConnector):
                 )
 
                 is_shared = False
-                if new_permissions is not None and len(new_permissions) > 1:
-                    is_shared = True
-                if new_permissions is not None and len(new_permissions) == 1:
-                    is_shared = new_permissions[0].type == PermissionType.GROUP
+                if new_permissions:
+                    has_group_permissions = any(
+                        perm.entity_type == EntityType.GROUP for perm in new_permissions
+                    )
+                    user_permissions = [
+                        perm for perm in new_permissions if perm.entity_type == EntityType.USER
+                    ]
+                    is_shared = (
+                        has_group_permissions
+                        or len(user_permissions) > 1
+                        or (len(user_permissions) == 1 and user_permissions[0].email != user_email)
+                    )
 
                 file_record.is_shared = is_shared
 
@@ -1304,9 +1339,12 @@ class DropboxConnector(BaseConnector):
         """
         try:
             if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                # The update carries the source's id; records are deleted by their key.
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
                 )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:
@@ -1725,6 +1763,8 @@ class DropboxConnector(BaseConnector):
             has_more = True
             latest_cursor_to_save = cursor
             events_processed = 0
+            # Before the new events, so that they are applied on top of the corrected groups.
+            owed_member_reads, owed_deletes = await self._retry_owed_group_removals(sync_point)
 
             while has_more:
                 try:
@@ -1744,6 +1784,15 @@ class DropboxConnector(BaseConnector):
                         try:
                             await self._process_group_event(event)
                             events_processed += 1
+                        except GroupAccessRemovalError as e:
+                            # The cursor moves on and Dropbox won't list the event again, so
+                            # the group is queued with the cursor: every later run tries again
+                            # until what the event should have removed is gone.
+                            owed = owed_deletes if e.group_deleted else owed_member_reads
+                            if e.group_id not in owed:
+                                owed.append(e.group_id)
+                            self.logger.error(f"❌ {e}; it will be tried again on the next run", exc_info=True)
+                            continue
                         except Exception as e:
                             self.logger.error(f"Error processing group event: {e}", exc_info=True)
                             continue
@@ -1762,7 +1811,11 @@ class DropboxConnector(BaseConnector):
                 self.logger.info(f"Storing latest group sync cursor for key {sync_point_key}")
                 await self.dropbox_cursor_sync_point.update_sync_point(
                     sync_point_key,
-                    sync_point_data={"cursor": latest_cursor_to_save}
+                    sync_point_data={
+                        "cursor": latest_cursor_to_save,
+                        "pendingGroupMemberReads": owed_member_reads,
+                        "pendingGroupDeletes": owed_deletes,
+                    }
                 )
 
             self.logger.info(f"Incremental group sync completed. Processed {events_processed} events.")
@@ -1770,6 +1823,63 @@ class DropboxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"⚠️ Fatal error in incremental group sync: {e}", exc_info=True)
             raise
+
+    async def _retry_owed_group_removals(self, sync_point: dict) -> tuple[list[str], list[str]]:
+        """
+        Try again the group deletions and member removals that earlier runs could not save.
+
+        Returns the ids of the groups whose members still have to be read again, and
+        of the groups that still have to be deleted.
+        """
+        still_to_delete: list[str] = []
+        for group_id in sync_point.get('pendingGroupDeletes') or []:
+            try:
+                await self.data_entities_processor.on_user_group_deleted(
+                    external_group_id=group_id,
+                    connector_id=self.connector_id
+                )
+                self.logger.info(f"Deleted group {group_id}, which an earlier run could not delete")
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Deleted group {group_id} still could not be removed, so its members keep "
+                    f"its access; will try again next run: {e}",
+                    exc_info=True,
+                )
+                still_to_delete.append(group_id)
+
+        still_to_read: list[str] = []
+        for group_id in sync_point.get('pendingGroupMemberReads') or []:
+            try:
+                await self._replace_stored_group_members(group_id)
+            except Exception as e:
+                self.logger.error(
+                    f"❌ The members of group {group_id} still could not be read and saved, so a member "
+                    f"removed from it keeps its access; will try again next run: {e}",
+                    exc_info=True,
+                )
+                still_to_read.append(group_id)
+
+        return still_to_read, still_to_delete
+
+    async def _replace_stored_group_members(self, group_id: str) -> None:
+        """
+        Read a stored group's current members from Dropbox and save them in place of the
+        stored ones, which removes anyone a failed removal left behind. Raises if it can't.
+        """
+        stored_group = await self.data_entities_processor.get_user_group_by_external_id(
+            connector_id=self.connector_id,
+            external_id=group_id,
+            raise_on_error=True,
+        )
+        if stored_group is None:
+            # Deleted since, so there is no membership left to correct.
+            return
+
+        members = await self._fetch_group_members(group_id, stored_group.name, raise_on_partial=True)
+        await self.data_entities_processor.on_new_user_groups(
+            [self._create_user_group_with_permissions(group_id, stored_group.name, members)]
+        )
+        self.logger.info(f"Saved the current members of group {group_id}, which an earlier run could not correct")
 
     async def _process_group_event(self, event) -> None:
         """
@@ -1795,6 +1905,8 @@ class DropboxConnector(BaseConnector):
             else:
                 self.logger.debug(f"Ignoring event type: {event_type}")
 
+        except GroupAccessRemovalError:
+            raise
         except Exception as e:
             self.logger.error(f"Error processing group event of type {getattr(event, 'event_type', 'unknown')}: {e}", exc_info=True)
 
@@ -1841,11 +1953,17 @@ class DropboxConnector(BaseConnector):
         elif event_type == "group_remove_member":
             self.logger.info(f"Removing member '{member_name}' ({member_email}) from group '{group_name}' ({group_id})")
 
-            await self.data_entities_processor.on_user_group_member_removed(
-                external_group_id=group_id,
-                user_email=member_email,
-                connector_id=self.connector_id
-            )
+            try:
+                await self.data_entities_processor.on_user_group_member_removed(
+                    external_group_id=group_id,
+                    user_email=member_email,
+                    connector_id=self.connector_id
+                )
+            except Exception as e:
+                raise GroupAccessRemovalError(
+                    f"Could not remove {member_email} from group '{group_name}' ({group_id}): {e}",
+                    group_id, group_deleted=False,
+                ) from e
 
     async def _handle_group_deleted_event(self, event) -> None:
         """Handle group_delete events from Dropbox audit log."""
@@ -1868,10 +1986,15 @@ class DropboxConnector(BaseConnector):
 
         self.logger.info(f"Deleting group {group_name} ({group_id})")
 
-        await self.data_entities_processor.on_user_group_deleted(
-            external_group_id=group_id,
-            connector_id=self.connector_id
-        )
+        try:
+            await self.data_entities_processor.on_user_group_deleted(
+                external_group_id=group_id,
+                connector_id=self.connector_id
+            )
+        except Exception as e:
+            raise GroupAccessRemovalError(
+                f"Could not delete group '{group_name}' ({group_id}): {e}", group_id, group_deleted=True
+            ) from e
 
     async def _handle_group_created_event(self, event) -> None:
         """Handle group_create events from Dropbox audit log."""
@@ -1924,10 +2047,13 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"Failed to process single group {group_name} ({group_id}): {e}", exc_info=True)
 
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> list:
+    async def _fetch_group_members(self, group_id: str, group_name: str, *, raise_on_partial: bool = False) -> list:
         """
         Fetch all members for a group with pagination.
         Extracted from _sync_user_groups section 3a for reusability.
+
+        With raise_on_partial, a later page that can't be read raises instead of
+        ending the list early, for a caller that saves the list in place of the stored one.
         """
         all_members = []
 
@@ -1944,6 +2070,8 @@ class DropboxConnector(BaseConnector):
             members_response = await self.data_source.team_groups_members_list_continue(member_cursor)
 
             if not members_response.success:
+                if raise_on_partial:
+                    raise Exception(f"Error fetching more members for group {group_name}: {members_response.error}")
                 self.logger.error(f"Error during member pagination for {group_name}: {members_response.error}")
                 break
 
@@ -2558,9 +2686,11 @@ class DropboxConnector(BaseConnector):
         self.logger.info(f"Deleting record group '{folder_name}' ({folder_id})")
 
         try:
+            # Team folder events run before the drive sync reaches the folder's files.
             await self.data_entities_processor.on_record_group_deleted(
                 external_group_id=folder_id,
-                connector_id=self.connector_id
+                connector_id=self.connector_id,
+                trash_live_records=True,
             )
         except Exception as e:
             self.logger.error(
@@ -2825,39 +2955,88 @@ class DropboxConnector(BaseConnector):
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             user_with_permission = await self.data_entities_processor.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
             file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
             if not user_with_permission:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
-                return None
+                raise not_downloadable(
+                    "PipesHub has no user with access to this item, so it cannot be "
+                    "downloaded.",
+                    connector=self.display_name,
+                )
             if not file_record:
                 self.logger.warning(f"No file record found for node: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the file metadata needed to download it.",
+                    connector=self.display_name,
+                )
 
             members = [UserSelectorArg("email", user_with_permission.email)]
             team_member_info = await self.data_source.team_members_get_info_v2(members=members)
-            team_member_id = team_member_info.data.members_info[0].get_member_info().profile.team_member_id
+            raise_for_stream_fetch(
+                success=team_member_info.success,
+                has_payload=bool(getattr(team_member_info.data, "members_info", None)),
+                connector=self.display_name,
+                message=team_member_info.error,
+            )
+            member_item = team_member_info.data.members_info[0]
+            # MembersGetInfoItem is a union: the id_not_found arm has no profile,
+            # so get_member_info() would raise an opaque AttributeError.
+            if hasattr(member_item, "is_member_info") and not member_item.is_member_info():
+                self.logger.warning(
+                    f"Dropbox has no team member for {user_with_permission.email}"
+                )
+                raise not_downloadable(
+                    "PipesHub could not resolve this item's owner in the Dropbox team, "
+                    "so it cannot be downloaded.",
+                    connector=self.display_name,
+                )
+            team_member_id = member_item.get_member_info().profile.team_member_id
             # Dropbox uses path or file ID for temporary links. ID is more robust.
             team_folder_id = None
             if record.external_record_group_id and not record.external_record_group_id.startswith("dbmid:"):
                 team_folder_id = record.external_record_group_id
 
-            response = await self.data_source.files_get_temporary_link(path=file_record.path, team_folder_id=team_folder_id, team_member_id=team_member_id)
+            response = await self.data_source.files_get_temporary_link(
+                path=file_record.path,
+                team_folder_id=team_folder_id,
+                team_member_id=team_member_id,
+                raise_on_error=True,
+            )
+            if not response.success or not response.data:
+                self.logger.error(
+                    f"Failed to get temporary link for record {record.id}: {response.error}"
+                )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data),
+                connector=self.display_name,
+                message=response.error,
+            )
             return response.data.link
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
-            return None
+            self.logger.error(
+                f"Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"

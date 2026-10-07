@@ -15,13 +15,18 @@ import asyncio
 import io
 import logging
 import os
+import re
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
+from fastapi.testclient import TestClient
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -119,7 +124,8 @@ def _make_upload_file(filename="slides.pptx", content=b"fake-pptx-data"):
     """Build a mock UploadFile."""
     uf = MagicMock()
     uf.filename = filename
-    uf.read = AsyncMock(return_value=content)
+    # The handler reads in bounded chunks until EOF: content once, then b"".
+    uf.read = AsyncMock(side_effect=[content, b""])
     uf.close = AsyncMock()
     return uf
 
@@ -154,6 +160,7 @@ class TestGetRecordStream:
         with (
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process),
             patch("os.path.exists", return_value=True),
+            patch("tempfile.mkdtemp", return_value=tempfile.gettempdir()),
             patch("builtins.open", create=True) as mock_open,
             patch(f"{_ROUTER}.create_stream_record_response") as mock_stream,
         ):
@@ -189,7 +196,9 @@ class TestGetRecordStream:
             with pytest.raises(HTTPException) as exc:
                 await get_record_stream(req, file)
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            assert "timed out" in exc.value.detail.lower()
+            # the person is told what failed and what to do, not the exception text
+            assert exc.value.detail.lower() == "we couldn't open this file. please try again; if it keeps failing, contact your admin."
+            assert "timed out" not in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_pdf_conversion_nonzero_returncode(self):
@@ -938,13 +947,14 @@ class TestHandleOauthConfigCreation:
 class TestStreamRecordInternalEdgeCases:
     """Tests for stream_record_internal — KB flow, Google Drive, errors."""
 
+    _CLAIMS = {"token_type": "scoped", "orgId": "org-1", "scopes": ["connector:signedUrl"]}
+
     def _setup(self, *, connector_name=Connectors.GOOGLE_DRIVE, has_connector_obj=True):
         """Build request with config_service, graph_provider, and container."""
-        record = _mock_record(connector_name=connector_name)
+        record = _mock_record(connector_name=connector_name, org_id="org-1")
 
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(side_effect=lambda path, **kwargs: {
-            "/services/secrets": {"scopedJwtSecret": "test-secret"},
             "/services/endpoints": {"storage": {"endpoint": "http://storage:8080"}},
         }.get(path, {}))
 
@@ -973,8 +983,6 @@ class TestStreamRecordInternalEdgeCases:
         container.connectors_map = {"conn-1": connector_obj} if has_connector_obj else {}
 
         req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer fake-token"}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
         req.app.state = MagicMock()
@@ -982,17 +990,15 @@ class TestStreamRecordInternalEdgeCases:
 
         return req, record, config_service, graph_provider
 
-    @pytest.mark.asyncio
-    async def test_knowledge_base_stream(self):
-        """Knowledge Base connector -> fetches from storage service."""
+    def _kb_setup(self):
         record = _mock_record(
             connector_name=Connectors.KNOWLEDGE_BASE,
             external_record_id="ext-kb-1",
+            org_id="org-1",
         )
 
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(side_effect=lambda path, **kwargs: {
-            "/services/secrets": {"scopedJwtSecret": "test-secret"},
             "/services/endpoints": {"storage": {"endpoint": "http://storage:8080"}},
         }.get(path, {}))
 
@@ -1001,165 +1007,110 @@ class TestStreamRecordInternalEdgeCases:
         graph_provider.get_document = AsyncMock(return_value={"_key": "org-1"})
 
         req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer fake-token"}.get(k, default)
         req.app = MagicMock()
         req.app.container = MagicMock()
+        return req, config_service, graph_provider
 
-        jwt_payload = {"orgId": "org-1", "scopes": ["connector:signedUrl"]}
+    @pytest.mark.asyncio
+    async def test_knowledge_base_stream(self):
+        """Knowledge Base connector -> fetches from storage with an org-scoped storage token."""
+        req, config_service, graph_provider = self._kb_setup()
 
         with (
-            patch("jwt.decode", return_value=jwt_payload),
-            patch(f"{_ROUTER}.generate_jwt", new_callable=AsyncMock, return_value="storage-token"),
+            patch(f"{_ROUTER}.generate_jwt", new_callable=AsyncMock, return_value="storage-token") as mock_generate_jwt,
             patch(f"{_ROUTER}.make_api_call", new_callable=AsyncMock, return_value={"data": b"file-bytes"}),
         ):
-            result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            assert isinstance(result, Response)
+            result = await stream_record_internal(
+                req, "rec-1", graph_provider, config_service, claims=self._CLAIMS
+            )
+        assert isinstance(result, Response)
+        mock_generate_jwt.assert_awaited_once_with(
+            config_service, {"orgId": "org-1", "scopes": ["storage:token"]}
+        )
 
     @pytest.mark.asyncio
     async def test_knowledge_base_stream_dict_response(self):
         """KB stream with dict data -> extracts buffer."""
-        record = _mock_record(
-            connector_name=Connectors.KNOWLEDGE_BASE,
-            external_record_id="ext-kb-1",
-        )
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(side_effect=lambda path, **kwargs: {
-            "/services/secrets": {"scopedJwtSecret": "test-secret"},
-            "/services/endpoints": {"storage": {"endpoint": "http://storage:8080"}},
-        }.get(path, {}))
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value=record)
-        graph_provider.get_document = AsyncMock(return_value={"_key": "org-1"})
-
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer fake-token"}.get(k, default)
-        req.app = MagicMock()
-        req.app.container = MagicMock()
+        req, config_service, graph_provider = self._kb_setup()
 
         with (
-            patch("jwt.decode", return_value={"orgId": "org-1"}),
             patch(f"{_ROUTER}.generate_jwt", new_callable=AsyncMock, return_value="token"),
             patch(f"{_ROUTER}.make_api_call", new_callable=AsyncMock, return_value={"data": {"data": [0x50, 0x44, 0x46]}}),
         ):
-            result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            assert isinstance(result, Response)
+            result = await stream_record_internal(
+                req, "rec-1", graph_provider, config_service, claims=self._CLAIMS
+            )
+        assert isinstance(result, Response)
+        assert result.body == b"PDF"
 
     @pytest.mark.asyncio
     async def test_google_drive_workspace_passes_user_id(self):
-        """Google Drive Workspace -> passes userId to stream_record."""
+        """Google Drive Workspace -> passes the token's userId to stream_record."""
         req, record, config_service, graph_provider = self._setup(
             connector_name=Connectors.GOOGLE_DRIVE,
         )
 
-        async def _gd_doc(doc_id, collection):
-            if collection == CollectionNames.ORGS.value:
-                return {"_key": "org-1"}
-            return {"_key": "conn-1", "name": "conn", "type": "GOOGLE_DRIVE", "isActive": True}
-
-        graph_provider.get_document = AsyncMock(side_effect=_gd_doc)
-
-        with patch("jwt.decode", return_value={"orgId": "org-1", "userId": "u1"}):
-            result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            connector_obj = req.app.container.connectors_map["conn-1"]
-            connector_obj.stream_record.assert_awaited_once()
-            # First arg is record, second is userId
-            call_args = connector_obj.stream_record.call_args[0]
-            assert len(call_args) == 2
+        await stream_record_internal(
+            req, "rec-1", graph_provider, config_service,
+            claims={**self._CLAIMS, "userId": "u1"},
+        )
+        connector_obj = req.app.container.connectors_map["conn-1"]
+        connector_obj.stream_record.assert_awaited_once_with(record, "u1")
 
     @pytest.mark.asyncio
     async def test_non_google_connector_no_user_id(self):
         """Non-Google connector -> stream_record called without userId."""
         req, record, config_service, graph_provider = self._setup()
 
-        # Make the connector NOT a Google workspace connector
         connector_obj = req.app.container.connectors_map["conn-1"]
         connector_obj.get_app_name = MagicMock(return_value=Connectors.SLACK)
 
-        async def _slack_doc(doc_id, collection):
-            if collection == CollectionNames.ORGS.value:
-                return {"_key": "org-1"}
-            return {"_key": "conn-1", "name": "conn", "type": "SLACK", "isActive": True}
-
-        graph_provider.get_document = AsyncMock(side_effect=_slack_doc)
-
-        with patch("jwt.decode", return_value={"orgId": "org-1"}):
-            result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            call_args = connector_obj.stream_record.call_args[0]
-            assert len(call_args) == 1  # only record, no userId
-
-    @pytest.mark.asyncio
-    async def test_missing_auth_header_raises_401(self):
-        """No Authorization header -> 401."""
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: None
-
-        with pytest.raises(HTTPException) as exc:
-            await stream_record_internal(req, "rec-1", AsyncMock(), AsyncMock())
-        assert exc.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+        await stream_record_internal(
+            req, "rec-1", graph_provider, config_service, claims=self._CLAIMS
+        )
+        connector_obj.stream_record.assert_awaited_once_with(record)
 
     @pytest.mark.asyncio
     async def test_record_not_found_raises_404(self):
         """Record not in DB -> 404."""
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer tok"}.get(k, default)
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=None)
         graph_provider.get_document = AsyncMock(return_value={"_key": "org-1"})
 
-        with patch("jwt.decode", return_value={"orgId": "org-1"}):
-            with pytest.raises(HTTPException) as exc:
-                await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        with pytest.raises(HTTPException) as exc:
+            await stream_record_internal(
+                MagicMock(), "rec-1", graph_provider, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
     async def test_connector_not_found_raises_404(self):
         """Connector instance deleted -> 404."""
-        record = _mock_record()
+        record = _mock_record(org_id="org-1")
 
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value=record)
-
-        # First call returns org, second returns None (connector deleted)
-        call_count = [0]
         async def get_doc_side_effect(doc_id, collection):
-            call_count[0] += 1
             if collection == CollectionNames.ORGS.value:
                 return {"_key": "org-1"}
             return None  # connector not found
 
+        graph_provider = AsyncMock()
+        graph_provider.get_record_by_id = AsyncMock(return_value=record)
         graph_provider.get_document = AsyncMock(side_effect=get_doc_side_effect)
 
         req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer tok"}.get(k, default)
         req.app = MagicMock()
         req.app.container = MagicMock()
 
-        with patch("jwt.decode", return_value={"orgId": "org-1"}):
-            with pytest.raises(HTTPException) as exc:
-                await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        with pytest.raises(HTTPException) as exc:
+            await stream_record_internal(
+                req, "rec-1", graph_provider, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
     async def test_connector_disabled_raises_unhealthy(self):
         """Connector not in connectors_map -> CONFLICT status."""
-        record = _mock_record()
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
+        record = _mock_record(org_id="org-1")
 
         graph_provider = AsyncMock()
         graph_provider.get_record_by_id = AsyncMock(return_value=record)
@@ -1171,88 +1122,40 @@ class TestStreamRecordInternalEdgeCases:
         container.connectors_map = {}  # empty map -> connector disabled
 
         req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer tok"}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
         req.app.state = MagicMock()
         req.app.state.connector_registry = MagicMock()
 
-        with patch("jwt.decode", return_value={"orgId": "org-1"}):
-            with pytest.raises(HTTPException) as exc:
-                await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            assert exc.value.status_code == HttpStatusCode.CONFLICT.value
+        with pytest.raises(HTTPException) as exc:
+            await stream_record_internal(
+                req, "rec-1", graph_provider, AsyncMock(), claims=self._CLAIMS
+            )
+        assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
-    async def test_org_not_found_retries_with_record_org(self):
-        """If org not found with JWT org_id but record has different org_id, retry."""
-        record = _mock_record(org_id="org-2")
+    async def test_record_from_other_org_is_not_streamed(self):
+        """A record owned by another org -> 404, never streamed (no fallback to the record's org)."""
+        req, _, config_service, graph_provider = self._setup()
+        graph_provider.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-2"))
 
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
-        call_count = [0]
-        async def get_doc_side_effect(doc_id, collection):
-            nonlocal call_count
-            call_count[0] += 1
-            if collection == CollectionNames.ORGS.value:
-                if doc_id == "org-1":
-                    return None  # JWT org not found
-                return {"_key": "org-2"}
-            return {"_key": "conn-1", "name": "Drive", "type": "GOOGLE_DRIVE", "isActive": True}
-
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(return_value=record)
-        graph_provider.get_document = AsyncMock(side_effect=get_doc_side_effect)
-
-        connector_obj = MagicMock()
-        connector_obj.get_app_name = MagicMock(return_value=Connectors.SLACK)
-        connector_obj.stream_record = AsyncMock(return_value=Response(content=b"data"))
-
-        container = MagicMock()
-        container.connectors_map = {"conn-1": connector_obj}
-
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer tok"}.get(k, default)
-        req.app = MagicMock()
-        req.app.container = container
-        req.app.state = MagicMock()
-        req.app.state.connector_registry = MagicMock()
-
-        with patch("jwt.decode", return_value={"orgId": "org-1"}):
-            result = await stream_record_internal(req, "rec-1", graph_provider, config_service)
-            assert isinstance(result, Response)
-
-    @pytest.mark.asyncio
-    async def test_jwt_error_raises_401(self):
-        """JWTError during decode -> 401."""
-        from jose import JWTError
-
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer bad"}.get(k, default)
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"scopedJwtSecret": "secret"})
-
-        with patch("jwt.decode", side_effect=JWTError("bad token")):
-            with pytest.raises(HTTPException) as exc:
-                await stream_record_internal(req, "rec-1", AsyncMock(), config_service)
-            assert exc.value.status_code == HttpStatusCode.UNAUTHORIZED.value
+        with pytest.raises(HTTPException) as exc:
+            await stream_record_internal(
+                req, "rec-1", graph_provider, config_service, claims=self._CLAIMS
+            )
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        req.app.container.connectors_map["conn-1"].stream_record.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unexpected_error_raises_500(self):
         """Generic exception -> 500."""
-        req = MagicMock()
-        req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"Authorization": "Bearer tok"}.get(k, default)
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(side_effect=RuntimeError("boom"))
+        graph_provider = AsyncMock()
+        graph_provider.get_record_by_id = AsyncMock(side_effect=RuntimeError("boom"))
 
         with pytest.raises(HTTPException) as exc:
-            await stream_record_internal(req, "rec-1", AsyncMock(), config_service)
+            await stream_record_internal(
+                MagicMock(), "rec-1", graph_provider, AsyncMock(), claims=self._CLAIMS
+            )
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
@@ -1281,7 +1184,7 @@ class TestDownloadFileDeepPaths:
 
         signed_url_handler = MagicMock()
         signed_url_handler.validate_token = MagicMock(return_value=SimpleNamespace(
-            user_id="u1", record_id="rec-1",
+            user_id="u1", record_id="rec-1", additional_claims={"org_id": "org-1"},
         ))
 
         req = MagicMock()
@@ -1535,24 +1438,35 @@ class TestStreamRecordDeepPaths:
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
-    async def test_org_mismatch_retries_with_record_org(self):
-        """JWT org_id differs from record org_id -> retry with record's org."""
+    async def test_org_mismatch_is_404_without_widening(self):
+        """JWT org_id differs from record org_id -> 404; the record's org is never used."""
         req, record, gp, cs, conn_obj = self._setup(is_google=False)
         record.org_id = "org-2"
-
-        call_count = [0]
-        async def get_doc(doc_id, collection):
-            call_count[0] += 1
-            if collection == CollectionNames.ORGS.value:
-                return {"_key": doc_id}
-            return {"_key": "conn-1", "name": "Drive", "type": "GD", "isActive": True}
-
-        gp.get_document = AsyncMock(side_effect=get_doc)
+        gp.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
 
         from app.connectors.api.router import stream_record
-        result = await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
-        # Should have fetched org-2 after mismatch
-        assert call_count[0] >= 2
+        with pytest.raises(HTTPException) as exc:
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.check_record_access_with_details.assert_not_awaited()
+        org_lookups = [
+            c for c in gp.get_document.await_args_list
+            if CollectionNames.ORGS.value in c.args
+        ]
+        assert all("org-2" not in c.args for c in org_lookups)
+
+    @pytest.mark.asyncio
+    async def test_record_without_org_is_404(self):
+        """A record with no org_id cannot be confined to the caller's org -> 404."""
+        req, record, gp, cs, conn_obj = self._setup(is_google=False)
+        record.org_id = ""
+        gp.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
+
+        from app.connectors.api.router import stream_record
+        with pytest.raises(HTTPException) as exc:
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+        gp.check_record_access_with_details.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_access_denied_raises_403(self):
@@ -1646,3 +1560,106 @@ class TestStreamRecordDeepPaths:
         with pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+
+# ============================================================================
+# get_record_stream — multipart filename hardening (GHSA-6m7x-v2x9-47jv,
+# GHSA-f5vc-fp3q-27q7, GHSA-xxg6-rf88-hf87), exercised over HTTP so the raw
+# Content-Disposition filename reaches the handler exactly as a client sends it.
+# ============================================================================
+
+
+def _convert_client() -> TestClient:
+    app = FastAPI()
+    app.add_api_route("/api/v1/record/buffer/convert", get_record_stream, methods=["POST"])
+    return TestClient(app)
+
+
+def _multipart(filename: str, content: bytes) -> tuple[bytes, str]:
+    """Hand-built body so an empty or path-like filename is sent verbatim."""
+    boundary = "pipeshub-test-boundary"
+    head = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+    ).encode()
+    return head + content + f"\r\n--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
+
+
+def _post_convert(filename: str, content: bytes = b"pptx-bytes") -> httpx.Response:
+    body, content_type = _multipart(filename, content)
+    return _convert_client().post(
+        "/api/v1/record/buffer/convert",
+        params={"to": MimeTypes.PDF.value},
+        content=body,
+        headers={"Content-Type": content_type},
+    )
+
+
+class TestConvertRouteFilenameHardening:
+    @pytest.mark.parametrize(
+        "bad_name",
+        ["../../outside.pptx", "/tmp/abs.pptx", "..\\..\\win.pptx", "%2e%2e/enc.pptx", ""],
+    )
+    def test_path_like_or_empty_filename_is_400_and_nothing_is_written_or_run(self, bad_name):
+        opened: list[str] = []
+        real_open = open
+
+        def spy_open(path, *args, **kwargs) -> io.IOBase:
+            if isinstance(path, str) and args and "w" in args[0]:
+                opened.append(path)
+            return real_open(path, *args, **kwargs)
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as exec_mock,
+            patch("builtins.open", side_effect=spy_open),
+        ):
+            resp = _post_convert(bad_name)
+
+        assert resp.status_code == HttpStatusCode.BAD_REQUEST.value, resp.text
+        assert opened == []
+        exec_mock.assert_not_called()
+
+    def test_disallowed_extension_is_400(self):
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as exec_mock:
+            resp = _post_convert("deck.exe")
+        assert resp.status_code == HttpStatusCode.BAD_REQUEST.value
+        exec_mock.assert_not_called()
+
+    def test_normal_filename_converts_from_a_random_path_inside_tmpdir(self):
+        commands: list[tuple[str, ...]] = []
+
+        async def fake_libreoffice(*cmd, **_kwargs) -> AsyncMock:
+            commands.append(cmd)
+            outdir = cmd[cmd.index("--outdir") + 1]
+            input_path = cmd[-1]
+            assert os.path.isfile(input_path)
+            with open(input_path, "rb") as f:
+                assert f.read() == b"pptx-bytes"
+            pdf_name = os.path.splitext(os.path.basename(input_path))[0] + ".pdf"
+            with open(os.path.join(outdir, pdf_name), "wb") as f:
+                f.write(b"%PDF-1.4 fake")
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.returncode = 0
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_libreoffice):
+            resp = _post_convert("deck.pptx")
+
+        assert resp.status_code == HttpStatusCode.OK.value, resp.text
+        assert resp.content == b"%PDF-1.4 fake"
+        assert resp.headers["content-disposition"] == 'attachment; filename="deck.pdf"'
+
+        assert len(commands) == 1
+        cmd = commands[0]
+        outdir = cmd[cmd.index("--outdir") + 1]
+        input_path = cmd[-1]
+        assert os.path.dirname(os.path.realpath(input_path)) == os.path.realpath(outdir)
+        assert os.path.realpath(outdir).startswith(os.path.realpath(tempfile.gettempdir()))
+        assert re.fullmatch(r"[0-9a-f]{32}\.pptx", os.path.basename(input_path))
+        assert "deck" not in os.path.basename(input_path)
+        profile_args = [a for a in cmd if a.startswith("-env:UserInstallation=")]
+        assert profile_args == [
+            "-env:UserInstallation=" + Path(os.path.join(outdir, ".libreoffice-profile")).as_uri()
+        ]

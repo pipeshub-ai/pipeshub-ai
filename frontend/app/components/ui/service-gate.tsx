@@ -73,23 +73,35 @@ export function ServiceGate({ children, services }: ServiceGateProps) {
           Service Unavailable
         </Heading>
 
-        <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
-          This page requires {formatServiceList(labels)} which{' '}
-          {unhealthyServices.length === 1 ? 'is' : 'are'} currently
-          unavailable. It will become available automatically once{' '}
-          {unhealthyServices.length === 1
-            ? 'the service recovers'
-            : 'the services recover'}
-          .
-        </Text>
+        {/* Service names help an admin act; to everyone else they are noise,
+            and the status page they point at is admin-only. Unknown (profile
+            still loading) counts as a member. */}
+        {isAdmin === true ? (
+          <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+            This page requires {formatServiceList(labels)} which{' '}
+            {unhealthyServices.length === 1 ? 'is' : 'are'} currently
+            unavailable. It will become available automatically once{' '}
+            {unhealthyServices.length === 1
+              ? 'the service recovers'
+              : 'the services recover'}
+            .
+          </Text>
+        ) : (
+          <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+            This page is temporarily unavailable. It will come back
+            automatically; if it lasts, contact your admin.
+          </Text>
+        )}
 
-        <Flex gap="2" wrap="wrap" justify="center">
-          {unhealthyServices.map((key) => (
-            <Badge key={key} color="red" variant="soft" size="2">
-              {APP_SERVICE_LABELS[key]}
-            </Badge>
-          ))}
-        </Flex>
+        {isAdmin === true && (
+          <Flex gap="2" wrap="wrap" justify="center">
+            {unhealthyServices.map((key) => (
+              <Badge key={key} color="red" variant="soft" size="2">
+                {APP_SERVICE_LABELS[key]}
+              </Badge>
+            ))}
+          </Flex>
+        )}
 
         {isAdmin === true && (
           <Button
@@ -105,11 +117,7 @@ export function ServiceGate({ children, services }: ServiceGateProps) {
             View Service Status
           </Button>
         )}
-        {isAdmin === false && (
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 8 }}>
-            Please contact your administrator for assistance.
-          </Text>
-        )}
+
       </Flex>
     </Flex>
   );

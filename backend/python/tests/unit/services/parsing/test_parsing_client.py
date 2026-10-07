@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from jose import jwt
 
+from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer
 from app.services.base_client import (
     ServiceBackpressureError,
@@ -45,6 +47,14 @@ class _MockTransport(httpx.AsyncBaseTransport):
 
 def _make_response(status: int, body: dict) -> httpx.Response:
     return httpx.Response(status, json=body)
+
+
+SCOPED_SECRET = "scoped-secret-for-tests"
+
+
+class _SecretsConfigService:
+    async def get_config(self, key, **kwargs):
+        return {"scopedJwtSecret": SCOPED_SECRET}
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +251,10 @@ async def test_an_unparseable_document_is_not_retried_and_leaves_the_breaker_clo
     """A 422 PARSE_FAILED is a fact about the document. Reported as a 500 it
     was retried, counted against the circuit breaker, and five in a row
     failed every other record fast for the breaker's cooldown."""
-    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0)
+    client = ParsingClient(
+        service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+        config_service=_SecretsConfigService(),
+    )
     calls = 0
 
     async def _request(method, url, **kwargs) -> httpx.Response:
@@ -265,3 +278,41 @@ async def test_an_unparseable_document_is_not_retried_and_leaves_the_breaker_clo
     assert calls == 1, "a document error must not be retried"
     assert not client.circuit_breaker.is_open
     assert client.circuit_breaker._consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# Service token
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parse_passes_org_for_token() -> None:
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    mock_post = AsyncMock(return_value=_make_response(200, _success_response()))
+
+    with patch.object(client, "_post_multipart", new=mock_post):
+        await client.parse(file_content=b"data", record_name="test.csv", org_id="org-123")
+
+    assert mock_post.await_args.kwargs["org_id"] == "org-123"
+
+
+@pytest.mark.asyncio
+async def test_list_providers_requests_token_without_org() -> None:
+    client = ParsingClient(
+        service_url="http://fake-parsing:8092", max_retries=1, config_service=_SecretsConfigService()
+    )
+    mock_request = AsyncMock(return_value=_make_response(200, {"csv": ["default"]}))
+
+    with patch.object(client, "_request_with_retry", new=mock_request):
+        await client.list_providers()
+
+    authorization = mock_request.await_args.kwargs["headers"]["Authorization"]
+    claims = jwt.decode(authorization.removeprefix("Bearer "), SCOPED_SECRET, algorithms=["HS256"])
+    assert claims["scopes"] == ["document:parse"]
+    assert "orgId" not in claims
+
+
+def test_parsing_client_uses_document_parse_scope() -> None:
+    client = ParsingClient(service_url="http://fake-parsing:8092")
+
+    assert client._service_scope is TokenScopes.DOCUMENT_PARSE

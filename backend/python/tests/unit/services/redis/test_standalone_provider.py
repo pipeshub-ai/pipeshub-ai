@@ -110,6 +110,19 @@ class TestCreatePubsubClient:
         assert options_arg.blocking is True
 
 
+class TestPublish:
+    @pytest.mark.asyncio
+    async def test_delegates_to_the_shared_clients_publish(self, mock_redis_cls):
+        provider = StandaloneRedisProvider(_config())
+        fake_client = MagicMock()
+        fake_client.publish = AsyncMock(return_value=1)
+        with patch.object(provider, "get_client", return_value=fake_client):
+            receivers = await provider.publish("chan", "payload")
+
+        assert receivers == 1
+        fake_client.publish.assert_awaited_once_with("chan", "payload")
+
+
 class TestScanKeys:
     @pytest.mark.asyncio
     async def test_decodes_bytes_keys(self, mock_redis_cls):

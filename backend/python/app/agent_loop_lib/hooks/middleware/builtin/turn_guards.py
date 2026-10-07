@@ -67,19 +67,45 @@ def check_not_cancelled(cancellation_token: object):
     return _middleware
 
 
+_TASK_COMPLETE_TOOL = "task_complete"
+
+
+def _task_complete_granted(ctx: ModelCallContext) -> bool:
+    """Whether this run can call `task_complete`: registered, and inside an
+    explicit tool grant when the spec has one. PipesHub never registers it —
+    its runs end on a plain text reply."""
+    run = ctx.scope.run if ctx.scope is not None else None
+    if run is None or run.runtime.tool_registry is None:
+        return False
+    if not run.runtime.tool_registry.has(_TASK_COMPLETE_TOOL):
+        return False
+    return not run.spec.tool_names or _TASK_COMPLETE_TOOL in run.spec.tool_names
+
+
 def warn_before_deadline(warn_at_turns_left: int = 2):
     """PRE_MODEL middleware: nudges the model to wrap up `warn_at_turns_left`
     turns before `ctx.max_turns` is hit, so it can synthesize gracefully
-    instead of running into the hard cap mid-thought."""
+    instead of running into the hard cap mid-thought.
+
+    Names `task_complete` only when the run can call it: told to call a
+    tool it does not have, the model has replied with a canned refusal."""
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         if ctx.max_turns is not None and (ctx.max_turns - ctx.turn_index) == warn_at_turns_left:
+            if _task_complete_granted(ctx):
+                finish = (
+                    "Synthesise everything you have found and call task_complete immediately "
+                    "with your best answer. Do not make any more search or scrape calls."
+                )
+            else:
+                finish = (
+                    "Reply with your final answer, based on everything you have found. "
+                    "Do not make any more tool calls unless one is essential to answer."
+                )
             ctx.messages.append(UserMessage(
                 content=(
                     f"[System: You have {warn_at_turns_left} turns remaining. "
-                    "Stop gathering information now. "
-                    "Synthesise everything you have found and call task_complete immediately "
-                    "with your best answer. Do not make any more search or scrape calls.]"
+                    f"Stop gathering information now. {finish}]"
                 ),
             ))
         await next_fn()

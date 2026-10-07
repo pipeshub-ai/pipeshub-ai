@@ -23,13 +23,20 @@ class EntityType(str, Enum):
     ANYONE = "ANYONE"
     ANYONE_WITH_LINK = "ANYONE_WITH_LINK"
 
+# The types an organization-to-record (or record group) PERMISSION edge carries when
+# it is a real org-wide share: "ORG" from connector permissions, "ORGANIZATION" from
+# a service account's chat upload (api/routes/chatbot.py). Access queries accept only
+# these, so an org edge of any other type (a domain share) never grants access.
+ORG_SHARE_PERMISSION_TYPES: tuple[str, ...] = (EntityType.ORG.value, "ORGANIZATION")
+
+
 class Permission(BaseModel):
     external_id: Optional[str] = None
     email: Optional[str] = None
     type: PermissionType
     entity_type: EntityType
-    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission creation")
-    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission update")
+    created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission creation")
+    updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the permission update")
 
     def to_arango_permission(
         self,

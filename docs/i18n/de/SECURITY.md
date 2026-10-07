@@ -14,7 +14,7 @@ Wir nehmen Sicherheitslücken ernst und schätzen deine Bemühungen, gefundene P
 
 **Bitte erstelle KEINE öffentlichen GitHub-Issues für Sicherheitslücken.**
 
-Melde Sicherheitslücken stattdessen per E-Mail an: **abhishek@pipeshub.com**
+Melde Sicherheitslücken stattdessen per E-Mail an: **security@pipeshub.com**
 
 ### Was anzugeben ist
 

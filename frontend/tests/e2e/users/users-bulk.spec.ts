@@ -7,12 +7,9 @@ test.describe('Users Bulk Operations', () => {
   });
 
   test('select all checkbox toggles all rows', async ({ page }) => {
-    const rows = page.locator('[role="row"]');
-    const rowCount = await rows.count();
-    if (rowCount === 0) {
-      test.skip();
-      return;
-    }
+    // The logged-in admin is always listed, so an empty table is a failure.
+    await expect(page.locator('[role="row"]').first()).toBeVisible({ timeout: 15_000 });
+    const rowCount = await page.locator('[role="row"]').count();
 
     // Click the header "select all" checkbox (first checkbox on page)
     const headerCheckbox = page.locator('button[role="checkbox"]').first();
@@ -34,11 +31,9 @@ test.describe('Users Bulk Operations', () => {
 
   test('individual row checkbox selection', async ({ page }) => {
     const rows = page.locator('[role="row"]');
+    await expect(rows.first()).toBeVisible({ timeout: 15_000 });
     const rowCount = await rows.count();
-    if (rowCount < 2) {
-      test.skip();
-      return;
-    }
+    test.skip(rowCount < 2, 'needs at least two users; only the admin exists in this environment');
 
     // Click checkbox on first row
     const firstRowCheckbox = rows.first().locator('button[role="checkbox"]');

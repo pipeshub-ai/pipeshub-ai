@@ -24,6 +24,24 @@ from app.connectors.api.router import update_connector_instance_auth_config
 _ROUTER = "app.connectors.api.router"
 
 
+@pytest.fixture(autouse=True)
+def _edition_resolvers():
+    """Stand-ins for the two edition-bound lookups, so these tests run the same in either edition.
+
+    A save that names an OAuth app must find it, and the config service is the container's;
+    these tests are about the rest of the save.
+    """
+
+    async def _resolve(container, config_path, org_id, config_id, config_service):
+        return {"_id": config_id, "orgId": org_id}
+
+    with (
+        patch(f"{_ROUTER}.resolve_oauth_config", side_effect=_resolve),
+        patch(f"{_ROUTER}.resolve_config_service", side_effect=lambda container, org_id: container.config_service()),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -213,9 +231,12 @@ class TestAdminOAuthCreatesNewConfig:
 
         assert result["success"] is True
         assert result["config"]["auth"]["oauthConfigId"] == "oauth-new-1"
-        # Credentials should be cleared
-        assert result["config"]["credentials"] is None
-        assert result["config"]["oauth"] is None
+        # Credentials are cleared in the store and never sent back
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in result["config"]
+        assert "oauth" not in result["config"]
         # Only secret OAuth fields are filtered for OAUTH type — clientSecret
         # lives only in the shared OAuth-app config. clientId is not secret
         # (it leaks in the authorize URL anyway) and stays on the instance
@@ -287,22 +308,18 @@ class TestAdminOAuthUpdatesExistingConfigFound:
 
 
 class TestAdminOAuthUpdatesExistingConfigNotFound:
-    """3. Admin + OAUTH + has credentials + has oauth_app_id + config NOT found.
+    """3. Admin + OAUTH + has credentials + has oauth_app_id + config NOT found
+       -> a new OAuth config is created and the connector is linked to it."""
 
-    NOTE: The source code has a variable shadowing issue at line 2815 where
-    ``existing_config = None`` shadows the outer etcd config variable.  When
-    the oauth_app_id is not found in the list, the outer ``existing_config``
-    becomes ``None``, causing ``existing_config.get("auth", {})`` at line 2882
-    to raise ``AttributeError``.  This results in a 500 error.
-    The test documents the actual current behavior.
-    """
-
-    async def test_config_not_found_triggers_500_due_to_variable_shadowing(self):
+    async def test_config_not_found_creates_a_new_one_and_keeps_the_connectors_auth(self):
         # oauth_app_id won't match anything in existing configs
         existing_oauth_cfgs = [
             {"_id": "other-id", "orgId": "o1", "oauthInstanceName": "Other"},
         ]
-        config_service = _make_config_service(oauth_configs=existing_oauth_cfgs)
+        config_service = _make_config_service(
+            instance_config={"auth": {"connectorScope": "personal", "includeJiraScope": True}, "credentials": None},
+            oauth_configs=existing_oauth_cfgs,
+        )
         registry = _make_connector_registry()
         container = _make_container(config_service)
 
@@ -327,22 +344,25 @@ class TestAdminOAuthUpdatesExistingConfigNotFound:
             patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT),
+            patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(
                 _PATCH_CREATE_OAUTH,
                 new_callable=AsyncMock,
                 return_value="oauth-brand-new",
-            ),
+            ) as create_oauth,
             patch(_PATCH_OAUTH_PATH, return_value="/services/oauth/googledrive"),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
         ):
-            # Due to variable shadowing bug, this raises 500 instead of succeeding
-            with pytest.raises(HTTPException) as exc_info:
-                await update_connector_instance_auth_config(
-                    "conn1", request, graph_provider
-                )
+            result = await update_connector_instance_auth_config(
+                "conn1", request, graph_provider
+            )
 
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "NoneType" in exc_info.value.detail or "attribute" in exc_info.value.detail
+        assert create_oauth.await_args.kwargs["oauth_app_id"] is None
+        auth = result["config"]["auth"]
+        assert auth["oauthConfigId"] == "oauth-brand-new"
+        # The app lookup must not replace the connector's own stored auth.
+        assert auth["includeJiraScope"] is True
+        assert auth["connectorScope"] == "personal"
 
 
 class TestAdminOAuthNoCredentialsHasAppId:
@@ -728,7 +748,9 @@ class TestGeneralExceptionRaises500:
                 )
 
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        assert "something broke" in exc_info.value.detail
+        # the person is told what failed and what to do, not the exception text
+        assert exc_info.value.detail == "We couldn't save this connector's sign-in details. Please try again; if it keeps failing, contact your admin."
+        assert "something broke" not in exc_info.value.detail
 
 
 class TestOAuthCreateFailsRaises500:
@@ -1011,11 +1033,13 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
+        linked_app = {"_id": "oauth-1", "orgId": "o1", "config": {"instanceUrl": "https://gitlab.mycompany.com"}}
         with (
             patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret", "instanceUrl"]),
             patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
+            patch(f"{_ROUTER}.resolve_oauth_config", AsyncMock(return_value=linked_app)),
         ):
             result = await update_connector_instance_auth_config(
                 "conn1", request, graph_provider
@@ -1078,6 +1102,9 @@ class TestMergePreservesExistingAuthFields:
         assert auth["existingField"] == "should-survive"
         assert auth["apiToken"] == "new-tok"
         assert auth["connectorScope"] == "personal"
-        # credentials and oauth should be cleared
-        assert result["config"]["credentials"] is None
-        assert result["config"]["oauth"] is None
+        # credentials and oauth are cleared in the store and never sent back
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in result["config"]
+        assert "oauth" not in result["config"]

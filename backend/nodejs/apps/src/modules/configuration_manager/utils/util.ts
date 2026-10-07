@@ -71,3 +71,21 @@ export async function getPlatformSettingsFromStore(
   return settings;
 }
 
+/** The AI models config as stored (decrypted), or null when none has been saved. */
+export async function readStoredAiModelsConfig(
+  keyValueStoreService: KeyValueStoreService,
+): Promise<Record<string, unknown> | null> {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encryptedAIConfig = await keyValueStoreService.get<string>(
+    configPaths.aiModels,
+  );
+  if (!encryptedAIConfig) {
+    return null;
+  }
+  return JSON.parse(
+    EncryptionService.getInstance(
+      configManagerConfig.algorithm,
+      configManagerConfig.secretKey,
+    ).decrypt(encryptedAIConfig),
+  );
+}

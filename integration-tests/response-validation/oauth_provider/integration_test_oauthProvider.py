@@ -26,6 +26,8 @@ Routes covered:
 Auth:
   Uses the session ``oauth_provider_client`` fixture from the root ``conftest.py``,
   backed by ``PipeshubClient`` OAuth credentials (``POST /api/v1/oauth2/token``).
+  Consent (``POST /api/v1/oauth2/authorize``) accepts only an interactive user
+  session (#3626), so that test calls it through ``user_session_client``.
 """
 
 from __future__ import annotations
@@ -47,6 +49,10 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.clients.oauth_client import OAuthProviderClient  # noqa: E402
+from helper.http.session_client import (  # noqa: E402
+    SESSION_REQUIRED_MESSAGE,
+    SessionClient,
+)
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
@@ -151,20 +157,30 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
     def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
 
-    def test_response_and_errors(self) -> None:
-        """401 missing auth, 400 invalid consent body."""
-        resp = self.oauth.authorize_consent(
-            client_id=self.client_id,
-            redirect_uri="http://localhost/callback",
-            scope="openid",
-            state="test",
-            consent="denied",
-        )
+    def test_response_and_errors(self, user_session_client: SessionClient) -> None:
+        """401 missing auth, 403 OAuth access token, 400 invalid consent body."""
+        consent = {
+            "client_id": self.client_id,
+            "redirect_uri": "http://localhost/callback",
+            "scope": "openid",
+            "state": "test",
+            "consent": "denied",
+        }
+        resp = self.oauth.authorize_consent(**consent)
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
 
-        resp = self.oauth.authorize_consent(consent="denied", auth=True)
+        # A client must not be able to consent with a token it already holds.
+        resp = self.oauth.authorize_consent(**consent, auth=True)
+        assert resp.status_code == 403, (
+            f"Expected 403 for an OAuth access token, got {resp.status_code}: {resp.text}"
+        )
+        assert SESSION_REQUIRED_MESSAGE in resp.json()["error"]["message"], resp.text
+
+        resp = OAuthProviderClient(user_session_client).authorize_consent(
+            consent="denied", auth=True
+        )
         assert resp.status_code == 400, (
             f"Expected 400 for missing fields, got {resp.status_code}: {resp.text}"
         )

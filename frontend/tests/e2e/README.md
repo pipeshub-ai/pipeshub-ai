@@ -28,11 +28,20 @@ End-to-end tests for the PipesHub frontend using [Playwright](https://playwright
    | `BASE_URL` | Where Playwright opens the app (default in config: `http://localhost:3001`) |
    | `NEXT_PUBLIC_API_BASE_URL` | Backend URL for API calls (seeding/fixtures); defaults to `http://localhost:3000` in fixtures when unset |
 
+   Optional, for the flows that need them (each skips with the reason when its prerequisite is missing):
+   | Variable | Description |
+   |----------|-------------|
+   | `SMTP_HOST` / `SMTP_PORT` | Where the org sends mail. Invite tests configure SMTP from these; CI points them at the stack's Mailpit |
+   | `MAILPIT_URL` | Mailpit's web API, where invite tests read the email back (default `http://localhost:8025`) |
+   | `TEST_OPENAI_API_KEY` | Lets chat and agent tests add a real model when none is configured (the CI secret; `TEST_OPENAI_LLM_MODEL` / `TEST_OPENAI_EMBEDDING_MODEL` override the models) |
+   | `E2E_AI_ENDPOINT` | Instead of OpenAI, any OpenAI-compatible server (for example a local model); `E2E_AI_API_KEY` is its key if it needs one, and `E2E_AI_LLM_MODEL` / `E2E_AI_EMBEDDING_MODEL` name its models |
+
 ## Running Tests
 
 | Command | Description |
 |---------|-------------|
 | `npm run test:e2e` | Run all tests (starts dev server automatically) |
+| `npm run test:e2e:smoke` | Run only the `@smoke` tests: the few most important flows, in a few minutes |
 | `npm run test:e2e:ui` | Open Playwright UI for interactive debugging |
 | `npm run test:e2e:headed` | Run tests in a visible browser |
 | `npm run test:e2e:seed` | Seed bulk test data (30 users, 30 groups, 30 teams) |
@@ -43,6 +52,12 @@ End-to-end tests for the PipesHub frontend using [Playwright](https://playwright
 | `npm run test:e2e:report` | Open the HTML test report |
 | `npm run test:e2e:coverage` | Run all tests with V8 code coverage |
 | `npm run test:e2e:coverage-report` | Open the coverage HTML report |
+
+## Smoke tests
+
+Tests whose title ends in `@smoke` form a quick set covering the most important flows: signing in, pages loading, a chat answer, a knowledge-base upload, a teammate accepting an invite, and the users, settings and service-health pages. CI runs them on every pull request in their own workflow (`.github/workflows/e2e-smoke.yml`), so a pull request gets a browser signal in minutes rather than after the full integration run. That workflow uses no repository secrets: it starts a throwaway stack and makes up its own admin login for each run. It skips pull requests opened from forks, because it runs on our self-hosted runner. The sign-in setup test is tagged too, because filtering by title would otherwise skip it. Keep the set small and fast; tag a test only if a failure there would block a release.
+
+A test should fail, not skip, when something it needs is missing from the page. Skip only for a genuine environment limit (for example, SMTP not configured, or an Enterprise-only feature), and give the reason.
 
 ## Code Coverage
 
@@ -95,12 +110,13 @@ npx playwright show-trace test-results/<test-folder>/trace.zip
 
 ## Test Projects
 
-Playwright is configured with four projects that run in order:
+Playwright is configured with these projects:
 
 1. **setup** — Logs in via the browser and saves auth state to `.auth/user.json`.
 2. **seed** — Seeds bulk data using UI interactions + API calls. Depends on `setup`.
 3. **authenticated** — All feature tests using saved auth state. Depends on `setup`.
-4. **unauthenticated** — Login page tests that run without saved auth.
+4. **ai** — Tests that need a real AI model (the cited answer and agent tests). They depend on **ai-models**, which adds a chat and an embedding model once if the org has none, and whose teardown (**ai-models-cleanup**) removes them after every `ai` test has finished. Without credentials the models aren't added and these tests skip with the reason.
+5. **unauthenticated** — Login page tests that run without saved auth.
 
 ## Directory Structure
 
@@ -109,7 +125,10 @@ tests/e2e/          # Playwright testDir (repo path: frontend/tests/e2e)
 ├── setup/           # Auth setup (login + save storageState)
 ├── fixtures/        # Shared test fixtures (API context, base)
 ├── helpers/         # Reusable interaction helpers
+│   ├── ai-models.helper.ts   # a real chat + embedding model for answering tests
 │   ├── login.helper.ts
+│   ├── mailpit.helper.ts     # reads invite emails back from Mailpit
+│   ├── members.helper.ts     # invite, accept and sign in as a second user
 │   ├── entity-table.helper.ts
 │   ├── pagination.helper.ts
 │   ├── search.helper.ts
@@ -122,7 +141,8 @@ tests/e2e/          # Playwright testDir (repo path: frontend/tests/e2e)
 ├── users/           # Users table, invite, actions, bulk ops
 ├── groups/          # Groups table, create, actions
 ├── teams/           # Teams table, create, actions
-├── chat/            # Chat interface tests
+├── chat/            # Chat interface tests, including a real cited answer
+├── agents/          # Building an agent and chatting with it
 └── knowledge-base/  # Knowledge base tests
 ```
 

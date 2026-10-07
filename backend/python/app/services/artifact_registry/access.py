@@ -60,21 +60,18 @@ class AccessPolicy:
 
     async def authorize_read(self, actor: Actor, artifact_id: str) -> dict:
         """Verify `actor` may read `artifact_id`'s base record. Returns the
-        base `records` document on success.
-
-        Owner (`role=OWNER` on a `USER -> RECORD` PERMISSION edge) is the
-        only role artifacts support today — there is no share/collaborator
-        flow yet, so read and write authorization are identical. Kept as
-        two methods (not one) so a future share model only needs to change
-        `authorize_read`'s edge-role check, not every call site."""
-        return await self._authorize(actor, artifact_id)
+        base `records` document on success. Any `USER -> RECORD` PERMISSION
+        edge suffices: OWNER for the creator, READER for users a conversation
+        was shared with."""
+        return await self._authorize(actor, artifact_id, require_owner=False)
 
     async def authorize_write(self, actor: Actor, artifact_id: str) -> dict:
-        """Verify `actor` may create a new version of `artifact_id`. See
-        `authorize_read`'s docstring for why this is currently identical."""
-        return await self._authorize(actor, artifact_id)
+        """Verify `actor` may create a new version of, or promote, `artifact_id`.
+        Requires an OWNER edge, so a READER from a shared conversation cannot
+        overwrite the owner's artifact through `update_artifact` and friends."""
+        return await self._authorize(actor, artifact_id, require_owner=True)
 
-    async def _authorize(self, actor: Actor, artifact_id: str) -> dict:
+    async def _authorize(self, actor: Actor, artifact_id: str, *, require_owner: bool) -> dict:
         record = await self._graph_provider.get_document(artifact_id, CollectionNames.RECORDS.value)
         if not record:
             raise ArtifactNotFoundError(f"Artifact not found: {artifact_id}")
@@ -96,6 +93,12 @@ class AccessPolicy:
                 actor.user_id, artifact_id,
             )
             raise AccessDeniedError(f"Not authorized for artifact: {artifact_id}")
+        if require_owner and edge.get("role") != "OWNER":
+            logger.warning(
+                "Write denied: user=%s holds role=%s (not OWNER) on artifact=%s",
+                actor.user_id, edge.get("role"), artifact_id,
+            )
+            raise AccessDeniedError(f"Not authorized to modify artifact: {artifact_id}")
         return record
 
     async def grant_owner_permission(self, actor: Actor, artifact_id: str, *, now: int) -> dict:

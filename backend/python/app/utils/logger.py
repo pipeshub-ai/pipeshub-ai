@@ -4,7 +4,10 @@ import os
 import sys
 from collections.abc import Callable
 
+from httpx import URL
+
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
 # ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
 # context is in flight, so startup/background lines stay clean.
@@ -91,6 +94,9 @@ class HttpxSuccessFilter(logging.Filter):
 
     The status is read from ``record.args`` rather than the formatted message:
     httpx passes it as an int, so this does not depend on message wording.
+
+    Lines that are kept have their request URL redacted: the query string of a
+    signed URL, or the userinfo of any URL, is a credential.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -103,7 +109,12 @@ class HttpxSuccessFilter(logging.Filter):
             if isinstance(arg, bool):
                 continue
             if isinstance(arg, int) and 100 <= arg <= 599:
-                return not (200 <= arg < 300)
+                if 200 <= arg < 300:
+                    return False
+                break
+        record.args = tuple(
+            redact_url(str(arg)) if isinstance(arg, URL) else arg for arg in record.args
+        )
         return True
 
 
@@ -127,6 +138,22 @@ class HealthCheckFilter(logging.Filter):
         # Fallback for any non-standard formatting
         msg = record.getMessage()
         return not ("/health" in msg and '" 2' in msg)
+
+
+class AccessLogRedactionFilter(logging.Filter):
+    """Redact credentials from the request path uvicorn writes to its access log.
+
+    Signed download URLs carry their JWT in ``?token=``, so logging the raw path
+    would hand a working download link to anyone who can read the logs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn access log args: (client_addr, method, path, http_version, status_code)
+        if isinstance(record.args, tuple) and len(record.args) >= 3:
+            args = list(record.args)
+            args[2] = redact_sensitive_query_params(str(args[2]))
+            record.args = tuple(args)
+        return True
 
 
 # Ensure log directory exists
@@ -161,6 +188,7 @@ logging.getLogger("opensearch").setLevel(logging.WARNING)
 
 # Suppress /health* endpoint noise from uvicorn access logs (process_monitor polling)
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+logging.getLogger("uvicorn.access").addFilter(AccessLogRedactionFilter())
 
 # httpx logs every outbound request at INFO. Keep the failures, drop the 2xx.
 logging.getLogger("httpx").addFilter(HttpxSuccessFilter())

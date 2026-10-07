@@ -24,17 +24,6 @@ from datetime import datetime, timezone
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.nextcloud.connector import (
     NEXTCLOUD_PERM_MASK_ALL,
-    NextcloudConnector,
-    extract_response_body,
-    get_file_extension,
-    get_mimetype_enum_for_nextcloud,
-    get_parent_path_from_path,
-    get_path_depth,
-    get_response_error,
-    is_response_successful,
-    nextcloud_permissions_to_permission_type,
-    parse_share_response,
-    parse_webdav_propfind_response,
 )
 
 
@@ -66,35 +55,6 @@ def mock_data_store_provider():
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
     return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "baseUrl": "https://nextcloud.example.com",
-            "username": "admin",
-            "password": "app-password-123",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
-def nextcloud_connector(mock_logger, mock_data_entities_processor,
-                        mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.nextcloud.connector.NextcloudApp"):
-        connector = NextcloudConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="nc-conn-1",
-            scope="team",
-            created_by="test-user",
-        )
-    return connector
 
 
 # ===========================================================================
@@ -667,7 +627,7 @@ class TestConnectorInitEdges:
             mock_ds.return_value = mock_ds_instance
             result = await nextcloud_connector.init()
             assert result is True
-            assert "nextcloud.local" in nextcloud_connector.current_user_email
+            assert nextcloud_connector.current_user_email is None, "a failed read must not invent an owner"
 
     @pytest.mark.asyncio
     async def test_init_user_details_exception(self, nextcloud_connector):
@@ -682,7 +642,7 @@ class TestConnectorInitEdges:
             mock_ds.return_value = mock_ds_instance
             result = await nextcloud_connector.init()
             assert result is True
-            assert "nextcloud.local" in nextcloud_connector.current_user_email
+            assert nextcloud_connector.current_user_email is None, "a failed read must not invent an owner"
 
     @pytest.mark.asyncio
     async def test_init_exception(self, nextcloud_connector):
@@ -942,7 +902,7 @@ class TestStreamRecord:
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
-        file_rec.mime_type = MimeTypes.FOLDER
+        file_rec.mime_type = MimeTypes.FOLDER.value  # records store the MIME text, not the enum
         file_rec.record_name = "Documents"
         nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
         nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/Documents")
@@ -1514,8 +1474,14 @@ class TestStreamRecordAdditional:
             await nextcloud_connector.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_stream_record_download_fails(self, nextcloud_connector):
-        """Download response is not successful (line 1628-1632)."""
+    @pytest.mark.parametrize(
+        "source_status,expected_status",
+        [(401, 409), (403, 403), (404, 404), (503, 502)],
+    )
+    async def test_stream_record_download_fails(
+        self, nextcloud_connector, source_status, expected_status
+    ):
+        """The WebDAV status decides ours — an expired token is not 'file not found'."""
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
@@ -1527,11 +1493,13 @@ class TestStreamRecordAdditional:
         mock_resp = MagicMock()
         mock_resp.success = False
         mock_resp.error = "download error"
+        mock_resp.status = source_status
         nextcloud_connector.data_source.download_file = AsyncMock(return_value=mock_resp)
 
         record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
-        with pytest.raises(HTTPException, match="Failed to download"):
+        with pytest.raises(HTTPException) as exc_info:
             await nextcloud_connector.stream_record(record)
+        assert exc_info.value.status_code == expected_status
 
     @pytest.mark.asyncio
     async def test_stream_record_empty_content(self, nextcloud_connector):
@@ -1571,5 +1539,7 @@ class TestStreamRecordAdditional:
         )
 
         record = MagicMock(id="r1", record_name="test.txt", mime_type="text/plain")
-        with pytest.raises(HTTPException, match="Error streaming file"):
+        with pytest.raises(HTTPException) as exc_info:
             await nextcloud_connector.stream_record(record)
+        assert exc_info.value.status_code == 500
+        assert "unexpected" not in str(exc_info.value.detail)

@@ -52,9 +52,14 @@ from app.config.constants.arangodb import (
     get_mime_type_for_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import (
+    not_downloadable,
+    raise_for_stream_fetch,
+)
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 from .constants import (
     CODE_FILE_MAX_SIZE_BYTES,
@@ -379,12 +384,18 @@ class ReposSync:
         external_group_id = f"{repo.id}-code-repository"
         try:
             existing = await self._list_code_records_by_path(external_group_id)
+            # Listed apart so the valve below judges the walk by live records only,
+            # and a trashed record sharing a live one's path cannot hide it.
+            trashed = await self._list_code_records_by_path(
+                external_group_id, visibility=RecordVisibility.DELETED
+            )
         except Exception as e:
             self.logger.error("Could not list code records for pruning in %s: %s", repo.full_name, e, exc_info=True)
             return
 
         stale = {path: rec_id for path, rec_id in existing.items() if path not in walked_paths}
-        if not stale:
+        stale_trashed = {path: rec_id for path, rec_id in trashed.items() if path not in walked_paths}
+        if not stale and not stale_trashed:
             return
         if (
             len(stale) > REPO_DELETE_VALVE_MIN_ABSOLUTE
@@ -398,16 +409,36 @@ class ReposSync:
             )
             return
 
-        self.logger.info("Pruning %s deleted code record(s) from %s", len(stale), repo.full_name)
+        self.logger.info(
+            "Pruning %s deleted code record(s) from %s", len(stale) + len(stale_trashed), repo.full_name
+        )
         # Deepest-first so a stale folder is deleted only after its stale
         # children — the same bottom-up order _cleanup_emptied_folders uses.
-        ordered_ids = [stale[p] for p in sorted(stale, key=lambda p: p.count("/"), reverse=True)]
+        pruned = [*stale.items(), *stale_trashed.items()]
+        ordered_ids = [rec_id for _, rec_id in sorted(pruned, key=lambda item: item[0].count("/"), reverse=True)]
         try:
-            await c.data_entities_processor.on_records_deleted_cascade(ordered_ids, c.connector_id)
+            result = await c.data_entities_processor.on_records_deleted_cascade(
+                ordered_ids, c.connector_id, include_trashed_roots=True
+            )
         except Exception as e:
             self.logger.error("Failed to prune deleted code records in %s: %s", repo.full_name, e, exc_info=True)
+            return
+        # With the trash on, a record already in it stays there for the purge.
+        already_trashed = set(stale_trashed.values()) if (result or {}).get("softDeleted") else set()
+        failed = [
+            f.get("record_id") for f in (result or {}).get("failed_records") or []
+            if f.get("record_id") not in already_trashed
+        ]
+        if not (result or {}).get("success", False) or failed:
+            self.logger.error(
+                "Could not prune %s of %s deleted code record(s) in %s: %s",
+                len(failed) or len(ordered_ids), len(ordered_ids), repo.full_name,
+                failed[:20] or (result or {}).get("reason"),
+            )
 
-    async def _list_code_records_by_path(self, external_group_id: str) -> dict[str, str]:
+    async def _list_code_records_by_path(
+        self, external_group_id: str, visibility: RecordVisibility = RecordVisibility.LIVE
+    ) -> dict[str, str]:
         """``{repo_path: record_id}`` for every record under a code record group.
 
         Folders are ``FileRecord``s with no ``file_path`` attribute, so their
@@ -417,34 +448,27 @@ class ReposSync:
         c = self.c
         repo_id = int(external_group_id.split("-")[0])
         by_path: dict[str, str] = {}
-        async with c.data_store_provider.transaction() as tx_store:
-            rg = await tx_store.get_record_group_by_external_id(
-                connector_id=c.connector_id, external_id=external_group_id,
+        page_size = 500
+        after_key: str | None = None
+        while True:
+            page = await c.data_entities_processor.get_records_in_record_group(
+                connector_id=c.connector_id,
+                external_group_id=external_group_id,
+                limit=page_size,
+                after_key=after_key,
+                visibility=visibility,
             )
-            if not rg:
-                return by_path
-            offset = 0
-            page_size = 500
-            while True:
-                page = await tx_store.get_records_by_status(
-                    org_id=c.data_entities_processor.org_id,
-                    connector_id=c.connector_id,
-                    status_filters=None,
-                    limit=page_size,
-                    offset=offset,
-                    record_group_id=rg.id,
+            if not page:
+                break
+            for rec in page:
+                path = getattr(rec, "file_path", None) or path_from_external_id(
+                    repo_id, getattr(rec, "external_record_id", None) or ""
                 )
-                if not page:
-                    break
-                for rec in page:
-                    path = getattr(rec, "file_path", None) or path_from_external_id(
-                        repo_id, getattr(rec, "external_record_id", None) or ""
-                    )
-                    if path:
-                        by_path[path] = rec.id
-                if len(page) < page_size:
-                    break
-                offset += page_size
+                if path:
+                    by_path[path] = rec.id
+            if len(page) < page_size:
+                break
+            after_key = page[-1].id
         return by_path
 
     # ------------------------------------------------------------------
@@ -833,22 +857,40 @@ class ReposSync:
         c = self.c
         external_group_id = getattr(record, "external_record_group_id", None)
         if not external_group_id:
-            raise Exception(f"Repository id not found on record {record.id}")
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                f"Repository id not found on record {record.id}",
+            )
         repo_id = int(external_group_id.split("-")[0])
         file_path = record.file_path
         if not file_path:
-            raise Exception(f"Cannot resolve repo path for record {record.id}")
+            raise HTTPException(
+                HttpStatusCode.BAD_REQUEST.value,
+                f"Cannot resolve repo path for record {record.id}",
+            )
 
         repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
         if not repo_res.success or not repo_res.data:
-            raise Exception(f"Failed to resolve repo id={repo_id} for record {record.id}: {repo_res.error}")
+            raise_for_stream_fetch(
+                success=repo_res.success,
+                has_payload=bool(repo_res.data),
+                connector=c.display_name,
+                status=repo_res.status_code,
+                message=repo_res.error,
+            )
         repo = repo_res.data
 
         content_res = await c.runtime.ds_call(
             c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
         )
         if not content_res.success or content_res.data is None:
-            raise Exception(f"Failed to fetch content for {file_path} in {repo.full_name}: {content_res.error}")
+            raise_for_stream_fetch(
+                success=content_res.success,
+                has_payload=content_res.data is not None,
+                connector=c.display_name,
+                status=content_res.status_code,
+                message=content_res.error,
+            )
         content_file = content_res.data
         # Incrementally-added/modified files bypass the full-sync size stamp
         # (Compare Commits entries carry no blob size), so this is the only
@@ -892,18 +934,26 @@ class ReposSync:
         c = self.c
         blob_sha = getattr(record, "file_hash", None)
         if not blob_sha:
-            raise Exception(
+            raise not_downloadable(
                 f"Contents API returned no content for {file_path!r} ({blob_size} bytes) in "
-                f"{repo.full_name} and the record carries no blob sha to fall back on"
+                f"{repo.full_name} and the record carries no blob sha to fall back on",
+                connector=c.display_name,
             )
         blob_res = await c.runtime.ds_call(c.data_source.get_git_blob, repo.owner.login, repo.name, blob_sha)
         if not blob_res.success or blob_res.data is None:
-            raise Exception(
-                f"Failed to fetch blob {blob_sha} for {file_path!r} in {repo.full_name}: {blob_res.error}"
+            raise_for_stream_fetch(
+                success=blob_res.success,
+                has_payload=blob_res.data is not None,
+                connector=c.display_name,
+                status=blob_res.status_code,
+                message=blob_res.error,
             )
         blob_content = getattr(blob_res.data, "content", None)
         if not blob_content:
-            raise Exception(f"Blob {blob_sha} for {file_path!r} in {repo.full_name} returned no content")
+            raise not_downloadable(
+                f"Blob {blob_sha} for {file_path!r} in {repo.full_name} returned no content",
+                connector=c.display_name,
+            )
         if getattr(blob_res.data, "encoding", "base64") != "base64":
             return blob_content.encode(GitHubLiterals.UTF_8.value)
         return base64.b64decode(blob_content)

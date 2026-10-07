@@ -2,10 +2,15 @@ import { apiClient } from '@/lib/api';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import type { User } from '@/app/(main)/workspace/users/types';
 import { fetchShareUsersPaginated } from '@/app/components/share/utils';
-import type { ShareAdapter, SharedMember, ShareSubmission } from '@/app/components/share/types';
+import { ShareCommonApi } from '@/app/components/share/api';
+import type { ShareAdapter, SharedMember, ShareSubmission, ShareRole } from '@/app/components/share/types';
+import { useAuthStore } from '@/config';
 import { useUserStore } from '@/lib/store/user-store';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import i18next from 'i18next';
 import type { SharedWithEntry } from './types';
+import { ProjectApi } from './project-api';
+import type { ProjectDetail, ProjectMemberRole } from './project-types';
 
 export interface CreateChatShareAdapterOptions {
   /** When set, uses GET/POST agent conversation share routes instead of global chat. */
@@ -137,5 +142,112 @@ export function createChatShareAdapter(
     getSharingUsersPaginated: fetchShareUsersPaginated,
 
     // No updateRole — supportsRoles is false
+  };
+}
+
+/**
+ * Project members only have `editor`/`viewer` roles (see `ProjectMemberRole`)
+ * — ownership is a single `userId` field, not a member row, and isn't
+ * reassignable from this dialog. The generic `RoleDropdownMenu` always offers
+ * OWNER/WRITER/READER, so an `OWNER` selection here is clamped to `editor`
+ * (the highest role the project members API accepts).
+ */
+function toProjectRole(role: ShareRole): ProjectMemberRole {
+  return role === 'READER' ? 'viewer' : 'editor';
+}
+
+function toShareRole(role: ProjectMemberRole): ShareRole {
+  return role === 'editor' ? 'WRITER' : 'READER';
+}
+
+/**
+ * Creates a ShareAdapter for a Project. Only the owner can call `share`/
+ * `updateRole`/`removeMember` (enforced server-side by
+ * `ProjectService.upsertMembers`/`removeMember`); callers should gate the
+ * "Share" entry point on `project.role === 'owner'`.
+ *
+ * Team principals are deferred (see the plan's "Deferred" section) — any
+ * `principalType: 'team'` member rows are hidden here rather than surfaced
+ * half-supported.
+ */
+export function createProjectShareAdapter(project: ProjectDetail): ShareAdapter {
+  const profile = useUserStore.getState().profile;
+  const authUser = useAuthStore.getState().user;
+  const currentUserId = (profile?.userId ?? authUser?.id ?? '').trim();
+  const projectId = project._id;
+  const ownerId = project.userId;
+
+  return {
+    entityType: 'project',
+    entityId: projectId,
+    sidebarTitle: i18next.t('chat.projects.shareProject'),
+    supportsRoles: true,
+    supportsTeams: false,
+
+    async getSharedMembers(): Promise<SharedMember[]> {
+      const members = await ProjectApi.listMembers(projectId);
+      const userMembers = members.filter((m) => m.principalType === 'user');
+      const ids = Array.from(new Set([ownerId, ...userMembers.map((m) => m.principalId)]));
+      const users = await ShareCommonApi.getUsersByIds(ids);
+      const byId = new Map(users.map((u) => [u.id, u]));
+
+      const ownerInfo = byId.get(ownerId);
+      const rows: SharedMember[] = [
+        {
+          id: ownerId,
+          type: 'user',
+          name: ownerInfo?.name ?? 'Unknown',
+          email: ownerInfo?.email,
+          avatarUrl: ownerInfo?.avatarUrl,
+          role: 'OWNER',
+          isOwner: true,
+          isCurrentUser: ownerId === currentUserId,
+        },
+      ];
+
+      userMembers.forEach((m) => {
+        const info = byId.get(m.principalId);
+        rows.push({
+          id: m.principalId,
+          type: 'user',
+          name: info?.name ?? 'Unknown',
+          email: info?.email,
+          avatarUrl: info?.avatarUrl,
+          role: toShareRole(m.role),
+          isOwner: false,
+          isCurrentUser: m.principalId === currentUserId,
+        });
+      });
+
+      return rows;
+    },
+
+    async share(submission: ShareSubmission): Promise<void> {
+      if (submission.userIds.length === 0) return;
+      await ProjectApi.upsertMembers(
+        projectId,
+        submission.userIds.map((id) => ({ principalId: id, role: toProjectRole(submission.role) })),
+      );
+    },
+
+    async updateRole(memberId: string, memberType: 'user' | 'team', newRole: ShareRole): Promise<void> {
+      if (memberType !== 'user') return;
+      if (memberId === ownerId) {
+        throw new Error('The project owner cannot be reassigned here.');
+      }
+      await ProjectApi.upsertMembers(projectId, [
+        { principalId: memberId, role: toProjectRole(newRole) },
+      ]);
+    },
+
+    async removeMember(memberId: string, memberType: 'user' | 'team'): Promise<void> {
+      if (memberType !== 'user') return;
+      if (memberId === ownerId) {
+        throw new Error('The project owner cannot be removed.');
+      }
+      await ProjectApi.removeMember(projectId, memberId);
+    },
+
+    getSharingUsersPaginated: fetchShareUsersPaginated,
   };
 }

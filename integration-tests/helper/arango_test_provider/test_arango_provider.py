@@ -16,7 +16,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppMetadata, AppRole, Record
-from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.arango.arango_http_provider import (
+    EDGE_COLLECTIONS,
+    NODE_COLLECTIONS,
+    ArangoHTTPProvider,
+)
 
 logger = logging.getLogger("test-graph-provider")
 
@@ -126,6 +130,30 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             query = f"FOR g IN {CollectionNames.RECORD_GROUPS.value} FILTER g.connectorId == @cid RETURN 1"
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
+
+    async def fetch_record_group_names(
+        self, connector_id: str, group_type: str | None = None
+    ) -> List[str]:
+        """Names of a connector's RecordGroups, optionally of one type.
+
+        See the Neo4j provider for why a test wants group names rather than a
+        substring search over record names.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        bind: Dict[str, Any] = {"cid": connector_id}
+        type_filter = ""
+        if group_type:
+            type_filter = "FILTER g.groupType == @gtype"
+            bind["gtype"] = group_type
+        query = f"""
+            FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER g.connectorId == @cid
+                {type_filter}
+                RETURN g.name != null ? g.name : g.groupName
+        """
+        rows = await self.http_client.execute_aql(query, bind)
+        return [str(name) for name in (rows or []) if name]
 
     async def count_user_groups(self, connector_id: str) -> int:
         """Count user-group documents for this connector (Jira site ``groups`` collection)."""
@@ -1192,3 +1220,76 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return list(result) if result else []
 
+    # =========================================================================
+    # Delete footprints. A handle is the document _id ("<collection>/<key>").
+    # Edges are found by their _from/_to, so an edge left pointing at a deleted
+    # node is still counted; walking out from surviving nodes would miss it.
+    # =========================================================================
+
+    async def connector_node_handles(self, connector_id: str) -> List[str]:
+        """Every node a connector (or knowledge base) owns: documents carrying its
+        connectorId, the document keyed by the connector id, and its records' type docs."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        handles: set = set()
+        for collection, _schema in NODE_COLLECTIONS:
+            if not await self.http_client.has_collection(collection):
+                continue
+            rows = await self.http_client.execute_aql(
+                "FOR d IN @@c FILTER d.connectorId == @cid OR d._key == @cid RETURN d._id",
+                {"@c": collection, "cid": connector_id},
+            )
+            handles.update(rows or [])
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid
+                FOR t IN 1..1 OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
+                    RETURN DISTINCT t._id
+            """,
+            {"cid": connector_id},
+        )
+        handles.update(rows or [])
+        return sorted(handles)
+
+    async def record_node_handles(self, record_ids: Iterable[str]) -> List[str]:
+        """The given records and their type documents (files, mails, ...)."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r._key IN @ids
+                LET types = (FOR t IN 1..1 OUTBOUND r {CollectionNames.IS_OF_TYPE.value} RETURN t._id)
+                FOR h IN APPEND([r._id], types)
+                    RETURN DISTINCT h
+            """,
+            {"ids": list(record_ids)},
+        )
+        return sorted(rows or [])
+
+    async def count_existing_nodes(self, handles: Iterable[str]) -> int:
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        rows = await self.http_client.execute_aql(
+            "FOR h IN @handles FILTER DOCUMENT(h) != null COLLECT WITH COUNT INTO c RETURN c",
+            {"handles": list(handles)},
+        )
+        return int(rows[0]) if rows else 0
+
+    async def count_edges_touching(self, handles: Iterable[str], *, excluding: Iterable[str] = ()) -> int:
+        """Edges in any edge collection but *excluding* with either end on one of these nodes."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        wanted = list(handles)
+        skipped = set(excluding)
+        seen: set = set()
+        for collection, _schema in EDGE_COLLECTIONS:
+            if collection in skipped or not await self.http_client.has_collection(collection):
+                continue
+            rows = await self.http_client.execute_aql(
+                "FOR e IN @@c FILTER e._from IN @h OR e._to IN @h RETURN e._id",
+                {"@c": collection, "h": wanted},
+            )
+            seen.update(rows or [])
+        return len(seen)

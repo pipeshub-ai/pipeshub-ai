@@ -4,7 +4,12 @@ import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
 import {
   InternalServerError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import {
   DeletedRecordEvent,
   Event,
@@ -35,6 +40,9 @@ const logger = Logger.getInstance({
   service: 'Knowledge Base Service',
 });
 
+export const RESYNC_NOT_QUEUED_MESSAGE =
+  "We couldn't start this sync because PipesHub couldn't queue it. Nothing was synced. Try again in a minute; if it keeps happening, ask your admin to check the services page.";
+
 @injectable()
 export class RecordRelationService {
 
@@ -54,10 +62,8 @@ export class RecordRelationService {
       logger.info('Event producer initialized successfully');
     } catch (error) {
       logger.error('Failed to initialize event producer', error);
-      throw new InternalServerError(
-        error instanceof Error
-          ? error.message
-          : 'Failed to initialize event producer',
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('start the knowledge base')),
       );
     }
   }
@@ -68,8 +74,8 @@ export class RecordRelationService {
       logger.info('Sync Event producer initialized successfully');
     } catch (error) {
       logger.error('Failed to initialize Sync event producer', error);
-      throw new InternalServerError(
-        `Failed to initialize sync event producer: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('start the knowledge base')),
       );
     }
   }
@@ -284,24 +290,13 @@ export class RecordRelationService {
     try {
       const resyncPayload =
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
-      if (isLocalFsConnector(resyncPayload.connector)) {
-        // Local FS is client-managed: the desktop app owns the watcher and
-        // the rescan, and the backend has no way to push a "sync now" command
-        // to a user's filesystem. The desktop runtime triggers replay +
-        // full-sync directly via IPC (see frontend electron/local-sync), so a
-        // backend resync request is a no-op.
-        logger.info('Skipping backend resync for client-managed Local FS connector', {
-          connectorId: resyncPayload.connectorId,
-          orgId: resyncPayload.orgId,
-        });
-        return {
-          success: true,
-          dispatch: 'client_managed',
-          message:
-            'Local FS sync is managed by the desktop app. Open Pipeshub on the machine that owns this folder to resync.',
-        };
-      }
-      const eventType = resyncPayload.connector.replace(' ', '').toLowerCase() + '.resync';
+      // Global replace, matching Python's str.replace, which is already global.
+      // The single-space version happened to route correctly because this value
+      // is normalized twice (normalizeAppName, then here) and the consumer
+      // normalizes again -- but it left an embedded space in the published
+      // payload.connector for three-word types. Same result, one pass.
+      const eventType =
+        resyncPayload.connector.replace(/ /g, '').toLowerCase() + '.resync';
       const event: SyncEvent = {
         eventType: eventType,
         timestamp: Date.now(),
@@ -321,8 +316,7 @@ export class RecordRelationService {
       if (eventError?.statusCode === 409) {
         throw eventError;
       }
-      // Don't throw the error to avoid affecting the main operation
-      return { success: false, error: eventError.message };
+      throw markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE));
     }
   }
 

@@ -74,7 +74,8 @@ def sandbox_mode(request, monkeypatch):
         monkeypatch.setenv("SANDBOX_MODE", "docker")
         monkeypatch.setenv("SANDBOX_DOCKER_IMAGE", DOCKER_TEST_IMAGE)
     else:
-        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
     reset_default_governor()
     yield request.param
     reset_default_governor()

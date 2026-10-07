@@ -79,7 +79,7 @@ export class JitProvisioningService {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId: newUser._id,
+          userId: newUser._id.toString(),
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,

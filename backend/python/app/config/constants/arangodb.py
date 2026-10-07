@@ -63,6 +63,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
+    DRUPAL_WIKI = "DRUPAL WIKI"
     GITHUB = "GITHUB"
     GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
@@ -86,6 +87,9 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    DEMO = "DEMO"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
@@ -94,19 +98,24 @@ class Connectors(Enum):
 
 
 class PermissionModel(Enum):
-    """How a connector's records derive their per-user visibility.
+    """How a record derives its per-user visibility, declared on its container.
 
-    ``APP_LEVEL`` means access to the connector app implies access to every
-    record it syncs — the source has no per-record ACLs, so each connector
-    writes one blanket ORG (or single creator-USER) permission. ``RECORD_LEVEL``
-    means the source syncs real per-record ACLs and visibility must be resolved
-    per user. Declared per connector via ``ConnectorBuilder.configure(...)``;
-    ``RECORD_LEVEL`` is the default because assuming per-record ACLs can only
-    under-share, never over-share.
+    ``APP_LEVEL``: reaching the app implies reaching every record it syncs.
+    ``RECORD_LEVEL``: the source has real per-record ACLs. Both are declared per
+    connector; ``RECORD_LEVEL`` is the default, since assuming per-record ACLs
+    can only under-share.
+
+    ``RECORD_GROUP_LEVEL`` is set on a RecordGroup, not a connector, and lets
+    search skip the per-record check for records in that group. Only safe when
+    every record under the group really inherits from it: ``recordGroupIds`` is
+    built from ``belongsTo`` (always written) while inheritance follows
+    ``INHERIT_PERMISSIONS`` (conditional), so one ``inherit_permissions=False``
+    record in the group makes it over-share. Leave unset to verify each record.
     """
 
     APP_LEVEL = "APP_LEVEL"
     RECORD_LEVEL = "RECORD_LEVEL"
+    RECORD_GROUP_LEVEL = "RECORD_GROUP_LEVEL"
 
 
 class AppGroups(Enum):
@@ -121,6 +130,7 @@ class AppGroups(Enum):
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    DRUPAL_WIKI = "Drupal Wiki"
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
@@ -131,12 +141,15 @@ class AppGroups(Enum):
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
+    DEMO = "Demo"
     RSS = "RSS"
     GITLAB = "GitLab"
 
     SNOWFLAKE = "Snowflake"
     POSTGRESQL = "PostgreSQL"
     MARIADB = "MariaDB"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -196,7 +209,7 @@ class CollectionNames(Enum):
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
-    PEOPLE = "people"
+    PEOPLE = "person"
     USERS = "users"
     GROUPS = "groups"
     ROLES = "roles"
@@ -228,6 +241,7 @@ class CollectionNames(Enum):
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
+    AUTHENTICATED_AS = "authenticatedAs"  # User -> User: connector creator -> source account it authenticated as, per connectorId
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
     PROSPECT = "prospect"  # Org -> Org: prospect/account relationship
     CUSTOMER = "customer"  # Org -> Org: customer relationship
@@ -279,6 +293,7 @@ class CollectionNames(Enum):
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
+    ENTITIES = "entities"
 
 
 class ExtensionTypes(Enum):
@@ -575,6 +590,14 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
 
 
+class DeleteSource(str, Enum):
+    """Who moved a record to the trash. Decides whether a sync may restore it."""
+
+    USER = "USER"
+    CONNECTOR = "CONNECTOR"
+    SYSTEM = "SYSTEM"
+
+
 class RecordTypes(Enum):
     FILE = "FILE"
     ATTACHMENT = "ATTACHMENT"
@@ -647,8 +670,13 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
+    DELETE_CONNECTOR_ENTITIES = "deleteConnectorEntities"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
+    SOFT_DELETE_RECORDS = "softDeleteRecords"
+    DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
 
 
 class AccountType(Enum):
@@ -667,6 +695,7 @@ class AppStatus(Enum):
     IDLE = "IDLE"
     FULL_SYNCING = "FULL_SYNCING"
     SYNCING = "SYNCING"
+    QUEUED = "QUEUED"
 
 
 RECORD_TYPE_COLLECTION_MAPPING = {
@@ -697,3 +726,34 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }
+
+
+# Person -> User promotion (see docs/external-user-support-plan.md, D4).
+#
+# One definition for both graph backends so they cannot drift: a Person that carries any
+# CRM edge is a Salesforce contact as well as a collaborator, so the two identities split
+# rather than merge - the collaborator edges move to the User and the Person survives
+# holding only its CRM edges. A Person with no CRM edge migrates outright and is deleted.
+#
+# Direction matters and differs: the transferable edges always have the Person as _from,
+# while `lead`/`contact` point AT the Person and only `memberOf` points away from it - so
+# the CRM check has to look both ways.
+PERSON_TRANSFERABLE_EDGES = (
+    CollectionNames.PERMISSION.value,
+    CollectionNames.USER_APP_RELATION.value,
+)
+
+PERSON_CRM_EDGES_OUTBOUND = (CollectionNames.MEMBER_OF.value,)
+PERSON_CRM_EDGES_INBOUND = (
+    CollectionNames.LEAD.value,
+    CollectionNames.CONTACT.value,
+)
+PERSON_CRM_EDGES = PERSON_CRM_EDGES_OUTBOUND + PERSON_CRM_EDGES_INBOUND
+
+
+class PersonMigrationMode:
+    """Outcome of migrate_person_to_user. Distinguished so callers can log which of the
+    two very different things happened."""
+
+    MIGRATED = "migrated"  # no CRM edges: everything moved, Person node deleted
+    SPLIT = "split"  # CRM edges present: collaborator edges moved, Person kept

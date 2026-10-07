@@ -21,7 +21,7 @@ test.describe('Workspace Services', () => {
     await expect(sectionHeading).toBeVisible({ timeout: 5_000 });
   });
 
-  test('shows core infrastructure service rows', async ({ page }) => {
+  test('shows core infrastructure service rows @smoke', async ({ page }) => {
     await expect(page.locator('text=Redis').first()).toBeVisible({ timeout: 5_000 });
     await expect(page.locator('text=MongoDB').first()).toBeVisible({ timeout: 5_000 });
     // These show resolved names from the API (e.g. "Kafka" or "Redis Streams" instead of "Message Broker")

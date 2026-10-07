@@ -3,11 +3,14 @@ from typing import Any, Dict
 
 import jwt
 from fastapi import HTTPException
-from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+
+# Signed-URL tokens share scopedJwtSecret with service tokens; the purpose claim
+# keeps one from being redeemed as the other.
+SIGNED_URL_PURPOSE = "file_processing"
 
 
 class SignedUrlConfig(BaseModel):
@@ -92,8 +95,6 @@ class SignedUrlHandler:
             )
             connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
-            self.logger.info(f"user_id: {user_id}")
-
             payload = TokenPayload(
                 record_id=record_id,
                 user_id=user_id,
@@ -137,13 +138,12 @@ class SignedUrlHandler:
     ) -> TokenPayload:
         """Validate the JWT token and optional required claims"""
         try:
-            self.logger.debug(f"Validating token: {token}")
             payload = jwt.decode(
                 token,
                 self.signed_url_config.private_key,
                 algorithms=[self.signed_url_config.algorithm],
+                options={"require": ["exp"]},
             )
-            self.logger.debug(f"Payload: {payload}")
 
             # Convert timestamps back to datetime for validation (ensure UTC timezone)
             if "exp" in payload:
@@ -152,7 +152,6 @@ class SignedUrlHandler:
                 payload["iat"] = datetime.fromtimestamp(payload["iat"], tz=timezone.utc)
 
             token_data = TokenPayload(**payload)
-            self.logger.debug(f"Token data: {token_data}")
 
             if required_claims:
                 for key, value in required_claims.items():
@@ -163,11 +162,15 @@ class SignedUrlHandler:
 
             return token_data
 
-        except JWTError as e:
+        except HTTPException:
+            raise
+        except jwt.PyJWTError as e:
             self.logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(status_code=401, detail="Invalid or expired token")
+            raise HTTPException(status_code=401, detail="Invalid or expired token") from e
         except ValidationError as e:
-            self.logger.error("Payload validation error: %s", str(e))
+            self.logger.error(
+                "Signed URL payload invalid on fields %s", [err.get("loc") for err in e.errors()]
+            )
             raise HTTPException(status_code=400, detail="Invalid token payload")
         except Exception as e:
             self.logger.error("Unexpected error during token validation: %s", str(e))

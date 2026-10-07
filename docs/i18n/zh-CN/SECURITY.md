@@ -14,7 +14,7 @@
 
 **请勿为安全漏洞创建公开的 GitHub issue。**
 
-请改为通过电子邮件报告安全漏洞：**abhishek@pipeshub.com**
+请改为通过电子邮件报告安全漏洞：**security@pipeshub.com**
 
 ### 应包含的内容
 

@@ -9,10 +9,11 @@ import {
   IOAuthAccessToken,
 } from '../schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
-import { IOAuthApp } from '../schema/oauth.app.schema'
+import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema'
 import {
   InvalidTokenError,
   ExpiredTokenError,
+  InvalidGrantError,
 } from '../../../libs/errors/oauth.errors'
 import {
   OAuthTokenPayload,
@@ -22,7 +23,11 @@ import {
   TokenListItem,
 } from '../types/oauth.types'
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
-import { PAT_TOKEN_PREFIX } from '../constants/constants'
+import { stripTokenDisplayPrefix } from '../constants/constants'
+
+
+/** What the personal-token views show; callers that need more pass their own. */
+const DEFAULT_TOKEN_LIST_LIMIT = 100
 
 @injectable()
 export class OAuthTokenService {
@@ -86,7 +91,17 @@ export class OAuthTokenService {
       tokenType: 'oauth',
       fullName,
       accountType,
-      createdBy: app.createdBy?.toString(),
+      // The identity a client_credentials token acts as: the app's chosen one
+      // when it has been pointed at a service account, its creator otherwise.
+      // The Python services read this claim to decide whose documents a
+      // request may reach, so it has to carry the answer rather than the
+      // creator — baking the creator in and resolving it only in Node would
+      // leave search and the connectors acting as the person while the Node
+      // routes acted as the service account.
+      //
+      // Changing an app's identity revokes its outstanding tokens, so none
+      // minted under the previous answer survives to be honoured.
+      createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
     }
 
     const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
@@ -131,7 +146,8 @@ export class OAuthTokenService {
         isRefreshToken: true,
         fullName,
         accountType,
-        createdBy: app.createdBy?.toString(),
+        // Same resolved identity as the access token above.
+        createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
       }
 
       const refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)
@@ -150,6 +166,10 @@ export class OAuthTokenService {
       result.refreshToken = refreshToken
     }
 
+    if (opts?.recheckAppScopes) {
+      await this.revokeIfScopesWithdrawn(app.clientId, scopes, result)
+    }
+
     this.logger.info('OAuth tokens generated', {
       clientId: app.clientId,
       userId,
@@ -161,17 +181,57 @@ export class OAuthTokenService {
   }
 
   /**
+   * updateApp saves a reduced scope list and then revokes the app's tokens.
+   * A grant that read the app before that save can insert its tokens after
+   * the revocation. Reading the app again after the insert closes the gap:
+   * if this read still sees the old scopes, the save and its revocation come
+   * later and catch these tokens; if it sees the new ones, they are revoked
+   * here.
+   */
+  private async revokeIfScopesWithdrawn(
+    clientId: string,
+    scopes: string[],
+    tokens: GeneratedTokens,
+  ): Promise<void> {
+    const current = await OAuthApp.findOne({
+      clientId: { $eq: clientId },
+      isDeleted: false,
+    })
+      .select('allowedScopes')
+      .lean()
+      .exec()
+    if (current && scopes.every((s) => current.allowedScopes.includes(s))) {
+      return
+    }
+
+    const revoked = { isRevoked: true, revokedAt: new Date() }
+    await Promise.all([
+      OAuthAccessToken.updateOne(
+        { tokenHash: { $eq: this.hashToken(tokens.accessToken) } },
+        revoked,
+      ),
+      tokens.refreshToken
+        ? OAuthRefreshToken.updateOne(
+            { tokenHash: { $eq: this.hashToken(tokens.refreshToken) } },
+            revoked,
+          )
+        : Promise.resolve(),
+    ])
+    throw new InvalidGrantError(
+      "The application's permissions changed during sign-in. Sign in again.",
+    )
+  }
+
+  /**
    * Verify access token
    */
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      // Personal access tokens carry a display-only phpat_ prefix ahead of
-      // the underlying JWT (see PAT_TOKEN_PREFIX) so they're grep-able in
+      // Personal access tokens and service tokens carry a display-only
+      // prefix ahead of the underlying JWT so they're grep-able in
       // logs/files. Strip it before verifying/hashing — every other token
-      // type never has this prefix, so this is a no-op for them.
-      const rawToken = token.startsWith(PAT_TOKEN_PREFIX)
-        ? token.slice(PAT_TOKEN_PREFIX.length)
-        : token
+      // type never has a prefix, so this is a no-op for them.
+      const rawToken = stripTokenDisplayPrefix(token)
 
       const payload = jwt.verify(rawToken, this.verifyKey, {
         algorithms: [this.algorithm],
@@ -265,12 +325,25 @@ export class OAuthTokenService {
       throw new InvalidTokenError('Refresh token not found')
     }
 
+    if (storedToken.clientId !== app.clientId) {
+      this.logger.warn('Refresh token presented by a different client', {
+        issuedTo: storedToken.clientId,
+        presentedBy: app.clientId,
+        userId: storedToken.userId.toString(),
+      });
+      throw new InvalidGrantError(
+        'Refresh token was not issued to this client',
+      )
+    }
+
     // Determine scopes - can only be reduced, not expanded
     let scopes = storedToken.scopes
     if (requestedScopes && requestedScopes.length > 0) {
       // Filter to only include scopes that were in the original grant
       scopes = requestedScopes.filter((s) => storedToken.scopes.includes(s))
     }
+    // Nor beyond what the app allows now; it may have lost scopes since the grant.
+    scopes = scopes.filter((s) => app.allowedScopes.includes(s))
 
     // Revoke old refresh token (rotation)
     storedToken.isRevoked = true
@@ -286,6 +359,7 @@ export class OAuthTokenService {
       true, // Include new refresh token
       payload.fullName,
       payload.accountType,
+      { recheckAppScopes: true },
     )
 
     this.logger.info('Tokens refreshed', {
@@ -368,6 +442,27 @@ export class OAuthTokenService {
   /**
    * Revoke all tokens for a user in an app
    */
+  /**
+   * Revoke every token held by a user, under every client.
+   *
+   * The per-client version below is for "this app no longer speaks for you".
+   * This one is for "this identity is gone", where leaving a credential alive
+   * because it was issued by a different client would defeat the point.
+   */
+  async revokeEveryTokenForUser(userId: string): Promise<void> {
+    const userObjId = new Types.ObjectId(userId)
+    await Promise.all([
+      OAuthAccessToken.updateMany(
+        { userId: { $eq: userObjId }, isRevoked: { $eq: false } },
+        { isRevoked: true, revokedAt: new Date() },
+      ),
+      OAuthRefreshToken.updateMany(
+        { userId: { $eq: userObjId }, isRevoked: { $eq: false } },
+        { isRevoked: true, revokedAt: new Date() },
+      ),
+    ])
+  }
+
   async revokeAllTokensForUser(
     clientId: string,
     userId: string,
@@ -511,10 +606,30 @@ export class OAuthTokenService {
    * List a single user's active access tokens for a client — the
    * per-user counterpart to {@link listTokensForApp}, used by the
    * personal access token list view.
+   *
+   * `limit` exists because the answer is read for different reasons. A person
+   * glancing at their own tokens is well served by the most recent hundred;
+   * an administrator looking at a service account is trying to find every
+   * credential it holds in order to revoke them, and a token they cannot see
+   * is one they cannot revoke.
    */
+  /** How many active access tokens a user holds for a client. */
+  async countActiveAccessTokensForUser(
+    clientId: string,
+    userId: string,
+  ): Promise<number> {
+    return OAuthAccessToken.countDocuments({
+      clientId: { $eq: clientId },
+      userId: { $eq: new Types.ObjectId(userId) },
+      isRevoked: { $eq: false },
+      expiresAt: { $gt: new Date() },
+    }).exec()
+  }
+
   async listAccessTokensForUser(
     clientId: string,
     userId: string,
+    limit: number = DEFAULT_TOKEN_LIST_LIMIT,
   ): Promise<TokenListItem[]> {
     const tokens = await OAuthAccessToken.find({
       clientId: { $eq: clientId },
@@ -523,8 +638,18 @@ export class OAuthTokenService {
       expiresAt: { $gt: new Date() },
     })
       .sort({ createdAt: -1 })
-      .limit(100)
+      .limit(limit)
       .exec()
+
+    // A caller that hits the ceiling is being shown less than it asked for,
+    // and for a revocation screen that means credentials nobody can see to
+    // revoke. Saying so is the difference between a cap and a silent one.
+    if (tokens.length === limit) {
+      this.logger.warn(
+        'Token list reached its limit; older tokens are not shown',
+        { clientId, userId, limit },
+      )
+    }
 
     return tokens.map((t) => ({
       id: (t._id as Types.ObjectId).toString(),

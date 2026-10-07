@@ -280,7 +280,7 @@ class TestCanAccessConnector:
     async def test_team_scope_admin_has_access(self):
         """Admin can access team-scoped connectors."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "admin-1", "org-1", is_admin=True)
 
@@ -290,7 +290,7 @@ class TestCanAccessConnector:
     async def test_team_scope_creator_has_access(self):
         """Creator can access their own team-scoped connector."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": ConnectorScope.TEAM.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -310,7 +310,7 @@ class TestCanAccessConnector:
     async def test_personal_scope_creator_has_access(self):
         """Creator can access their personal connector."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1"}
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -350,7 +350,7 @@ class TestCanAccessConnector:
     async def test_default_scope_is_personal(self):
         """Missing scope defaults to personal."""
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "createdBy": "user-1"}  # No scope key
+        instance = {"_key": "conn-1", "orgId": "org-1", "createdBy": "user-1"}  # No scope key
 
         result = await registry._can_access_connector(instance, "user-1", "org-1", is_admin=False)
 
@@ -624,6 +624,39 @@ class TestBuildConnectorInfo:
         result = registry._build_connector_info("X", metadata, instance_data)
 
         assert result["isLocked"] is True
+
+    def test_instance_data_owner_device_fields(self):
+        """Local FS owner device reaches the API response.
+
+        Node reads these off this payload to route a pull and to decide whether
+        the caller may enable sync; dropping them turns every Local FS
+        connector into a permanent DESKTOP_UNCLAIMED refusal.
+        """
+        registry, _ = _make_registry()
+        metadata = {"appGroup": "G", "config": {}, "connectorScopes": []}
+        instance_data = {
+            "_key": "i1",
+            "name": "N",
+            "ownerDeviceId": "dev-a",
+            "ownerDeviceName": "Work Laptop",
+            "scope": ConnectorScope.PERSONAL.value,
+        }
+
+        result = registry._build_connector_info("X", metadata, instance_data)
+
+        assert result["ownerDeviceId"] == "dev-a"
+        assert result["ownerDeviceName"] == "Work Laptop"
+
+    def test_instance_data_owner_device_absent_is_null_not_missing(self):
+        """An unclaimed connector answers with explicit nulls, not absent keys."""
+        registry, _ = _make_registry()
+        metadata = {"appGroup": "G", "config": {}, "connectorScopes": []}
+        instance_data = {"_key": "i1", "name": "N", "scope": ConnectorScope.PERSONAL.value}
+
+        result = registry._build_connector_info("X", metadata, instance_data)
+
+        assert result["ownerDeviceId"] is None
+        assert result["ownerDeviceName"] is None
 
     def test_no_instance_data_no_key(self):
         """Without instance_data, '_key' is not in result."""
@@ -1243,7 +1276,7 @@ class TestGetConnectorInstance:
 
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "My Gmail",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "My Gmail",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
 
@@ -1370,6 +1403,8 @@ class TestCreateConnectorInstanceOnConfiguration:
         assert result["type"] == "Gmail"
         assert result["name"] == "My Gmail"
         assert result["authType"] == "OAUTH"
+        # until someone else re-authenticates, the creator is who authenticated it
+        assert result["authenticatedBy"] == result["createdBy"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_unregistered_type_returns_none(self):
@@ -1482,7 +1517,7 @@ class TestUpdateConnectorInstance:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old Name",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old Name",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.update_node.return_value = True
@@ -1541,7 +1576,7 @@ class TestUpdateConnectorInstance:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.check_connector_name_exists.return_value = True
@@ -1815,39 +1850,71 @@ class TestCreateConnectorInstanceDeep:
 # ===========================================================================
 
 
+class _FilteringGraphProvider:
+    """Filters, sorts and pages connector documents the way the graph query does."""
+
+    def __init__(self, documents: list[dict]) -> None:
+        self.documents = documents
+
+    async def get_filtered_connector_instances(
+        self,
+        *,
+        skip: int = 0,
+        limit: int = 20,
+        is_configured: bool | None = None,
+        is_agent_active: bool | None = None,
+        allowed_connector_types: list[str] | None = None,
+        **_: object,
+    ) -> tuple[list[dict], int]:
+        matching = [
+            d for d in self.documents
+            if (is_configured is None or bool(d.get("isConfigured")) == is_configured)
+            and (is_agent_active is None or bool(d.get("isAgentActive")) == is_agent_active)
+            and (allowed_connector_types is None or d.get("type") in allowed_connector_types)
+        ]
+        # ORDER BY createdAtTimestamp DESC, then the id, so ties keep one order.
+        matching.sort(key=lambda d: d["_key"])
+        matching.sort(key=lambda d: d.get("createdAtTimestamp", 0), reverse=True)
+        return matching[skip:skip + limit], len(matching)
+
+
+def _registry_over(documents: list[dict]) -> ConnectorRegistry:
+    registry, container = _make_registry()
+    registry.register_connector(_make_connector_class(name="Gmail", app_group="Google"))
+    data_store = MagicMock()
+    data_store.graph_provider = _FilteringGraphProvider(documents)
+    container.data_store = AsyncMock(return_value=data_store)
+    return registry
+
+
+# Every other connector is configured, and every fourth one also has agents on.
+_MIXED_CONNECTORS = [
+    {
+        "_key": f"c{i:02d}", "type": "Gmail", "name": f"Connector {i:02d}", "scope": "team",
+        "isConfigured": i % 2 == 0, "isAgentActive": i % 4 == 0,
+    }
+    for i in range(50)
+]
+
+
 class TestGetActiveAgentConnectorInstances:
     """Tests for get_active_agent_connector_instances."""
 
     @pytest.mark.asyncio
-    async def test_filters_active_agent_only(self):
-        """Only instances with isAgentActive=True and isConfigured=True are returned."""
-        registry, container = _make_registry()
-        cls = _make_connector_class(name="Gmail", app_group="Google")
-        registry.register_connector(cls)
-
-        gp = _make_graph_provider()
-        gp.get_filtered_connector_instances.return_value = (
-            [
-                {"_key": "c1", "type": "Gmail", "name": "Agent Active",
-                 "isAgentActive": True, "isConfigured": True, "scope": "personal"},
-                {"_key": "c2", "type": "Gmail", "name": "Not Agent Active",
-                 "isAgentActive": False, "isConfigured": True, "scope": "personal"},
-                {"_key": "c3", "type": "Gmail", "name": "Agent Not Configured",
-                 "isAgentActive": True, "isConfigured": False, "scope": "personal"},
-            ],
-            3,
-        )
-
-        mock_data_store = MagicMock()
-        mock_data_store.graph_provider = gp
-        container.data_store = AsyncMock(return_value=mock_data_store)
+    async def test_page_two_holds_the_next_agent_connectors_and_the_total_counts_them_all(self) -> None:
+        registry = _registry_over(_MIXED_CONNECTORS)
 
         result = await registry.get_active_agent_connector_instances(
-            "user-1", "org-1", is_admin=False
+            "user-1", "org-1", is_admin=True, page=2, limit=5
         )
 
-        assert len(result["connectors"]) == 1
-        assert result["connectors"][0]["name"] == "Agent Active"
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in (20, 24, 28, 32, 36)
+        ]
+        assert result["pagination"]["totalCount"] == 13
+        assert result["pagination"]["totalPages"] == 3
+        assert result["pagination"]["hasNext"] is True
+        assert result["pagination"]["hasPrev"] is True
 
 
 # ===========================================================================
@@ -1859,33 +1926,52 @@ class TestGetConfiguredConnectorInstances:
     """Tests for get_configured_connector_instances."""
 
     @pytest.mark.asyncio
-    async def test_filters_configured_only(self):
-        """Only configured instances are returned."""
-        registry, container = _make_registry()
-        cls = _make_connector_class(name="Gmail", app_group="Google")
-        registry.register_connector(cls)
-
-        gp = _make_graph_provider()
-        gp.get_filtered_connector_instances.return_value = (
-            [
-                {"_key": "c1", "type": "Gmail", "name": "Configured",
-                 "isConfigured": True, "scope": "personal"},
-                {"_key": "c2", "type": "Gmail", "name": "Not Configured",
-                 "isConfigured": False, "scope": "personal"},
-            ],
-            2,
-        )
-
-        mock_data_store = MagicMock()
-        mock_data_store.graph_provider = gp
-        container.data_store = AsyncMock(return_value=mock_data_store)
+    async def test_page_two_holds_the_next_configured_connectors_and_the_total_counts_them_all(self) -> None:
+        registry = _registry_over(_MIXED_CONNECTORS)
 
         result = await registry.get_configured_connector_instances(
-            "user-1", "org-1", is_admin=False
+            "user-1", "org-1", is_admin=True, page=2, limit=10, search=None
         )
 
-        assert len(result["connectors"]) == 1
-        assert result["connectors"][0]["isConfigured"] is True
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in range(20, 40, 2)
+        ]
+        assert result["pagination"]["totalCount"] == 25
+        assert result["pagination"]["totalPages"] == 3
+        assert result["pagination"]["hasNext"] is True
+        assert result["pagination"]["nextPage"] == 3
+
+    @pytest.mark.asyncio
+    async def test_unregistered_types_are_left_out_of_the_page_and_the_total(self) -> None:
+        unregistered = [
+            {"_key": f"u{i}", "type": "Retired Connector", "name": f"Retired {i}", "isConfigured": True}
+            for i in range(15)
+        ]
+        registry = _registry_over(unregistered + _MIXED_CONNECTORS)
+
+        result = await registry.get_configured_connector_instances(
+            "user-1", "org-1", is_admin=True, page=1, limit=10, search=None
+        )
+
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in range(0, 20, 2)
+        ]
+        assert result["pagination"]["totalCount"] == 25
+        assert result["pagination"]["totalPages"] == 3
+
+    @pytest.mark.asyncio
+    async def test_last_page_ends_the_list(self) -> None:
+        registry = _registry_over(_MIXED_CONNECTORS)
+
+        result = await registry.get_configured_connector_instances(
+            "user-1", "org-1", is_admin=True, page=3, limit=10, search=None
+        )
+
+        assert [c["name"] for c in result["connectors"]] == [
+            f"Connector {i:02d}" for i in range(40, 50, 2)
+        ]
+        assert result["pagination"]["hasNext"] is False
+        assert result["pagination"]["nextPage"] is None
 
 
 # ===========================================================================
@@ -1977,13 +2063,58 @@ class TestDiscoverConnectorsDeep:
 class TestUpdateConnectorInstanceDeep:
     """Deeper tests for update_connector_instance."""
 
+    @staticmethod
+    def _registry_with_team_connector(name, *, name_taken=True):
+        registry, container = _make_registry()
+        gp = _make_graph_provider()
+        gp.get_document.return_value = {
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": name,
+            "scope": ConnectorScope.TEAM.value, "createdBy": "user-1",
+        }
+        gp.update_node.return_value = True
+        gp.check_connector_name_exists.return_value = name_taken
+        mock_data_store = MagicMock()
+        mock_data_store.graph_provider = gp
+        container.data_store = AsyncMock(return_value=mock_data_store)
+        return registry, gp
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("new_name", ["jira", " jira ", "Jira"])
+    async def test_rename_never_clashes_with_the_connector_itself(self, new_name):
+        """The name lookup excludes the connector being renamed, so resaving its
+        name or changing only case/spacing is not reported as taken."""
+        registry, gp = self._registry_with_team_connector("jira", name_taken=False)
+
+        result = await registry.update_connector_instance(
+            "c1", {"name": new_name}, "user-1", "org-1", is_admin=True
+        )
+
+        assert result is not None
+        kwargs = gp.check_connector_name_exists.call_args.kwargs
+        assert kwargs["exclude_connector_id"] == "c1"
+        assert kwargs["instance_name"] == new_name
+
+    @pytest.mark.asyncio
+    async def test_rename_to_name_held_by_another_connector_is_rejected(self):
+        registry, gp = self._registry_with_team_connector("jira", name_taken=True)
+
+        with pytest.raises(ValueError, match="already exists"):
+            await registry.update_connector_instance(
+                "c1", {"name": "Confluence"}, "user-1", "org-1", is_admin=True
+            )
+
+        kwargs = gp.check_connector_name_exists.call_args.kwargs
+        assert kwargs["org_id"] == "org-1"
+        assert kwargs["exclude_connector_id"] == "c1"
+        gp.update_node.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_update_without_name_change(self):
         """Update without name change skips uniqueness check."""
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old Name",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old Name",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.update_node.return_value = True
@@ -2006,7 +2137,7 @@ class TestUpdateConnectorInstanceDeep:
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.return_value = {
-            "_key": "c1", "type": "Gmail", "name": "Old Name",
+            "_key": "c1", "orgId": "org-1", "type": "Gmail", "name": "Old Name",
             "scope": ConnectorScope.PERSONAL.value, "createdBy": "user-1",
         }
         gp.check_connector_name_exists.return_value = False

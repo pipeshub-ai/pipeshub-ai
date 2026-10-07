@@ -24,6 +24,7 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
     ConfluenceDataCenterConnector,
+    ContentListing,
 )
 from app.models.entities import (
     AppUser,
@@ -950,14 +951,14 @@ class TestFetchGroupMembers:
         mock_ds.get_group_members_by_name = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         emails = await c._fetch_group_members("g1", "G")
-        assert emails == []
+        assert emails is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
         emails = await c._fetch_group_members("g1", "G")
-        assert emails == []
+        assert emails is None
 
 
 # ===========================================================================
@@ -1360,8 +1361,8 @@ class TestFetchPageContent:
         assert mock_ds.get_content_v1.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_exhausted_retries_preserves_status_code(self):
-        """Test that when 503 exhausts retries, HTTPException has status_code=503 and concise message."""
+    async def test_exhausted_retries_maps_upstream_5xx_to_bad_gateway(self):
+        """A 503 that exhausts retries surfaces as 502, not an opaque 500."""
         c = _conn()
         mock_ds = MagicMock()
         # All attempts return 503
@@ -1375,16 +1376,14 @@ class TestFetchPageContent:
         with pytest.raises(HTTPException) as exc_info:
             await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
         
-        # Verify status code is preserved (503, not 500)
-        assert exc_info.value.status_code == 503
-        # Verify message is concise (under 600 chars - includes 500 char error body limit)
+        assert exc_info.value.status_code == 502
         assert len(exc_info.value.detail) < 600
         # Verify all 3 attempts were made
         assert mock_ds.get_content_v1.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_exhausted_retries_includes_confluence_error_message(self):
-        """Test that Confluence API error message is included in the final HTTPException detail."""
+    async def test_exhausted_retries_does_not_leak_upstream_body(self):
+        """The upstream error body must not reach the browser."""
         c = _conn()
         mock_ds = MagicMock()
         confluence_error_msg = "Confluence is currently in maintenance mode. Please try again later."
@@ -1399,10 +1398,8 @@ class TestFetchPageContent:
         with pytest.raises(HTTPException) as exc_info:
             await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
         
-        # Verify status code is preserved
-        assert exc_info.value.status_code == 503
-        # Verify the Confluence error message is included in the detail
-        assert "maintenance mode" in exc_info.value.detail
+        assert exc_info.value.status_code == 502
+        assert "maintenance mode" not in exc_info.value.detail
         # Verify all 3 attempts were made
         assert mock_ds.get_content_v1.call_count == 3
 
@@ -1823,7 +1820,7 @@ class TestRunSync:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
-        c._sync_content = AsyncMock()
+        c._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()

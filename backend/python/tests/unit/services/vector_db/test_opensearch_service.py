@@ -969,7 +969,7 @@ class TestOpenSearchFilterBuilder:
 # Phase 3 regression: OpenSearch correctness + auth seam
 # ===========================================================================
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 
 def _make_os_service():
@@ -1334,6 +1334,20 @@ class TestForceMerge:
         )
 
     @pytest.mark.asyncio
+    async def test_force_merge_refreshes_after_merging(self, connected_service) -> None:
+        """Without the refresh, searches read the old segments for up to 30s."""
+        calls = []
+        connected_service.client.indices.forcemerge = AsyncMock(
+            side_effect=lambda **_: calls.append("forcemerge")
+        )
+        connected_service.client.indices.refresh = AsyncMock(
+            side_effect=lambda **_: calls.append("refresh")
+        )
+        await connected_service.force_merge("my-idx")
+        assert calls == ["forcemerge", "refresh"]
+        connected_service.client.indices.refresh.assert_awaited_once_with(index="my-idx")
+
+    @pytest.mark.asyncio
     async def test_force_merge_custom_segments(self, connected_service):
         connected_service.client.indices.forcemerge = AsyncMock(return_value={})
         await connected_service.force_merge("my-idx", max_segments=5)
@@ -1492,3 +1506,135 @@ class TestScrollMigrationGuard:
         )
         result = await connected_service.scroll("my-idx", FilterExpression(), limit=5)
         assert result.next_offset == '["p4"]'
+
+
+class TestScrollMembershipArrays:
+    """Qdrant's scroll returns the whole payload and Redis rebuilds every array;
+    OpenSearch hand-builds one, so a key missing here is a silent divergence
+    between backends rather than an error."""
+
+    @pytest.mark.asyncio
+    async def test_scroll_returns_all_three_membership_arrays(self, connected_service):
+        connected_service.client.search = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "doc-1",
+                            "sort": ["doc-1"],
+                            "_source": {
+                                "metadata": {"orgId": "org1"},
+                                "page_content": "hello",
+                                "connectorIds": ["conn-1"],
+                                "recordGroupIds": ["thread-1"],
+                                "rootRecordGroupIds": ["channel-1"],
+                            },
+                        }
+                    ]
+                }
+            }
+        )
+        result = await connected_service.scroll("my-idx", FilterExpression(), 100)
+        payload = result.points[0].payload
+        assert payload["connectorIds"] == ["conn-1"]
+        assert payload["recordGroupIds"] == ["thread-1"]
+        assert payload["rootRecordGroupIds"] == ["channel-1"]
+
+    @pytest.mark.asyncio
+    async def test_scroll_membership_arrays_default_to_empty(self, connected_service):
+        connected_service.client.search = AsyncMock(
+            return_value={"hits": {"hits": [{"_id": "doc-1", "_source": {}}]}}
+        )
+        result = await connected_service.scroll("my-idx", FilterExpression(), 100)
+        assert result.points[0].payload["rootRecordGroupIds"] == []
+
+
+class TestUpdatePayloadByIds:
+    @pytest.mark.asyncio
+    async def test_bulk_partial_update_by_id(self, connected_service):
+        """update_by_query is search-based and misses unrefreshed documents;
+        a bulk update by _id does not."""
+        bulk = AsyncMock(return_value=(2, []))
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
+            await connected_service.update_payload_by_ids(
+                "entities", ["p1", "p2"], {"connectorIds": ["c1"], "metadata.level": "1"},
+            )
+        actions = bulk.await_args.args[1]
+        assert actions == [
+            {"_op_type": "update", "_index": "entities", "_id": "p1",
+             "doc": {"connectorIds": ["c1"], "metadata": {"level": "1"}}, "retry_on_conflict": 3},
+            {"_op_type": "update", "_index": "entities", "_id": "p2",
+             "doc": {"connectorIds": ["c1"], "metadata": {"level": "1"}}, "retry_on_conflict": 3},
+        ]
+        assert bulk.await_args.kwargs["refresh"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_missing_id_is_ignored(self, connected_service) -> None:
+        missing = {"update": {"_id": "gone", "status": 404, "error": {"type": "document_missing_exception"}}}
+        bulk = AsyncMock(return_value=(1, [missing]))
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
+            await connected_service.update_payload_by_ids("entities", ["p1", "gone"], {"connectorIds": ["c1"]})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [409, 429, 400])
+    async def test_any_other_item_error_raises(self, connected_service, status) -> None:
+        """Qdrant and Redis raise on a failed write; a dropped item here would
+        leave the store believing the membership was written."""
+        failed = {"update": {"_id": "p2", "status": status, "error": {"type": "some_exception"}}}
+        bulk = AsyncMock(return_value=(1, [failed]))
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
+            with pytest.raises(RuntimeError, match="1 of 2 point"):
+                await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]})
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, connected_service):
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=AsyncMock()) as bulk:
+            await connected_service.update_payload_by_ids("entities", [], {"x": 1})
+        bulk.assert_not_called()
+
+
+class TestRetrievePoints:
+    @pytest.mark.asyncio
+    async def test_uses_realtime_mget_and_skips_missing_docs(self, connected_service):
+        connected_service.client.mget = AsyncMock(return_value={"docs": [
+            {"_id": "p1", "found": True, "_source": {
+                "metadata": {"entityId": "e1"}, "page_content": "Legal",
+                "connectorIds": ["c1"], "recordGroupIds": ["g1"],
+            }},
+            {"_id": "p2", "found": False},
+        ]})
+
+        points = await connected_service.retrieve_points("entities", ["p1", "p2"])
+
+        kwargs = connected_service.client.mget.await_args.kwargs
+        assert kwargs["index"] == "entities"
+        assert kwargs["body"] == {"ids": ["p1", "p2"]}
+        assert kwargs["_source_excludes"] == ["dense_embedding"]
+        (point,) = points
+        assert point.id == "p1"
+        assert point.payload["metadata"] == {"entityId": "e1"}
+        assert point.payload["connectorIds"] == ["c1"]
+        assert point.payload["recordGroupIds"] == ["g1"]
+        assert point.payload["page_content"] == "Legal"
+
+    @pytest.mark.asyncio
+    async def test_scroll_and_retrieve_build_the_same_payload(self, connected_service):
+        source = {"metadata": {"entityId": "e1"}, "page_content": "x", "connectorIds": ["c1"]}
+        connected_service.client.search = AsyncMock(return_value={"hits": {"hits": [
+            {"_id": "p1", "_source": source, "sort": ["p1"]},
+        ]}})
+        connected_service.client.mget = AsyncMock(return_value={"docs": [
+            {"_id": "p1", "found": True, "_source": source},
+        ]})
+        from app.services.vector_db.models import FilterExpression
+
+        scrolled = (await connected_service.scroll("entities", FilterExpression(), 10)).points
+        retrieved = await connected_service.retrieve_points("entities", ["p1"])
+
+        assert scrolled[0].payload == retrieved[0].payload
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, connected_service):
+        connected_service.client.mget = AsyncMock()
+        assert await connected_service.retrieve_points("entities", []) == []
+        connected_service.client.mget.assert_not_called()

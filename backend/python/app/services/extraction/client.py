@@ -7,6 +7,8 @@ Usage::
         block_container=container,
         org_id="org-123",
         departments=["Engineering", "Finance"],
+        record_name="Q3 Board Deck.pdf",
+        record_type="FILE",
     )
 """
 from __future__ import annotations
@@ -15,11 +17,13 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.services.base_client import BaseServiceClient, ServiceCallError
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 
 if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
     from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,7 @@ class ExtractionClient(BaseServiceClient):
         max_retries: int = 2,
         retry_delay: float = 2.0,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
+        config_service: "ConfigurationService | None" = None,
     ) -> None:
         super().__init__(
             service_url=service_url or os.getenv("EXTRACTION_SERVICE_URL", "http://localhost:8093"),
@@ -52,6 +57,8 @@ class ExtractionClient(BaseServiceClient):
             max_retries=max_retries,
             retry_delay=retry_delay,
             backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
+            config_service=config_service,
+            service_scope=TokenScopes.DOCUMENT_CLASSIFY,
         )
 
     async def classify(
@@ -59,6 +66,8 @@ class ExtractionClient(BaseServiceClient):
         block_container: BlocksContainer,
         org_id: str,
         departments: list[str] | None = None,
+        record_name: str = "",
+        record_type: str = "",
     ) -> SemanticMetadata | None:
         """Call ``POST /api/v1/extract/classify`` and return SemanticMetadata.
 
@@ -70,12 +79,15 @@ class ExtractionClient(BaseServiceClient):
             "block_container": block_container.model_dump(mode="json"),
             "org_id": org_id,
             "departments": departments or [],
+            "record_name": record_name,
+            "record_type": record_type,
         }
 
         response = await self._post_json(
             "/api/v1/extract/classify",
             payload,
             operation="classify",
+            org_id=org_id,
         )
 
         body = response.json()

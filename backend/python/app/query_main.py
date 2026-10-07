@@ -7,11 +7,12 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.edition_config import (
     agent_router,
@@ -37,7 +38,9 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
 container = QueryAppContainer.init("query_service")
@@ -152,6 +155,7 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
 
     # Before anything builds a pool or semaphore off a per-process budget.
     set_process_worker_count(configured_worker_count())
@@ -253,6 +257,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        # Collections created before keyword scoring was fixed (Qdrant IDF,
+        # OpenSearch stemming) are updated in place. A deployment that only
+        # serves search never reaches the indexing write path that would
+        # otherwise do it, so it has to happen here too.
+        async def _reconcile_lexical_scoring() -> None:
+            try:
+                changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
+                if changed:
+                    logger.info(f"Updated keyword scoring on collection(s) {changed}")
+            except Exception as reconcile_error:
+                logger.warning(f"Keyword-scoring reconcile failed (non-fatal): {reconcile_error}")
+
+        app.state.lexical_reconcile_task = asyncio.create_task(_reconcile_lexical_scoring())
+
     # Prepare the coding sandbox backend before a user needs it. On Docker
     # that means pulling the sandbox image and creating the egress network —
     # otherwise the first `run_code` of a deployment pays for both inside a
@@ -293,7 +311,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Coding sandbox warmup complete (%s)", settings.backend)
         except Exception as warmup_error:
             app.state.sandbox_health = {
-                "backend": os.getenv("SANDBOX_MODE", "local").lower(),
+                "backend": (os.getenv("SANDBOX_MODE") or "").strip().lower() or "unset",
                 "available": False,
                 "reason": f"{type(warmup_error).__name__}: {warmup_error}",
             }
@@ -338,6 +356,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
+        "lexical_reconcile_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -420,21 +439,20 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         # Handle authentication errors
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     except Exception:
-        # Handle unexpected errors
+        # Handle unexpected errors. This wraps every route, so an uncaught
+        # exception anywhere in the app ends up here: log it with its
+        # traceback, otherwise the only trace of a crashing route is a
+        # generic 500 and nothing in the server logs.
+        container.logger().exception(
+            "Unhandled exception while processing %s %s",
+            request.method,
+            request.url.path,
+        )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error"},
         )
 
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)
@@ -464,24 +482,13 @@ async def health_check() -> JSONResponse:
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """
-    Custom handler to log Pydantic validation errors.
-    This will log the detailed error and the body of the failed request.
-    """
-    # Log the full error details from the exception
-
-    try:
-        # Try to log the request body
-        await request.json()
-    except Exception:
-        print("Could not parse request body as JSON.")
-
-    # You can customize the response, but for now, we'll just re-raise
-    # or return the default FastAPI response structure.
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors()},
+    """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
+    errors = jsonable_encoder(exc.errors())
+    logging.getLogger(__name__).warning(
+        "Request validation failed for %s %s: %s", request.method, request.url, errors
     )
+    message, detail = friendly_validation_errors(errors)
+    return JSONResponse(status_code=422, content={"message": message, "detail": detail})
 
 
 # Include routes from routes.py
@@ -491,7 +498,8 @@ app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
-app.include_router(health_router, prefix="/api/v1")
+# These routes call whatever provider URL the body names, so only admins may reach them.
+app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")
 if agent_sharing_router is not None:
     app.include_router(agent_sharing_router, prefix="/api/v1/agent")
@@ -550,6 +558,8 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         )
         workers = 1
         os.environ["QUERY_UVICORN_WORKERS"] = "1"
+    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+
     if workers > 1 and not os.getenv(_EXEC_SENTINEL):
         # uvicorn spawns workers, and a spawned child re-imports the parent's __main__.
         # Reached via `python -m app.query_main`, __main__ IS this module, so every child
@@ -564,6 +574,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
             sys.executable, "-m", "uvicorn", "app.query_main:app",
             "--host", host, "--port", str(port),
             "--log-level", "info", "--workers", str(workers),
+            "--timeout-worker-healthcheck", str(uvicorn_worker_healthcheck_timeout()),
         ]
         try:
             os.execvp(sys.executable, argv)
@@ -583,6 +594,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 if __name__ == "__main__":

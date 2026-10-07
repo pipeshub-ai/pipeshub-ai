@@ -1,6 +1,7 @@
 from app.config.constants.arangodb import (
     Connectors,
     ConnectorScopes,
+    DeleteSource,
     OriginTypes,
     PermissionModel,
 )
@@ -25,6 +26,18 @@ orgs_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # app.modules.indexing.entity_index_rebuild
+            "entityIndexState": {"type": ["string", "null"]},
+            "entityIndexPhase": {"type": ["string", "null"]},
+            "entityIndexAfterKey": {"type": ["string", "null"]},
+            "entityIndexAttempts": {"type": ["integer", "null"]},
+            "entityIndexFailures": {"type": ["integer", "null"]},
+            "entityIndexExhausted": {"type": ["boolean", "null"]},
+            "entityIndexTarget": {"type": ["string", "null"]},
+            "entityIndexErrors": {"type": ["integer", "null"]},
+            "entityIndexSweptAt": {"type": ["number", "null"]},
+            "entityIndexSweepOffset": {"type": ["string", "null"]},
+            "entityIndexSweepFailures": {"type": ["integer", "null"]},
         },
         "required": ["accountType", "isActive"],
         "additionalProperties": False,
@@ -156,27 +169,49 @@ app_schema = {
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
+            "pendingResync": {"type": ["boolean", "null"]},
+            "queuedAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.modules.indexing.entity_index_rebuild
+            "entityIndexState": {"type": ["string", "null"]},
+            "entityIndexPhase": {"type": ["string", "null"]},
+            "entityIndexAfterKey": {"type": ["string", "null"]},
+            "entityIndexAttempts": {"type": ["integer", "null"]},
+            "entityIndexFailures": {"type": ["integer", "null"]},
+            "entityIndexExhausted": {"type": ["boolean", "null"]},
+            "entityIndexTarget": {"type": ["string", "null"]},
+            "entityIndexErrors": {"type": ["integer", "null"]},
+            "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            "authenticatedBy": {"type": ["string", "null"]},
             "lastSyncedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            "ownerDeviceId": {"type": ["string", "null"]},
+            "ownerDeviceName": {"type": ["string", "null"]},
             "permissionModel": {
                 "type": ["string", "null"],
-                "enum": [m.value for m in PermissionModel] + [None],
+                "enum": [
+                    PermissionModel.APP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
             },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
             "hideConnector": {"type": ["boolean", "null"]},
+            # Excludes this KB from list/browse/unscoped-search surfaces even
+            # though it is a normal KB app; explicit filters.kb still resolves it.
+            "isHidden": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",
@@ -207,6 +242,7 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "externalRootGroupId": {"type": ["string", "null"]},
             "recordGroupId": {"type": ["string", "null"]},
+            "rootRecordGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],
@@ -230,7 +266,26 @@ record_schema = {
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
+            # Soft delete: when the record entered the trash, who put it there,
+            # the batch a restore brings back together, and the purge's retries.
+            "deletedAtTimestamp": {"type": ["number", "null"]},
+            "deleteSource": {
+                "type": ["string", "null"],
+                "enum": [source.value for source in DeleteSource] + [None],
+            },
+            "deleteBatchId": {"type": ["string", "null"]},
+            "purgeAttempts": {"type": ["number", "null"]},
+            "purgeLastError": {"type": ["string", "null"]},
+            # The source id a trashed record gave up when a live record moved onto it.
+            "trashedExternalRecordId": {"type": ["string", "null"]},
+            # When a restore brought the record back; see RESTORED_AT_FIELD.
+            "restoredAtTimestamp": {"type": ["number", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
+            # Clocks the stranded-record sweep in indexing_main ages rows on,
+            # and how many times it has re-sent the record since it was queued.
+            "queuedAtTimestamp": {"type": ["number", "null"]},
+            "lastRepublishedAt": {"type": ["number", "null"]},
+            "republishCount": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [
@@ -276,6 +331,11 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # Promoted duplicates of this record still need its taxonomy copied.
+            "duplicateReconcilePending": {"type": "boolean"},
+            # app.modules.indexing.duplicate_reconcile
+            "duplicateReconcileAttempts": {"type": ["integer", "null"]},
+            "duplicateReconcileDueAt": {"type": ["number", "null"]},
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
@@ -729,6 +789,18 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            # Whether container-filtered search may trust this group's grant
+            # instead of checking each record. Null means "verify" — the safe
+            # state, and the only one until a connector proves otherwise.
+            # APP_LEVEL is excluded: it describes a connector, not a group.
+            "permissionModel": {
+                "type": ["string", "null"],
+                "enum": [
+                    PermissionModel.RECORD_GROUP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
+            },
             "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
@@ -867,6 +939,7 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
@@ -1178,10 +1251,14 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # deterministic UUID based on email
+            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
             "email": {"type": "string"},
+            # Not in "required": pre-existing documents written before org-scoping
+            # was added have no orgId and must stay schema-valid.
+            "orgId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "fullName": {"type": ["string", "null"]},
             "firstName": {"type": ["string", "null"]},
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},
@@ -1315,7 +1392,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated"]},
+            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

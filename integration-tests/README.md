@@ -163,6 +163,9 @@ Only needed for the connectors you actually run. If a credential is missing, tha
 
 | Variable                         | Used by      | Purpose |
 |----------------------------------|-------------|---------|
+| `SCOPED_JWT_SECRET`              | `storage/`, `security/` | The deployment's scoped JWT secret. Storage routes accept only storage service tokens, so the suite mints its own. The integration compose files start the stack with `pipeshub-integration-scoped-jwt-secret-test-only` unless you set another value, and the nightly passes the same value to pytest. Without it the suite is skipped locally and fails on the nightly. |
+| `MAILPIT_URL`                    | `response-validation/auth/` | Mailpit's web API, where the emailed sign-in tests read the reset link and sign-in code. Default `http://localhost:8025`, which the integration compose publishes. |
+| `PIPESHUB_CONNECTOR_URL`         | `security/` | The connector service, for the checks that an ended session is refused by the Python services too. Default: the host of `PIPESHUB_BASE_URL` on port 8088. Skipped when unreachable. |
 | `S3_ACCESS_KEY`                  | S3          | AWS access key for test bucket. |
 | `S3_SECRET_KEY`                  | S3          | AWS secret key. |
 | `S3_REGION`                      | S3          | Optional; default `us-east-1`. |
@@ -251,6 +254,19 @@ pytest -m azure_blob -v
 pytest -m azure_files -v
 ```
 
+**MCP server surface** (`response-validation/mcp/`): connects an MCP client to `{PIPESHUB_BASE_URL}/mcp` with an OAuth token (authorization_code + PKCE, obtained with API calls) and compares the served instructions, tool descriptions, input schemas, annotations, and prompts with `response-validation/mcp/golden/mcp_surface_<version>.json`. `<version>` is the `@pipeshub-ai/mcp` pin in `backend/nodejs/apps/package.json`. After bumping that pin, review the served text and regenerate the golden:
+
+```bash
+pytest -m mcp -v                                     # compare with the golden
+pytest response-validation/mcp --update-mcp-golden   # rewrite the golden from the live server
+```
+
+**Storage backends** (`storage/`): drives upload, download, versioning, rollback and metadata through the running product, against each configured backend. These repoint the whole deployment's storage while they run, so they never join a plain `pytest` or `-m integration` session — ask for them by name:
+
+```bash
+pytest -m storage -v
+```
+
 **Other options:**
 
 ```bash
@@ -258,6 +274,59 @@ pytest -m integration -v -k "test_full_lifecycle"   # single test
 pytest -m integration -v --tb=long                 # longer tracebacks
 pytest -m "integration and not slow" -v             # exclude slow
 ```
+
+**How CI splits this suite.** The nightly run does not run the whole suite in one
+job: `.github/workflows/integration-tests.yml` divides the connector suites across
+three shards (`CONN_SHARD_1` … `CONN_SHARD_3`), and a fourth `core` shard runs
+everything those three do not name, plus the browser tests. A fifth `demo` shard
+runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
+indexed into, because the demo's answers are prompted differently once a
+workspace has data of its own; `core` leaves the `demo` marker out. A sixth
+`ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
+calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
+against a real model. Every test there costs model calls, so that shard runs on
+the nightly and on a full manual run, never on a pull request, and `core` leaves
+its marker out. The model-settings part (`-m ai_models`) also runs weekly
+against a local Ollama model in `integration-tests-ollama.yml`. Each shard
+brings up its own stack and runs both graph databases, so a shard's wall clock is
+roughly the sum of its two legs.
+
+Adding a connector means adding its marker to one of those shard lines. Connector
+tests are also marked `integration`, so a marker in none of them is not skipped —
+it falls into `core`, which makes that shard longer and undoes the balance. A
+`CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that
+does skip tests: `core` excludes them and no job selects them. After adding or
+growing a suite:
+
+```bash
+python3 scripts/shard_balance.py --check
+```
+
+It lists each shard's measured minutes and fails when a connector is unassigned,
+is in two shards, when a shard names something that is not a single connector's
+marker, when a shard list and the job matrix disagree, when the `demo` job and
+`core` would both run the demo (or neither would), or when one shard drifts
+well past the others. The measurements
+live in `scripts/shard_durations.json`; refresh them from a recent nightly's
+`reports-both-<shard>` artifacts (`*-results.xml`) when they look stale. The same
+check runs in CI through `python3 -m unittest discover -s scripts`.
+
+**Pull requests and secrets.** `integration-tests.yml` runs on `pull_request`.
+For a branch in this repository, the full suite runs with the connector and model
+secrets once a maintainer approves the `integration-test-dev` environment. A pull
+request from a fork never gets those secrets: it runs the `it-fork` job instead,
+which runs only the helper unit tests (`pytest unit/`) on a GitHub-hosted runner.
+To run the full suite on a fork's change, a maintainer reviews the pull request
+and then dispatches the workflow on that exact commit:
+
+```bash
+gh workflow run integration-tests.yml -f commit_hash=<full 40-character SHA you reviewed> -f connectors=integration
+```
+
+The environment approval still applies. `commit_hash` must be a full SHA, so the
+run cannot pick up a commit pushed after the review. Review everything that runs,
+not only the tests: `conftest.py`, `pyproject.toml`, `package.json` scripts,
+Dockerfiles and compose files all execute with the secrets.
 
 After each run, an **HTML** report is written to `integration-tests/reports/` with a graph-DB-tagged, timestamped filename, e.g. `INTEGRATION_TEST_REPORT_neo4j_2025-03-09_14-30-45.html`. Open it when debugging: verdict summary, pass/fail/skip counts, **parsed root cause** per failure, **cascade hints** when a later ordered test fails because shared state was never set (e.g. `KeyError: connector_id`), **full tracebacks**, optional captured stdout/stderr, and tables of all results by suite with durations. Keep multiple runs to compare over time.
 
@@ -314,7 +383,11 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `.env.local.example` | Template for `.env.local` (all vars for local). |
 | `.env.prod.example`  | Template for `.env.prod` (all vars for prod). |
 | `conftest.py`        | Loads `.env` then `.env.local` or `.env.prod`, exports Neo4j env, local OAuth fixture. |
-| `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). |
+| `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). `obtain_user_session_token` also handles the enterprise `auth/token/switch` step. |
+| `helper/mcp_oauth.py` | Registers a full-access OAuth app and mints tokens (authorization_code + PKCE, client_credentials) with API calls only. |
+| `helper/mcp_client.py` | Reads the `/mcp` surface (initialize, tools, prompts) with `fastmcp` as plain JSON. |
+| `helper/mcp_pin.py` | Reads the `@pipeshub-ai/mcp` pin from `backend/nodejs/apps/package.json`. |
+| `response-validation/mcp/` | MCP surface tests and the per-version golden files. |
 | `helper/pipeshub_client.py` | HTTP client for Pipeshub connector API (client_credentials). |
 | `helper/graph_provider.py` | `GraphProviderProtocol` — common graph test helper interface. |
 | `helper/graph_provider_utils.py` | Shared polling helpers (`wait_until_graph_condition`, etc.). |

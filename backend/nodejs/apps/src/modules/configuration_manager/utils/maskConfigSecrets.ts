@@ -30,6 +30,7 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'model',
   'modelFriendlyName',
   'dimensions',
+  'defaultReasoningEffort',
 ] as const;
 
 export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
@@ -138,6 +139,34 @@ export function mergeSmtpConfigPlaceholders<T extends Record<string, unknown>>(
   }
   const out = { ...incoming } as Record<string, unknown>;
   for (const key of SMTP_SECRET_KEYS) {
+    if (out[key] === CONFIG_SECRET_PLACEHOLDER && typeof existing[key] === 'string') {
+      out[key] = existing[key];
+    }
+  }
+  return out as T;
+}
+
+export const SLACK_BOT_SECRET_KEYS = ['botToken', 'signingSecret'] as const;
+
+/**
+ * Admin-facing Slack bot responses must not echo the workspace credentials
+ * back over HTTP. The bot process reads the real values from the internal
+ * route instead.
+ */
+export function maskSlackBotConfig<T extends Record<string, unknown>>(config: T): T {
+  return maskKeys(config, SLACK_BOT_SECRET_KEYS);
+}
+
+/** An edit form that never saw the real value re-submits the placeholder. */
+export function mergeSlackBotConfigPlaceholders<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+): T {
+  if (!existing || typeof existing !== 'object') {
+    return incoming;
+  }
+  const out = { ...incoming } as Record<string, unknown>;
+  for (const key of SLACK_BOT_SECRET_KEYS) {
     if (out[key] === CONFIG_SECRET_PLACEHOLDER && typeof existing[key] === 'string') {
       out[key] = existing[key];
     }
