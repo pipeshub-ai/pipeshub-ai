@@ -748,8 +748,9 @@ class LaneAssignments:
         fence_delay_ms: int,
         busy_after_ms: int = BUSY_READING_MAX_AGE_MS,
     ) -> UpkeepResult:
-        """Fence settled moves and deletes, clear and remove what has drained,
-        rebuild the counts and write the busy flags, in one atomic step.
+        """Fence moves and deletes, clear the old lane of any that has drained
+        (a deleted entry is never removed), rebuild the counts and write the
+        busy flags, in one atomic step.
 
         ``oldest_waiting_ms`` is, per lane number, when its oldest unfinished
         event was published (lanes with none left out); None when the backlog
