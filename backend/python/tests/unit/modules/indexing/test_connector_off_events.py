@@ -267,7 +267,7 @@ class TestGraphConnectorOffFilter:
         assert result.settled == frozenset(range(0, 100, 2))
         assert dict(result.by_connector) == {("conn-off", "off"): 50}
         assert graph.calls == {
-            "get_nodes_by_field_in:apps": 1,
+            "get_nodes_by_field_in:apps": 2,
             "get_nodes_by_field_in:records": 1,
             "update_nodes_fields_if_match:records": 1,
         }
@@ -464,3 +464,38 @@ async def test_a_completed_records_queued_copy_is_still_promoted_when_its_update
 
     assert result.settled == frozenset()
     assert graph.records["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+
+class TestAConnectorTurnedBackOnDuringTheWrite:
+    async def test_its_events_are_not_settled_and_its_records_get_their_status_back(self) -> None:
+        """Turning a connector on does not re-queue records marked not indexed,
+        so an event settled in that window would never be indexed."""
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=False)
+        graph.add_record("r1", "conn-off", reason="earlier reason")
+        graph.add_record("r2", "conn-off")
+        write = graph.update_nodes_fields_if_match
+
+        async def write_then_turn_on(collection, rows, transaction=None):  # noqa: ANN202
+            applied = await write(collection, rows, transaction)
+            graph.set_active("conn-off", True)
+            return applied
+
+        graph.update_nodes_fields_if_match = write_then_turn_on
+
+        result = await _filter(graph).settle([_message(), _message(record_id="r2")])
+
+        assert result.settled == frozenset()
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert graph.records["r1"]["reason"] == "earlier reason"
+        assert "reason" not in graph.records["r2"]
+
+    async def test_a_connector_that_stays_off_is_settled_with_one_more_read(self) -> None:
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=False)
+        graph.add_record("r1", "conn-off")
+
+        result = await _filter(graph).settle([_message()])
+
+        assert result.settled == frozenset({0})
+        assert graph.calls["get_nodes_by_field_in:apps"] == 2
