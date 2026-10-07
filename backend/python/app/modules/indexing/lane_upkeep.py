@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
+from app.services.graph_db.common.utils import org_id_from_app_edge
 from app.services.messaging.config import messaging_env
 from app.services.messaging.lanes.assignment_policy import (
     LaneRequestReason,
@@ -58,8 +59,6 @@ RESCUE_CAP_PER_CONNECTOR = 20_000
 # move; the fence waits that long and this much more.
 _FENCE_MARGIN_MS = 30_000
 _PAGE = 500
-# Walks over a connector's queued records per re-send; see _rescue.
-_RESCUE_WALKS = 5
 # The lane view lists at most this many connectors per lane, large ones first.
 _LISTED_PER_LANE = 50
 
@@ -426,23 +425,9 @@ async def _upgrade_fix_up(
 async def _org_of(
     graph_provider: IGraphDBProvider, app: _App, connector_id: str
 ) -> str | None:
-    """The connector's org: knowledge bases carry ``orgId``, but connectors
-    created before it was stored on the document have only the org-app edge
-    (the same resolution as ``ConnectorRegistry._org_id_from_edge``)."""
-    if app.org_id:
-        return app.org_id
-    edges = await graph_provider.get_edges_to_node(
-        f"{CollectionNames.APPS.value}/{connector_id}",
-        CollectionNames.ORG_APP_RELATION.value,
-    )
-    for edge in edges or []:
-        if not isinstance(edge, dict):
-            continue
-        # Neo4j returns a bare id in from_id; Arango a handle in _from.
-        source = edge.get("from_id") or edge.get("_from")
-        if source:
-            return str(source).rsplit("/", 1)[-1]
-    return None
+    """The connector's org: knowledge bases carry ``orgId``; connectors created
+    before it was stored on the document have only the org-app edge."""
+    return app.org_id or await org_id_from_app_edge(graph_provider, connector_id)
 
 
 async def _queued(
@@ -492,75 +477,64 @@ async def _rescue(
     """Re-send up to ``cap`` of a moved connector's queued records to ``stream``,
     oldest in line first, so its new lane holds them ahead of what comes next.
 
-    The records are paged by offset while the consumer is already working
-    through them, so a record that leaves QUEUED moves every later one up a
-    place and the next page can step over one. So the walk is repeated, sending
-    only what has not been sent, until a whole walk finds nothing new. Records
-    put in line after the re-send began are left alone: their events are on the
-    new lane already. Returns how many were sent and whether it finished.
+    The records are read in one query, the oldest ``cap`` of them. Paging
+    through them instead would race the consumer, which takes records out of
+    QUEUED as it goes: with offsets a record can slide into a page already
+    read and be skipped, and no number of further walks can prove one was not.
+    One query is one snapshot. Records put in line after the re-send began are
+    left alone, their events are on the new lane already. Returns how many
+    were sent and whether every one of them was.
     """
     started_ms = get_epoch_timestamp_in_ms()
-    sent: set[str] = set()
-
-    def stopped(error: Exception) -> tuple[int, bool]:
-        logger.warning(
-            "Queue lanes: stopped re-sending the queued records of connector %s "
-            "after %d: %s: %s",
-            connector_id,
-            len(sent),
-            type(error).__name__,
-            error,
+    try:
+        records = await graph_provider.get_documents_paginated(
+            CollectionNames.RECORDS.value,
+            skip=0,
+            limit=cap,
+            filters={
+                "connectorId": connector_id,
+                "indexingStatus": ProgressStatus.QUEUED.value,
+            },
+            sort_field="queuedAtTimestamp",
+            raise_on_error=True,
         )
-        return len(sent), False
-
-    for _walk in range(_RESCUE_WALKS):
-        found = False
-        skip = 0
-        while True:
-            try:
-                page = await graph_provider.get_documents_paginated(
-                    CollectionNames.RECORDS.value,
-                    skip=skip,
-                    limit=_PAGE,
-                    filters={
-                        "connectorId": connector_id,
-                        "indexingStatus": ProgressStatus.QUEUED.value,
-                    },
-                    sort_field="queuedAtTimestamp",
-                    raise_on_error=True,
-                )
-            except Exception as e:
-                return stopped(e)
-            for record in page:
-                if len(sent) >= cap:
-                    return len(sent), True
-                record_key = str(record.get("_key") or record.get("id") or "")
-                if not record_key or record_key in sent or is_parked_duplicate(record):
-                    continue
-                try:
-                    if float(record.get("queuedAtTimestamp")) > started_ms:  # type: ignore[arg-type]
-                        continue
-                except (TypeError, ValueError):
-                    pass
-                event_type, payload = record_event(
-                    record, record_key=record_key, connector_id=connector_id
-                )
-                send = producer.send_event(
-                    topic=stream, event_type=event_type, payload=payload, key=record_key
-                )
-                try:
-                    await (run(send) if run is not None else send)
-                except Exception as e:
-                    return stopped(e)
-                sent.add(record_key)
-                found = True
-            if len(page) < _PAGE:
-                break
-            skip += len(page)
-        if not found:
-            return len(sent), True
-    # Still finding records it had skipped: the next pass carries on.
-    return len(sent), False
+    except Exception as e:
+        logger.warning(
+            "Queue lanes: could not read the queued records of connector %s to "
+            "re-send them: %s: %s",
+            connector_id,
+            type(e).__name__,
+            e,
+        )
+        return 0, False
+    sent = 0
+    for record in records:
+        record_key = str(record.get("_key") or record.get("id") or "")
+        if not record_key or is_parked_duplicate(record):
+            continue
+        try:
+            if float(record.get("queuedAtTimestamp")) > started_ms:  # type: ignore[arg-type]
+                continue
+        except (TypeError, ValueError):
+            pass
+        event_type, payload = record_event(record, record_key=record_key, connector_id=connector_id)
+        send = producer.send_event(
+            topic=stream, event_type=event_type, payload=payload, key=record_key
+        )
+        try:
+            await (run(send) if run is not None else send)
+        except Exception as e:
+            logger.warning(
+                "Queue lanes: stopped re-sending the queued records of connector %s "
+                "after %d: %s: %s",
+                connector_id,
+                sent,
+                type(e).__name__,
+                e,
+            )
+            return sent, False
+        sent += 1
+    return sent, True
 
 
 def _report(

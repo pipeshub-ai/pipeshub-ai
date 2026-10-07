@@ -467,6 +467,34 @@ class TestTheReSendMissesNothingWhileTheConsumerWorks:
         assert report.migrated_at_ms is not None
 
 
+    async def test_past_the_cap_the_oldest_records_are_all_re_sent_while_others_finish(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """25,000 queued and a cap of 20,000, with the consumer finishing
+        records all the while: every one of the oldest 20,000 is re-sent."""
+        graph.add(GITLAB, queued=30_000)
+        graph.add(SLACK, queued=25_000)
+        oldest = {f"{SLACK}-r{i}" for i in range(20_000)}
+        send = producer.send_event
+        sends = 0
+
+        async def records_finish_meanwhile(**kwargs: object) -> bool:
+            nonlocal sends
+            sends += 1
+            if sends % 500 == 0:
+                graph.queued[SLACK][sends + 3]["indexingStatus"] = "COMPLETED"
+            return await send(**kwargs)
+
+        producer.send_event = records_finish_meanwhile  # type: ignore[method-assign]
+
+        report = await _upkeep(provider, graph, producer, rescue_cap=20_000)
+
+        re_sent = [payload["recordId"] for _t, _e, payload, _k in producer.events]
+        assert set(re_sent) == oldest
+        assert len(re_sent) == len(oldest), "nothing sent twice"
+        assert report.migrated_at_ms is not None
+
+
 class TestKeepingTheMapInStepWithTheGraph:
     async def test_a_live_connector_a_paged_scan_missed_keeps_its_lane(
         self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
