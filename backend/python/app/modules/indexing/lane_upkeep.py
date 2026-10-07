@@ -31,6 +31,7 @@ from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY
 from app.services.messaging.lanes.lifecycle import connector_class_of
 from app.telemetry.modules import scheduling_metrics as metrics
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -57,6 +58,8 @@ RESCUE_CAP_PER_CONNECTOR = 20_000
 # move; the fence waits that long and this much more.
 _FENCE_MARGIN_MS = 30_000
 _PAGE = 500
+# Walks over a connector's queued records per re-send; see _rescue.
+_RESCUE_WALKS = 5
 # The lane view lists at most this many connectors per lane, large ones first.
 _LISTED_PER_LANE = 50
 
@@ -420,14 +423,45 @@ async def _upgrade_fix_up(
     return moved, rescued, finished
 
 
+async def _org_of(
+    graph_provider: IGraphDBProvider, app: _App, connector_id: str
+) -> str | None:
+    """The connector's org: knowledge bases carry ``orgId``, but connectors
+    created before it was stored on the document have only the org-app edge
+    (the same resolution as ``ConnectorRegistry._org_id_from_edge``)."""
+    if app.org_id:
+        return app.org_id
+    edges = await graph_provider.get_edges_to_node(
+        f"{CollectionNames.APPS.value}/{connector_id}",
+        CollectionNames.ORG_APP_RELATION.value,
+    )
+    for edge in edges or []:
+        if not isinstance(edge, dict):
+            continue
+        # Neo4j returns a bare id in from_id; Arango a handle in _from.
+        source = edge.get("from_id") or edge.get("_from")
+        if source:
+            return str(source).rsplit("/", 1)[-1]
+    return None
+
+
 async def _queued(
     graph_provider: IGraphDBProvider, app: _App, connector_id: str, logger: Logger
 ) -> int | None:
     """Records of this connector put in line and not yet picked up; None if
-    the graph could not say (its providers answer a failure with
-    ``success: False`` rather than raising)."""
+    the graph could not say. The providers answer a failure with
+    ``success: False`` rather than raising, and an unknown org with zeros, so
+    both are caught here rather than read as an empty queue."""
     try:
-        stats = await graph_provider.get_connector_stats(app.org_id or "", connector_id)
+        org_id = await _org_of(graph_provider, app, connector_id)
+        if not org_id:
+            logger.warning(
+                "Queue lanes: could not find the org of connector %s to count its "
+                "queued records",
+                connector_id,
+            )
+            return None
+        stats = await graph_provider.get_connector_stats(org_id, connector_id)
     except Exception as e:
         logger.warning(
             "Queue lanes: could not count the queued records of connector %s: %s: %s",
@@ -457,61 +491,76 @@ async def _rescue(
 ) -> tuple[int, bool]:
     """Re-send up to ``cap`` of a moved connector's queued records to ``stream``,
     oldest in line first, so its new lane holds them ahead of what comes next.
-    Returns how many were sent and whether it got to the end (or the cap)."""
-    sent = 0
-    skip = 0
-    while sent < cap:
-        try:
-            page = await graph_provider.get_documents_paginated(
-                CollectionNames.RECORDS.value,
-                skip=skip,
-                limit=_PAGE,
-                filters={
-                    "connectorId": connector_id,
-                    "indexingStatus": ProgressStatus.QUEUED.value,
-                },
-                sort_field="queuedAtTimestamp",
-                raise_on_error=True,
-            )
-        except Exception as e:
-            logger.warning(
-                "Queue lanes: stopped re-sending the queued records of connector %s "
-                "after %d: %s: %s",
-                connector_id,
-                sent,
-                type(e).__name__,
-                e,
-            )
-            return sent, False
-        for record in page:
-            if sent >= cap:
-                break
-            record_key = record.get("_key") or record.get("id")
-            if not record_key or is_parked_duplicate(record):
-                continue
-            event_type, payload = record_event(
-                record, record_key=str(record_key), connector_id=connector_id
-            )
-            send = producer.send_event(
-                topic=stream, event_type=event_type, payload=payload, key=str(record_key)
-            )
+
+    The records are paged by offset while the consumer is already working
+    through them, so a record that leaves QUEUED moves every later one up a
+    place and the next page can step over one. So the walk is repeated, sending
+    only what has not been sent, until a whole walk finds nothing new. Records
+    put in line after the re-send began are left alone: their events are on the
+    new lane already. Returns how many were sent and whether it finished.
+    """
+    started_ms = get_epoch_timestamp_in_ms()
+    sent: set[str] = set()
+
+    def stopped(error: Exception) -> tuple[int, bool]:
+        logger.warning(
+            "Queue lanes: stopped re-sending the queued records of connector %s "
+            "after %d: %s: %s",
+            connector_id,
+            len(sent),
+            type(error).__name__,
+            error,
+        )
+        return len(sent), False
+
+    for _walk in range(_RESCUE_WALKS):
+        found = False
+        skip = 0
+        while True:
             try:
-                await (run(send) if run is not None else send)
-            except Exception as e:
-                logger.warning(
-                    "Queue lanes: stopped re-sending the queued records of connector "
-                    "%s after %d: %s: %s",
-                    connector_id,
-                    sent,
-                    type(e).__name__,
-                    e,
+                page = await graph_provider.get_documents_paginated(
+                    CollectionNames.RECORDS.value,
+                    skip=skip,
+                    limit=_PAGE,
+                    filters={
+                        "connectorId": connector_id,
+                        "indexingStatus": ProgressStatus.QUEUED.value,
+                    },
+                    sort_field="queuedAtTimestamp",
+                    raise_on_error=True,
                 )
-                return sent, False
-            sent += 1
-        if len(page) < _PAGE:
-            break
-        skip += len(page)
-    return sent, True
+            except Exception as e:
+                return stopped(e)
+            for record in page:
+                if len(sent) >= cap:
+                    return len(sent), True
+                record_key = str(record.get("_key") or record.get("id") or "")
+                if not record_key or record_key in sent or is_parked_duplicate(record):
+                    continue
+                try:
+                    if float(record.get("queuedAtTimestamp")) > started_ms:  # type: ignore[arg-type]
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                event_type, payload = record_event(
+                    record, record_key=record_key, connector_id=connector_id
+                )
+                send = producer.send_event(
+                    topic=stream, event_type=event_type, payload=payload, key=record_key
+                )
+                try:
+                    await (run(send) if run is not None else send)
+                except Exception as e:
+                    return stopped(e)
+                sent.add(record_key)
+                found = True
+            if len(page) < _PAGE:
+                break
+            skip += len(page)
+        if not found:
+            return len(sent), True
+    # Still finding records it had skipped: the next pass carries on.
+    return len(sent), False
 
 
 def _report(
