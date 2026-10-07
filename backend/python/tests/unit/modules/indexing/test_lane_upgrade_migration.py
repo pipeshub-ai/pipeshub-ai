@@ -33,7 +33,6 @@ from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
 from tests.unit.modules.indexing.test_lane_upkeep import _Graph
 from tests.unit.services.messaging.test_lane_assignment import _colliding
-from tests.unit.services.messaging.test_lane_aware_producer import _RecordingProducer
 
 TOPIC = "record-events"
 GROUP = "records_consumer_group"
@@ -69,7 +68,7 @@ async def _publish(provider: FakeRedisConnectionProvider, router: object, events
         await producer.cleanup()
 
 
-async def test_an_upgrade_separates_the_colliding_connectors_without_early_re_sends() -> None:
+async def test_an_upgrade_separates_the_colliding_connectors_and_moves_no_queued_event() -> None:
     provider = FakeRedisConnectionProvider()
     client = provider.get_client()
     consumer = IndexingRedisStreamsConsumer(
@@ -98,11 +97,9 @@ async def test_an_upgrade_separates_the_colliding_connectors_without_early_re_se
     graph.add(GITLAB, queued=31)
     graph.add(SLACK, queued=3)
     graph.add(JIRA, queued=2)
-    rescue = _RecordingProducer()
-    await run_lane_upkeep(
+    first = await run_lane_upkeep(
         assignments=assignments,
         graph_provider=graph,  # type: ignore[arg-type]
-        producer=rescue,  # type: ignore[arg-type]
         backlog=await consumer.lane_backlog(TOPIC),
         logger=logging.getLogger("t"),
     )
@@ -113,8 +110,10 @@ async def test_an_upgrade_separates_the_colliding_connectors_without_early_re_se
     slack = entries[SLACK]
     assert slack.lane != SHARED
     assert slack.prev_lane == SHARED
-    assert len(rescue.events) == 3
-    assert {topic for topic, *_ in rescue.events} == {f"{TOPIC}.{slack.lane}"}
+    assert first.migrated_at_ms is None, "a pass that moves someone leaves the rest to the next"
+    # Nothing is re-sent: Slack's three queued events are worked off where they are.
+    assert await client.xlen(f"{TOPIC}.{SHARED}") == 34
+    assert await client.xlen(f"{TOPIC}.{slack.lane}") == 0
 
     # Slack's new events land on its new lane.
     await _publish(provider, assigned, [(SLACK, "s3")])
@@ -128,26 +127,25 @@ async def test_an_upgrade_separates_the_colliding_connectors_without_early_re_se
     # ...and the move settles once the shared lane has finished everything up
     # to the fence: the first pass fences, the drain finishes the old lane,
     # the next pass clears the old lane from Slack's entry.
-    await run_lane_upkeep(
+    second = await run_lane_upkeep(
         assignments=assignments,
         graph_provider=graph,  # type: ignore[arg-type]
-        producer=rescue,  # type: ignore[arg-type]
         backlog=await consumer.lane_backlog(TOPIC),
         logger=logging.getLogger("t"),
     )
+    assert second.migrated_at_ms is not None
     assert (await read_lane_map(client, TOPIC))[SLACK].fence_ms is not None
     shared = f"{TOPIC}.{SHARED}"
     delivered = await client.xreadgroup(GROUP, "c", {shared: ">"}, count=1000)
     await client.xack(shared, GROUP, *[entry_id for _s, entries_ in delivered for entry_id, _f in entries_])
 
-    await run_lane_upkeep(
+    third = await run_lane_upkeep(
         assignments=assignments,
         graph_provider=graph,  # type: ignore[arg-type]
-        producer=rescue,  # type: ignore[arg-type]
         backlog=await consumer.lane_backlog(TOPIC),
         logger=logging.getLogger("t"),
     )
 
     settled = (await read_lane_map(client, TOPIC))[SLACK]
     assert (settled.lane, settled.prev_lane, settled.fence_ms) == (slack.lane, None, None)
-    assert len(rescue.events) == 3, "the fix-up ran once"
+    assert third.migrated_at_ms == second.migrated_at_ms, "the fix-up ran once"

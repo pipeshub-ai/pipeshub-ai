@@ -55,7 +55,6 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
-from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -588,9 +587,7 @@ async def recover_in_progress_records(
 
         await _upkeep_lanes(
             graph_provider=graph_provider,
-            producer=retry_producer,
             read_backlog=read_backlog,
-            run_coordination=run_coordination,
             logger=logger,
         )
 
@@ -686,9 +683,7 @@ def _read_once(read: Callable[[], Awaitable[_T]]) -> Callable[[], Awaitable[_T]]
 async def _upkeep_lanes(
     *,
     graph_provider: IGraphDBProvider,
-    producer: IMessagingProducer,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None,
-    run_coordination: Callable[[Awaitable[_T]], Awaitable[_T]],
     logger: logging.Logger,
 ) -> None:
     """Keep the Redis Streams lane map in step, when producers place by it.
@@ -710,10 +705,8 @@ async def _upkeep_lanes(
         await run_lane_upkeep(
             assignments=assignments,
             graph_provider=graph_provider,
-            producer=producer,
             backlog=backlog,
             logger=logger,
-            run=run_coordination,
         )
     except Exception as e:
         logger.warning(
