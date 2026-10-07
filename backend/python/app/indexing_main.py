@@ -55,6 +55,7 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
+from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -685,7 +686,7 @@ def _read_once(read: Callable[[], Awaitable[_T]]) -> Callable[[], Awaitable[_T]]
 async def _upkeep_lanes(
     *,
     graph_provider: IGraphDBProvider,
-    producer: Any,
+    producer: IMessagingProducer,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None,
     run_coordination: Callable[[Awaitable[_T]], Awaitable[_T]],
     logger: logging.Logger,

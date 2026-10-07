@@ -381,7 +381,7 @@ class TestHandleDelete:
             side_effect=lambda **kwargs: order.append(kwargs["message"]["eventType"])
         )
 
-        async def freed(_logger, connector_id) -> None:  # noqa: ANN001
+        async def freed(_logger, connector_id) -> None:
             order.append(f"free:{connector_id}")
 
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \

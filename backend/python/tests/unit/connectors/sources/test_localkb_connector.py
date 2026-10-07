@@ -411,7 +411,7 @@ class TestKnowledgeBaseService:
         order: list[str] = []
         svc._publish_with_retry = AsyncMock(side_effect=lambda event, _kb: order.append(event["eventType"]))
 
-        async def freed(_logger, kb_id) -> None:  # noqa: ANN001
+        async def freed(_logger, kb_id) -> None:
             order.append(f"free:{kb_id}")
 
         with patch(
