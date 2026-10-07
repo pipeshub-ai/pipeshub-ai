@@ -167,6 +167,10 @@ valid_group_labels = [
     ]
 
 class RetrievalService:
+    # Local models may load or download on first use, so their queries get no deadline.
+    # A class default, so an instance built without __init__ (as some tests do) has it too.
+    _cached_embedding_is_local = True
+
     def __init__(
         self,
         logger,
@@ -206,8 +210,6 @@ class RetrievalService:
         # provider changes, but reuse the built instance when config is stable.
         self._cached_dense_embeddings: Embeddings | None = None
         self._cached_embedding_config_hash: str | None = None
-        # Local models may load or download on first use, so their queries get no deadline.
-        self._cached_embedding_is_local = True
         self._embedding_model_lock = asyncio.Lock()
 
         self.logger.info(
