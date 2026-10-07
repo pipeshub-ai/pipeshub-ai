@@ -967,3 +967,43 @@ class TestAgentToolShareParentResults:
 
         assert captured["goal"].description == "compute 2 + 2"
         assert captured["staged"] is None
+
+
+class TestDelegateHandoffFlag:
+    """`delegate_handoff` gives only `answers_directly` delegates the `final`
+    parameter; off, every schema and description is exactly as before."""
+
+    @staticmethod
+    def _tools(handoff: bool) -> dict[str, AgentTool]:
+        registry = _full_registry()
+        compose_domain_agents(
+            registry, AgentRuntime(tool_registry=registry), make_context(),
+            provider="scripted", model_name="scripted-model", delegate_handoff=handoff,
+        )
+        return {
+            n: registry.resolve_by_name(n)  # type: ignore[misc]
+            for n in ("coding_agent", "web_agent", "internal_exploration_agent", "calculator_agent")
+        }
+
+    def test_off_has_no_final_parameter_anywhere(self) -> None:
+        for tool in self._tools(False).values():
+            assert "final" not in [p.name for p in tool.parameters]
+            assert "final=true" not in tool.description
+
+    def test_on_exposes_final_only_on_eligible_delegates(self) -> None:
+        tools = self._tools(True)
+        has_final = {n: "final" in [p.name for p in t.parameters] for n, t in tools.items()}
+        assert has_final == {
+            "coding_agent": True, "web_agent": True,
+            "internal_exploration_agent": False, "calculator_agent": False,
+        }
+
+    def test_on_does_not_change_the_other_parameters(self) -> None:
+        on, off = self._tools(True), self._tools(False)
+        for name in ("coding_agent", "web_agent"):
+            assert [p.name for p in on[name].parameters if p.name != "final"] == [p.name for p in off[name].parameters]
+
+    def test_default_is_off(self) -> None:
+        registry = _full_registry()
+        _compose(registry)
+        assert "final" not in [p.name for p in registry.resolve_by_name("coding_agent").parameters]  # type: ignore[attr-defined]

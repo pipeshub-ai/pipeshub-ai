@@ -1038,6 +1038,7 @@ export function MessageList() {
                   citationCallbacks={citationCallbacks}
                   confidence={pair.confidence}
                   answerMatchType={pair.answerMatchType}
+                  answeredVia={pair.answeredVia}
                   isStreaming={pair.isStreaming}
                   modelInfo={pair.modelInfo}
                   collections={pair.collections}

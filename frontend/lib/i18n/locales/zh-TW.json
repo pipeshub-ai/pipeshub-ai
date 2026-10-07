@@ -858,6 +858,11 @@
     "answer": "回答",
     "sources": "來源",
     "citation": "引用",
+    "answeredVia": {
+      "coding_agent": "透過程式設計代理",
+      "web_agent": "透過網路研究",
+      "other": "透過 {{name}}"
+    },
     "thankYouForFeedback": "感謝您的意見回饋",
     "feedbackHelpsImprove": "您的意見回饋有助於我們改進",
     "feedbackError": "無法送出意見回饋",

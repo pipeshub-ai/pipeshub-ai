@@ -782,6 +782,11 @@
     "answer": "Respuesta",
     "sources": "Fuentes",
     "citation": "Cita",
+    "answeredVia": {
+      "coding_agent": "mediante el agente de programación",
+      "web_agent": "mediante investigación web",
+      "other": "mediante {{name}}"
+    },
     "thankYouForFeedback": "Gracias por sus comentarios",
     "feedbackHelpsImprove": "Sus comentarios nos ayudan a mejorar",
     "feedbackError": "Error al enviar comentarios",

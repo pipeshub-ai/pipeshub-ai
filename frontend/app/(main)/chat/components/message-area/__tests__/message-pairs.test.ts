@@ -216,3 +216,16 @@ describe('buildMessagePairs, collaboration fields', () => {
     expect(plain.answeredAt).toBeUndefined();
   });
 });
+
+describe('buildMessagePairs, answeredVia', () => {
+  it('carries the delegate that answered onto the pair, and adds no key otherwise', () => {
+    const [withDelegate] = buildMessagePairs(
+      [user('u1', 'Q'), { ...assistant('a1', 'A'), metadata: { custom: { messageId: 'a1', answeredVia: 'coding_agent' } } }],
+      OPTIONS
+    );
+    const [plain] = buildMessagePairs([user('u1', 'Q'), assistant('a1', 'A')], OPTIONS);
+
+    expect(withDelegate.answeredVia).toBe('coding_agent');
+    expect(plain).not.toHaveProperty('answeredVia');
+  });
+});

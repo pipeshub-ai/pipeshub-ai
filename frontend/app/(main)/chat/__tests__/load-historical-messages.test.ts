@@ -41,6 +41,18 @@ describe('loadHistoricalMessages', () => {
     expect(messages.map((m) => m.role)).toEqual(['user']);
   });
 
+  it('carries the delegate that answered, only when there was one', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q1', messageType: 'user_query', content: 'Plot it' }),
+      message({ _id: 'a1', messageType: 'bot_response', content: 'Done', answeredVia: 'coding_agent' }),
+      message({ _id: 'q2', messageType: 'user_query', content: 'Thanks' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'Welcome' }),
+    ]);
+
+    expect(messages[1].metadata?.custom?.answeredVia).toBe('coding_agent');
+    expect(messages[3].metadata?.custom).not.toHaveProperty('answeredVia');
+  });
+
   it('keeps a stopped reply that has text, with its Stopped status', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'A question' }),

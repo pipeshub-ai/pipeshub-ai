@@ -25,6 +25,7 @@ import { AnsweringLine } from './timeline/answering-line';
 import { HumanMessage } from './timeline/human-message';
 import { ReplyMessage } from './timeline/reply-message';
 import { AgentAnswerHeader } from '../collaboration/agent-answer-header';
+import { AnsweredViaLabel } from './answered-via-label';
 import { useCollabMessageContext } from '../../hooks/use-collab-message-context';
 import { askCardReadOnlyFor, askerOf, attributionVisible, regenerateAllowed } from '../../utils/collab-attribution';
 import type { MessageAuthor } from '../../collaboration-types';
@@ -101,6 +102,8 @@ interface ChatResponseProps {
   confidence?: ConfidenceLevel;
   /** `Capability Card` (the `@assistant help` answer) is not a search answer: no confidence, Sources or Citations. */
   answerMatchType?: 'Capability Card';
+  /** Delegate agent (tool name) whose output was the answer; the header says so. */
+  answeredVia?: string;
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
@@ -179,6 +182,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationCallbacks,
   confidence,
   answerMatchType,
+  answeredVia,
   isStreaming = false,
   modelInfo,
   collections,
@@ -1007,11 +1011,13 @@ export const ChatResponse = React.memo(function ChatResponse({
   if (rowMode === 'reply') {
     const showAsker = attributionVisible(collabActive, collabAccess.collabEnabled, asker, meUserId);
     const askerIsMe = asker != null && asker.userId === meUserId;
-    const headerExtra = !showAsker ? null : isStreaming ? (
+    const askerExtra = !showAsker ? null : isStreaming ? (
       askerIsMe ? null : <AnsweringLine name={asker?.displayName || t('chat.collab.attribution.formerMember')} />
     ) : activeTab === 'answer' ? (
       <AnsweredAsLabel asker={asker} meUserId={meUserId} />
     ) : null;
+    const viaExtra = answeredVia && !isStreaming && !unanswered ? <AnsweredViaLabel delegate={answeredVia} /> : null;
+    const headerExtra = askerExtra && viaExtra ? <>{askerExtra}{viaExtra}</> : askerExtra ?? viaExtra;
     const showChips = !unanswered && !isCapabilityCard && (sourcesCount > 0 || citationCount > 0 || activeTab !== 'answer') && !(askQuestionMatchesRow || persistedAskUserQuestion);
     const reply = (
       <ReplyMessage
@@ -1105,6 +1111,7 @@ export const ChatResponse = React.memo(function ChatResponse({
       {filtersAndAttachments}
 
       {!unanswered && respondingAgent && <AgentAnswerHeader agent={respondingAgent} />}
+      {!unanswered && !isStreaming && answeredVia && <AnsweredViaLabel delegate={answeredVia} />}
 
       {/* Tabs */}
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card

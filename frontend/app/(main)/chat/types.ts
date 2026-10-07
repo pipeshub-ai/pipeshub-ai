@@ -883,6 +883,8 @@ export interface ConversationMessage {
   confidence?: 'Very High' | 'High' | 'Medium' | 'Low';
   /** `Capability Card` marks the `@assistant help` answer, which has no confidence or sources. */
   answerMatchType?: 'Capability Card';
+  /** Delegate agent whose output was sent as the answer (e.g. `coding_agent`); absent when the assistant wrote it. */
+  answeredVia?: string;
   followUpQuestions: string[];
   referenceData: ReferenceData[];
   modelInfo: ModelInfo;

@@ -241,6 +241,14 @@ class DomainAgentDefinition:
     whose children can consume arbitrary prior tool output as data —
     `coding_agent` is the only current user."""
 
+    answers_directly: bool = False
+    """When True, and `register_domain_agents(delegate_handoff=True)`, the
+    delegate's `AgentTool` accepts `final=true`: the calling agent can hand
+    this delegate's result to the user as the answer instead of rewriting
+    it (see `AgentTool`'s `direct_answer_note`). Only for domains whose
+    output is usually the finished answer (research, generated files), not
+    raw data the caller must combine."""
+
     result_note: str | None = None
     """Passed to `AgentTool(result_note=...)`: appended verbatim to the
     child's successful output before the calling agent sees it. Use for
@@ -305,6 +313,23 @@ Source links and citation markers from this web research belong in the \
 final answer next to the facts they support, exactly as given, rather than \
 condensed into an uncited summary."""
 
+# Appended to the child's goal when the calling agent sets `final=true`
+# (`AgentTool(direct_answer_note=...)`): its closing message is shown to
+# the user as-is, so it must be written as the answer, not as a report.
+_DIRECT_ANSWER_NOTE = """\
+## Your reply goes straight to the user
+
+This is the final answer. Nothing rewrites it, and the user will not see \
+any message from the agent that delegated to you.
+- Write the complete user-facing answer in markdown, addressed to the user. \
+Do not write a report for a calling agent and do not refer to one.
+- Cite web sources as `[source](<Citation ID>)`, copying the Citation ID \
+exactly as the tool printed it, inline right after the claim it supports. \
+A Citation ID is not a link target anywhere else.
+- Files you saved under $OUTPUT_DIR are attached to the answer automatically. \
+Refer to them by file name only; never print sandbox paths or download links.
+- Include any caveat the user needs (what failed, what you could not verify)."""
+
 DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
     DomainAgentDefinition(
         name="web_agent",
@@ -317,6 +342,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
         ),
         tool_names=frozenset({"dynamic__web_search", "dynamic__fetch_url"}),
         result_note=_WEB_RESULT_NOTE,
+        answers_directly=True,
     ),
     DomainAgentDefinition(
         name="coding_agent",
@@ -350,6 +376,7 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
         }),
         delegate_agents=("web_agent",),
         share_parent_results=True,
+        answers_directly=True,
         extra_instructions=(
             "For pictures/illustrations (photos, scenes, objects, people, "
             "places), ALWAYS use the image_generator__generate_image tool — do "
@@ -506,6 +533,7 @@ def register_domain_agents(
     model_name: str,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
+    delegate_handoff: bool = False,
 ) -> list[str]:
     """Materializes `plan`: builds one ReAct child `AgentSpec` per claimed
     domain and registers each as an `AgentTool` on `tool_registry`. Returns
@@ -543,6 +571,10 @@ def register_domain_agents(
     middleware's docstring) can only ever inject a skill's full body —
     never a "call load_skill if relevant" pointer, since the domain
     agent would have no `load_skill` to call.
+
+    `delegate_handoff` (env `PIPESHUB_DELEGATE_HANDOFF`, resolved by the
+    factory) gives every `answers_directly` definition the `final`
+    parameter; `False` leaves every tool schema exactly as before.
     """
     claims = plan.claims
     registered = set(plan.registered_names)
@@ -581,6 +613,9 @@ def register_domain_agents(
                     spec, runtime, name=definition.name, description=definition.description,
                     share_parent_results=definition.share_parent_results,
                     result_note=definition.result_note,
+                    direct_answer_note=(
+                        _DIRECT_ANSWER_NOTE if delegate_handoff and definition.answers_directly else None
+                    ),
                 )
             )
         except (DuplicateToolNameError, DuplicateToolPathError):
@@ -615,6 +650,7 @@ def compose_domain_agents(
     definitions: tuple[DomainAgentDefinition, ...] = DOMAIN_AGENT_DEFINITIONS,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
+    delegate_handoff: bool = False,
 ) -> list[str]:
     """Convenience: plan + register in one call, for callers that don't
     need the plan/register split (e.g. tests, or a caller with no need to
@@ -623,7 +659,7 @@ def compose_domain_agents(
     return register_domain_agents(
         plan, tool_registry, runtime, context,
         provider=provider, model_name=model_name, lazy_tools=lazy_tools,
-        shared_tool_names=shared_tool_names,
+        shared_tool_names=shared_tool_names, delegate_handoff=delegate_handoff,
     )
 
 

@@ -858,6 +858,11 @@
     "answer": "답변",
     "sources": "출처",
     "citation": "인용",
+    "answeredVia": {
+      "coding_agent": "코딩 에이전트를 통해",
+      "web_agent": "웹 조사를 통해",
+      "other": "{{name}}을(를) 통해"
+    },
     "thankYouForFeedback": "피드백을 보내 주셔서 감사합니다",
     "feedbackHelpsImprove": "보내 주신 피드백은 개선에 큰 도움이 됩니다",
     "feedbackError": "피드백을 제출하지 못했습니다",

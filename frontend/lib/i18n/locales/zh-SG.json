@@ -858,6 +858,11 @@
     "answer": "回答",
     "sources": "来源",
     "citation": "引用",
+    "answeredVia": {
+      "coding_agent": "通过编程智能体",
+      "web_agent": "通过网络调研",
+      "other": "通过 {{name}}"
+    },
     "thankYouForFeedback": "感谢您的反馈",
     "feedbackHelpsImprove": "您的反馈有助于我们改进",
     "feedbackError": "提交反馈失败",

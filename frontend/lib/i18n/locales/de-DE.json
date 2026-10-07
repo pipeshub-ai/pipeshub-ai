@@ -773,6 +773,11 @@
     "answer": "Antwort",
     "sources": "Quellen",
     "citation": "Zitat",
+    "answeredVia": {
+      "coding_agent": "über den Coding-Agenten",
+      "web_agent": "über Web-Recherche",
+      "other": "über {{name}}"
+    },
     "thankYouForFeedback": "Vielen Dank für Ihr Feedback",
     "feedbackHelpsImprove": "Ihr Feedback hilft uns, uns zu verbessern",
     "feedbackError": "Feedback konnte nicht gesendet werden",

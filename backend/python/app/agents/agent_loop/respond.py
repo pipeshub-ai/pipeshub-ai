@@ -144,6 +144,7 @@ class AnswerFinalizer:
         agent_confidence: str | None = None,
         agent_cancelled: bool = False,
         agent_needs_input: str | None = None,
+        answered_via: str | None = None,
     ) -> dict[str, Any]:
         """Produce `completion_data` from the completed agent run.
 
@@ -159,6 +160,9 @@ class AnswerFinalizer:
         `agent_confidence` is the normalized confidence level from
         `AgentResult.confidence` (populated by `final_answer` when the tool is
         enabled). Takes precedence over the legacy text-trailer parser.
+
+        `answered_via` is `AgentResult.answered_by`: the delegate whose output
+        was sent to the user as the answer (persisted as `answeredVia`).
 
         `agent_cancelled` (Stop Generation, Phase 3b) is `AgentResult.
         cancelled` — an immutable snapshot `Agent.fail(..., status=
@@ -205,6 +209,7 @@ class AnswerFinalizer:
                     streamed_answer, reasoning_turns or [],
                     agent_confidence=agent_confidence,
                     agent_needs_input=agent_needs_input,
+                    answered_via=answered_via,
                 )
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
@@ -282,6 +287,7 @@ class AnswerFinalizer:
         reasoning_turns: list[dict[str, Any]],
         agent_confidence: str | None = None,
         agent_needs_input: str | None = None,
+        answered_via: str | None = None,
     ) -> dict[str, Any]:
         streamed = (streamed_answer or "").strip()
         is_resume = bool(state.get("ask_user_question_resume"))
@@ -437,6 +443,8 @@ class AnswerFinalizer:
         completion_data["answer"] = normalized
         completion_data["citations"] = citations
         completion_data["confidence"] = confidence
+        if answered_via:
+            completion_data["answeredVia"] = answered_via
         reasoning_payload = build_reasoning_payload(reasoning_turns)
         if reasoning_payload is not None:
             completion_data["reasoning"] = reasoning_payload

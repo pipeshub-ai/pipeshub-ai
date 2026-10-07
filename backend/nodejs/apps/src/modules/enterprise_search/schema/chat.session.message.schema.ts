@@ -238,6 +238,7 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     citations: [messageCitationSchema],
     confidence: { type: String, enum: CONFIDENCE_LEVELS },
     answerMatchType: { type: String, enum: ['Capability Card'] },
+    answeredVia: { type: String },
     followUpQuestions: [followUpQuestionSchema],
     feedback: [feedbackSchema],
     metadata: {

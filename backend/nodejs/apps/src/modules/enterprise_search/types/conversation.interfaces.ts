@@ -160,6 +160,8 @@ export interface IMessage {
   confidence?: string;
   /** Only `Capability Card` (the `@assistant help` answer) is kept; the UI hides the search chrome for it. */
   answerMatchType?: 'Capability Card';
+  /** Name of the delegate agent whose output was sent to the user as the answer (e.g. `coding_agent`). */
+  answeredVia?: string;
   followUpQuestions?: IFollowUpQuestion[];
   feedback?: IFeedback[];
   metadata?: IMessageMetadata;
@@ -427,6 +429,8 @@ export interface IAIResponse {
   status?: 'stopped' | 'waiting_input';
   reason: string;
   answerMatchType: AnswerMatchType;
+  /** Set by Python when a delegate agent's output was the answer (`delegate handoff`). */
+  answeredVia?: string;
   documentIndexes: string[];
   followUpQuestions?: IFollowUpQuestion[];
   feedback?: IFeedback[];

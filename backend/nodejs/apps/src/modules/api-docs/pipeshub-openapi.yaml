@@ -8639,6 +8639,10 @@ components:
           enum: [Capability Card]
           description: |
             Present only on the `@assistant help` capability answer in a shared chat. It is not a search answer, so clients should not show confidence or sources for it.
+        answeredVia:
+          type: string
+          description: |
+            Name of the delegate agent whose output was sent to the user as the answer (for example `coding_agent` or `web_agent`). Present only when that happened; absent when the assistant wrote the answer itself.
         followUpQuestions:
           type: array
           items:

@@ -312,6 +312,19 @@ describe('Enterprise Search Utils', () => {
       expect(plain).to.not.have.property('answerMatchType')
     })
 
+    it('keeps answeredVia only when a delegate answered', () => {
+      const delegated = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: 'Done', confidence: 'High', answeredVia: 'coding_agent' },
+      } as any)
+      expect(delegated.answeredVia).to.equal('coding_agent')
+      const plain = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: 'Done', confidence: 'High' },
+      } as any)
+      expect(plain).to.not.have.property('answeredVia')
+    })
+
     it('should persist classified failure answers as error messages', () => {
       const aiResponse = {
         statusCode: 200,

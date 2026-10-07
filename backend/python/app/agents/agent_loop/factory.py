@@ -296,6 +296,13 @@ def _composed_agents_enabled() -> bool:
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
 
 
+def _delegate_handoff_enabled() -> bool:
+    """Lets the calling model hand a delegate's result to the user as the
+    answer (`final=true`, see `domain_agents.py`) instead of paying for a
+    second generation that restates it. Off by default."""
+    return os.getenv("PIPESHUB_DELEGATE_HANDOFF", "false").strip().lower() == "true"
+
+
 def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
     """Entity tools are hidden when no entity store is wired (they could only
     fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
@@ -798,6 +805,10 @@ class PipesHubAgentFactory:
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
                 ),
+                # Only the react loop's root agent writes the user's answer
+                # straight from a tool result; plan/orchestrator steps feed a
+                # later stage.
+                delegate_handoff=_delegate_handoff_enabled() and mode.loop_kind == "react",
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
             logger.info(

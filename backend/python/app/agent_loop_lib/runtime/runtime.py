@@ -125,6 +125,7 @@ class AgentRuntime:
         session_id: str | None = None,
         parent_scope: "RunScope | None" = None,
         mirror_events: bool = True,
+        event_emitter: EventEmitter | None = None,
     ) -> AgentResult:
         """The single place a child agent is launched — used by both
         `agent_as_tool()`'s static composition and `spawn_agent`/`best_of_n`'s
@@ -157,6 +158,12 @@ class AgentRuntime:
         on the parent's stream (e.g. a silent judge/critique sub-agent) —
         it still emits ordinary lifecycle/tool events, just not the
         streaming text deltas.
+
+        `event_emitter`, when given, replaces `self.event_emitter` for this
+        child only. Pass the calling agent's own effective emitter to make
+        the child's events reach whoever is consuming the parent's
+        `Agent.stream()` (which taps only the parent instance, not the shared
+        runtime emitter).
         """
         from app.agent_loop_lib.agent import Agent
         from app.agent_loop_lib.context.manager import ContextManager
@@ -235,6 +242,8 @@ class AgentRuntime:
         # Opt-out via `mirror_events=False` for a child whose token-level
         # narration shouldn't reach the parent's stream at all.
         child.streaming = mirror_events
+        if event_emitter is not None:
+            child._event_emitter_override = event_emitter
 
         with maybe_start_agent_span(
             enabled=self.opik_enabled,

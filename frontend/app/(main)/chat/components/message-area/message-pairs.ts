@@ -12,6 +12,8 @@ export interface MessagePair {
   citationMaps: CitationMaps;
   confidence?: ConfidenceLevel;
   answerMatchType?: 'Capability Card';
+  /** Delegate agent whose output was sent as the answer (e.g. `coding_agent`). */
+  answeredVia?: string;
   isStreaming: boolean;
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
@@ -65,6 +67,7 @@ type AssistantCustom = {
   citationMaps?: CitationMaps;
   confidence?: ConfidenceLevel;
   answerMatchType?: 'Capability Card';
+  answeredVia?: string;
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
   persistedAskUserQuestion?: AskUserQuestionPayload;
@@ -231,6 +234,7 @@ export function buildMessagePairs(
           : (metadata?.citationMaps || emptyCitationMaps),
         confidence: metadata?.confidence,
         answerMatchType: metadata?.answerMatchType,
+        ...(metadata?.answeredVia ? { answeredVia: metadata.answeredVia } : {}),
         isStreaming: isCurrentlyStreaming || isBeingRegenerated,
         modelInfo: metadata?.modelInfo,
         feedbackInfo: metadata?.feedbackInfo,

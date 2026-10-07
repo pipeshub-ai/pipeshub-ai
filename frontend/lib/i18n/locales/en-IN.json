@@ -774,6 +774,11 @@
     "answer": "Answer",
     "sources": "Sources",
     "citation": "Citation",
+    "answeredVia": {
+      "coding_agent": "via coding agent",
+      "web_agent": "via web research",
+      "other": "via {{name}}"
+    },
     "thankYouForFeedback": "Thank you for your feedback",
     "feedbackHelpsImprove": "Your feedback helps us improve",
     "feedbackError": "Failed to submit feedback",

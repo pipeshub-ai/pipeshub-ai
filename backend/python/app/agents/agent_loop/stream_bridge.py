@@ -423,6 +423,7 @@ async def run_agent_loop_stream(
                     # result, which would otherwise mislabel it "stopped".
                     agent_cancelled=result.cancelled,
                     agent_needs_input=result.needs_input,
+                    answered_via=result.answered_by,
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)

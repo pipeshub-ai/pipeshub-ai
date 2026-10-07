@@ -774,6 +774,11 @@
     "answer": "उत्तर",
     "sources": "स्रोत",
     "citation": "उद्धरण",
+    "answeredVia": {
+      "coding_agent": "कोडिंग एजेंट के माध्यम से",
+      "web_agent": "वेब रिसर्च के माध्यम से",
+      "other": "{{name}} के माध्यम से"
+    },
     "thankYouForFeedback": "आपकी प्रतिक्रिया के लिए धन्यवाद",
     "feedbackHelpsImprove": "आपकी प्रतिक्रिया हमें सुधार करने में मदद करती है",
     "feedbackError": "प्रतिक्रिया सबमिट करने में विफल",

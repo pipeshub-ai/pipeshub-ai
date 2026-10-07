@@ -331,6 +331,31 @@ class TestCreate:
         coding_spec = runtime.tool_registry.resolve_by_name("coding_agent")._spec
         assert "run_code" in coding_spec.tool_names
 
+    async def test_delegate_handoff_is_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PIPESHUB_DELEGATE_HANDOFF", raising=False)
+        context = make_context(llm=FakeChatModel())
+        _agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+            context, context.llm, "react", query="hello",
+        )
+        if not runtime.tool_registry.has("coding_agent"):
+            pytest.skip("code execution disabled in this environment — no domain to compose")
+        names = [p.name for p in runtime.tool_registry.resolve_by_name("coding_agent").parameters]
+        assert "final" not in names
+
+    @pytest.mark.parametrize(("mode", "expected"), [("react", True), ("planExecute", False), ("deep", False)])
+    async def test_delegate_handoff_flag_applies_to_the_react_loop_only(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str, expected: bool,
+    ) -> None:
+        monkeypatch.setenv("PIPESHUB_DELEGATE_HANDOFF", "true")
+        context = make_context(llm=FakeChatModel())
+        _agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+            context, context.llm, mode, query="hello",
+        )
+        if not runtime.tool_registry.has("coding_agent"):
+            pytest.skip("code execution disabled in this environment — no domain to compose")
+        names = [p.name for p in runtime.tool_registry.resolve_by_name("coding_agent").parameters]
+        assert ("final" in names) is expected
+
     async def test_plan_execute_mode_composes_domain_agents_plus_planning_tools(self) -> None:
         """Regression test for the bug this fix originally addressed: the
         `planExecute` mode must compose domain agents (connector tools

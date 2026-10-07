@@ -719,6 +719,7 @@ export const buildAIResponseMessage = (
     })),
     confidence: data.confidence,
     ...(data.answerMatchType === 'Capability Card' ? { answerMatchType: 'Capability Card' as const } : {}),
+    ...(typeof data.answeredVia === 'string' && data.answeredVia ? { answeredVia: data.answeredVia } : {}),
     followUpQuestions:
       data.followUpQuestions?.map((q) => ({
         question: q.question,
