@@ -35025,6 +35025,12 @@ paths:
           description: Not allowed to update the given instance
         '404':
           description: Connector type or instance not found
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/network/egress-ips:
     get:
@@ -35049,6 +35055,9 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - success
+                  - egressIps
                 properties:
                   success:
                     type: boolean
@@ -35059,6 +35068,12 @@ paths:
                     example: ["203.0.113.10"]
         '401':
           description: Unauthorized
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Connector Instances --------------------
   /connectors:
