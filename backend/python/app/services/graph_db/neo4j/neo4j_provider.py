@@ -236,6 +236,8 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 _PURGE_LOCK = "purgeLock"
 # Written and removed at the start of a move statement to take its new parent's write lock.
 _MOVE_LOCK = "moveLock"
+# Written and removed before a conditional write reads its expectation, to take the node's write lock.
+_MATCH_LOCK = "matchLock"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # The roots of a connector's delete batches: records in the trash whose parent is
@@ -3143,10 +3145,15 @@ class Neo4jProvider(IGraphDBProvider):
             })
         # Expected values travel as parallel lists: a null inside a map
         # parameter means "absent" here, and a list keeps it addressable.
+        # The lock comes first so the check reads a write that committed while
+        # this waited, instead of overwriting it (Neo4j's lost-update pattern).
         result = await self.client.execute_query(
             f"""
             UNWIND $rows AS row
             MATCH (n:{label} {{id: row.key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n, row
             WHERE all(i IN range(0, size(row.fields) - 1) WHERE
                 CASE WHEN row.values[i] IS NULL
                      THEN n[row.fields[i]] IS NULL
