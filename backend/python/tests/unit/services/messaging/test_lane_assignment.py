@@ -320,21 +320,34 @@ class TestKnownClassAndLaneCount:
         self, provider: FakeRedisConnectionProvider
     ) -> None:
         """Both lookups miss; the publish places first and caches its guess.
-        Creation must still correct the class rather than take the cache."""
+        Creation must still correct the class rather than take the cache.
+
+        Gated so the order is certain: the publish looks up, then creation
+        looks up, and only then does the publish commit."""
         assignments = _assignments(provider)
         real_eval = assignments._eval
+        publish_looked_up = asyncio.Event()
+        creation_looked_up = asyncio.Event()
+        lookups = 0
 
-        async def yielding_eval(body: str, *args: object) -> list:
-            await asyncio.sleep(0)  # as a real round trip would
-            return await real_eval(body, *args)
+        async def gated_eval(body: str, *args: object) -> list:
+            nonlocal lookups
+            if body == assignment_module._COMMIT_SCRIPT and not creation_looked_up.is_set():
+                await creation_looked_up.wait()
+            reply = await real_eval(body, *args)
+            if body == assignment_module._LOOKUP_SCRIPT:
+                lookups += 1
+                (publish_looked_up if lookups == 1 else creation_looked_up).set()
+            return reply
 
-        assignments._eval = yielding_eval  # type: ignore[method-assign]
+        assignments._eval = gated_eval  # type: ignore[method-assign]
 
-        published, created = await asyncio.gather(
-            assignments.lane_for("gmail-1"),
-            assignments.assign("gmail-1", ConnectorClass.PERSONAL),
-        )
+        publish = asyncio.create_task(assignments.lane_for("gmail-1"))
+        await publish_looked_up.wait()
+        created = await assignments.assign("gmail-1", ConnectorClass.PERSONAL)
+        published = await publish
 
+        assert lookups == 2, "both lookups missed"
         assert published == created
         assert (await _map(provider))["gmail-1"].connector_class == "personal"
         meta = await _meta(provider)
