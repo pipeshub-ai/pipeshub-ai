@@ -666,6 +666,27 @@ class TestAFreeLaneReallyIsFree:
         assert (entries["a-50"].lane, entries["c-10"].lane) == (6, 1)
         assert second.migrated_at_ms is not None
 
+    async def test_with_no_lane_free_a_moved_connectors_records_follow_it_where_it_stays(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
+    ) -> None:
+        """Slack (40) moved off GitLab's lane 0 onto lane 1, beside Drive (80),
+        and every lane has a team connector. It stays on lane 1 for good, so
+        its records waiting on lane 0 follow it there."""
+        placements: dict[str, tuple[int, int | None, int]] = {
+            "gitlab-100": (0, None, 100),
+            "slack-40": (1, 0, 40),
+            "drive-80": (1, None, 80),
+        }
+        placements |= {f"solo-{lane}": (lane, None, 5) for lane in range(2, 8)}
+        await _seed(provider, graph, placements)
+
+        report = await _upkeep(provider, graph, producer)
+
+        assert (await _map(provider))["slack-40"].lane == 1
+        assert {t for t, *_ in producer.events} == {f"{TOPIC}.1"}
+        assert len(producer.events) == 40
+        assert report.migrated_at_ms is not None
+
     async def test_a_connector_recorded_late_beside_one_already_moved_is_separated(
         self, provider: FakeRedisConnectionProvider, graph: _Graph, producer: _RecordingProducer
     ) -> None:
