@@ -18,6 +18,7 @@ from connectors_audit_support import (
     bearer,
     instance_state,
 )
+from runner_stub import needs_runner_stub
 from strict_openapi import assert_spec_forbids_request, assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
@@ -37,6 +38,7 @@ def _authorize(client: ConnectorsAuditClient, connector_id: str) -> str:
     return str(resp.json()["state"])
 
 
+@needs_runner_stub
 def test_callback_completes_the_flow_and_authenticates_the_connector(
     connectors_client: ConnectorsAuditClient, gitlab_oauth_connector: str, oauth_provider: StubSource
 ) -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from runner_stub import needs_runner_stub
 from strict_openapi import (
     assert_spec_forbids_request,
     assert_strict_openapi_exchange,
@@ -52,6 +53,7 @@ def _assert_refused(resp: Any, status: int, code: str, message: str) -> None:
     assert "access_token" not in resp.json()
 
 
+@needs_runner_stub
 def test_code_for_an_account_returns_the_provider_tokens(
     user_account_audit_client: UserAccountAuditClient,
     oauth_provider: OAuthProviderStub,
@@ -74,6 +76,7 @@ def test_code_for_an_account_returns_the_provider_tokens(
     assert sent["redirect_uri"] == oauth_exchange_body()["redirectUri"]
 
 
+@needs_runner_stub
 def test_fields_the_provider_leaves_out_are_absent(
     user_account_audit_client: UserAccountAuditClient,
     oauth_provider: OAuthProviderStub,
@@ -88,6 +91,7 @@ def test_fields_the_provider_leaves_out_are_absent(
     assert resp.json() == {"access_token": access_token}
 
 
+@needs_runner_stub
 def test_provider_is_not_read_and_unknown_fields_are_ignored(
     user_account_audit_client: UserAccountAuditClient,
     oauth_provider: OAuthProviderStub,
@@ -132,6 +136,7 @@ def test_no_json_object_body_is_bad_request(
     assert_spec_forbids_request(resp, ROUTE)
 
 
+@needs_runner_stub
 def test_code_the_provider_rejects_is_bad_request(
     user_account_audit_client: UserAccountAuditClient, oauth_provider: OAuthProviderStub
 ) -> None:
@@ -139,6 +144,7 @@ def test_code_the_provider_rejects_is_bad_request(
     _assert_refused(resp, 400, BAD_REQUEST, OAUTH_SIGN_IN_FAILED)
 
 
+@needs_runner_stub
 def test_access_token_the_userinfo_endpoint_rejects_is_unauthorized(
     user_account_audit_client: UserAccountAuditClient,
     oauth_provider: OAuthProviderStub,
@@ -151,6 +157,7 @@ def test_access_token_the_userinfo_endpoint_rejects_is_unauthorized(
     _assert_refused(resp, 401, UNAUTHORIZED, OAUTH_SIGN_IN_FAILED)
 
 
+@needs_runner_stub
 def test_provider_that_shares_no_email_is_bad_request(
     user_account_audit_client: UserAccountAuditClient, oauth_provider: OAuthProviderStub
 ) -> None:
@@ -160,6 +167,7 @@ def test_provider_that_shares_no_email_is_bad_request(
     _assert_refused(resp, 400, BAD_REQUEST, PROVIDER_SHARED_NO_EMAIL)
 
 
+@needs_runner_stub
 def test_email_with_no_account_is_not_found_while_jit_is_off(
     user_account_audit_client: UserAccountAuditClient,
     oauth_provider: OAuthProviderStub,

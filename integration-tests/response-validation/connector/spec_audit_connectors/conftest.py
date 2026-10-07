@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 import uuid
@@ -17,10 +18,12 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
         sys.path.insert(0, str(_p))
 
 from helper.clients.kb_client import KBClient  # noqa: E402
+from helper.connector_lifecycle import source_unavailable  # noqa: E402
 from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient  # noqa: E402
 from helper.http.session_client import SessionClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import SecondUser, second_user  # noqa: E402, F401 - fixture
+from helper.web_fixtures import WebFixtures  # noqa: E402
 from helper.vector_rebuild import (  # noqa: E402
     VECTOR_STORE_REBUILD_FLAG,
     read_platform_settings,
@@ -364,23 +367,39 @@ def member_configured_connector(
 
 
 @pytest.fixture(scope="module")
-def bookstack_source() -> Iterator[StubSource]:
-    """A BookStack stand-in whose search lists one book."""
-    body = {"data": [{"id": 7, "name": "Spec Audit Book", "slug": "spec-audit-book", "type": "book"}], "total": 1}
-    with StubSource(body) as stub:
-        yield stub
+def bookstack_source() -> Iterator[str]:
+    """A BookStack stand-in on the web-fixtures service whose search lists one book; yields its base URL."""
+    fixtures = WebFixtures()
+    try:
+        fixtures.check_available()
+    except Exception as exc:  # noqa: BLE001 - any failure means "not available"
+        source_unavailable(f"web-fixtures service not reachable at {fixtures.test_url}: {exc}")
+    root = f"spec-audit/bookstack-{uuid.uuid4().hex[:10]}"
+    files = {
+        f"{root}/api/users": {"data": [], "total": 0},
+        f"{root}/api/books": {"data": [], "total": 0},
+        f"{root}/api/search": {
+            "data": [{"id": 7, "name": "Spec Audit Book", "slug": "spec-audit-book", "type": "book"}],
+            "total": 1,
+        },
+    }
+    for path, body in files.items():
+        fixtures.put(path, json.dumps(body), "application/json")
+    try:
+        yield fixtures.url_for_connector(root)
+    finally:
+        for path in files:
+            fixtures.delete(path)
 
 
 @pytest.fixture(scope="module")
-def bookstack_connector(
-    connectors_client: ConnectorsAuditClient, bookstack_source: StubSource
-) -> Iterator[str]:
-    """A team BookStack instance whose credentials point at the local stand-in."""
+def bookstack_connector(connectors_client: ConnectorsAuditClient, bookstack_source: str) -> Iterator[str]:
+    """A team BookStack instance whose credentials point at the web-fixtures stand-in."""
     seeded = create_seed_connector(connectors_client, connectorType="BookStack", authType="API_TOKEN")
     try:
         resp = connectors_client.put(
             f"/{seeded}/config/auth",
-            json={"auth": {"base_url": bookstack_source.url, "token_id": "spec-audit", "token_secret": "spec-audit"}},
+            json={"auth": {"base_url": bookstack_source, "token_id": "spec-audit", "token_secret": "spec-audit"}},
         )
         assert resp.status_code == 200, resp.text[:300]
         yield seeded

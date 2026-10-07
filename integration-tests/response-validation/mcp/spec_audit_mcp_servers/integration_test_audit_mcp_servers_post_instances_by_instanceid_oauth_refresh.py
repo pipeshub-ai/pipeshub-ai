@@ -22,6 +22,7 @@ from mcp_servers_audit_support import (
     oauth_instance_body,
     request_as,
 )
+from runner_stub import needs_runner_stub
 from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
@@ -39,6 +40,7 @@ def _refresh_path(instance_id: str) -> str:
     return f"/instances/{instance_id}/oauth/refresh"
 
 
+@needs_runner_stub
 def test_refresh_exchanges_the_stored_refresh_token(
     mcp_servers_client: McpServersClient, seed_mcp_instance: SeedMcpInstance
 ) -> None:
@@ -79,6 +81,7 @@ def test_a_body_is_ignored(
         pytest.param((503, {"error": "temporarily_unavailable"}), 500, id="token-endpoint-fails"),
     ],
 )
+@needs_runner_stub
 def test_refresh_refused_by_the_provider(
     mcp_servers_client: McpServersClient,
     seed_mcp_instance: SeedMcpInstance,
@@ -96,6 +99,7 @@ def test_refresh_refused_by_the_provider(
         assert_strict_openapi_exchange(resp, ROUTE)
 
 
+@needs_runner_stub
 def test_tokens_without_a_refresh_token_are_bad_request(
     mcp_servers_client: McpServersClient, seed_mcp_instance: SeedMcpInstance
 ) -> None:

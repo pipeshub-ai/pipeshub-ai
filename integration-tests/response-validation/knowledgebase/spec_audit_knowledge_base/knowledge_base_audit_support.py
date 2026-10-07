@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 import requests
@@ -20,6 +18,7 @@ from helper.clients.kb_client import KBClient
 from helper.local_auth import obtain_user_session_token
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
+from helper.web_fixtures import WebFixtures, html_page
 
 KB_BASE = "/api/v1/knowledgeBase"
 
@@ -219,19 +218,6 @@ WEB_PAGE_TITLE = "Spec audit web page"
 RECORD_GROUP_VISIBLE_TIMEOUT_SEC = 120.0
 
 
-class _OnePage(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802 - http.server's name
-        body = f"<html><head><title>{WEB_PAGE_TITLE}</title></head><body>spec audit</body></html>".encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_: Any) -> None:
-        pass
-
-
 @dataclass
 class WebRecordGroup:
     connector_id: str
@@ -241,15 +227,16 @@ class WebRecordGroup:
 
 @contextmanager
 def web_record_group(client: PipeshubClient, kb_client: KBClient, scope: str = "team") -> Iterator[WebRecordGroup]:
-    """A Web connector synced from a one-page site served here, so the org has a record group.
+    """A Web connector synced from one page on the web-fixtures service, so the org has a record group.
 
     A knowledge base is stored as an app, so a record group only comes from a connector sync. The
-    page is served on 127.0.0.1, which the connector service (on the same host) can fetch. The
     connector, and with it the record group, is deleted on exit.
     """
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _OnePage)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    fixtures = WebFixtures()
+    fixtures.check_available()
+    page = f"spec-audit/kb-{uuid.uuid4().hex[:10]}.html"
+    fixtures.put(page, html_page(WEB_PAGE_TITLE, "spec audit"), "text/html")
+    url = fixtures.url_for_connector(page)
     connector_id = client.create_connector(
         "Web",
         unique_name("spec-audit-web"),
@@ -277,7 +264,7 @@ def web_record_group(client: PipeshubClient, kb_client: KBClient, scope: str = "
         yield WebRecordGroup(connector_id, group_id, record_id)
     finally:
         client.delete_connector(connector_id)
-        server.shutdown()
+        fixtures.delete(page)
 
 
 UPLOAD_EVENT_SCHEMAS = {

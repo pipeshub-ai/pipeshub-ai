@@ -8,6 +8,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -85,12 +86,15 @@ def scoped_token(pipeshub_client: PipeshubClient) -> MintScopedToken:
 
 @pytest.fixture(scope="session")
 def smtp_relay_reachable() -> None:
-    """Fail when nothing accepts connections on SMTP_HOST:SMTP_PORT.
+    """Fail when nothing accepts connections on the relay at SMTP_PORT.
 
     Saving an SMTP config does not check the relay, so a route that really sends
-    mail answers 500 when the configured relay is down.
+    mail answers 500 when the configured relay is down. SMTP_HOST is the name the
+    API uses (``mailpit`` inside the CI compose network); the runner reaches the
+    same relay on MAILPIT_URL's host.
     """
-    host = os.getenv("SMTP_HOST", "").strip()
+    mailpit_url = os.getenv("MAILPIT_URL", "").strip()
+    host = urlsplit(mailpit_url).hostname if mailpit_url else os.getenv("SMTP_HOST", "").strip()
     port = os.getenv("SMTP_PORT", "").strip()
     if not host or not port.isdigit():
         pytest.fail("SMTP_HOST/SMTP_PORT not set: no relay to deliver the mail to")

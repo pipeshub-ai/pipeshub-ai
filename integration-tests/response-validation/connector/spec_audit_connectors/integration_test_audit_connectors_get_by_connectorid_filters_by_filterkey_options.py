@@ -1,7 +1,7 @@
 """Strict OpenAPI audit of GET /api/v1/connectors/:connectorId/filters/:filterKey/options.
 
-The success cases use a BookStack instance whose credentials point at a local
-stand-in that answers the book search, so no third party is contacted.
+The success cases use a BookStack instance whose credentials point at a stand-in on the
+web-fixtures service that answers the book search, so no third party is contacted.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from connectors_audit_support import (
     MISSING_CONNECTOR_ID,
     UNSAFE_CONNECTOR_ID,
     ConnectorsAuditClient,
-    StubSource,
     bearer,
     request_as,
 )
@@ -31,7 +30,7 @@ def _path(connector_id: str, filter_key: str = DYNAMIC_KEY) -> str:
 
 
 def test_admin_lists_the_options_of_a_dynamic_filter(
-    connectors_client: ConnectorsAuditClient, bookstack_connector: str, bookstack_source: StubSource
+    connectors_client: ConnectorsAuditClient, bookstack_connector: str
 ) -> None:
     resp = connectors_client.get(
         _path(bookstack_connector), params={"page": 1, "limit": 5, "search": "spec"}
@@ -46,7 +45,6 @@ def test_admin_lists_the_options_of_a_dynamic_filter(
         "limit": 5,
         "hasMore": False,
     }
-    assert any("count=5" in path for _, path in bookstack_source.requests)
 
 
 def test_group_paths_and_cursor_are_accepted_by_every_connector(

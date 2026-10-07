@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from helper.pipeshub_client import PipeshubClient
+from runner_stub import needs_runner_stub
 from strict_openapi import (
     assert_spec_forbids_request,
     assert_strict_openapi_exchange,
@@ -449,6 +450,7 @@ def test_next_step_lists_the_settings_of_its_providers(
     assert "clientSecret" not in answer["authProviders"]["oauth"]
 
 
+@needs_runner_stub
 def test_oauth_access_token_signs_in(
     user_account_audit_client: UserAccountAuditClient,
     sign_in_policy: SignInPolicy,
@@ -468,10 +470,10 @@ def test_oauth_access_token_signs_in(
 @pytest.mark.parametrize(
     ("case", "status", "code", "message"),
     [
-        pytest.param("token_the_provider_rejects", 401, UNAUTHORIZED, OAUTH_SIGN_IN_FAILED, id="rejected_token"),
+        pytest.param("token_the_provider_rejects", 401, UNAUTHORIZED, OAUTH_SIGN_IN_FAILED, id="rejected_token", marks=needs_runner_stub),
         pytest.param("no_access_token", 400, BAD_REQUEST, OAUTH_SIGN_IN_FAILED, id="no_access_token"),
-        pytest.param("no_email", 400, BAD_REQUEST, PROVIDER_SHARED_NO_EMAIL, id="provider_shares_no_email"),
-        pytest.param("no_account", 400, BAD_REQUEST, ACCOUNT_NOT_FOUND, id="no_account_and_jit_off"),
+        pytest.param("no_email", 400, BAD_REQUEST, PROVIDER_SHARED_NO_EMAIL, id="provider_shares_no_email", marks=needs_runner_stub),
+        pytest.param("no_account", 400, BAD_REQUEST, ACCOUNT_NOT_FOUND, id="no_account_and_jit_off", marks=needs_runner_stub),
     ],
 )
 def test_oauth_sign_in_that_cannot_complete(

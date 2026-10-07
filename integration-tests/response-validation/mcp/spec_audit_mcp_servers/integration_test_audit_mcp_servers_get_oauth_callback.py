@@ -14,6 +14,7 @@ from mcp_servers_audit_support import (
     oauth_instance_body,
     request_as,
 )
+from runner_stub import needs_runner_stub
 from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
@@ -37,6 +38,7 @@ def _start_authorization(
     return instance_id, state
 
 
+@needs_runner_stub
 def test_callback_exchanges_the_code_and_stores_the_tokens(
     mcp_servers_client: McpServersClient, seed_mcp_instance: SeedMcpInstance
 ) -> None:
@@ -60,6 +62,7 @@ def test_callback_exchanges_the_code_and_stores_the_tokens(
     assert entry["isAuthenticated"] is True
 
 
+@needs_runner_stub
 def test_callback_reports_a_refused_code_exchange(
     mcp_servers_client: McpServersClient, seed_mcp_instance: SeedMcpInstance
 ) -> None:

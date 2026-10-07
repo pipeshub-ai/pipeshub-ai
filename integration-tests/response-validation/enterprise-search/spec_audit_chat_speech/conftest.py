@@ -16,6 +16,7 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
         sys.path.insert(0, str(_p))
 
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from runner_stub import skip_in_ci  # noqa: E402
 
 from chat_speech_audit_support import (  # noqa: E402
     ChatSpeechClient,
@@ -78,6 +79,7 @@ def no_speech_provider(
 
 @pytest.fixture(scope="session")
 def fake_provider_endpoint() -> Iterator[str]:
+    skip_in_ci()
     with fake_openai_audio_server() as endpoint:
         yield endpoint
 
