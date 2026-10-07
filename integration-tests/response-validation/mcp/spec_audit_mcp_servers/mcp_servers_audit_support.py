@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from pymongo import MongoClient
@@ -204,3 +205,23 @@ def fake_token_endpoint() -> Iterator[FakeTokenEndpoint]:
     finally:
         server.shutdown()
         server.server_close()
+
+
+STATIC_OAUTH_CLIENT: JsonObject = {"clientId": "spec-audit-client", "clientSecret": "spec-audit-secret"}
+
+
+def connect_oauth_instance(
+    client: McpServersClient, instance_id: str, token_endpoint: FakeTokenEndpoint
+) -> None:
+    """Run authorize and callback for the admin against ``token_endpoint``, storing its tokens.
+
+    The instance must be an OAuth instance whose ``tokenUrl`` is ``token_endpoint.url``.
+    """
+    configured = client.put(f"/instances/{instance_id}/oauth-config", json=STATIC_OAUTH_CLIENT)
+    assert configured.status_code == 200, f"storing the OAuth client: {configured.text[:500]}"
+    authorize = client.get(f"/instances/{instance_id}/oauth/authorize")
+    assert authorize.status_code == 200, f"starting the OAuth flow: {authorize.text[:500]}"
+    state = parse_qs(urlparse(authorize.json()["authorizationUrl"]).query)["state"][0]
+    callback = client.get("/oauth/callback", params={"code": "spec-audit-code", "state": state})
+    assert callback.status_code == 200, callback.text[:500]
+    assert callback.json().get("success") is True, f"completing the OAuth flow: {callback.text[:500]}"

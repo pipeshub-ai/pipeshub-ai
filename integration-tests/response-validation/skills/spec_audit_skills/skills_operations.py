@@ -10,7 +10,9 @@ from typing import Any
 
 from skills_audit_support import (
     MISSING_CANDIDATE_ID,
+    MISSING_RESOURCE_PATH,
     MISSING_SKILL_NAME,
+    MISSING_VERSION,
     skill_md,
     skill_payload,
     unique_skill_name,
@@ -64,4 +66,38 @@ OPERATIONS = [
     SkillsOperation("POST", "", "/api/v1/skills", WRITE, body=skill_payload(unique_skill_name())),
     SkillsOperation("GET", f"/{MISSING_SKILL_NAME}", "/api/v1/skills/:name", READ),
     SkillsOperation("PUT", f"/{MISSING_SKILL_NAME}", "/api/v1/skills/:name", WRITE, body=skill_payload()),
+    SkillsOperation(
+        "PATCH", f"/{MISSING_SKILL_NAME}/body", "/api/v1/skills/:name/body", WRITE,
+        body={"old_string": "spec-audit-old", "new_string": "spec-audit-new"},
+    ),
+    SkillsOperation(
+        "POST", f"/{MISSING_SKILL_NAME}/deprecate", "/api/v1/skills/:name/deprecate", WRITE,
+        body={"reason": "spec audit"},
+    ),
+    SkillsOperation("POST", f"/{MISSING_SKILL_NAME}/disable", "/api/v1/skills/:name/disable", WRITE),
+    SkillsOperation("POST", f"/{MISSING_SKILL_NAME}/enable", "/api/v1/skills/:name/enable", WRITE),
+    SkillsOperation("GET", f"/{MISSING_SKILL_NAME}/usage", "/api/v1/skills/:name/usage", READ),
+    SkillsOperation("DELETE", f"/{MISSING_SKILL_NAME}", "/api/v1/skills/:name", WRITE),
+    SkillsOperation("GET", f"/{MISSING_SKILL_NAME}/export", "/api/v1/skills/:name/export", READ),
+    SkillsOperation("GET", f"/{MISSING_SKILL_NAME}/versions", "/api/v1/skills/:name/versions", READ),
+    SkillsOperation(
+        "GET", f"/{MISSING_SKILL_NAME}/versions/{MISSING_VERSION}",
+        "/api/v1/skills/:name/versions/:version", READ,
+    ),
+    SkillsOperation(
+        "POST", f"/{MISSING_SKILL_NAME}/rollback", "/api/v1/skills/:name/rollback", WRITE,
+        body={"version": MISSING_VERSION},
+    ),
+    SkillsOperation(
+        "GET", f"/{MISSING_SKILL_NAME}/resource?path={MISSING_RESOURCE_PATH}",
+        "/api/v1/skills/:name/resource", READ,
+    ),
+    SkillsOperation(
+        "PUT", f"/{MISSING_SKILL_NAME}/resource", "/api/v1/skills/:name/resource", WRITE,
+        body={"path": MISSING_RESOURCE_PATH, "content": "spec audit"},
+    ),
+    SkillsOperation(
+        "DELETE", f"/{MISSING_SKILL_NAME}/resource?path={MISSING_RESOURCE_PATH}",
+        "/api/v1/skills/:name/resource", WRITE,
+    ),
 ]

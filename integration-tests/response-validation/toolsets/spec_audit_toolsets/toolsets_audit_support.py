@@ -62,6 +62,16 @@ RESERVED_SEGMENTS = (INSTANCES_SEGMENT, OAUTH_CONFIGS_SEGMENT, AGENTS_SEGMENT)
 # What FastAPI answers for a URL no Python route matches, relayed by Node.
 NO_BACKEND_ROUTE = "Not Found"
 INSTANCE_NOT_FOUND = "This toolset was removed, or you no longer have access. Refresh the page and try again."
+CREDENTIALS_REQUIRED = "Credentials are required."
+NO_SAVED_CREDENTIALS = "No existing credentials found for this instance. Please authenticate first."
+OAUTH_INSTANCE_CREDENTIALS_REFUSAL = (
+    "OAuth toolsets sign in through the OAuth flow. Use reauthenticate to start a new one."
+)
+AGENT_EDIT_REFUSAL = "You do not have permission to manage toolsets for this agent."
+REGULAR_AGENT_REFUSAL = (
+    "Per-agent toolsets credentials only apply to service account agents. "
+    "For regular agents, configure credentials in Settings \u2192 Toolsets."
+)
 # What Python's OAuth-config list answers for a toolset type that has none.
 NO_OAUTH_CONFIGS: dict[str, Any] = {"status": "success", "oauthConfigs": [], "total": 0}
 
@@ -214,6 +224,29 @@ def mark_code_as_exchanged(instance_id: str, user_id: str, code: str) -> None:
         client.close()
 
 
+def agent_not_found(agent_key: str) -> str:
+    return f"Agent '{agent_key}' not found."
+
+
+def decode_state(state: str) -> JsonObject:
+    """The JSON object inside an OAuth ``state`` produced by an authorize route."""
+    decoded: JsonObject = json.loads(base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)))
+    return decoded
+
+
+def assert_bad_request(resp: requests.Response, message: str) -> None:
+    """A 400 the backend wrote by hand (not the Node validator's VALIDATION_ERROR)."""
+    assert resp.status_code == 400, resp.text[:500]
+    error = error_of(resp)
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", message), resp.text[:500]
+
+
+def assert_forbidden(resp: requests.Response, message: str) -> None:
+    assert resp.status_code == 403, resp.text[:500]
+    error = error_of(resp)
+    assert (error["code"], error["message"]) == ("HTTP_FORBIDDEN", message), resp.text[:500]
+
+
 def error_of(resp: requests.Response) -> JsonObject:
     """The ``error`` object of an ErrorResponse body."""
     body = resp.json()
@@ -281,4 +314,81 @@ SHARED_BEHAVIOUR_OPERATIONS: list[tuple[str, str, str, str]] = [
     ("instances_list", "GET", "/instances", "/instances"),
     ("instances_create", "POST", "/instances", "/instances"),
     ("instance_get", "GET", f"/instances/{MISSING_INSTANCE_ID}", "/instances/:instanceId"),
+    ("instance_update", "PUT", f"/instances/{MISSING_INSTANCE_ID}", "/instances/:instanceId"),
+    ("instance_delete", "DELETE", f"/instances/{MISSING_INSTANCE_ID}", "/instances/:instanceId"),
+    (
+        "instance_authenticate",
+        "POST",
+        f"/instances/{MISSING_INSTANCE_ID}/authenticate",
+        "/instances/:instanceId/authenticate",
+    ),
+    (
+        "instance_credentials_update",
+        "PUT",
+        f"/instances/{MISSING_INSTANCE_ID}/credentials",
+        "/instances/:instanceId/credentials",
+    ),
+    (
+        "instance_credentials_delete",
+        "DELETE",
+        f"/instances/{MISSING_INSTANCE_ID}/credentials",
+        "/instances/:instanceId/credentials",
+    ),
+    (
+        "instance_reauthenticate",
+        "POST",
+        f"/instances/{MISSING_INSTANCE_ID}/reauthenticate",
+        "/instances/:instanceId/reauthenticate",
+    ),
+    (
+        "instance_authorize",
+        "GET",
+        f"/instances/{MISSING_INSTANCE_ID}/oauth/authorize",
+        "/instances/:instanceId/oauth/authorize",
+    ),
+    ("instance_status", "GET", f"/instances/{MISSING_INSTANCE_ID}/status", "/instances/:instanceId/status"),
+    ("oauth_configs_list", "GET", f"/oauth-configs/{TOOLSET_TYPE}", "/oauth-configs/:toolsetType"),
+    (
+        "oauth_config_update",
+        "PUT",
+        f"/oauth-configs/{TOOLSET_TYPE}/{MISSING_OAUTH_CONFIG_ID}",
+        "/oauth-configs/:toolsetType/:oauthConfigId",
+    ),
+    (
+        "oauth_config_delete",
+        "DELETE",
+        f"/oauth-configs/{TOOLSET_TYPE}/{MISSING_OAUTH_CONFIG_ID}",
+        "/oauth-configs/:toolsetType/:oauthConfigId",
+    ),
+    ("agent_toolsets", "GET", f"/agents/{MISSING_AGENT_KEY}", "/agents/:agentKey"),
+    (
+        "agent_authenticate",
+        "POST",
+        f"/agents/{MISSING_AGENT_KEY}/instances/{MISSING_INSTANCE_ID}/authenticate",
+        "/agents/:agentKey/instances/:instanceId/authenticate",
+    ),
+    (
+        "agent_credentials_update",
+        "PUT",
+        f"/agents/{MISSING_AGENT_KEY}/instances/{MISSING_INSTANCE_ID}/credentials",
+        "/agents/:agentKey/instances/:instanceId/credentials",
+    ),
+    (
+        "agent_credentials_delete",
+        "DELETE",
+        f"/agents/{MISSING_AGENT_KEY}/instances/{MISSING_INSTANCE_ID}/credentials",
+        "/agents/:agentKey/instances/:instanceId/credentials",
+    ),
+    (
+        "agent_reauthenticate",
+        "POST",
+        f"/agents/{MISSING_AGENT_KEY}/instances/{MISSING_INSTANCE_ID}/reauthenticate",
+        "/agents/:agentKey/instances/:instanceId/reauthenticate",
+    ),
+    (
+        "agent_authorize",
+        "GET",
+        f"/agents/{MISSING_AGENT_KEY}/instances/{MISSING_INSTANCE_ID}/oauth/authorize",
+        "/agents/:agentKey/instances/:instanceId/oauth/authorize",
+    ),
 ]

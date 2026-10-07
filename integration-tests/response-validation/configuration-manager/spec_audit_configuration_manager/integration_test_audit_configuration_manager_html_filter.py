@@ -14,6 +14,7 @@ import pytest
 from configuration_manager_audit_support import (
     CONFIGURATION_MANAGER_BASE,
     PRE_ROUTER_OPERATIONS,
+    concrete_path,
     SSO_VALID_BODY,
     assert_validation_error,
 )
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.spec_audit
 HTML_REFUSED_MESSAGE = (
     "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again."
 )
-POST_SUB_PATHS = [sub_path for method, sub_path in PRE_ROUTER_OPERATIONS if method == "POST"]
+BODY_OPERATIONS = [(method, sub_path) for method, sub_path in PRE_ROUTER_OPERATIONS if method in ("POST", "PUT", "PATCH")]
 
 _MICROSOFT_APP = {
     "clientId": "spec-audit-client-id",
@@ -76,8 +77,8 @@ BLANK_CASES = [
 
 
 def _send(config_client: ConfigClient, method: str, sub_path: str, **kwargs: Any) -> Any:
-    send = config_client.get if method == "GET" else config_client.post
-    return send(sub_path, auth=False, **kwargs)
+    send = getattr(config_client, method.lower())
+    return send(concrete_path(sub_path), auth=False, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -103,12 +104,16 @@ def test_markup_in_the_query_string_is_refused_before_the_token_check(
     assert_strict_openapi_exchange(resp, f"{CONFIGURATION_MANAGER_BASE}{sub_path}")
 
 
-@pytest.mark.parametrize("sub_path", POST_SUB_PATHS)
+@pytest.mark.parametrize(
+    ("method", "sub_path"),
+    BODY_OPERATIONS,
+    ids=[f"{method} {sub_path}" for method, sub_path in BODY_OPERATIONS],
+)
 def test_markup_in_the_body_is_refused_before_the_token_check(
-    config_client: ConfigClient, sub_path: str
+    config_client: ConfigClient, method: str, sub_path: str
 ) -> None:
     # Any string anywhere in the body counts, in a field the route knows or not.
-    resp = _send(config_client, "POST", sub_path, json={"nested": {"specAudit": ["<i>spec audit</i>"]}})
+    resp = _send(config_client, method, sub_path, json={"nested": {"specAudit": ["<i>spec audit</i>"]}})
 
     assert resp.status_code == 400, resp.text[:500]
     error = resp.json()["error"]

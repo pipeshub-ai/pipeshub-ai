@@ -11,6 +11,7 @@ from artifacts_audit_support import (
     ArtifactsClient,
     SeededArtifact,
     request_as,
+    spec_accepts_oauth_scopes,
 )
 from helper.second_user import SecondUser
 from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
@@ -111,3 +112,13 @@ def test_get_with_a_token_lacking_both_read_scopes_is_forbidden(
     assert resp.status_code == 403, resp.text[:500]
     assert resp.json()["error"]["message"] == SCOPE_REFUSAL
     assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_get_with_a_token_holding_only_connector_read_passes_the_scope_check(
+    artifacts_client: ArtifactsClient, connector_read_headers: dict[str, str]
+) -> None:
+    resp = artifacts_client.get_one(MISSING_ARTIFACT_ID, auth=False, headers=connector_read_headers)
+
+    assert resp.status_code == 404, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert spec_accepts_oauth_scopes("GET", ROUTE, ["connector:read"])

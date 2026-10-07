@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import uuid
 from functools import lru_cache
@@ -17,8 +18,10 @@ from openapi_schema_validator import (
     adapt_openapi_nullable,
     load_openapi_document,
 )
+from pymongo import MongoClient
 from referencing import Registry
 
+from helper.config import MONGO_DB_NAME, MONGO_URI
 from helper.second_user import SecondUser
 
 CONFIGURATION_MANAGER_BASE = "/api/v1/configurationManager"
@@ -29,6 +32,8 @@ MISSING_SLACK_BOT_CONFIG_ID = "00000000-0000-4000-8000-000000000000"
 MISSING_WEB_SEARCH_PROVIDER_KEY = "00000000-0000-4000-8000-000000000001"
 # The built-in provider: always listed, never stored, accepted by PUT /web-search/default/:providerKey.
 BUILTIN_WEB_SEARCH_PROVIDER_KEY = "duckduckgo"
+
+MISSING_AI_MODEL_KEY = "00000000-0000-4000-8000-000000000002"
 
 UNKNOWN_AI_PROVIDER_ID = "spec-audit-no-such-provider"
 # Decodes to "a%b", which guardPathParams(router, 'providerId') refuses.
@@ -60,6 +65,16 @@ KV_AUTH_OAUTH = "/services/auth/oauth"
 KV_CONNECTOR_ATLASSIAN = "/services/connectors/atlassian/config"
 KV_CONNECTOR_ONEDRIVE = "/services/connectors/onedrive/config"
 KV_CONNECTOR_SHAREPOINT = "/services/connectors/sharepoint/config"
+KV_GOOGLE_WORKSPACE_OAUTH = "/services/connectors/googleWorkspace/oauth/config"
+# The organization id is appended as one more path segment.
+KV_GOOGLE_WORKSPACE_BUSINESS = "/services/connectors/googleWorkspace/credentials/business"
+KV_SYSTEM_PROMPTS = "/services/systemPrompts"
+# Encrypted JSON; GET /metricsCollection returns it decrypted.
+KV_METRICS_COLLECTION = "/services/metricsCollection"
+# Plain JSON shared by the frontend and connector public URLs (and other endpoints).
+KV_ENDPOINTS = "/services/endpoints"
+# Encrypted JSON of the stored web search providers and settings.
+KV_WEB_SEARCH = "/services/webSearch"
 
 _KV_INVALIDATION_CHANNEL = "pipeshub:cache:invalidate"
 
@@ -104,12 +119,88 @@ PRE_ROUTER_OPERATIONS: list[tuple[str, str]] = [
     ("GET", "/authConfig/oauth"),
     ("POST", "/authConfig/oauth"),
     ("POST", "/platform/settings"),
+    ("GET", "/platform/settings"),
+    ("GET", "/platform/feature-flags/available"),
+    ("GET", "/platform/feature-flags/effective"),
+    ("GET", "/slack-bot"),
+    ("POST", "/slack-bot"),
+    ("PUT", "/slack-bot/:configId"),
+    ("DELETE", "/slack-bot/:configId"),
+    ("GET", "/prompts/system"),
+    ("PUT", "/prompts/system"),
+    ("POST", "/connectors/googleWorkspaceCredentials"),
+    ("GET", "/connectors/googleWorkspaceCredentials"),
+    ("GET", "/connectors/googleWorkspaceOauthConfig"),
+    ("POST", "/connectors/googleWorkspaceOauthConfig"),
+    ("POST", "/aiModelsConfig"),
+    ("GET", "/aiModelsConfig"),
+    ("GET", "/ai-models/registry/capabilities"),
+    ("GET", "/ai-models/registry/:providerId/schema"),
+    ("GET", "/ai-models/registry"),
+    ("GET", "/ai-models"),
+    ("GET", "/ai-models/roles"),
+    ("PUT", "/ai-models/roles"),
+    ("GET", "/ai-models/download-progress"),
+    ("GET", "/ai-models/:modelType"),
+    ("GET", "/ai-models/available/:modelType"),
+    ("POST", "/ai-models/providers"),
+    ("POST", "/ai-models/prepare-model"),
+    ("PUT", "/ai-models/providers/:modelType/:modelKey"),
+    ("DELETE", "/ai-models/providers/:modelType/:modelKey"),
+    ("PUT", "/ai-models/default/:modelType/:modelKey"),
+    ("GET", "/web-search"),
+    ("PUT", "/web-search/settings"),
+    ("POST", "/web-search/providers"),
+    ("PUT", "/web-search/providers/:providerKey"),
+    ("DELETE", "/web-search/providers/:providerKey"),
+    ("PUT", "/web-search/default/:providerKey"),
+    ("GET", "/frontendPublicUrl"),
+    ("GET", "/public/desktopFrontendUrl"),
+    ("POST", "/frontendPublicUrl"),
+    ("GET", "/connectorPublicUrl"),
+    ("POST", "/connectorPublicUrl"),
+    ("PUT", "/metricsCollection/toggle"),
+    ("GET", "/metricsCollection"),
+    ("PATCH", "/metricsCollection/pushInterval"),
+    ("PATCH", "/metricsCollection/serverUrl"),
 ]
 
+_PATH_PARAMETER_VALUES = {
+    ":configId": MISSING_SLACK_BOT_CONFIG_ID,
+    ":providerId": "openAI",
+    ":modelType": "llm",
+    ":modelKey": MISSING_AI_MODEL_KEY,
+    ":providerKey": MISSING_WEB_SEARCH_PROVIDER_KEY,
+}
+
+
+def concrete_path(sub_path: str) -> str:
+    """A PRE_ROUTER_OPERATIONS path with its Express parameters filled in."""
+    for name, value in _PATH_PARAMETER_VALUES.items():
+        sub_path = sub_path.replace(name, value)
+    return sub_path
+
+
+# A scope that is not config:read or config:write, for the requireScopes refusals.
+NARROW_SCOPE = "org:read"
+
 SeedSlackBot = Callable[..., dict[str, Any]]
+# seed(**overrides) -> details of a stored duckduckgo web search provider (providerKey...).
+SeedWebSearchProvider = Callable[..., dict[str, Any]]
+# seed(**overrides) -> details of a stored llm entry (modelKey...), made with the run's Azure model.
+SeedLlmProvider = Callable[..., dict[str, Any]]
+
+_AZURE_LLM_ENV = (
+    "TEST_AZURE_OPENAI_API_KEY",
+    "TEST_AZURE_OPENAI_ENDPOINT",
+    "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
+    "TEST_AZURE_OPENAI_MODEL",
+)
 MetricsCollectionConfig = dict[str, Any]
 # guard(sub_path, kv_path, derived=()) -> the config GET returned before the test touched it.
 GuardSavedConfig = Callable[..., dict[str, Any]]
+# guard(kv_path) -> the raw bytes stored there now (None when absent).
+GuardStoredValue = Callable[[str], "bytes | None"]
 
 _OPENAPI_ANNOTATION_KEYS = frozenset({"example", "examples", "discriminator", "xml", "externalDocs"})
 
@@ -242,3 +333,78 @@ def assert_strict_openapi_response_keeping_field_names(resp: requests.Response, 
     )
     if problems:
         raise AssertionError(f"{len(problems)} OpenAPI problem(s):\n" + "\n".join(problems))
+
+
+def mint_narrow_scope_token(base_url: str, timeout: float = 60) -> str:
+    """A client-credentials token of the suite's own OAuth client, limited to NARROW_SCOPE."""
+    resp = requests.post(
+        f"{base_url}/api/v1/oauth2/token",
+        json={
+            "grant_type": "client_credentials",
+            "client_id": os.environ["CLIENT_ID"],
+            "client_secret": os.environ["CLIENT_SECRET"],
+            "scope": NARROW_SCOPE,
+        },
+        timeout=timeout,
+    )
+    assert resp.status_code == 200, f"minting a {NARROW_SCOPE} token: {resp.status_code} {resp.text[:300]}"
+    granted = resp.json().get("scope")
+    assert granted == NARROW_SCOPE, f"asked for {NARROW_SCOPE!r}, the token carries {granted!r}"
+    return str(resp.json()["access_token"])
+
+
+def forget_access_token(token: str) -> None:
+    """Remove the stored row of an access token this suite minted (there is no delete API)."""
+    client: MongoClient[dict[str, Any]] = MongoClient(MONGO_URI)
+    try:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        client[MONGO_DB_NAME]["oauthAccessTokens"].delete_one({"tokenHash": token_hash})
+    finally:
+        client.close()
+
+
+def retry_while_health_check_times_out(send: Callable[[], requests.Response], attempts: int = 2) -> requests.Response:
+    """Repeat a call whose web search health check answered 408; fail the test if it keeps doing so.
+
+    The duckduckgo health check makes a real search: it passes when html.duckduckgo.com answers
+    or refuses quickly, and times out (408) when the connection hangs. Every answer, the 408s
+    included, still goes through the strict gate.
+    """
+    resp = send()
+    for _ in range(attempts - 1):
+        if resp.status_code != 408:
+            break
+        resp = send()
+    if resp.status_code == 408:
+        pytest.fail(
+            "environment: the duckduckgo web search health check timed out "
+            f"{attempts} times (408); html.duckduckgo.com does not answer from this machine: {resp.text[:200]}"
+        )
+    return resp
+
+
+def azure_llm_configuration() -> dict[str, str]:
+    """The run's own Azure OpenAI chat model, the one the stack is configured with."""
+    missing = [name for name in _AZURE_LLM_ENV if not os.getenv(name)]
+    if missing:
+        pytest.fail(f"environment: an llm entry passes its health check only with real credentials; set {missing}")
+    return {
+        "endpoint": os.environ["TEST_AZURE_OPENAI_ENDPOINT"],
+        "apiKey": os.environ["TEST_AZURE_OPENAI_API_KEY"],
+        "deploymentName": os.environ["TEST_AZURE_OPENAI_DEPLOYMENT_NAME"],
+        "model": os.environ["TEST_AZURE_OPENAI_MODEL"],
+    }
+
+
+def llm_provider_body(**overrides: Any) -> dict[str, Any]:
+    """A POST /ai-models/providers body for the run's Azure model, never the default."""
+    body: dict[str, Any] = {
+        "modelType": "llm",
+        "provider": "azureOpenAI",
+        "configuration": azure_llm_configuration(),
+        "isMultimodal": False,
+        "isReasoning": False,
+        "isDefault": False,
+    }
+    body.update(overrides)
+    return body

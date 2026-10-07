@@ -17,7 +17,9 @@ from strict_openapi import assert_strict_openapi_exchange
 from toolsets_audit_support import (
     AGENTS_SEGMENT,
     INSTANCES_SEGMENT,
+    MISSING_AGENT_KEY,
     MISSING_INSTANCE_ID,
+    MISSING_OAUTH_CONFIG_ID,
     MISSING_TOOLSET_ID,
     NO_BACKEND_ROUTE,
     OAUTH_CONFIGS_SEGMENT,
@@ -34,6 +36,8 @@ from helper.pipeshub_client import PipeshubClient
 pytestmark = pytest.mark.spec_audit
 
 LEGACY_CONFIG_BODY: JsonObject = {"auth": {"type": "API_TOKEN"}}
+CREDENTIALS_BODY: JsonObject = {"auth": {"apiToken": "spec-audit-token"}}
+AGENT_INSTANCE = f"/agents/{MISSING_AGENT_KEY}/instances/{MISSING_INSTANCE_ID}"
 
 
 def _call(
@@ -140,6 +144,123 @@ def _call(
             None,
             "connector:read",
             id="instance_get",
+        ),
+        pytest.param(
+            "PUT", f"/instances/{MISSING_INSTANCE_ID}", "/instances/:instanceId", {}, "connector:write",
+            id="instance_update",
+        ),
+        pytest.param(
+            "DELETE", f"/instances/{MISSING_INSTANCE_ID}", "/instances/:instanceId", None, "connector:delete",
+            id="instance_delete",
+        ),
+        pytest.param(
+            "POST",
+            f"/instances/{MISSING_INSTANCE_ID}/authenticate",
+            "/instances/:instanceId/authenticate",
+            CREDENTIALS_BODY,
+            "connector:write",
+            id="instance_authenticate",
+        ),
+        pytest.param(
+            "PUT",
+            f"/instances/{MISSING_INSTANCE_ID}/credentials",
+            "/instances/:instanceId/credentials",
+            CREDENTIALS_BODY,
+            "connector:write",
+            id="instance_credentials_update",
+        ),
+        pytest.param(
+            "DELETE",
+            f"/instances/{MISSING_INSTANCE_ID}/credentials",
+            "/instances/:instanceId/credentials",
+            None,
+            "connector:write",
+            id="instance_credentials_delete",
+        ),
+        pytest.param(
+            "POST",
+            f"/instances/{MISSING_INSTANCE_ID}/reauthenticate",
+            "/instances/:instanceId/reauthenticate",
+            None,
+            "connector:write",
+            id="instance_reauthenticate",
+        ),
+        pytest.param(
+            "GET",
+            f"/instances/{MISSING_INSTANCE_ID}/oauth/authorize",
+            "/instances/:instanceId/oauth/authorize",
+            None,
+            "connector:write",
+            id="instance_authorize",
+        ),
+        pytest.param(
+            "GET",
+            f"/instances/{MISSING_INSTANCE_ID}/status",
+            "/instances/:instanceId/status",
+            None,
+            "connector:read",
+            id="instance_status",
+        ),
+        pytest.param(
+            "GET", f"/oauth-configs/{TOOLSET_TYPE}", "/oauth-configs/:toolsetType", None, "connector:read",
+            id="oauth_configs_list",
+        ),
+        pytest.param(
+            "PUT",
+            f"/oauth-configs/{TOOLSET_TYPE}/{MISSING_OAUTH_CONFIG_ID}",
+            "/oauth-configs/:toolsetType/:oauthConfigId",
+            {},
+            "connector:write",
+            id="oauth_config_update",
+        ),
+        pytest.param(
+            "DELETE",
+            f"/oauth-configs/{TOOLSET_TYPE}/{MISSING_OAUTH_CONFIG_ID}",
+            "/oauth-configs/:toolsetType/:oauthConfigId",
+            None,
+            "connector:delete",
+            id="oauth_config_delete",
+        ),
+        pytest.param("GET", f"/agents/{MISSING_AGENT_KEY}", "/agents/:agentKey", None, "agent:read", id="agent_toolsets"),
+        pytest.param(
+            "POST",
+            f"{AGENT_INSTANCE}/authenticate",
+            "/agents/:agentKey/instances/:instanceId/authenticate",
+            CREDENTIALS_BODY,
+            "agent:write",
+            id="agent_authenticate",
+        ),
+        pytest.param(
+            "PUT",
+            f"{AGENT_INSTANCE}/credentials",
+            "/agents/:agentKey/instances/:instanceId/credentials",
+            CREDENTIALS_BODY,
+            "agent:write",
+            id="agent_credentials_update",
+        ),
+        pytest.param(
+            "DELETE",
+            f"{AGENT_INSTANCE}/credentials",
+            "/agents/:agentKey/instances/:instanceId/credentials",
+            None,
+            "agent:write",
+            id="agent_credentials_delete",
+        ),
+        pytest.param(
+            "POST",
+            f"{AGENT_INSTANCE}/reauthenticate",
+            "/agents/:agentKey/instances/:instanceId/reauthenticate",
+            None,
+            "agent:write",
+            id="agent_reauthenticate",
+        ),
+        pytest.param(
+            "GET",
+            f"{AGENT_INSTANCE}/oauth/authorize",
+            "/agents/:agentKey/instances/:instanceId/oauth/authorize",
+            None,
+            "agent:write",
+            id="agent_authorize",
         ),
     ],
 )

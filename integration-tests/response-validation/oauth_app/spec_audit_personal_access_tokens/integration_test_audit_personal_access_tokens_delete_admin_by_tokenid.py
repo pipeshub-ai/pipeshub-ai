@@ -11,7 +11,7 @@ from personal_access_tokens_audit_support import (
     request_as,
 )
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -28,13 +28,13 @@ def test_admin_revokes_another_users_token_then_reports_not_found(
 
     resp = pats_client.admin_revoke(token["id"], json={"reason": "spec audit"})
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {"message": REVOKED_MESSAGE}
 
     # An already revoked token is indistinguishable from an unknown one.
     again = pats_client.admin_revoke(token["id"])
     assert again.status_code == 404, again.text[:500]
-    assert_strict_openapi_response(again, ROUTE)
+    assert_strict_openapi_exchange(again, ROUTE)
 
 
 def test_member_cannot_use_admin_revoke_on_own_token(
@@ -46,7 +46,7 @@ def test_member_cannot_use_admin_revoke_on_own_token(
 
     resp = request_as(second_user, "DELETE", f"/admin/{token['id']}")
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
     # The refused call must not have revoked it: the admin still can.
     survived = pats_client.admin_revoke(token["id"])
@@ -65,10 +65,30 @@ def test_admin_revoke_rejects_bad_token_id(
 ) -> None:
     resp = pats_client.admin_revoke(token_id)
     assert resp.status_code == expected_status, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_admin_revoke_without_token_is_unauthorized(pats_client: PatsClient) -> None:
     resp = pats_client.admin_revoke(MISSING_TOKEN_ID, auth=False)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_admin_revoke_ignores_a_reason_that_is_not_a_string(
+    pats_client: PatsClient, mint_pat: MintPat
+) -> None:
+    token = mint_pat()
+
+    with outside_request_contract("reason is documented as a string; the handler drops other types"):
+        resp = pats_client.admin_revoke(token["id"], json={"reason": 42})
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.json() == {"message": REVOKED_MESSAGE}
+
+
+def test_admin_revoke_with_oauth_token_is_forbidden(oauth_pats_client: PatsClient) -> None:
+    resp = oauth_pats_client.admin_revoke(MISSING_TOKEN_ID)
+    assert resp.status_code == 403, resp.text[:500]
+    assert "interactive user session" in resp.text
+    assert_strict_openapi_exchange(resp, ROUTE)

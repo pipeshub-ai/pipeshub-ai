@@ -68,6 +68,22 @@ def test_stream_creates_the_conversation_and_finishes(
     assert conversation["messages"][-1]["messageType"] == "bot_response"
 
 
+def test_blank_query_is_accepted_and_creates_the_conversation(
+    agents_audit_client: AgentsAuditClient,
+    audit_agent: str,
+    forget_conversation: Callable[[str | None], None],
+) -> None:
+    resp = _stream(agents_audit_client, audit_agent, {**QUICK_TURN, "query": "   "})
+    events = sse_events(resp) if resp.status_code == 200 else []
+    conversation_id = _created_id(events)
+    forget_conversation(conversation_id)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert conversation_id, [e for e, _ in events][:10]
+
+
 def test_unknown_agent_streams_a_run_error(
     agents_audit_client: AgentsAuditClient,
     forget_conversation: Callable[[str | None], None],

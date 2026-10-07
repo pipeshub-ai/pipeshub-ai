@@ -8,23 +8,32 @@ without looking the instance up.
 from __future__ import annotations
 
 import pytest
+from strict_openapi import assert_strict_openapi_exchange
 from toolsets_audit_support import (
+    AGENT_EDIT_REFUSAL,
     API_TOKEN_AUTH,
+    MISSING_AGENT_KEY,
     MISSING_INSTANCE_ID,
+    REGULAR_AGENT_REFUSAL,
     UNSAFE_PATH_ID,
     JsonObject,
     SeedAgent,
     SeedToolsetInstance,
     ToolsetsClient,
+    agent_not_found,
     agent_path,
+    assert_bad_request,
+    assert_forbidden,
+    assert_not_found,
     request_as,
 )
+
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
 
 pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/api/v1/toolsets/agents/:agentKey/instances/:instanceId/credentials"
+REMOVED: JsonObject = {"status": "success", "message": "Agent credentials removed successfully."}
 
 
 def _is_authenticated(toolsets_client: ToolsetsClient, agent_key: str, instance: JsonObject) -> bool:
@@ -53,9 +62,20 @@ def test_remove_saved_agent_credentials(
 
     resp = toolsets_client.delete(agent_path(agent_key, instance["_id"], "/credentials"))
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json() == REMOVED
 
     assert not _is_authenticated(toolsets_client, agent_key, instance)
+
+
+def test_remove_credentials_of_an_unknown_instance_still_succeeds(
+    toolsets_client: ToolsetsClient, seed_agent: SeedAgent
+) -> None:
+    agent_key = seed_agent()
+    resp = toolsets_client.delete(agent_path(agent_key, MISSING_INSTANCE_ID, "/credentials"))
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json() == REMOVED
 
 
 def test_remove_credentials_of_regular_agent_is_rejected(
@@ -64,8 +84,8 @@ def test_remove_credentials_of_regular_agent_is_rejected(
 ) -> None:
     agent_key = seed_agent(is_service_account=False)
     resp = toolsets_client.delete(agent_path(agent_key, MISSING_INSTANCE_ID, "/credentials"))
-    assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_bad_request(resp, REGULAR_AGENT_REFUSAL)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_member_with_read_only_access_to_agent_is_forbidden(
@@ -78,20 +98,22 @@ def test_member_with_read_only_access_to_agent_is_forbidden(
     resp = request_as(
         second_user, "DELETE", agent_path(agent_key, MISSING_INSTANCE_ID, "/credentials")
     )
-    assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_forbidden(resp, AGENT_EDIT_REFUSAL)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
-def test_remove_agent_credentials_without_token_is_unauthorized(
-    toolsets_client: ToolsetsClient,
-    seed_agent: SeedAgent,
-) -> None:
-    agent_key = seed_agent()
+def test_remove_credentials_of_an_unknown_agent_is_not_found(toolsets_client: ToolsetsClient) -> None:
+    resp = toolsets_client.delete(agent_path(MISSING_AGENT_KEY, MISSING_INSTANCE_ID, "/credentials"))
+    assert_not_found(resp, agent_not_found(MISSING_AGENT_KEY))
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_remove_agent_credentials_without_token_is_unauthorized(toolsets_client: ToolsetsClient) -> None:
     resp = toolsets_client.delete(
-        agent_path(agent_key, MISSING_INSTANCE_ID, "/credentials"), auth=False
+        agent_path(MISSING_AGENT_KEY, MISSING_INSTANCE_ID, "/credentials"), auth=False
     )
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_remove_agent_credentials_with_unsafe_agent_key_is_rejected_before_auth(
@@ -101,4 +123,4 @@ def test_remove_agent_credentials_with_unsafe_agent_key_is_rejected_before_auth(
         agent_path(UNSAFE_PATH_ID, MISSING_INSTANCE_ID, "/credentials"), auth=False
     )
     assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)

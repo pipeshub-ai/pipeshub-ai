@@ -11,7 +11,7 @@ from oauth2_audit_support import (
     OAuth2Client,
     user_bound_access_token,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -41,7 +41,7 @@ def test_userinfo_returns_the_claims_the_scopes_grant(
         resp = oauth2_client.userinfo(token)
 
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     body = resp.json()
     assert isinstance(body["user_id"], str) and body["user_id"]
     # Unset user fields are dropped from the JSON, so the claim set is an upper bound.
@@ -63,7 +63,7 @@ def test_userinfo_without_a_valid_token_is_unauthorized(
     resp = oauth2_client.userinfo(access_token)
 
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json()["error"] == error
     assert resp.headers["WWW-Authenticate"].startswith('Bearer realm="oauth"')
 
@@ -79,9 +79,29 @@ def test_userinfo_without_openid_scope_is_forbidden(
         resp = oauth2_client.userinfo(token)
 
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert resp.json() == {
         "error": "insufficient_scope",
         "error_description": "Required scopes: openid",
         "scope": "openid",
     }
+
+
+def test_userinfo_ignores_query_parameters(
+    oauth2_client: OAuth2Client,
+    pipeshub_client: PipeshubClient,
+    user_session_client: SessionClient,
+) -> None:
+    with user_bound_access_token(
+        pipeshub_client.base_url, user_session_client.token, ("openid",)
+    ) as token:
+        with outside_request_contract("the route takes no parameters; this shows it ignores them"):
+            resp = oauth2_client.get(
+                "/userinfo",
+                auth=False,
+                params={"spec_audit": "ignored"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200, resp.text[:500]
+            assert_strict_openapi_exchange(resp, ROUTE)
+    assert set(resp.json()) == {"user_id"}

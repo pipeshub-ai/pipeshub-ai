@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 import pytest
 from connectors_audit_support import (
     MISSING_CONNECTOR_ID,
@@ -137,4 +139,16 @@ def test_stats_for_unusable_connector_id(
 ) -> None:
     resp = connectors_client.get(f"/{requested_id}/stats")
     assert resp.status_code == expected_status, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("scope", ["connector:read", "kb:read"])
+def test_stats_take_either_read_scope(
+    connectors_client: ConnectorsAuditClient,
+    connector_id: str,
+    token_with_scopes: Callable[..., str],
+    scope: str,
+) -> None:
+    resp = connectors_client.get(f"/{connector_id}/stats", auth=False, headers=bearer(token_with_scopes(scope)))
+    assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)

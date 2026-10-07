@@ -12,13 +12,16 @@ from projects_audit_support import (
     ARCHIVE_TEMPLATE,
     CONVERSATIONS_TEMPLATE,
     JSON_HEADERS,
+    KNOWLEDGE_BASE_TEMPLATE,
     MALFORMED_JSON_BODY,
+    MEMBER_TEMPLATE,
     MEMBERS_TEMPLATE,
     MISSING_PROJECT_ID,
     PIN_TEMPLATE,
     PROJECT_TEMPLATE,
     ROOT_TEMPLATE,
     UNARCHIVE_TEMPLATE,
+    UNKNOWN_USER_ID,
     UNPIN_TEMPLATE,
 )
 from strict_openapi import assert_strict_openapi_exchange
@@ -43,6 +46,8 @@ P = MISSING_PROJECT_ID
         pytest.param("GET", f"/{P}/conversations", CONVERSATIONS_TEMPLATE, id="get-conversations"),
         pytest.param("GET", f"/{P}/members", MEMBERS_TEMPLATE, id="get-members"),
         pytest.param("PUT", f"/{P}/members", MEMBERS_TEMPLATE, id="put-members"),
+        pytest.param("DELETE", f"/{P}/members/{UNKNOWN_USER_ID}", MEMBER_TEMPLATE, id="delete-member"),
+        pytest.param("POST", f"/{P}/knowledge-base", KNOWLEDGE_BASE_TEMPLATE, id="post-knowledge-base"),
     ],
 )
 def test_malformed_json_body_is_an_internal_error(

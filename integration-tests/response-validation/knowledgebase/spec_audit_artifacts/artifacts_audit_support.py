@@ -13,6 +13,8 @@ import requests
 from helper.http.api_client import APIClient
 from helper.local_auth import obtain_user_session_token
 from helper.second_user import SecondUser
+from openapi_schema_validator import load_openapi_document
+from strict_openapi import find_operation
 
 if TYPE_CHECKING:
     from helper.graph_provider import GraphProviderProtocol
@@ -43,6 +45,7 @@ OAUTH_CLIENTS_PATH = "/api/v1/oauth-clients"
 OAUTH_TOKEN_PATH = "/api/v1/oauth2/token"
 # The routes accept kb:read or connector:read; this is neither.
 UNRELATED_SCOPE = "org:read"
+CONNECTOR_READ_SCOPE = "connector:read"
 SCOPE_REFUSAL = "Insufficient scope. Required: kb:read or connector:read"
 
 
@@ -105,6 +108,14 @@ def oauth_token_with_scopes(base_url: str, scopes: list[str], timeout: int = 60)
         yield issued.json()["access_token"]
     finally:
         requests.delete(f"{base_url}{OAUTH_CLIENTS_PATH}/{app['id']}", headers=admin, timeout=timeout)
+
+
+def spec_accepts_oauth_scopes(method: str, route: str, scopes: list[str]) -> bool:
+    """Whether the spec's security for the operation is met by an OAuth token holding only ``scopes``."""
+    found = find_operation(load_openapi_document(), method, route)
+    assert found is not None, f"{method} {route} is not in the spec"
+    requirements = found[1].get("security") or []
+    return any(set(req) == {"oauth2"} and set(req["oauth2"]) <= set(scopes) for req in requirements)
 
 
 def request_as(user: SecondUser, path: str = "", **kwargs: Any) -> requests.Response:

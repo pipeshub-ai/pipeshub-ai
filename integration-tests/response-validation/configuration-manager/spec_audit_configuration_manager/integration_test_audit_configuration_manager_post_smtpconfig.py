@@ -194,3 +194,26 @@ def test_set_smtp_config_without_a_body_is_rejected_like_an_empty_one(
 
     assert_validation_error(resp, "body.host", "body.port", "body.fromEmail")
     assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("port", [70000, 587.5], ids=["above-65535", "not-a-whole-number"])
+def test_set_smtp_config_checks_neither_the_port_range_nor_whole_numbers(
+    config_client: ConfigClient, current: dict[str, Any], port: float
+) -> None:
+    # API bug: zod is z.number().min(1); the config is stored and the mail service reloads with it.
+    resp = config_client.post(PATH, json={**current, "port": port})
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert _stored(config_client)["port"] == port
+
+
+def test_set_smtp_config_stores_a_sender_that_is_not_an_email_address(
+    config_client: ConfigClient, current: dict[str, Any]
+) -> None:
+    # API bug: fromEmail is only checked for being non-empty.
+    resp = config_client.post(PATH, json={**current, "fromEmail": "not-an-email"})
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert _stored(config_client)["fromEmail"] == "not-an-email"

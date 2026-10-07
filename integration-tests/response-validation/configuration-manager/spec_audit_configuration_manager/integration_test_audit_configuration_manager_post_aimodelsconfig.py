@@ -1,7 +1,12 @@
 """Strict OpenAPI audit of POST /api/v1/configurationManager/aiModelsConfig.
 
-Negative paths only: a successful call replaces the org's whole AI model
-configuration after live LLM / embedding health checks.
+Chain: authenticate -> requireScopes(config:write) -> userAdminCheck -> zod body ->
+createAIModelsConfig, which health-checks the LLM and embedding entries through the query
+service before it replaces the organization's whole AI model configuration.
+
+A success replaces the models every other suite chats and indexes with, and fires the
+"LLM / embedding configured" events, so it is not run here. Every case below stops before
+anything is stored: the entries name a provider that does not exist.
 """
 
 from __future__ import annotations
@@ -9,59 +14,179 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from configuration_manager_audit_support import request_as
+from configuration_manager_audit_support import (
+    INVALID_BEARER_HEADERS,
+    assert_validation_error,
+    request_as,
+)
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import (
+    assert_strict_openapi_exchange,
+    assert_strict_openapi_response,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/api/v1/configurationManager/aiModelsConfig"
+PATH = "/aiModelsConfig"
 
-# Refused by aiModelsConfigSchema, so it can never reach the store even if a gate is missing.
+UNKNOWN_PROVIDER_ENTRY: dict[str, Any] = {
+    "provider": "spec-audit-no-such-provider",
+    "configuration": {"model": "spec-audit-model"},
+}
+# Refused by the validator, so it can never reach the store even if a gate is missing.
 EMPTY_MODELS_BODY: dict[str, Any] = {"llm": [], "embedding": []}
 
 
-def test_create_ai_models_config_without_token_is_unauthorized(config_client: ConfigClient) -> None:
-    resp = config_client.post("/aiModelsConfig", auth=False, json=EMPTY_MODELS_BODY)
+def _stored(config_client: ConfigClient) -> dict[str, Any]:
+    resp = config_client.get(PATH)
+    assert resp.status_code == 200, resp.text[:500]
+    body: dict[str, Any] = resp.json()
+    return body
 
-    assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
 
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        pytest.param(
+            {"llm": [UNKNOWN_PROVIDER_ENTRY], "embedding": []},
+            "Failed to do health check of llm configuration, check credentials again",
+            id="llm-health-check-fails",
+        ),
+        pytest.param(
+            {"llm": [], "embedding": [UNKNOWN_PROVIDER_ENTRY]},
+            "Failed to do health check of embedding configuration, check credentials again",
+            id="embedding-health-check-fails",
+        ),
+    ],
+)
+def test_a_model_that_fails_its_health_check_is_an_internal_error_and_nothing_is_stored(
+    config_client: ConfigClient, body: dict[str, Any], message: str
+) -> None:
+    before = _stored(config_client)
 
-def test_create_ai_models_config_as_member_is_forbidden(second_user: SecondUser) -> None:
-    resp = request_as(second_user, "POST", "/aiModelsConfig", json=EMPTY_MODELS_BODY)
+    resp = config_client.post(PATH, json=body)
 
-    assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert resp.status_code == 500, resp.text[:500]
+    error = resp.json()["error"]
+    assert (error["code"], error["message"]) == ("HTTP_INTERNAL_SERVER_ERROR", message)
+    assert isinstance(error["metadata"], dict), error
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert _stored(config_client) == before
 
 
 @pytest.mark.parametrize(
     "body",
     [
-        pytest.param(EMPTY_MODELS_BODY, id="no-model-configured"),
+        pytest.param({"ocr": [UNKNOWN_PROVIDER_ENTRY]}, id="only-ocr"),
+        pytest.param({"slm": [UNKNOWN_PROVIDER_ENTRY], "llm": []}, id="no-embedding-key"),
+    ],
+)
+def test_a_body_without_both_llm_and_embedding_lists_crashes_the_handler(
+    config_client: ConfigClient, body: dict[str, Any]
+) -> None:
+    # API bug: the validator accepts any one model type, but the handler reads
+    # aiConfig.llm.length and aiConfig.embedding.length unconditionally.
+    before = _stored(config_client)
+
+    resp = config_client.post(PATH, json=body)
+
+    assert resp.status_code == 500, resp.text[:500]
+    assert resp.json()["error"]["code"] == "INTERNAL_ERROR", resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert _stored(config_client) == before
+
+
+def test_unknown_configuration_keys_pass_the_validator(config_client: ConfigClient) -> None:
+    # The configuration object is passed through so registry-defined keys reach the health check.
+    with outside_request_contract("specAuditKey is not a documented configuration key"):
+        resp = config_client.post(
+            PATH,
+            json={
+                "llm": [{**UNKNOWN_PROVIDER_ENTRY, "configuration": {"model": "m", "specAuditKey": "x"}}],
+                "embedding": [],
+            },
+        )
+
+    assert resp.status_code == 500, resp.text[:500]
+    assert resp.json()["error"]["message"].startswith("Failed to do health check of llm")
+    assert_strict_openapi_response(resp, ROUTE)
+
+
+@pytest.mark.parametrize(
+    ("body", "fields"),
+    [
+        pytest.param(EMPTY_MODELS_BODY, ["body"], id="no-model-configured"),
+        pytest.param({}, ["body"], id="empty-object"),
         # The body object is strict: only the nine model-type keys are accepted.
-        pytest.param({"llm": [], "embedding": [], "vision": []}, id="unknown-model-type"),
-        # Fails the configuration refinement, before any health check is attempted.
+        pytest.param({"llm": [UNKNOWN_PROVIDER_ENTRY], "embedding": [], "vision": []}, ["body"], id="unknown-model-type"),
         pytest.param(
             {
                 "llm": [
                     {
                         "provider": "openAI",
-                        "configuration": {
-                            "model": "spec-audit-a, spec-audit-b",
-                            "modelFriendlyName": "Spec Audit",
-                        },
+                        "configuration": {"model": "spec-audit-a, spec-audit-b", "modelFriendlyName": "Spec Audit"},
                     }
                 ],
                 "embedding": [],
             },
+            ["body.llm.0.configuration.modelFriendlyName"],
             id="friendly-name-with-several-models",
         ),
+        pytest.param(
+            {"llm": [{"provider": "openAI", "configuration": {"modelFriendlyName": "Spec Audit"}}], "embedding": []},
+            ["body.llm.0.configuration.modelFriendlyName"],
+            id="friendly-name-without-model",
+        ),
+        pytest.param({"llm": [{"provider": "", "configuration": {}}]}, ["body.llm.0.provider"], id="empty-provider"),
+        pytest.param({"llm": [{"configuration": {}}]}, ["body.llm.0.provider"], id="missing-provider"),
+        pytest.param({"llm": [{"provider": "openAI"}]}, ["body.llm.0.configuration"], id="missing-configuration"),
+        pytest.param(
+            {"llm": [{**UNKNOWN_PROVIDER_ENTRY, "isDefault": "no", "contextLength": "x"}]},
+            ["body.llm.0.isDefault", "body.llm.0.contextLength"],
+            id="wrong-types",
+        ),
+        pytest.param(
+            {"llm": [{**UNKNOWN_PROVIDER_ENTRY, "configuration": {"model": "m", "defaultReasoningEffort": "extreme"}}]},
+            ["body.llm.0.configuration.defaultReasoningEffort"],
+            id="unknown-reasoning-effort",
+        ),
+        pytest.param({"llm": UNKNOWN_PROVIDER_ENTRY}, ["body.llm"], id="llm-not-a-list"),
     ],
 )
-def test_create_ai_models_config_rejects_invalid_body(config_client: ConfigClient, body: dict[str, Any]) -> None:
-    resp = config_client.post("/aiModelsConfig", json=body)
+def test_create_ai_models_config_rejects_invalid_body(
+    config_client: ConfigClient, body: dict[str, Any], fields: list[str]
+) -> None:
+    resp = config_client.post(PATH, json=body)
 
-    assert resp.status_code == 400, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_validation_error(resp, *fields)
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("headers", [None, INVALID_BEARER_HEADERS], ids=["no-token", "invalid-token"])
+def test_create_ai_models_config_without_valid_token_is_unauthorized(
+    config_client: ConfigClient, headers: dict[str, str] | None
+) -> None:
+    resp = config_client.post(PATH, auth=False, headers=headers, json=EMPTY_MODELS_BODY)
+
+    assert resp.status_code == 401, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_create_ai_models_config_as_member_is_forbidden(second_user: SecondUser) -> None:
+    resp = request_as(second_user, "POST", PATH, json=EMPTY_MODELS_BODY)
+
+    assert resp.status_code == 403, resp.text[:500]
+    # The member is refused before the validator, so this empty body is only judged by the spec.
+    with outside_request_contract("the empty lists are refused by the validator, which never runs here"):
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_token_without_config_write_scope_is_forbidden(config_client: ConfigClient, narrow_scope_headers: dict[str, str]) -> None:
+    resp = config_client.post("/aiModelsConfig", auth=False, headers=narrow_scope_headers, json={})
+
+    assert resp.status_code == 403, resp.text[:500]
+    assert resp.json()["error"]["code"] == "HTTP_FORBIDDEN", resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)

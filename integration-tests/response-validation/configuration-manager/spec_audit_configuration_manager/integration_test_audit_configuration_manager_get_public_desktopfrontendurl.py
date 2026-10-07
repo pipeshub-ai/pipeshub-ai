@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 import pytest
 from configuration_manager_audit_support import DESKTOP_CLIENT_HEADERS
 from helper.clients.config_client import ConfigClient
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -18,7 +18,7 @@ PATH = "/public/desktopFrontendUrl"
 def test_desktop_client_reads_frontend_url_without_a_session(config_client: ConfigClient) -> None:
     resp = config_client.get(PATH, auth=False, headers=DESKTOP_CLIENT_HEADERS)
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     body = resp.json()
     assert list(body) == ["frontendUrl"], body
     # resolveFrontendPublicUrl falls back to http://localhost:<port>, so it is never empty.
@@ -45,5 +45,5 @@ def test_non_desktop_caller_is_forbidden(
 ) -> None:
     resp = config_client.get(PATH, auth=auth, headers=headers)
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     assert "frontendUrl" not in resp.text, resp.text[:500]

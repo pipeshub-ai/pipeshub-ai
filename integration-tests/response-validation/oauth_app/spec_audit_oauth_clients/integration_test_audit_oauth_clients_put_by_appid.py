@@ -113,6 +113,7 @@ def test_refine_only_checks_redirects_sent_with_authorization_code(
         pytest.param({"allowedScopes": []}, ["body.allowedScopes"], id="no-scopes"),
         pytest.param({"allowedGrantTypes": ["implicit"]}, ["body.allowedGrantTypes.0"], id="unknown-grant"),
         pytest.param({"redirectUris": ["not a url"]}, ["body.redirectUris.0"], id="redirect-not-a-url"),
+        pytest.param({"redirectUris": ["https://"]}, ["body.redirectUris.0"], id="redirect-without-host"),
         pytest.param({"homepageUrl": "spec-audit"}, ["body.homepageUrl"], id="homepage-not-a-url"),
         pytest.param({"privacyPolicyUrl": "spec-audit"}, ["body.privacyPolicyUrl"], id="privacy-not-a-url"),
         pytest.param({"termsOfServiceUrl": "spec-audit"}, ["body.termsOfServiceUrl"], id="terms-not-a-url"),
@@ -139,6 +140,23 @@ def test_invalid_body_is_a_validation_error(
     error = resp.json()["error"]
     assert error["code"] == "VALIDATION_ERROR"
     assert [e["field"] for e in error["metadata"]["errors"]] == fields
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    ["HTTPS://spec-audit.example/cb", "https:spec-audit.example/cb", "http://LOCALHOST:3000/cb"],
+    ids=["upper-case-scheme", "no-slashes", "upper-case-localhost"],
+)
+def test_redirect_uris_in_any_case_or_slash_form_are_accepted(
+    oauth_clients_client: OAuthClientsAuditClient, seed_oauth_app: SeedOAuthApp, redirect_uri: str
+) -> None:
+    app = seed_oauth_app()
+
+    resp = _put(oauth_clients_client, app["id"], json={"redirectUris": [redirect_uri]})
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert resp.json()["app"]["redirectUris"] == [redirect_uri]
     assert_strict_openapi_exchange(resp, ROUTE)
 
 

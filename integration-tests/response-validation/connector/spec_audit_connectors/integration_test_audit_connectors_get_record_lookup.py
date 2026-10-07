@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from connectors_audit_support import (
@@ -163,6 +163,7 @@ def test_lookup_identifiers_refused_by_the_validator(
     "params",
     [
         pytest.param({"connectorName": ""}, id="connector-name-empty"),
+        pytest.param({"connectorName": "  "}, id="connector-name-blank"),
         pytest.param([("connectorName", "JIRA"), ("connectorName", "SLACK")], id="connector-name-repeated"),
     ],
 )
@@ -173,4 +174,15 @@ def test_lookup_connector_name_refused_by_the_validator(
     resp = connectors_client.get("/record/lookup", params=query)
     assert resp.status_code == 400, resp.text[:500]
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR", resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("scope", ["kb:read", "connector:read"])
+def test_lookup_takes_either_read_scope(
+    connectors_client: ConnectorsAuditClient, token_with_scopes: Callable[..., str], scope: str
+) -> None:
+    resp = connectors_client.lookup_record(
+        _unknown_identifier(), auth=False, headers=bearer(token_with_scopes(scope))
+    )
+    assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)

@@ -7,7 +7,7 @@ import logging
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pytest
 
@@ -39,13 +39,19 @@ from app.services.redis.connection_provider_factory import get_redis_provider  #
 from app.services.vector_db.rebuild_state import JOB_LOCK_KEY  # noqa: E402
 
 from connectors_audit_support import (  # noqa: E402
+    MEMBER_TOKEN_AUTH,
+    OAUTH_BASE_URL,
     ConnectorsAuditClient,
     KbRecords,
     SeedConnector,
+    StubSource,
     create_seed_connector,
     created_connector_id,
+    is_settled,
+    is_syncing,
     personal_body,
     request_as,
+    wait_for_state,
 )
 
 logger = logging.getLogger("spec-audit-connectors")
@@ -168,6 +174,51 @@ def token_without_connector_scopes(
 
 
 @pytest.fixture(scope="session")
+def token_with_scopes(
+    pipeshub_client: PipeshubClient, user_session_client: SessionClient
+) -> Iterator[Callable[..., str]]:
+    """Factory: the admin's access token from an OAuth app granted exactly ``scopes``.
+
+    Shows which single scope a route accepts, apart from the role checks.
+    """
+    apps = OAuthAppsClient(user_session_client)
+    created: list[str] = []
+    tokens: dict[tuple[str, ...], str] = {}
+
+    def _token(*scopes: str) -> str:
+        key = tuple(sorted(scopes))
+        if key in tokens:
+            return tokens[key]
+        resp = apps.create_app(
+            name=f"spec-audit-connectors-{'-'.join(key).replace(':', '_')}-{uuid.uuid4().hex[:8]}",
+            allowedGrantTypes=["client_credentials"],
+            allowedScopes=["openid", *key],
+        )
+        assert resp.status_code < 300, f"OAuth app create failed: {resp.status_code} {resp.text[:300]}"
+        app = resp.json()["app"]
+        created.append(str(app["id"]))
+        token_resp = OAuthProviderClient(pipeshub_client).token(
+            grant_type="client_credentials",
+            client_id=app["clientId"],
+            client_secret=app["clientSecret"],
+            scope=" ".join(key),
+        )
+        assert token_resp.status_code < 300, (
+            f"token fetch failed: {token_resp.status_code} {token_resp.text[:300]}"
+        )
+        tokens[key] = str(token_resp.json()["access_token"])
+        return tokens[key]
+
+    try:
+        yield _token
+    finally:
+        for app_id in created:
+            deleted = apps.delete_app(app_id)
+            if deleted.status_code >= 300:
+                logger.warning("could not delete OAuth app %s: %s", app_id, deleted.status_code)
+
+
+@pytest.fixture(scope="session")
 def kb_records(pipeshub_client: PipeshubClient) -> Iterator[KbRecords]:
     """A throwaway KB holding one text record and one record of an unsupported type.
 
@@ -278,3 +329,132 @@ def vector_store_rebuild_disabled(pipeshub_client: PipeshubClient) -> Iterator[N
     finally:
         if was_enabled:
             set_rebuild_flag(pipeshub_client, True)
+
+
+@pytest.fixture
+def syncing_connector(connectors_client: ConnectorsAuditClient) -> Iterator[str]:
+    """A Demo instance whose first sync was just started and is still running.
+
+    Demo contacts nothing external. Teardown stops the sync early, so few demo
+    records are written, waits for it to settle and removes the instance.
+    """
+    seeded = create_seed_connector(connectors_client)
+    try:
+        resp = connectors_client.post(f"/{seeded}/toggle", json={"type": "sync"})
+        assert resp.status_code == 200, resp.text[:300]
+        wait_for_state(connectors_client, seeded, is_syncing, "a running sync")
+        yield seeded
+    finally:
+        try:
+            connectors_client.post(f"/{seeded}/sync/stop")
+            state = wait_for_state(connectors_client, seeded, is_settled, "the end of its sync")
+            if state.get("isActive"):
+                connectors_client.post(f"/{seeded}/toggle", json={"type": "sync"})
+        finally:
+            _remove(connectors_client, [seeded])
+
+
+@pytest.fixture
+def member_configured_connector(
+    second_user: SecondUser,  # noqa: F811 - the fixture
+    member_connector: SeedConnector,
+) -> str:
+    """A personal instance of the member with API-token credentials saved (nothing is contacted)."""
+    seeded = member_connector()
+    resp = request_as(second_user, "PUT", f"/{seeded}/config/auth", json={"auth": MEMBER_TOKEN_AUTH})
+    assert resp.status_code == 200, resp.text[:300]
+    return seeded
+
+
+@pytest.fixture(scope="module")
+def bookstack_source() -> Iterator[StubSource]:
+    """A BookStack stand-in whose search lists one book."""
+    body = {"data": [{"id": 7, "name": "Spec Audit Book", "slug": "spec-audit-book", "type": "book"}], "total": 1}
+    with StubSource(body) as stub:
+        yield stub
+
+
+@pytest.fixture(scope="module")
+def bookstack_connector(
+    connectors_client: ConnectorsAuditClient, bookstack_source: StubSource
+) -> Iterator[str]:
+    """A team BookStack instance whose credentials point at the local stand-in."""
+    seeded = create_seed_connector(connectors_client, connectorType="BookStack", authType="API_TOKEN")
+    try:
+        resp = connectors_client.put(
+            f"/{seeded}/config/auth",
+            json={"auth": {"base_url": bookstack_source.url, "token_id": "spec-audit", "token_secret": "spec-audit"}},
+        )
+        assert resp.status_code == 200, resp.text[:300]
+        yield seeded
+    finally:
+        _remove(connectors_client, [seeded])
+
+
+@pytest.fixture
+def oauth_provider() -> Iterator[StubSource]:
+    """An OAuth provider stand-in: its token endpoint issues a token for any code."""
+    with StubSource({}) as stub:
+        yield stub
+
+
+@pytest.fixture
+def gitlab_oauth_connector(
+    connectors_client: ConnectorsAuditClient,
+    pipeshub_client: PipeshubClient,
+    oauth_provider: StubSource,
+) -> Iterator[str]:
+    """A team GitLab OAuth instance whose instance URL is the local provider stand-in.
+
+    Saving client credentials as an admin creates a shared OAuth app, which is
+    removed with the instance.
+    """
+    seeded = create_seed_connector(connectors_client, connectorType="GitLab", authType="OAUTH")
+    oauth_app_id = None
+    try:
+        resp = connectors_client.put(
+            f"/{seeded}/config/auth",
+            json={
+                "auth": {"clientId": "spec-audit-client", "clientSecret": "spec-audit-secret", "instanceUrl": oauth_provider.url},
+                "baseUrl": OAUTH_BASE_URL,
+            },
+        )
+        assert resp.status_code == 200, resp.text[:300]
+        oauth_app_id = resp.json()["config"]["auth"].get("oauthConfigId")
+        yield seeded
+    finally:
+        _remove(connectors_client, [seeded])
+        if oauth_app_id:
+            deleted = pipeshub_client.request("DELETE", f"/api/v1/oauth/GitLab/{oauth_app_id}")
+            if deleted.status_code >= 300:
+                logger.warning("could not delete OAuth app %s: %s", oauth_app_id, deleted.status_code)
+
+
+@pytest.fixture
+def agent_capable_connector(connectors_client: ConnectorsAuditClient) -> Iterator[str]:
+    """A configured team Confluence instance (API token, never contacted): agent use can be toggled."""
+    seeded = create_seed_connector(connectors_client, connectorType="Confluence", authType="API_TOKEN")
+    try:
+        resp = connectors_client.put(
+            f"/{seeded}/config/auth",
+            json={"auth": {"baseUrl": "https://spec-audit.invalid", "email": "spec-audit@example.com", "apiToken": "spec-audit"}},
+        )
+        assert resp.status_code == 200, resp.text[:300]
+        yield seeded
+    finally:
+        _remove(connectors_client, [seeded])
+
+
+@pytest.fixture
+def local_fs_connector(connectors_client: ConnectorsAuditClient) -> Iterator[str]:
+    """A personal Local FS instance of the admin that no desktop device has claimed."""
+    seeded = create_seed_connector(
+        connectors_client,
+        connectorType="Local FS",
+        scope="personal",
+        config={"sync": {"sync_root_path": f"/Users/spec-audit/{uuid.uuid4().hex[:8]}"}},
+    )
+    try:
+        yield seeded
+    finally:
+        _remove(connectors_client, [seeded])

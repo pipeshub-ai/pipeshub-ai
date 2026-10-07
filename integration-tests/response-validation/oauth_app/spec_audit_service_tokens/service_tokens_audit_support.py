@@ -22,6 +22,9 @@ DEFAULT_TOKEN_SCOPES = ("kb:read",)
 DENIED_TOKEN_SCOPE = "agent:execute"
 UNKNOWN_TOKEN_SCOPE = "spec-audit:no-such-scope"
 MAX_EXPIRY_DAYS = 365
+DEFAULT_EXPIRY_DAYS = 90
+# SERVICE_TOKEN_MAX_ACTIVE in service-token.service.ts.
+MAX_ACTIVE_TOKENS = 50
 
 # Returns the service account view (id, slug, fullName, email, isDisabled, ...).
 SeedServiceAccount = Callable[..., dict[str, Any]]
@@ -88,5 +91,18 @@ def request_as(
         method,
         f"{user.base_url}{SERVICE_TOKENS_BASE}{path}",
         headers=user.headers,
+        **kwargs,
+    )
+
+
+def request_with_token(
+    base_url: str, token: str, method: str, path: str = "", **kwargs: Any
+) -> requests.Response:
+    """Call a service-tokens route with an arbitrary bearer token, e.g. a narrowly scoped PAT."""
+    kwargs.setdefault("timeout", 60)
+    return requests.request(
+        method,
+        f"{base_url}{SERVICE_TOKENS_BASE}{path}",
+        headers={"Authorization": f"Bearer {token}"},
         **kwargs,
     )

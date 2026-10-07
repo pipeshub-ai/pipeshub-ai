@@ -121,6 +121,7 @@ def test_an_unknown_body_field_is_dropped(create: Create) -> None:
     [
         {"email": "x@test-pipeshub.com"},
         {"fullName": "", "email": "x@test-pipeshub.com"},
+        {"fullName": "  \t ", "email": "x@test-pipeshub.com"},
         {"fullName": "No Email"},
         {"fullName": "Bad Email", "email": "not-an-email"},
         {"fullName": "Bad Email", "email": "a@b"},
@@ -131,6 +132,7 @@ def test_an_unknown_body_field_is_dropped(create: Create) -> None:
     ids=[
         "missing-fullName",
         "empty-fullName",
+        "whitespace-fullName",
         "missing-email",
         "email-no-at",
         "email-no-tld",

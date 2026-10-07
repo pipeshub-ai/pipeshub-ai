@@ -12,6 +12,7 @@ from agents_audit_support import (
     OTHER_AGENT_KEY,
     QUICK_TURN,
     SEED_AGENT_KEY,
+    UNKNOWN_MODEL_KEY,
     AgentsAuditClient,
     SeedAgentConversation,
     SeedMessage,
@@ -55,6 +56,26 @@ def test_follow_up_appends_one_answered_turn(
     ]
     assert body["recordsUsed"] == body["meta"]["recordsUsed"]
 
+
+def test_unknown_model_key_falls_back_to_the_default_model(
+    agents_audit_client: AgentsAuditClient,
+    audit_agent: str,
+    seed_agent_conversation: SeedAgentConversation,
+) -> None:
+    conversation_id = seed_agent_conversation(agent_key=audit_agent)
+
+    resp = agents_audit_client.add_message(
+        audit_agent,
+        conversation_id,
+        json={**QUICK_TURN, "modelKey": UNKNOWN_MODEL_KEY},
+        timeout=ANSWER_TIMEOUT,
+    )
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    conversation = resp.json()["conversation"]
+    assert conversation["status"] == "Complete", conversation.get("failReason")
+    assert conversation["messages"][-1]["messageType"] == "bot_response"
 
 @pytest.mark.parametrize(
     ("agent_key", "conversation_id"),
@@ -139,6 +160,23 @@ def test_unsafe_query_is_refused_before_the_turn_starts(
     assert resp.status_code == 400, resp.text[:500]
     assert CONVERSATION_ID_HEADER not in resp.headers
     assert_strict_openapi_exchange(resp, ROUTE)
+    assert_spec_forbids_request(resp, ROUTE)
+
+
+def test_blank_query_is_refused_by_the_controller(
+    agents_audit_client: AgentsAuditClient,
+    seed_agent_conversation: SeedAgentConversation,
+) -> None:
+    conversation_id = seed_agent_conversation()
+
+    resp = agents_audit_client.add_message(
+        SEED_AGENT_KEY, conversation_id, json={**QUICK_TURN, "query": "   "}
+    )
+
+    assert resp.status_code == 400, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    error = error_of(resp)
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", "Query is required"), resp.text[:500]
     assert_spec_forbids_request(resp, ROUTE)
 
 

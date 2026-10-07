@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import threading
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, TypedDict
 
 import requests
@@ -60,6 +63,8 @@ INVALID_LIST_QUERIES: list[Any] = [
     {"isAuthenticated": ""},
     {"isActive": "1"},
     {"connectorType": ""},
+    # Values are trimmed before they are checked.
+    {"connectorType": "  "},
     [("page", 1), ("page", 2)],
     [("search", "a"), ("search", "b")],
 ]
@@ -78,6 +83,7 @@ INVALID_LIST_IDS = [
     "is-authenticated-empty",
     "is-active-not-boolean",
     "connector-type-empty",
+    "connector-type-blank",
     "page-repeated",
     "search-repeated",
 ]
@@ -197,3 +203,107 @@ def spec_query_value_errors(method: str, route: str, name: str, value: Any) -> l
     assert name in documented, f"{method} {route} documents no query parameter {name!r}"
     _, pointer = documented[name]
     return _schema_errors(registry, pointer, value)
+
+
+# Origin of the frontend the OAuth redirect URI and callback redirectUrl are built on.
+OAUTH_BASE_URL = "http://localhost:3001"
+
+SYNC_RUNNING_STATUSES = ("SYNCING", "FULL_SYNCING", "QUEUED")
+STATUS_POLL_TIMEOUT_SEC = 60.0
+STATUS_POLL_INTERVAL_SEC = 0.5
+
+# A personal type whose API_TOKEN form needs no reachable source to be saved,
+# so a member can own a configured instance.
+MEMBER_TOKEN_AUTH: dict[str, Any] = {
+    "baseUrl": "https://spec-audit.invalid",
+    "email": "spec-audit@example.com",
+    "apiToken": "spec-audit-token",
+}
+
+
+def instance_state(client: ConnectorsAuditClient, connector_id: str) -> dict[str, Any]:
+    resp = client.get(f"/{connector_id}")
+    assert resp.status_code == 200, resp.text[:300]
+    return dict(resp.json()["connector"])
+
+
+def wait_for_state(
+    client: ConnectorsAuditClient,
+    connector_id: str,
+    ready: Callable[[dict[str, Any]], bool],
+    what: str,
+    timeout: float = STATUS_POLL_TIMEOUT_SEC,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while True:
+        state = instance_state(client, connector_id)
+        if ready(state):
+            return state
+        assert time.monotonic() < deadline, (
+            f"connector {connector_id} did not reach {what} in {timeout:.0f}s: "
+            f"status={state.get('status')} isActive={state.get('isActive')} isLocked={state.get('isLocked')}"
+        )
+        time.sleep(STATUS_POLL_INTERVAL_SEC)
+
+
+def is_syncing(state: dict[str, Any]) -> bool:
+    return state.get("status") in SYNC_RUNNING_STATUSES
+
+
+def is_settled(state: dict[str, Any]) -> bool:
+    return state.get("status") not in SYNC_RUNNING_STATUSES and not state.get("isLocked")
+
+
+class StubSource:
+    """A local HTTP server standing in for a connector's source or OAuth provider.
+
+    The connector service runs on this host, so it reaches the stub on 127.0.0.1.
+    GET answers ``get_body``; POST answers ``post_body`` (a token response by default).
+    """
+
+    def __init__(self, get_body: Any, post_body: Any | None = None) -> None:
+        self.get_body = get_body
+        self.post_body = post_body if post_body is not None else {
+            "access_token": "spec-audit-access-token",
+            "refresh_token": "spec-audit-refresh-token",
+            "token_type": "Bearer",
+            "expires_in": 7200,
+        }
+        self.requests: list[tuple[str, str]] = []
+        stub = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
+                return
+
+            def _answer(self, body: Any) -> None:
+                stub.requests.append((self.command, self.path))
+                data = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:  # noqa: N802 - stdlib name
+                self._answer(stub.get_body)
+
+            def do_POST(self) -> None:  # noqa: N802 - stdlib name
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                self._answer(stub.post_body)
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self._server.server_port}"
+
+    def __enter__(self) -> StubSource:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()

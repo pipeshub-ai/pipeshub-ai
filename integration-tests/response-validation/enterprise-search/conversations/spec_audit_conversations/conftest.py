@@ -22,15 +22,19 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
         sys.path.insert(0, str(_p))
 
 from helper.config import MONGO_DB_NAME, MONGO_URI  # noqa: E402
+from helper.clients.projects_client import ProjectsClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 
 from conversations_audit_support import (  # noqa: E402
     CHEAP_QUERY,
     COLLECTION,
+    MESSAGES_COLLECTION,
     LLM_TIMEOUT_SECONDS,
     ConversationsAuditClient,
     MultipartFiles,
     SeedConversation,
+    SeedProject,
+    SeedTurn,
     UploadAttachment,
     attachment_files,
     forget_access_token,
@@ -195,3 +199,70 @@ def live_conversation(
     finally:
         if conversation_id:
             conversations_audit_client.delete_conversation(conversation_id)
+
+
+@pytest.fixture
+def seed_turn(
+    chat_sessions_collection: Collection,
+    seed_conversation: SeedConversation,
+    pipeshub_client: PipeshubClient,
+) -> Iterator[SeedTurn]:
+    """Factory: a conversation holding one answered turn, without an LLM call.
+
+    ``seed_turn(query=CHEAP_QUERY, answer="pong", **conversation_fields)`` returns
+    ``(conversation_id, user_query_id, bot_response_id)``; the messages are removed on teardown.
+    """
+    messages = chat_sessions_collection.database[MESSAGES_COLLECTION]
+    sessions: list[ObjectId] = []
+
+    def _seed(query: str = CHEAP_QUERY, answer: str = "pong", **fields: Any) -> tuple[str, str, str]:
+        conversation_id = seed_conversation(nextSeq=2, **fields)
+        session = ObjectId(conversation_id)
+        sessions.append(session)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        common = {
+            "sessionId": session,
+            "orgId": ObjectId(pipeshub_client.org_id),
+            "contentFormat": "MARKDOWN",
+            "citations": [],
+            "followUpQuestions": [],
+            "feedback": [],
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        ids = messages.insert_many(
+            [
+                {**common, "seq": 0, "messageType": "user_query", "content": query},
+                {**common, "seq": 1, "messageType": "bot_response", "content": answer},
+            ]
+        ).inserted_ids
+        return conversation_id, str(ids[0]), str(ids[1])
+
+    try:
+        yield _seed
+    finally:
+        if sessions:
+            messages.delete_many({"sessionId": {"$in": sessions}})
+
+
+@pytest.fixture
+def seed_project(pipeshub_client: PipeshubClient) -> Iterator[SeedProject]:
+    """Factory: create a private project owned by the admin and return its id; deleted on teardown."""
+    projects = ProjectsClient(pipeshub_client)
+    created: list[str] = []
+
+    def _seed() -> str:
+        resp = projects.create_project(name=f"spec-audit {uuid.uuid4().hex[:8]}")
+        if resp.status_code != 201:
+            pytest.fail(f"could not create a project: {resp.status_code} {resp.text[:300]}")
+        project_id = str(resp.json()["project"]["_id"])
+        created.append(project_id)
+        return project_id
+
+    try:
+        yield _seed
+    finally:
+        for project_id in created:
+            resp = projects.delete_project(project_id)
+            if resp.status_code >= 300:
+                logger.warning("Could not delete project %s: HTTP %s", project_id, resp.status_code)

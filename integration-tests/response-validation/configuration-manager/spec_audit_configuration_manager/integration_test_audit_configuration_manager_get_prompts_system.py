@@ -6,7 +6,7 @@ import pytest
 from configuration_manager_audit_support import INVALID_BEARER_HEADERS, request_as
 from helper.clients.config_client import ConfigClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange
 
 pytestmark = pytest.mark.spec_audit
 
@@ -22,7 +22,7 @@ PROMPT_KEYS = {
 def test_admin_gets_all_three_prompts(config_client: ConfigClient) -> None:
     resp = config_client.get("/prompts/system")
     assert resp.status_code == 200, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
     body = resp.json()
     # Every branch of the controller (dedicated key, legacy aiModels blob, nothing
     # stored) answers the same three keys, with "" standing in for an unset prompt.
@@ -40,10 +40,10 @@ def test_unauthenticated_is_rejected(
 ) -> None:
     resp = config_client.get("/prompts/system", auth=False, headers=headers)
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)
 
 
 def test_member_is_forbidden(second_user: SecondUser) -> None:
     resp = request_as(second_user, "GET", "/prompts/system")
     assert resp.status_code == 403, resp.text[:500]
-    assert_strict_openapi_response(resp, ROUTE)
+    assert_strict_openapi_exchange(resp, ROUTE)

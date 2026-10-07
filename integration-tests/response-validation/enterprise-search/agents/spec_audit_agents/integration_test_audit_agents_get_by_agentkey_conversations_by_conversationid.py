@@ -15,7 +15,7 @@ from agents_audit_support import (
     SeedMessage,
     error_of,
 )
-from strict_openapi import assert_strict_openapi_exchange
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -74,6 +74,49 @@ def test_documented_query_is_accepted(
 
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param({"messageType": ""}, id="empty-message-type"),
+        pytest.param({"startDate": ""}, id="empty-start-date"),
+        pytest.param({"endDate": ""}, id="empty-end-date"),
+    ],
+)
+def test_empty_filter_is_read_as_not_sent(
+    agents_audit_client: AgentsAuditClient,
+    seeded_turn: tuple[str, list[str]],
+    params: dict[str, str],
+) -> None:
+    conversation_id, message_ids = seeded_turn
+
+    resp = agents_audit_client.get_conversation(SEED_AGENT_KEY, conversation_id, **params)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert sorted(m["_id"] for m in resp.json()["conversation"]["messages"]) == sorted(message_ids)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param({"startDate": "May 1 2020"}, id="start-date-words"),
+        pytest.param({"endDate": "2999/01/01"}, id="end-date-slashes"),
+    ],
+)
+def test_non_iso_date_that_javascript_parses_is_accepted(
+    agents_audit_client: AgentsAuditClient,
+    seeded_turn: tuple[str, list[str]],
+    params: dict[str, str],
+) -> None:
+    conversation_id, _ = seeded_turn
+
+    with outside_request_contract("the validator accepts any string JavaScript Date can parse"):
+        resp = agents_audit_client.get_conversation(SEED_AGENT_KEY, conversation_id, **params)
+        assert_strict_openapi_exchange(resp, ROUTE)
+
+    assert resp.status_code == 200, resp.text[:500]
 
 
 @pytest.mark.parametrize(

@@ -16,8 +16,16 @@ for _p in (_INTEGRATION_ROOT, _INTEGRATION_ROOT / "response-validation" / "helpe
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient  # noqa: E402
+from helper.http.session_client import SessionClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from helper.second_user import SecondUser, second_user  # noqa: E402, F401 - fixture
+from helper.second_user import (  # noqa: E402
+    SecondUser,
+    create_second_user,
+    delete_second_user,
+    log_in,
+    second_user,  # noqa: F401 - fixture
+)
 
 from crawling_manager_audit_support import (  # noqa: E402
     SEED_CONNECTOR_TYPE,
@@ -130,3 +138,87 @@ def member_personal_connector(second_user: SecondUser) -> Iterator[SeededConnect
 def token_without_crawl_scopes(token_without_connector_read: str) -> str:
     """The parent folder's OAuth token (openid, profile, kb:read): it carries no crawl:* scope either."""
     return token_without_connector_read
+
+
+@pytest.fixture(scope="module")
+def token_with_only_crawl_scopes(
+    pipeshub_client: PipeshubClient, user_session_client: SessionClient
+) -> Iterator[str]:
+    """The admin's own OAuth token with every crawl:* scope but neither connector:read nor kb:write."""
+    apps = OAuthAppsClient(user_session_client)
+    resp = apps.create_app(
+        name=f"spec-audit-crawl-only-{uuid.uuid4().hex[:8]}",
+        allowedGrantTypes=["client_credentials"],
+        allowedScopes=["openid", "crawl:read", "crawl:write", "crawl:delete"],
+    )
+    if resp.status_code >= 300:
+        pytest.fail(f"OAuth app create failed: {resp.status_code} {resp.text[:300]}")
+    app = resp.json()["app"]
+    try:
+        token_resp = OAuthProviderClient(pipeshub_client).token(
+            grant_type="client_credentials",
+            client_id=app["clientId"],
+            client_secret=app["clientSecret"],
+        )
+        token = token_resp.json().get("access_token") if token_resp.status_code < 300 else None
+        if not token:
+            pytest.fail(f"token fetch failed: {token_resp.status_code} {token_resp.text[:300]}")
+        yield str(token)
+    finally:
+        removed = apps.delete_app(str(app["id"]))
+        if removed.status_code >= 300:
+            logger.warning("Could not delete OAuth app %s: %s", app["id"], removed.text[:200])
+
+
+def _set_role(client: PipeshubClient, user: SecondUser, role: str) -> None:
+    resp = client.request("PUT", f"/api/v1/users/{user.user_id}", json={"role": role})
+    if resp.status_code >= 300:
+        pytest.fail(f"could not make {user.email} {role}: {resp.status_code} {resp.text[:300]}")
+
+
+@pytest.fixture
+def demoted_team_connector_creator(
+    pipeshub_client: PipeshubClient,
+) -> Iterator[tuple[SecondUser, SeededConnector]]:
+    """A member who created a team connector while an admin, logged in again after the demotion.
+
+    Python lets a team connector's creator read it whatever their role; Node's crawl routes then
+    refuse anyone who is not an admin. A disposable user, because a role change ends the
+    user's sessions.
+    """
+    user = create_second_user(pipeshub_client)
+    connector_id = ""
+    try:
+        _set_role(pipeshub_client, user, "admin")
+        admin_headers = {**user.headers, "Authorization": f"Bearer {log_in(user.base_url, user.email, user.timeout)}"}
+        resp = requests.post(
+            f"{user.base_url}/api/v1/connectors/",
+            headers=admin_headers,
+            json={
+                "connectorType": SEED_CONNECTOR_TYPE,
+                "instanceName": f"spec-audit-crawl-demoted-{uuid.uuid4().hex[:8]}",
+                "scope": "team",
+            },
+            timeout=user.timeout,
+        )
+        connector = (resp.json().get("connector") or {}) if resp.status_code < 300 else {}
+        connector_id = str(connector.get("connectorId") or connector.get("_key") or "")
+        if not connector_id:
+            pytest.fail(f"promoted user could not create a team connector: {resp.status_code} {resp.text[:300]}")
+        _set_role(pipeshub_client, user, "member")
+        member = SecondUser(
+            user_id=user.user_id,
+            graph_id=user.graph_id,
+            email=user.email,
+            token=log_in(user.base_url, user.email, user.timeout),
+            base_url=user.base_url,
+            timeout=user.timeout,
+        )
+        yield member, SeededConnector(connector_id, str(connector.get("connectorType") or SEED_CONNECTOR_TYPE))
+    finally:
+        if connector_id:
+            try:
+                pipeshub_client.delete_connector(connector_id)
+            except Exception as exc:  # noqa: BLE001 - still delete the user
+                logger.warning("Could not delete connector %s: %s", connector_id, exc)
+        delete_second_user(pipeshub_client, user)

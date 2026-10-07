@@ -18,6 +18,7 @@ from knowledge_base_audit_support import (
     MISSING_RECORD_ID,
     SOFT_DELETE_OFF_MESSAGE,
     SeedRecord,
+    body_spec_refusals,
     request_as,
     unique_name,
     wait_for_record,
@@ -187,6 +188,7 @@ def test_restore_ignores_fields_other_than_record_ids(kb_client: KBClient, trash
         assert resp.status_code == 200, resp.text[:500]
         assert_strict_openapi_exchange(resp, ROUTE)
     _assert_outcomes(resp.json(), [MISSING_RECORD_ID])
+    assert body_spec_refusals(resp, ROUTE) == []
 
 
 def test_restore_accepts_the_most_ids_allowed(kb_client: KBClient, trash_off: None) -> None:

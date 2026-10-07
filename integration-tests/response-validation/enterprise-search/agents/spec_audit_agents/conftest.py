@@ -31,14 +31,17 @@ from agents_audit_support import (  # noqa: E402
     CHAT_SESSIONS_COLLECTION,
     SEED_AGENT_KEY,
     AgentsAuditClient,
+    MakeAgent,
     MultipartFiles,
     SeedAgentConversation,
     SeedMessage,
     SeedProject,
+    TrackAgent,
     UploadAttachment,
     attachment_files,
     forget_access_token,
     mint_narrow_scope_token,
+    unique_agent_name,
     uploaded_record_ids,
 )
 
@@ -295,3 +298,37 @@ def upload_attachment(
             resp = agents_audit_client.delete_attachment(SEED_AGENT_KEY, record_id)
             if resp.status_code >= 300:
                 logger.warning("could not delete attachment %s: HTTP %s", record_id, resp.status_code)
+
+
+@pytest.fixture
+def track_agent(agents_audit_client: AgentsAuditClient) -> Iterator[TrackAgent]:
+    """Register the agent a 201 create response made; it is deleted on teardown unless already gone."""
+    keys: list[str] = []
+
+    def _track(resp: Any) -> str:
+        assert resp.status_code == 201, f"agent create failed: {resp.status_code} {resp.text[:300]}"
+        key = resp.json()["agent"]["_key"]
+        keys.append(key)
+        return key
+
+    try:
+        yield _track
+    finally:
+        for key in reversed(keys):
+            resp = agents_audit_client.delete_agent(key)
+            if resp.status_code not in (200, 404):
+                logger.warning("could not delete agent %s: HTTP %s", key, resp.status_code)
+
+
+@pytest.fixture
+def make_agent(agents_audit_client: AgentsAuditClient, track_agent: TrackAgent) -> MakeAgent:
+    """Factory: create an agent owned by the admin and return its key; deleted on teardown.
+
+    ``make_agent(**fields)`` sends ``fields`` as the body; ``name`` defaults to a unique one.
+    """
+
+    def _make(**fields: Any) -> str:
+        fields.setdefault("name", unique_agent_name())
+        return track_agent(agents_audit_client.create_agent(fields))
+
+    return _make

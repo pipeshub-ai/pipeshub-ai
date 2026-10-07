@@ -15,8 +15,9 @@ from service_accounts_audit_support import (
     SeedServiceAccount,
     ServiceAccountsClient,
     request_as,
+    request_with_token,
 )
-from strict_openapi import assert_strict_openapi_response
+from strict_openapi import assert_strict_openapi_exchange, outside_request_contract
 
 pytestmark = pytest.mark.spec_audit
 
@@ -51,7 +52,7 @@ def test_list_returns_seeded_accounts_newest_first(
     assert listed_older["email"].endswith(f"@{SERVICE_ACCOUNT_EMAIL_DOMAIN}")
     assert listed_newer["isDisabled"] is True
     assert "description" not in listed_newer
-    assert_strict_openapi_response(resp, ROOT_TEMPLATE)
+    assert_strict_openapi_exchange(resp, ROOT_TEMPLATE)
 
 
 def test_list_omits_deleted_account(
@@ -69,7 +70,7 @@ def test_list_omits_deleted_account(
     ids = [row["id"] for row in resp.json()["serviceAccounts"]]
     assert kept["id"] in ids
     assert deleted["id"] not in ids
-    assert_strict_openapi_response(resp, ROOT_TEMPLATE)
+    assert_strict_openapi_exchange(resp, ROOT_TEMPLATE)
 
 
 def test_list_without_token_is_unauthorized(
@@ -78,7 +79,7 @@ def test_list_without_token_is_unauthorized(
     resp = service_accounts_client.list(auth=False)
 
     assert resp.status_code == 401, resp.text[:500]
-    assert_strict_openapi_response(resp, ROOT_TEMPLATE)
+    assert_strict_openapi_exchange(resp, ROOT_TEMPLATE)
 
 
 def test_list_as_non_admin_member_is_forbidden(second_user: SecondUser) -> None:
@@ -86,4 +87,28 @@ def test_list_as_non_admin_member_is_forbidden(second_user: SecondUser) -> None:
 
     assert resp.status_code == 403, resp.text[:500]
     assert "serviceAccounts" not in resp.text
-    assert_strict_openapi_response(resp, ROOT_TEMPLATE)
+    assert_strict_openapi_exchange(resp, ROOT_TEMPLATE)
+
+
+def test_list_ignores_query_parameters(
+    service_accounts_client: ServiceAccountsClient,
+    seed_service_account: SeedServiceAccount,
+) -> None:
+    disabled = seed_service_account(disabled=True)
+
+    with outside_request_contract("an undocumented query parameter; the handler reads no query"):
+        resp = service_accounts_client.get("", params={"isDisabled": "false", "limit": "1"})
+        assert_strict_openapi_exchange(resp, ROOT_TEMPLATE)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert disabled["id"] in [row["id"] for row in resp.json()["serviceAccounts"]]
+
+
+def test_list_with_a_token_lacking_user_read_is_forbidden(
+    service_accounts_client: ServiceAccountsClient, kb_read_pat: str
+) -> None:
+    resp = request_with_token(service_accounts_client._client.base_url, kb_read_pat, "GET")
+
+    assert resp.status_code == 403, resp.text[:500]
+    assert "Insufficient scope" in resp.text
+    assert_strict_openapi_exchange(resp, ROOT_TEMPLATE)

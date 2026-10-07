@@ -23,7 +23,11 @@ from conversations_audit_support import (
 )
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
-from strict_openapi import assert_strict_openapi_exchange
+from strict_openapi import (
+    assert_spec_forbids_request,
+    assert_strict_openapi_exchange,
+    outside_request_contract,
+)
 
 pytestmark = pytest.mark.spec_audit
 
@@ -91,6 +95,19 @@ def test_add_message_to_an_unreachable_conversation_is_not_found(
     assert resp.json()["error"]["code"] == "HTTP_NOT_FOUND", resp.text[:500]
 
 
+def test_add_message_validator_strips_unknown_fields(
+    conversations_audit_client: ConversationsAuditClient,
+) -> None:
+    # The 404 comes from the lookup that runs after validation, so the field got through.
+    with outside_request_contract("an undocumented body field is sent on purpose"):
+        resp = conversations_audit_client.add_message(
+            MISSING_CONVERSATION_ID, json={**VALID_BODY, "specAuditExtra": 1}
+        )
+    assert resp.status_code == 404, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert resp.json()["error"]["code"] == "HTTP_NOT_FOUND", resp.text[:500]
+
+
 @pytest.mark.parametrize("chat_mode", LEGACY_CHAT_MODES)
 def test_validator_accepts_legacy_chat_modes(
     conversations_audit_client: ConversationsAuditClient, chat_mode: str
@@ -116,6 +133,18 @@ def test_add_message_rejects_invalid_body(
     assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
     assert named in validation_fields(resp), resp.text[:500]
+
+
+@pytest.mark.parametrize("query", ["   ", "\n\t "], ids=["spaces", "mixed-whitespace"])
+def test_add_message_refuses_a_blank_query_in_the_handler(
+    conversations_audit_client: ConversationsAuditClient, seed_conversation: SeedConversation, query: str
+) -> None:
+    resp = conversations_audit_client.add_message(seed_conversation(), json={"query": query})
+    error = resp.json()["error"]
+    assert resp.status_code == 400, resp.text[:500]
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", "Query is required"), resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert_spec_forbids_request(resp, ROUTE)
 
 
 def test_add_message_with_malformed_conversation_id_is_rejected(

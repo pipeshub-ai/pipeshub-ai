@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from connectors_audit_support import (
@@ -263,4 +263,13 @@ def test_navigate_with_neither_read_scope_is_forbidden(
 ) -> None:
     resp = connectors_client.navigate(auth=False, headers=bearer(token_without_connector_scopes))
     assert resp.status_code == 403, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("scope", ["kb:read", "connector:read"])
+def test_navigate_takes_either_read_scope(
+    connectors_client: ConnectorsAuditClient, token_with_scopes: Callable[..., str], scope: str
+) -> None:
+    resp = connectors_client.navigate(auth=False, headers=bearer(token_with_scopes(scope)))
+    assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)

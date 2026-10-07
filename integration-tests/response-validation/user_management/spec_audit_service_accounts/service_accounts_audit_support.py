@@ -76,3 +76,16 @@ def request_as(
         headers=user.headers,
         **kwargs,
     )
+
+
+def request_with_token(
+    base_url: str, token: str, method: str, path: str = "", **kwargs: Any
+) -> requests.Response:
+    """Call a service-accounts route with an arbitrary bearer token, e.g. a narrowly scoped PAT."""
+    kwargs.setdefault("timeout", 60)
+    return requests.request(
+        method,
+        f"{base_url}{SERVICE_ACCOUNTS_BASE}{path}",
+        headers={"Authorization": f"Bearer {token}"},
+        **kwargs,
+    )

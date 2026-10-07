@@ -18,6 +18,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import second_user  # noqa: E402, F401 - fixture
 
 from artifacts_audit_support import (  # noqa: E402
+    CONNECTOR_READ_SCOPE,
     UNRELATED_SCOPE,
     ArtifactsClient,
     SeededArtifact,
@@ -41,6 +42,15 @@ def unscoped_headers(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]
     """Headers of an OAuth token for the admin's org that carries neither kb:read nor connector:read."""
     with oauth_token_with_scopes(
         pipeshub_client.base_url, [UNRELATED_SCOPE], pipeshub_client.timeout_seconds
+    ) as token:
+        yield bearer(token)
+
+
+@pytest.fixture(scope="session")
+def connector_read_headers(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]]:
+    """Headers of an OAuth token for the admin's org that carries connector:read and not kb:read."""
+    with oauth_token_with_scopes(
+        pipeshub_client.base_url, [CONNECTOR_READ_SCOPE], pipeshub_client.timeout_seconds
     ) as token:
         yield bearer(token)
 
