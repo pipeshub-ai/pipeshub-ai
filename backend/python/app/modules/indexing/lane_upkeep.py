@@ -3,7 +3,8 @@
 Runs in the indexing service, inside the stale-record recovery pass, so under
 the cluster-wide ``recovery`` lock and on one replica at a time. Each pass:
 
-1. Settles moves and deletes, rebuilds the per-lane counts and writes the busy
+1. Settles moves and deletes (a deleted entry stays in the map, so a late
+   event keeps its lane), rebuilds the per-lane counts and writes the busy
    flags, in one atomic script (``LaneAssignments.upkeep``), from the same
    backlog read the stranded-record sweep uses.
 2. Reads the connectors and knowledge bases from the graph: corrects a class
@@ -113,14 +114,13 @@ async def run_lane_upkeep(
             assignments, graph_provider, entries, apps, logger
         )
 
-    if settled.fenced or settled.cleared or settled.removed or released or corrected:
+    if settled.fenced or settled.cleared or released or corrected:
         logger.info(
-            "Queue lanes: %d move(s) or delete(s) fenced, %d move(s) settled, %d "
-            "deleted connector(s) removed, %d lane(s) freed for connectors that no "
-            "longer exist, %d class(es) corrected",
+            "Queue lanes: %d move(s) or delete(s) fenced, %d old lane(s) let go, "
+            "%d lane(s) freed for connectors that no longer exist, %d class(es) "
+            "corrected",
             settled.fenced,
             settled.cleared,
-            settled.removed,
             released,
             corrected,
         )
@@ -239,14 +239,17 @@ def _report(
     for lane in sorted(numbers):
         stream = router.lane_name(topic, lane)
         here = [(c, e) for c, e in entries.items() if e.lane == lane]
-        here.sort(key=lambda item: (not is_large_class(item[1].connector_class), item[0]))
+        # Deleted entries stay in the map for good, so only live ones are listed.
+        live = [(c, e) for c, e in here if e.is_live]
+        live.sort(key=lambda item: (not is_large_class(item[1].connector_class), item[0]))
         oldest = backlog.oldest_waiting_ms.get(stream) if backlog is not None else None
         lanes.append(
             {
                 "lane": lane,
                 "stream": stream,
-                "large": sum(e.is_live and is_large_class(e.connector_class) for _, e in here),
-                "small": sum(e.is_live and not is_large_class(e.connector_class) for _, e in here),
+                "large": sum(is_large_class(e.connector_class) for _, e in live),
+                "small": sum(not is_large_class(e.connector_class) for _, e in live),
+                "deleted": len(here) - len(live),
                 "connectors": [
                     {
                         "id": connector_id,
@@ -254,9 +257,9 @@ def _report(
                         "class": entry.connector_class,
                         "state": entry.state,
                     }
-                    for connector_id, entry in here[:_LISTED_PER_LANE]
+                    for connector_id, entry in live[:_LISTED_PER_LANE]
                 ],
-                "connectorsNotListed": max(0, len(here) - _LISTED_PER_LANE),
+                "connectorsNotListed": max(0, len(live) - _LISTED_PER_LANE),
                 "movingOn": [
                     {"id": c, "fromLane": e.prev_lane, "fencedAt": e.fence_ms}
                     for c, e in here

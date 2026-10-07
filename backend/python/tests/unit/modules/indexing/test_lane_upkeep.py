@@ -226,6 +226,23 @@ class TestTheLaneView:
         assert shared["movingOff"] == [{"id": SLACK, "toLane": slack_lane, "fencedAt": None}]
         assert lanes[slack_lane]["movingOn"] == [{"id": SLACK, "fromLane": SHARED, "fencedAt": None}]
 
+    async def test_a_deleted_connector_is_counted_on_its_lane_but_not_listed(
+        self, provider: FakeRedisConnectionProvider, graph: _Graph
+    ) -> None:
+        graph.add(GITLAB)
+        assignments = _assignments(provider)
+        await assignments.lane_for(GITLAB)
+        await assignments.lane_for("gone-1")
+        await assignments.release("gone-1")
+        gone_lane = (await _map(provider))["gone-1"].lane
+
+        view = (await _upkeep(provider, graph)).as_dict()
+
+        lanes = {lane["lane"]: lane for lane in view["lanes"]}  # type: ignore[union-attr]
+        assert lanes[gone_lane]["deleted"] == 1
+        assert "gone-1" not in [c["id"] for c in lanes[gone_lane]["connectors"]]
+        assert sum(lane["large"] for lane in lanes.values()) == 1
+
     async def test_the_lane_metrics_are_published_by_lane_never_by_connector(
         self, provider: FakeRedisConnectionProvider, graph: _Graph
     ) -> None:
