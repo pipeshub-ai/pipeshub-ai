@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from typing import TYPE_CHECKING
 
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY, LaneConfig
+
+if TYPE_CHECKING:
+    from app.services.messaging.lanes.interface import LaneHint
 
 __all__ = ["KafkaLaneRouter", "RedisLaneRouter", "stable_lane", "build_lane_router"]
 
@@ -54,6 +58,11 @@ class KafkaLaneRouter:
     def route(self, topic: str, lane_key: str | None) -> tuple[str, str | None]:
         return topic, lane_key or DEFAULT_LANE_KEY
 
+    async def place(
+        self, topic: str, lane_key: str | None, hint: LaneHint | None = None
+    ) -> tuple[str, str | None]:
+        return self.route(topic, lane_key)
+
     def lane_topics(self, topic: str) -> list[str]:
         return [topic]
 
@@ -79,6 +88,11 @@ class RedisLaneRouter:
     def route(self, topic: str, lane_key: str | None) -> tuple[str, str | None]:
         lane = stable_lane(lane_key or DEFAULT_LANE_KEY, self._lane_count)
         return self.lane_name(topic, lane), lane_key
+
+    async def place(
+        self, topic: str, lane_key: str | None, hint: LaneHint | None = None
+    ) -> tuple[str, str | None]:
+        return self.route(topic, lane_key)
 
     def lane_topics(self, topic: str) -> list[str]:
         """Base stream first, then the lanes.

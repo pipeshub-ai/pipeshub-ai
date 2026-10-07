@@ -54,6 +54,14 @@ LANES_PAUSED = METRICS_BACKEND.gauge(
     ["broker"],
 )
 
+# Bounded by the reason, never labelled by connector.
+LANE_ASSIGNMENT_FALLBACKS = METRICS_BACKEND.counter(
+    "pipeshub_lane_assignment_fallbacks_total",
+    "Record events sent to their connector's hashed lane because the lane map "
+    "could not be read",
+    ["reason"],
+)
+
 DWELL_EXCEEDED = METRICS_BACKEND.counter(
     "pipeshub_indexing_scheduler_dwell_exceeded_total",
     "Buffered items force-resolved after exceeding the dwell budget",
@@ -98,6 +106,10 @@ def record_deferred(broker: str, reason: str) -> None:
 
 def record_lanes_paused(broker: str, count: int) -> None:
     LANES_PAUSED.set(broker, value=count)
+
+
+def record_lane_assignment_fallback(reason: str) -> None:
+    LANE_ASSIGNMENT_FALLBACKS.inc(reason)
 
 
 def record_dwell_exceeded(broker: str, count: int = 1) -> None:

@@ -506,6 +506,36 @@ class TestRecoverInProgressRecords:
         assert send_kwargs["payload"]["recordId"] == "r1"
         assert send_kwargs["key"] == "r1"
 
+    async def test_recovered_event_names_its_connector_so_it_goes_to_that_connectors_lane(
+        self,
+    ) -> None:
+        """Without it every recovered record shared the default lane, where one
+        connector's recovered backlog sat in front of everyone else's."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_document = AsyncMock(
+            side_effect=_document_lookup(gp, connector={"_key": "gitlab-1", "isActive": True})
+        )
+        in_progress = [
+            {
+                "_key": "r1",
+                "recordName": "README.md",
+                "version": 0,
+                "orgId": "org1",
+                "connectorId": "gitlab-1",
+                "origin": "CONNECTOR",
+            }
+        ]
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
+        assert producer.send_event.await_args.kwargs["payload"]["connectorId"] == "gitlab-1"
+
     async def test_in_progress_record_reindex_when_version_gt_zero_and_virtual_record_id(self):
         """Record with version > 0 and virtualRecordId is treated as REINDEX_RECORD."""
         from app.indexing_main import recover_in_progress_records

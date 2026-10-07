@@ -14,9 +14,10 @@ import pytest
 pytest.importorskip("fakeredis.aioredis")
 
 from app.services.messaging.config import RedisStreamsConfig
+from app.services.messaging.lanes.assignment import LaneEntry
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
 from app.services.messaging.lanes.hash_router import RedisLaneRouter, stable_lane
-from app.services.messaging.lanes.interface import LaneConfig
+from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY, LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.redis_streams.backlog import read_stream_backlog
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
@@ -342,3 +343,123 @@ class TestIndexingConsumerLaneBacklog:
 
         assert backlog.oldest_waiting_for({"connectorId": "gitlab-1"}) is not None
         assert read_on and all(loop is consumer.main_loop for loop in read_on)
+
+
+def _lane(connector_id: str) -> str:
+    return f"{TOPIC}.{stable_lane(connector_id, LANES)}"
+
+
+def _another_lane(*avoid: str) -> str:
+    """A lane none of these connectors, nor the default key, hashes to."""
+    taken = {_lane(c) for c in (*avoid, DEFAULT_LANE_KEY)}
+    return next(f"{TOPIC}.{lane}" for lane in range(LANES) if f"{TOPIC}.{lane}" not in taken)
+
+
+class TestLanesAnAssignedEventCouldBeOn:
+    STREAMS = (TOPIC, *(f"{TOPIC}.{lane}" for lane in range(LANES)))
+
+    def test_its_assigned_lane_as_well_as_its_hash_lane(self) -> None:
+        """The hash lane stays: old producers, a rollback and lookups that fell back use it."""
+        assigned = _another_lane("gitlab-1")
+        entry = LaneEntry(int(assigned.rsplit(".", 1)[1]), "team")
+
+        lanes = redis_lanes_for_key(TOPIC, "gitlab-1", self.STREAMS, LANES, {"gitlab-1": entry})
+
+        assert {assigned, _lane("gitlab-1"), _lane(DEFAULT_LANE_KEY), TOPIC} <= lanes
+
+    def test_the_lane_a_move_is_still_settling_off(self) -> None:
+        entry = LaneEntry(1, "team", prev_lane=2, moved_at_ms=1000)
+
+        lanes = redis_lanes_for_key(TOPIC, "gitlab-1", self.STREAMS, LANES, {"gitlab-1": entry})
+
+        assert {f"{TOPIC}.1", f"{TOPIC}.2"} <= lanes
+
+    def test_the_default_keys_assigned_lane(self) -> None:
+        entry = LaneEntry(3, "system")
+
+        lanes = redis_lanes_for_key(TOPIC, "gitlab-1", self.STREAMS, LANES, {DEFAULT_LANE_KEY: entry})
+
+        assert f"{TOPIC}.3" in lanes
+
+    def test_another_connectors_assigned_lane_does_not_count(self) -> None:
+        other = _another_lane("gitlab-1")
+        entry = LaneEntry(int(other.rsplit(".", 1)[1]), "team")
+
+        lanes = redis_lanes_for_key(TOPIC, "gitlab-1", self.STREAMS, LANES, {"slack-1": entry})
+
+        assert other not in lanes
+
+    def test_a_map_that_could_not_be_read_makes_every_stream_count(self) -> None:
+        assert redis_lanes_for_key(TOPIC, "gitlab-1", self.STREAMS, LANES, None) == set(self.STREAMS)
+
+
+class TestIndexingConsumerAndTheLaneMap:
+    @pytest.fixture(autouse=True)
+    def _lanes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", str(LANES))
+
+    @pytest.fixture
+    async def consumer(self, provider: FakeRedisConnectionProvider) -> IndexingRedisStreamsConsumer:
+        topics = RedisLaneRouter(LANES).lane_topics(TOPIC)
+        consumer = _consumer(provider, topics)
+        for topic in topics:
+            await consumer.redis.xgroup_create(topic, GROUP, id="0", mkstream=True)
+        return consumer
+
+    async def test_when_the_map_cannot_be_read_every_lane_holds_a_record_back(
+        self, provider: FakeRedisConnectionProvider, consumer: IndexingRedisStreamsConsumer
+    ) -> None:
+        """Leaving a record alone longer is the safe mistake; re-sending early is not."""
+        await _add(provider.get_client(), 1000, stream=_another_lane(BUSY))
+
+        async def unreadable(*_args, **_kwargs):  # noqa: ANN202
+            raise ConnectionError("lane map unavailable")
+
+        consumer.redis.hgetall = unreadable
+
+        backlog = await consumer.lane_backlog(TOPIC)
+
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) == 1000.0
+
+    async def test_with_no_map_it_answers_exactly_as_hashing_did(
+        self, provider: FakeRedisConnectionProvider, consumer: IndexingRedisStreamsConsumer
+    ) -> None:
+        await _add(provider.get_client(), 1000, stream=_another_lane(BUSY))
+
+        backlog = await consumer.lane_backlog(TOPIC)
+
+        assert backlog.oldest_waiting_for({"connectorId": BUSY}) is None
+
+    async def test_at_startup_it_records_how_many_lanes_it_reads(
+        self, provider: FakeRedisConnectionProvider, consumer: IndexingRedisStreamsConsumer
+    ) -> None:
+        await consumer._IndexingRedisStreamsConsumer__record_lane_count()
+
+        assert await provider.get_client().hget("{record-events}:lane-meta", "laneCount") == str(LANES)
+
+    async def test_with_laning_off_it_records_nothing(
+        self,
+        provider: FakeRedisConnectionProvider,
+        consumer: IndexingRedisStreamsConsumer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", "1")
+
+        await consumer._IndexingRedisStreamsConsumer__record_lane_count()
+
+        assert not await provider.get_client().exists("{record-events}:lane-meta")
+
+    async def test_a_stream_of_a_topic_that_is_not_laned_gets_its_retry_back_as_before(
+        self, consumer: IndexingRedisStreamsConsumer
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from app.services.messaging.config import StreamMessage
+
+        consumer.producer = AsyncMock()
+        consumer._run_on_main_loop = lambda coro: coro  # type: ignore[method-assign]
+        message = StreamMessage(eventType="newRecord", payload={"recordId": "r1"})
+
+        await consumer._requeue_message("entity-events.2", message, "stable-1")
+
+        assert consumer.producer.send_event.await_args.kwargs["topic"] == "entity-events.2"

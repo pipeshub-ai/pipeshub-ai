@@ -333,13 +333,16 @@ async def recover_in_progress_records(
                             results["skipped"] += 1
                             return True
 
-                    # Reconstruct the payload from the record data
+                    # Reconstruct the payload from the record data. With the
+                    # connector id the event goes to its connector's own lane;
+                    # without it every recovered record shared the default lane.
                     payload = {
                         "recordId": record_id,
                         "recordName": record.get("recordName"),
                         "orgId": record.get("orgId"),
                         "version": record.get("version", 0),
                         "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
+                        "connectorId": record.get("connectorId"),
                         "extension": record.get("extension"),
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),

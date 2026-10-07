@@ -483,6 +483,26 @@ class MessagingEnvConfig:
         return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
 
     @property
+    def fair_scheduling_lane_assignment(self) -> str:
+        """How a Redis Streams producer picks a connector's lane.
+
+        ``assigned``: each connector is given the least-loaded lane once and
+        the choice is recorded in Redis (``lanes/assignment.py``), so
+        connectors stop sharing a lane by chance. ``hash``: the lane is a
+        hash of the connector id, as before. Kafka always places by key.
+        Anything else is treated as ``hash``.
+        """
+        value = os.getenv("FAIR_SCHEDULING_LANE_ASSIGNMENT", "hash").strip().lower()
+        return value if value in ("assigned", "hash") else "hash"
+
+    @property
+    def fair_scheduling_lane_cache_seconds(self) -> float:
+        """How long a producer trusts a connector's looked-up lane before
+        reading it from Redis again. A lane only changes when a connector is
+        moved, and a move waits out this long before it is fenced."""
+        return _env_seconds("FAIR_SCHEDULING_LANE_CACHE_SECONDS", 60.0)
+
+    @property
     def fair_scheduling_lane_key_field(self) -> str:
         """Payload field a lane is chosen from.
 

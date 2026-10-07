@@ -24,8 +24,12 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
+from app.services.messaging.lanes.assignment import (
+    AssignedRedisLaneRouter,
+    shared_lane_assignments,
+)
 from app.services.messaging.lanes.hash_router import build_lane_router
-from app.services.messaging.lanes.interface import LaneConfig
+from app.services.messaging.lanes.interface import LaneAssignmentMode, LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
@@ -43,10 +47,13 @@ from app.services.messaging.scheduling.interface import (
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
+from app.services.redis.config import RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
     from app.services.messaging.disposition import AbandonedMessageSink
+    from app.services.messaging.lanes.interface import LaneRouter
     from app.services.resource_governor import ResourceGovernor
 
 
@@ -74,7 +81,36 @@ def lane_config_from_env() -> LaneConfig:
         lane_count=messaging_env.fair_scheduling_lane_count,
         lane_key_field=messaging_env.fair_scheduling_lane_key_field,
         laned_topics=messaging_env.fair_scheduling_laned_topics,
+        assignment=LaneAssignmentMode(messaging_env.fair_scheduling_lane_assignment),
+        assignment_cache_seconds=messaging_env.fair_scheduling_lane_cache_seconds,
     )
+
+
+def _build_producer_lane_router(
+    logger: Logger,
+    lane_config: LaneConfig,
+    broker_type: MessageBrokerType,
+    config: KafkaProducerConfig | RedisStreamsConfig,
+) -> "LaneRouter":
+    """The hash router, or on Redis with assignment on, the lane map's router.
+
+    The lane map lives on the broker's own Redis, so a lookup and the publish
+    it serves fail together. Only the first laned topic is assigned; any other
+    laned topic keeps hashing.
+    """
+    if (
+        broker_type == MessageBrokerType.KAFKA
+        or lane_config.assignment is not LaneAssignmentMode.ASSIGNED
+    ):
+        return build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA)
+    assignments = shared_lane_assignments(
+        logger,
+        get_redis_provider(RedisConnectionConfig.from_redis_config(config)),
+        topic=lane_config.laned_topics[0],
+        fallback_lane_count=lane_config.lane_count,
+        cache_seconds=lane_config.assignment_cache_seconds,
+    )
+    return AssignedRedisLaneRouter(assignments, logger)
 
 
 def lane_topics_for(topic: str, broker_type: MessageBrokerType | None = None) -> list[str]:
@@ -199,7 +235,7 @@ class MessagingFactory:
         return LaneAwareProducer(
             logger,
             producer,
-            build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA),
+            _build_producer_lane_router(logger, lane_config, broker_type, config),
             lane_config,
         )
 
