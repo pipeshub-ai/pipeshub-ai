@@ -356,6 +356,13 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # Stores the response-validation tests read and clean up directly. They
+      # match the compose stack's published ports and default credentials.
+      TEST_MONGO_URI: mongodb://admin:password@localhost:27017/?authSource=admin
+      TEST_MONGO_DB_NAME: es
+      REDIS_HOST: localhost
+      REDIS_PORT: '6379'
+      MAILPIT_URL: http://localhost:8025
       # The SMB connector syncs from the smb-source Samba share in the compose
       # stack, started by the smb-source profile for connectors-2 (or a dispatch
       # of smb). The connector reaches it by service name; the test process
@@ -605,6 +612,41 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
+      # The OAuth-client limiter keys on the admin user, and the serial audit
+      # below sends well over 1000 such calls a minute. The limiter is
+      # in-process, so recreating only the app container with a higher limit
+      # starts a fresh window; the main step above still ran at the default,
+      # so its deliberate 429 tests got a real 429.
+      - name: 'Neo4j: Raise auth rate limits for the spec audit'
+        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        working-directory: deployment/docker-compose
+        env:
+          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: '100000'
+          MAX_AUTH_REQUESTS_PER_MINUTE: '100000'
+        run: |
+          docker compose -f docker-compose.integration.neo4j.yml up -d --no-deps --force-recreate pipeshub-ai
+          deadline=$((SECONDS + 600))
+          until curl -sf "$PIPESHUB_BASE_URL/api/v1/health" | grep -q '"status":"healthy"' &&
+                curl -sf "$PIPESHUB_BASE_URL/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::app not healthy after recreate"; exit 1; fi
+            echo "Not ready, retrying in 5s..."
+            sleep 5
+          done
+
+      # Strict OpenAPI checks (-m spec_audit). Serial: they change org-wide
+      # settings (SSO, AI models, web search, auth methods) and restore them.
+      - name: 'Neo4j: Run strict OpenAPI spec audit'
+        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        timeout-minutes: 120
+        working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: neo4j
+          STRICT_OPENAPI_GATE: '1'
+        run: |
+          source .venv/bin/activate
+          pytest -m spec_audit response-validation -n 0 --tb=short \
+            --junitxml=reports/neo4j-spec-audit-results.xml 2>&1
+
       # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
       # indexing process, cuts the app off from its AI provider and makes blob
       # storage unwritable on the live stack, and empties and rebuilds the
@@ -789,6 +831,39 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
+      # Same as the Neo4j pass.
+      - name: 'ArangoDB: Raise auth rate limits for the spec audit'
+        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        working-directory: deployment/docker-compose
+        env:
+          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: '100000'
+          MAX_AUTH_REQUESTS_PER_MINUTE: '100000'
+        run: |
+          docker compose -f docker-compose.integration.arango.yml up -d --no-deps --force-recreate pipeshub-ai
+          deadline=$((SECONDS + 600))
+          until curl -sf "$PIPESHUB_BASE_URL/api/v1/health" | grep -q '"status":"healthy"' &&
+                curl -sf "$PIPESHUB_BASE_URL/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::app not healthy after recreate"; exit 1; fi
+            echo "Not ready, retrying in 5s..."
+            sleep 5
+          done
+
+      - name: 'ArangoDB: Run strict OpenAPI spec audit'
+        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        timeout-minutes: 120
+        working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: arango
+          TEST_ARANGO_URL: http://localhost:8529
+          TEST_ARANGO_USERNAME: root
+          TEST_ARANGO_PASSWORD: ${{ env.ARANGO_PASSWORD }}
+          TEST_ARANGO_DB_NAME: es
+          STRICT_OPENAPI_GATE: '1'
+        run: |
+          source .venv/bin/activate
+          pytest -m spec_audit response-validation -n 0 --tb=short \
+            --junitxml=reports/arango-spec-audit-results.xml 2>&1
+
       - name: 'ArangoDB: Dump docker logs'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
@@ -837,7 +912,7 @@ jobs:
           TOTAL_TESTS=0
           BACKENDS_RUN=""
 
-          for xml in reports/neo4j-results.xml reports/neo4j-resilience-results.xml reports/neo4j-storage-results.xml reports/arango-results.xml; do
+          for xml in reports/neo4j-results.xml reports/neo4j-spec-audit-results.xml reports/neo4j-resilience-results.xml reports/neo4j-storage-results.xml reports/arango-results.xml reports/arango-spec-audit-results.xml; do
             if [ -f "$xml" ]; then
               backend=$(basename "$xml" -results.xml)
               BACKENDS_RUN="${BACKENDS_RUN:+$BACKENDS_RUN, }$backend"
@@ -1152,9 +1227,11 @@ jobs:
           for xml_path in [
               'reports/unit-results.xml',
               'reports/neo4j-results.xml',
+              'reports/neo4j-spec-audit-results.xml',
               'reports/neo4j-resilience-results.xml',
               'reports/neo4j-storage-results.xml',
               'reports/arango-results.xml',
+              'reports/arango-spec-audit-results.xml',
               'reports/playwright/playwright-junit.xml',
           ]:
               if not os.path.exists(xml_path):
