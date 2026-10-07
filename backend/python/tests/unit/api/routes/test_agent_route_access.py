@@ -465,6 +465,33 @@ class TestUpdateAttachments:
         assert response.status_code == 500
         self._assert_old_toolset_intact(graph)
 
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_removing_every_toolset_still_cleans_up_when_old_nodes_fail_to_delete(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_tools_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentTools" and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_tools_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": []})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            self._assert_old_toolset_intact(graph)
+        else:
+            # Every old link is already gone, as asked; the records they pointed to go too.
+            assert self._linked_toolsets(graph) == []
+            assert graph.nodes["agentToolsets"] == {}
+            assert graph.nodes["agentTools"] == {}
+
     def test_mcp_servers_are_replaced(self, client, graph) -> None:
         graph.add_node("agentMcpServers", {"_key": "mcp-old", "instanceId": "old"})
         graph.add_node("agentTools", {"_key": "mcp-tool-old", "name": "t"})
@@ -651,6 +678,31 @@ class TestUpdateAttachments:
         assert response.status_code == 500
         assert graph.nodes.get("agentKnowledge", {}) == {}
         assert graph.edges_from("agentHasKnowledge", f"{AGENTS}/private") == []
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_removing_all_knowledge_still_cleans_up_when_old_nodes_fail_to_delete(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_two_old(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_knowledge_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentKnowledge" and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_knowledge_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"knowledge": []})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            assert self._linked(graph) == {"agentKnowledge/kn-old", "agentKnowledge/kn-old2"}
+        else:
+            assert self._linked(graph) == set()
+            assert graph.nodes["agentKnowledge"] == {}
 
     def test_skills_link_only_to_the_callers_own_or_builtin_active_skills(self, client, graph) -> None:
         skills = [

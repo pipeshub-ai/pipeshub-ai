@@ -1439,9 +1439,9 @@ async def _finish_unlinking_old(
     whether it did, so the caller can remove the old nodes too.
 
     Acts only on evidence read back from the graph: a new link still present, or a
-    removed old link still gone while others remain. A real rollback restores the old
-    links and drops the new ones, and a failed read shows nothing, so both are left as
-    they are. Best effort throughout; failures are logged.
+    removed old link still gone. A real rollback restores the old links and drops the
+    new ones, and a failed read shows nothing, so both are left as they are. Best effort
+    throughout; failures are logged.
     """
     try:
         edges = await graph_provider.get_edges_from_node(agent_full_id, edge_collection)
@@ -1453,7 +1453,7 @@ async def _finish_unlinking_old(
     if new_ids:
         persisted = bool(linked & new_ids)
     else:
-        persisted = bool(remaining_old) and any(old_id not in linked for old_id in deleted_old_ids)
+        persisted = any(old_id not in linked for old_id in deleted_old_ids)
     if not persisted:
         return False
     for old_id in remaining_old:
