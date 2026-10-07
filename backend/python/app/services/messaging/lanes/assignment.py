@@ -62,7 +62,7 @@ from app.services.redis.loop_clients import LoopBoundClients
 from app.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Mapping
+    from collections.abc import Callable, Mapping
     from logging import Logger
 
     from app.services.messaging.lanes.assignment_policy import LaneChoice
@@ -437,16 +437,6 @@ if changed then redis.call("HINCRBY", meta, "version", 1) end
 return {fenced, cleared, removed, now}
 """
 
-# KEYS: map, meta. Recorded once, the first time upkeep has finished the
-# one-time upgrade fix-up; returns when that was.
-_MARK_MIGRATED_SCRIPT = _LUA_HELPERS + """
-if redis.call("HSETNX", KEYS[2], "migratedAt", now_ms()) == 1 then
-    redis.call("HINCRBY", KEYS[2], "version", 1)
-end
-return tonumber(redis.call("HGET", KEYS[2], "migratedAt"))
-"""
-
-
 def _text(value: object) -> str:
     return value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
 
@@ -513,21 +503,6 @@ def _without(snapshot: LaneSnapshot, entry: LaneEntry) -> LaneSnapshot:
         for load in snapshot.lanes
     )
     return replace(snapshot, lanes=lanes)
-
-
-def _with_large_on(snapshot: LaneSnapshot, lanes: Collection[int]) -> LaneSnapshot:
-    held = set(lanes)
-    return replace(
-        snapshot,
-        lanes=tuple(
-            replace(load, large=load.large + 1) if load.lane in held else load
-            for load in snapshot.lanes
-        ),
-    )
-
-
-def _hash_lane_rule(request: LaneRequest, _snapshot: LaneSnapshot) -> int:
-    return request.hash_lane
 
 
 @dataclass(frozen=True)
@@ -683,17 +658,13 @@ class LaneAssignments:
         reason: LaneRequestReason,
         *,
         org_id: str | None = None,
-        still_held: Collection[int] = (),
     ) -> LaneEntry:
         """Ask the rule for a new lane for a connector that already has one.
 
         The old lane is kept as ``prevLane`` until housekeeping sees it
         drained past the fence. An admin move happens only if the edition's
         ``admin_lane_move_allowed`` says so; a move while an earlier one is
-        still settling is refused. ``still_held`` names lanes that hold
-        another large connector's backlog although the map no longer counts
-        it there (it is moving off them); the rule sees one more large
-        connector on each.
+        still settling is refused.
         """
         if reason is LaneRequestReason.ADMIN and not self._admin_move_allowed(
             org_id, connector_id
@@ -722,7 +693,6 @@ class LaneAssignments:
             snapshot_from_meta(_pairs(reply[3]), lane_count, int(reply[2])),
             mode="move",
             legacy_lane=None,
-            still_held=still_held,
         )
         if status == "settling":
             raise LaneMoveRefusedError(
@@ -769,46 +739,6 @@ class LaneAssignments:
             await self._eval(_SET_CLASS_SCRIPT, connector_id, entry.encode(), connector_class)
         )
 
-    async def record_at_hash_lane(
-        self,
-        connector_id: str,
-        connector_class: str,
-        *,
-        org_id: str | None = None,
-        connector_type: str | None = None,
-    ) -> int:
-        """Record a connector where hashing has always put it, unless it
-        already has a lane. Used by the upgrade fix-up, which then moves only
-        the connectors that collide."""
-        reply = await self._eval(
-            _LOOKUP_SCRIPT, connector_id, self._fallback_lane_count, "1"
-        )
-        lane_count = self._note_lane_count(reply[1])
-        entry = LaneEntry.parse(reply[0])
-        if entry is not None and entry.lane < lane_count:
-            return entry.lane
-        request = LaneRequest(
-            connector_id=connector_id,
-            connector_class=connector_class,
-            hash_lane=stable_lane(connector_id, lane_count),
-            reason=LaneRequestReason.UPGRADE,
-            org_id=org_id,
-            connector_type=connector_type,
-        )
-        _status, value, _occupancy = await self._commit_loop(
-            request,
-            entry,
-            snapshot_from_meta(_pairs(reply[3]), lane_count, int(reply[2])),
-            mode="assign",
-            legacy_lane=request.hash_lane,
-            choose=_hash_lane_rule,
-        )
-        recorded = LaneEntry.parse(value)
-        if recorded is None:
-            raise RuntimeError(f"Lane map returned an unreadable entry for {connector_id}")
-        self._remember(connector_id, recorded.lane)
-        return recorded.lane
-
     async def upkeep(
         self,
         oldest_waiting_ms: Mapping[int, float] | None,
@@ -840,10 +770,6 @@ class LaneAssignments:
             removed=int(reply[2]),
             now_ms=int(reply[3]),
         )
-
-    async def mark_migrated(self) -> int:
-        """Record that the one-time upgrade fix-up is done; returns when it was."""
-        return int(await self._eval(_MARK_MIGRATED_SCRIPT))
 
     async def _lookup_or_place(
         self,
@@ -976,7 +902,6 @@ class LaneAssignments:
         mode: str,
         legacy_lane: int | None,
         choose: Callable[[LaneRequest, LaneSnapshot], LaneChoice] | None = None,
-        still_held: Collection[int] = (),
         class_is_known: bool = False,
     ) -> tuple[str, object, tuple[int, int]]:
         """Commit the rule's choice, asking it again on a fresh snapshot for as
@@ -991,8 +916,6 @@ class LaneAssignments:
                 if entry is not None and request.current_lane is not None
                 else snapshot
             )
-            if still_held:
-                view = _with_large_on(view, still_held)
             choice = (choose or self._choose)(request, view)
             if choice is KEEP_CURRENT:
                 if request.current_lane is None:

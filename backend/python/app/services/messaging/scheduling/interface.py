@@ -118,6 +118,11 @@ class FairSchedulerConfig:
     # every light page and issue queued behind it. The scheduler itself
     # stays tier-agnostic: it only sees the depths below.
     tier_level: bool = True
+    # Kafka only. Messages read past a connector at its cap are remembered by
+    # position (partition, offset) rather than held, up to this many across
+    # every connector; past it the lane stops as it did before. 0 keeps the
+    # earlier behaviour of parking whole messages within the buffer.
+    max_remembered_positions: int = 0
 
     @property
     def entity_depth(self) -> int:

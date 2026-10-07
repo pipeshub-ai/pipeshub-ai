@@ -1668,6 +1668,27 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def update_nodes_fields_if_match(
+        self,
+        collection: str,
+        rows: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """``update_node_fields_if_match`` for many nodes: each row is
+        ``(key, updates, expected)``. Returns the keys whose write applied.
+
+        The default issues one call per row; Neo4j and ArangoDB override it with
+        a single statement. A row whose expectation no longer holds is left
+        unchanged, which is a normal outcome, not an error.
+        """
+        applied: list[str] = []
+        for key, updates, expected in rows:
+            if await self.update_node_fields_if_match(
+                key, collection, updates, expected, transaction
+            ):
+                applied.append(key)
+        return applied
+
     @abstractmethod
     async def update_node_fields_if_match(
         self,

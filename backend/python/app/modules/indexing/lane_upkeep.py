@@ -1,4 +1,4 @@
-"""Once-a-minute upkeep of the Redis Streams lane map, and the one-time upgrade fix-up.
+"""Once-a-minute upkeep of the Redis Streams lane map.
 
 Runs in the indexing service, inside the stale-record recovery pass, so under
 the cluster-wide ``recovery`` lock and on one replica at a time. Each pass:
@@ -9,10 +9,11 @@ the cluster-wide ``recovery`` lock and on one replica at a time. Each pass:
 2. Reads the connectors and knowledge bases from the graph: corrects a class
    that was guessed on a first publish, and frees the lane of any connector
    that no longer exists (in case a delete path missed it).
-3. Until it is done, the one-time upgrade fix-up: separates the large
-   connectors that share a lane, one move per pass. The one with the most
-   records waiting keeps the lane; queued records are never re-sent.
-4. Publishes the lane metrics and keeps a report for ``GET /health``.
+3. Publishes the lane metrics and keeps a report for ``GET /health``.
+
+There is no one-time step for an install upgraded from hashing: a connector
+is placed by the rule on its first publish after the switch, and the events
+it had already queued finish on the lane they are on.
 """
 from __future__ import annotations
 
@@ -20,13 +21,9 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.services.graph_db.common.utils import org_id_from_app_edge
+from app.config.constants.arangodb import CollectionNames
 from app.services.messaging.config import messaging_env
-from app.services.messaging.lanes.assignment_policy import (
-    LaneRequestReason,
-    is_large_class,
-)
+from app.services.messaging.lanes.assignment_policy import is_large_class
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY
 from app.services.messaging.lanes.lifecycle import connector_class_of
@@ -69,7 +66,6 @@ class LaneReport:
     topic: str
     updated_at_ms: int
     lane_count: int
-    migrated_at_ms: int | None
     backlog_read: bool
     lanes: list[dict[str, object]] = field(default_factory=list)
 
@@ -78,7 +74,6 @@ class LaneReport:
             "topic": self.topic,
             "updatedAt": self.updated_at_ms,
             "laneCount": self.lane_count,
-            "upgradeFixUpDoneAt": self.migrated_at_ms,
             "backlogRead": self.backlog_read,
             "lanes": self.lanes,
         }
@@ -112,21 +107,11 @@ async def run_lane_upkeep(
     # not in it, and cannot be mistaken for one whose document is gone.
     entries = await assignments.read_map()
     apps = await _read_apps(graph_provider, logger)
-    released = corrected = moved = 0
+    released = corrected = 0
     if apps is not None:
         released, corrected = await _reconcile_with_graph(
             assignments, graph_provider, entries, apps, logger
         )
-        if "migratedAt" not in await assignments.read_meta():
-            moved, finished = await _upgrade_fix_up(assignments, graph_provider, apps, logger)
-            if finished:
-                await assignments.mark_migrated()
-            logger.info(
-                "Queue lanes: the one-time upgrade fix-up %s; %d connector(s) moved "
-                "off a shared lane this pass",
-                "is done" if finished else "carries on next pass",
-                moved,
-            )
 
     if settled.fenced or settled.cleared or settled.removed or released or corrected:
         logger.info(
@@ -143,7 +128,6 @@ async def run_lane_upkeep(
     report = _report(
         topic,
         await assignments.read_map(),
-        await assignments.read_meta(),
         apps or {},
         backlog,
         assignments.lane_count,
@@ -239,184 +223,9 @@ async def _reconcile_with_graph(
     return released, corrected
 
 
-async def _upgrade_fix_up(
-    assignments: LaneAssignments,
-    graph_provider: IGraphDBProvider,
-    apps: Mapping[str, _App],
-    logger: Logger,
-) -> tuple[int, bool]:
-    """Separate the large connectors that share a lane, one move per pass.
-
-    Every connector without an entry is first recorded where hashing has
-    always put it. On a lane with two or more large connectors, the one with
-    the most records waiting keeps it, since its backlog is already there. A
-    connector a first publish already moved off a lane still counts there,
-    as its queued events are still there, but only one still on the lane is
-    ever moved. Of those, the one with the most waiting is moved by the
-    edition's rule, but only onto a lane that is truly empty: no large
-    connector on it and no move still settling off it. Nothing is re-sent: records already
-    queued are worked off where they are, and the stranded-record sweep keeps
-    counting a moved connector's old lane until it has drained.
-
-    Returns (moved, finished). It is finished once no lane has two large
-    connectors, or once none of them can be split: no lane is truly empty and
-    no move is still settling, which could free one. It is not finished while
-    a connector could not be recorded, a shared lane's queued counts could not
-    all be read (a connector the graph could not show included), the
-    connector that should move is still settling an earlier move, or a move
-    failed. A pass that moves someone always leaves the rest to the next.
-    """
-    finished = True
-    for connector_id, app in apps.items():
-        try:
-            await assignments.record_at_hash_lane(
-                connector_id,
-                app.connector_class,
-                org_id=app.org_id,
-                connector_type=app.connector_type,
-            )
-        except Exception as e:
-            finished = False
-            logger.warning(
-                "Queue lanes: could not record connector %s at its lane: %s: %s",
-                connector_id,
-                type(e).__name__,
-                e,
-            )
-
-    # From the map, not from the graph scan, which can miss a live connector.
-    entries = await assignments.read_map()
-    large = {
-        connector_id: entry
-        for connector_id, entry in entries.items()
-        if connector_id != DEFAULT_LANE_KEY
-        and entry.is_live
-        and is_large_class(entry.connector_class)
-    }
-    on_lane: dict[int, list[str]] = {}
-    for connector_id, entry in large.items():
-        on_lane.setdefault(entry.lane, []).append(connector_id)
-        if entry.prev_lane is not None and entry.prev_lane != entry.lane:
-            on_lane.setdefault(entry.prev_lane, []).append(connector_id)
-
-    waiting: dict[str, int] = {}
-    movers: list[str] = []
-    for lane, connectors in sorted(on_lane.items()):
-        if len(connectors) < 2:
-            continue
-        for connector_id in connectors:
-            if connector_id in waiting:
-                continue
-            app = apps.get(connector_id)
-            count = (
-                None
-                if app is None
-                else await _queued(graph_provider, app, connector_id, logger)
-            )
-            if count is not None:
-                waiting[connector_id] = count
-        if any(c not in waiting for c in connectors):
-            # An unknown backlog must not read as an empty one: the connector
-            # that holds the lane's backlog is the one most likely to time out.
-            finished = False
-            continue
-        keeper = min(connectors, key=lambda c, lane=lane: (-waiting[c], large[c].lane != lane, c))
-        movers.extend(c for c in connectors if c != keeper and large[c].lane == lane)
-    if not movers:
-        return 0, finished
-
-    settling = {e.prev_lane for e in entries.values() if e.is_live and e.prev_lane is not None}
-    occupied = {e.lane for e in large.values()} | settling
-    if all(lane in occupied for lane in range(assignments.lane_count)):
-        # Every lane already has a large connector or a backlog draining off it.
-        return 0, finished and not settling
-
-    for connector_id in sorted(movers, key=lambda c: (-waiting[c], c)):
-        entry = large[connector_id]
-        if entry.prev_lane is not None:
-            # It cannot move until its earlier move settles; nobody takes the
-            # free lane meanwhile.
-            return 0, False
-        try:
-            placed = await assignments.move(
-                connector_id,
-                LaneRequestReason.UPGRADE,
-                org_id=apps[connector_id].org_id,
-                still_held=tuple(occupied),
-            )
-        except Exception as e:
-            logger.info(
-                "Queue lanes: connector %s has to leave lane %d and will be moved "
-                "on a later pass: %s: %s",
-                connector_id,
-                entry.lane,
-                type(e).__name__,
-                e,
-            )
-            return 0, False
-        if placed.lane != entry.lane:
-            logger.info(
-                "Queue lanes: connector %s (%s) moved off shared lane %d to lane %d; "
-                "its %d queued record(s) are worked off on lane %d",
-                apps[connector_id].name or connector_id,
-                connector_id,
-                entry.lane,
-                placed.lane,
-                waiting[connector_id],
-                entry.lane,
-            )
-            return 1, False
-        # The rule kept it where it is: that is the edition's decision.
-    return 0, finished
-
-
-async def _org_of(
-    graph_provider: IGraphDBProvider, app: _App, connector_id: str
-) -> str | None:
-    """The connector's org: knowledge bases carry ``orgId``; connectors created
-    before it was stored on the document have only the org-app edge."""
-    return app.org_id or await org_id_from_app_edge(graph_provider, connector_id)
-
-
-async def _queued(
-    graph_provider: IGraphDBProvider, app: _App, connector_id: str, logger: Logger
-) -> int | None:
-    """Records of this connector put in line and not yet picked up; None if
-    the graph could not say. The providers answer a failure with
-    ``success: False`` rather than raising, and an unknown org with zeros, so
-    both are caught here rather than read as an empty queue."""
-    try:
-        org_id = await _org_of(graph_provider, app, connector_id)
-        if not org_id:
-            logger.warning(
-                "Queue lanes: could not find the org of connector %s to count its "
-                "queued records",
-                connector_id,
-            )
-            return None
-        stats = await graph_provider.get_connector_stats(org_id, connector_id)
-    except Exception as e:
-        logger.warning(
-            "Queue lanes: could not count the queued records of connector %s: %s: %s",
-            connector_id,
-            type(e).__name__,
-            e,
-        )
-        return None
-    counts = (((stats or {}).get("data") or {}).get("stats") or {}).get("indexingStatus")
-    if not (stats or {}).get("success", True) or not isinstance(counts, dict):
-        logger.warning(
-            "Queue lanes: could not count the queued records of connector %s",
-            connector_id,
-        )
-        return None
-    return int(counts.get(ProgressStatus.QUEUED.value, 0) or 0)
-
-
 def _report(
     topic: str,
     entries: Mapping[str, LaneEntry],
-    meta: Mapping[str, str],
     apps: Mapping[str, _App],
     backlog: LaneBacklog | None,
     lane_count: int,
@@ -464,15 +273,10 @@ def _report(
                 "pending": backlog.pending.get(stream) if backlog is not None else None,
             }
         )
-    try:
-        migrated_at = int(meta["migratedAt"]) if meta.get("migratedAt") else None
-    except ValueError:
-        migrated_at = None
     return LaneReport(
         topic=topic,
         updated_at_ms=now_ms,
         lane_count=lane_count,
-        migrated_at_ms=migrated_at,
         backlog_read=backlog is not None,
         lanes=lanes,
     )

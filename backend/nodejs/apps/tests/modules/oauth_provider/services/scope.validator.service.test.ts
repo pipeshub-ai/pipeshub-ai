@@ -168,6 +168,36 @@ describe('ScopeValidatorService', () => {
     })
   })
 
+  describe('resolveGrantedScopes', () => {
+    it('grants the allowed scopes and reports the rest as not granted', () => {
+      const result = service.resolveGrantedScopes(
+        ['openid', 'kb:read', 'agent:read'],
+        ['kb:read', 'conversation:chat'],
+      )
+      expect(result).to.deep.equal({ granted: ['kb:read'], notGranted: ['openid', 'agent:read'] })
+    })
+
+    it('throws InvalidScopeError when no requested scope is allowed', () => {
+      expect(() => service.resolveGrantedScopes(['agent:read'], ['kb:read']))
+        .to.throw(InvalidScopeError)
+    })
+
+    it('throws InvalidScopeError for an unknown scope name', () => {
+      expect(() => service.resolveGrantedScopes(['kb:read', 'nope:read'], ['kb:read']))
+        .to.throw(InvalidScopeError)
+    })
+
+    it('returns empty lists for an empty request', () => {
+      expect(service.resolveGrantedScopes([], ['kb:read']))
+        .to.deep.equal({ granted: [], notGranted: [] })
+    })
+
+    it('lists a repeated scope once', () => {
+      expect(service.resolveGrantedScopes(['kb:read', 'openid', 'kb:read', 'openid'], ['kb:read']))
+        .to.deep.equal({ granted: ['kb:read'], notGranted: ['openid'] })
+    })
+  })
+
   describe('getAllowedScopeNamesForRole', () => {
     it('should include admin-only scope names for org admin', () => {
       const names = service.getAllowedScopeNamesForRole(true)
