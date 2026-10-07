@@ -4,10 +4,12 @@ import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, RecordRelations
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -21,6 +23,7 @@ from app.connectors.sources.zendesk.connector import (
     PAGE_SIZE,
     SYNC_POINT_KEY,
     UNASSIGNED_GROUP_ID,
+    ZendeskAuthError,
     ZendeskConnector,
 )
 from app.models.blocks import BlockGroup, DataFormat, GroupSubType, GroupType
@@ -314,18 +317,41 @@ class TestFetchPaginatedList:
         assert result == [{"id": 1}]
         assert slept == [42.0]
 
-    async def test_does_not_retry_an_auth_failure(self, zendesk_connector):
+    async def test_auth_failure_that_cannot_refresh_fails_the_sync(self, zendesk_connector):
+        """A swallowed 401 reads as a short page and the sync ends "completed"."""
         api = AsyncMock(return_value=_make_response(
             success=False, error="Unauthorized", status_code=401,
         ))
         api.__name__ = "list_groups"
+        zendesk_connector._refresh_after_unauthorized = AsyncMock(return_value=False)
 
-        items, complete = await zendesk_connector._fetch_paginated_list_checked(
-            api, "groups"
-        )
-
+        with pytest.raises(ZendeskAuthError):
+            await zendesk_connector._fetch_paginated_list_checked(api, "groups")
         assert api.await_count == 1
-        assert (items, complete) == ([], False)
+
+    async def test_auth_failure_refreshes_the_token_and_retries(self, zendesk_connector):
+        _ready(zendesk_connector)
+        client = zendesk_connector.external_client.get_client.return_value
+        zendesk_connector.config_service.get_config = AsyncMock(return_value={
+            "credentials": {"access_token": "tok", "refresh_token": "rt"},
+        })
+        refresh_service = MagicMock()
+        refresh_service.refresh_now = AsyncMock(return_value=MagicMock(access_token="new"))
+        api = AsyncMock(side_effect=[
+            _make_response(success=False, error="Unauthorized", status_code=401),
+            _make_response(data={"groups": [{"id": 1}]}),
+        ])
+        api.__name__ = "list_groups"
+
+        with patch(
+            "app.connectors.sources.zendesk.connector.startup_service"
+        ) as startup:
+            startup.get_token_refresh_service.return_value = refresh_service
+            result = await zendesk_connector._fetch_paginated_list(api, "groups")
+
+        assert result == [{"id": 1}]
+        refresh_service.refresh_now.assert_awaited_once()
+        client.set_access_token.assert_called_once_with("new")
 
 
 # ===========================================================================
@@ -2467,20 +2493,58 @@ class TestGetFilterOptions:
 
 
 class TestConnectionAndLifecycle:
+    def _token_info(self, connector, response):
+        _ready(connector)
+        connector._show_current_token = AsyncMock(return_value=response)
+
     async def test_connection_ok(self, zendesk_connector):
-        datasource = _ready(zendesk_connector)
-        datasource.list_groups = AsyncMock(return_value=_make_response())
+        self._token_info(zendesk_connector, _make_response(
+            data={"token": {"scopes": ["read"]}}, status_code=200,
+        ))
         assert await zendesk_connector.test_connection_and_access() is True
 
-    async def test_connection_false_on_unsuccessful_response(self, zendesk_connector):
-        datasource = _ready(zendesk_connector)
-        datasource.list_groups = AsyncMock(return_value=_make_response(success=False))
-        assert await zendesk_connector.test_connection_and_access() is False
+    async def test_connection_names_the_missing_scope(self, zendesk_connector):
+        self._token_info(zendesk_connector, _make_response(
+            data={"token": {"scopes": ["tickets:write"]}}, status_code=200,
+        ))
+        with pytest.raises(ConnectorInitError, match="missing the required scope.*read"):
+            await zendesk_connector.test_connection_and_access()
 
-    async def test_connection_false_on_exception(self, zendesk_connector):
-        datasource = _ready(zendesk_connector)
-        datasource.list_groups = AsyncMock(side_effect=Exception("network down"))
-        assert await zendesk_connector.test_connection_and_access() is False
+    async def test_connection_token_without_read_scope(self, zendesk_connector):
+        """Zendesk 403s token introspection itself when "read" is missing (seen live)."""
+        self._token_info(zendesk_connector, _make_response(
+            success=False, status_code=403,
+            error='{"error":"Forbidden","description":"You are missing the following '
+                  'required scopes: read"}',
+        ))
+        with pytest.raises(
+            ConnectorInitError,
+            match=r"^Zendesk: You are missing the following required scopes: read\. Re-authorize",
+        ):
+            await zendesk_connector.test_connection_and_access()
+
+    async def test_connection_unknown_subdomain(self, zendesk_connector):
+        self._token_info(zendesk_connector, _make_response(
+            success=False, error="Not Found", status_code=404,
+        ))
+        with pytest.raises(ConnectorInitError, match="No Zendesk account found at acme"):
+            await zendesk_connector.test_connection_and_access()
+
+    async def test_connection_rejected_credentials(self, zendesk_connector):
+        self._token_info(zendesk_connector, _make_response(
+            success=False, error="invalid_token", status_code=401,
+        ))
+        zendesk_connector._refresh_after_unauthorized = AsyncMock(return_value=False)
+        with pytest.raises(ConnectorInitError, match="Re-authorize"):
+            await zendesk_connector.test_connection_and_access()
+
+    async def test_connection_unreachable(self, zendesk_connector):
+        _ready(zendesk_connector)
+        zendesk_connector._show_current_token = AsyncMock(
+            side_effect=httpx.ConnectError("dns failure")
+        )
+        with pytest.raises(ConnectorInitError, match="Could not reach acme.zendesk.com"):
+            await zendesk_connector.test_connection_and_access()
 
     async def test_cleanup_closes_client(self, zendesk_connector):
         inner = MagicMock()

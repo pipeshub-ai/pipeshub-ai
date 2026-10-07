@@ -9,11 +9,13 @@ import pytest
 
 from app.sources.client.zendesk.zendesk import (
     ZendeskClient,
+    ZendeskConfigError,
     ZendeskOAuthConfig,
     ZendeskRESTClientViaOAuth,
     ZendeskRESTClientViaToken,
     ZendeskResponse,
     ZendeskTokenConfig,
+    redact_attachment_url,
 )
 
 
@@ -125,6 +127,44 @@ class TestZendeskRESTClientViaOAuth:
         client = ZendeskRESTClientViaOAuth(SUBDOMAIN, "cid", "secret", "https://cb", "tok")
         assert client.get_subdomain() == SUBDOMAIN
 
+    @pytest.mark.parametrize(
+        "subdomain", ["evil.com/x?", "acme.zendesk.com", "https://acme", "-acme", "", "a b"]
+    )
+    def test_rejects_anything_but_a_bare_subdomain(self, subdomain):
+        """The subdomain lands in every URL; a host or path would send the token elsewhere."""
+        with pytest.raises(ZendeskConfigError, match="Invalid Zendesk subdomain"):
+            ZendeskRESTClientViaOAuth(subdomain, "cid", "secret", "https://cb", "tok")
+
+    def test_set_access_token_updates_the_live_header(self):
+        client = ZendeskRESTClientViaOAuth(SUBDOMAIN, "cid", "secret", "https://cb", "tok")
+        client.set_access_token("new")
+        assert client.access_token == "new"
+        assert client.headers["Authorization"] == "Bearer new"
+
+
+class TestAttachmentUrlRedaction:
+    def test_redacts_the_attachment_token(self):
+        url = "https://acme.zendesk.com/attachments/token/AbC123xyz/?name=report.pdf"
+        assert redact_attachment_url(url) == (
+            "https://acme.zendesk.com/attachments/token/<redacted>/?name=report.pdf"
+        )
+
+    def test_redacts_a_signed_cdn_token(self):
+        url = "https://acme.zdusercontent.com/attachment/1/file.png?token=eyJhbGciOi.x.y"
+        assert "eyJhbGciOi" not in redact_attachment_url(url)
+
+    def test_httpx_request_log_is_redacted(self, caplog):
+        import httpx
+
+        with caplog.at_level(logging.INFO, logger="httpx"):
+            logging.getLogger("httpx").info(
+                'HTTP Request: %s %s "%s %d %s"', "GET",
+                httpx.URL("https://acme.zendesk.com/attachments/token/SECRET/?name=a"),
+                "HTTP/1.1", 302, "Found",
+            )
+        assert "SECRET" not in caplog.text
+        assert "attachments/token/<redacted>" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Config objects
@@ -228,7 +268,7 @@ class TestZendeskClient:
                 "credentials": {"access_token": "tok"},
             },
         })
-        with pytest.raises(ValueError, match="OAuth token required"):
+        with pytest.raises(ZendeskConfigError, match="not authorized yet"):
             await ZendeskClient.build_from_services(
                 logger=logger,
                 config_service=mock_config_service,
