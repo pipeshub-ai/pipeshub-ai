@@ -254,19 +254,20 @@ class TestEntriesThatNeedReplacing:
         assert entry.prev_lane == 6
         assert (await _meta(provider))["large:6"] == "0"
 
+    @pytest.mark.parametrize("connector_class", ["personal", "kb"])
     async def test_a_replaced_entry_keeps_the_class_it_had(
-        self, provider: FakeRedisConnectionProvider
+        self, provider: FakeRedisConnectionProvider, connector_class: str
     ) -> None:
-        """An event says its class only for an upload; a personal connector's
+        """An event says its class only for an upload; a small connector's
         entry must not turn large because some other event repaired it."""
         client = provider.get_client()
-        await client.hset(lane_map_key(TOPIC), "gmail-1", LaneEntry(6, "personal").encode())
+        await client.hset(lane_map_key(TOPIC), "small-1", LaneEntry(6, connector_class).encode())
         await client.hset(lane_meta_key(TOPIC), mapping={"laneCount": "4", "small:6": "1"})
 
-        lane = await _assignments(provider).lane_for("gmail-1")
+        lane = await _assignments(provider).lane_for("small-1")
 
-        entry = (await _map(provider))["gmail-1"]
-        assert (entry.lane, entry.connector_class, entry.prev_lane) == (lane, "personal", 6)
+        entry = (await _map(provider))["small-1"]
+        assert (entry.lane, entry.connector_class, entry.prev_lane) == (lane, connector_class, 6)
         meta = await _meta(provider)
         assert meta["small:6"] == "0"
         assert meta[f"small:{lane}"] == "1"
@@ -299,6 +300,35 @@ class TestEntriesThatNeedReplacing:
         entry = (await _map(provider))[second]
         assert entry.lane != stable_lane(second, LANES)
         assert entry.prev_lane == stable_lane(second, LANES)
+
+
+class TestKnownClassAndLaneCount:
+    async def test_creation_corrects_a_class_a_first_publish_guessed(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        assignments = _assignments(provider)
+        lane = await assignments.lane_for("gmail-1")
+        assert (await _map(provider))["gmail-1"].connector_class == "team"
+
+        assert await assignments.assign("gmail-1", ConnectorClass.PERSONAL) == lane
+
+        assert (await _map(provider))["gmail-1"] == LaneEntry(lane, "personal")
+        meta = await _meta(provider)
+        assert (meta[f"large:{lane}"], meta[f"small:{lane}"]) == ("0", "1")
+
+    async def test_a_lowered_lane_count_seen_by_any_lookup_drops_cached_lanes_past_it(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        client = provider.get_client()
+        await write_lane_count(client, TOPIC, 8)
+        assignments = _assignments(provider)
+        high = next(c for c in (f"c-{i}" for i in range(100)) if stable_lane(c, 8) >= 4)
+        assert await assignments.lane_for(high) >= 4
+
+        await write_lane_count(client, TOPIC, 4)
+        await assignments.lane_for("another-connector")
+
+        assert await assignments.lane_for(high) < 4
 
 
 class TestConcurrentPlacement:
@@ -731,6 +761,37 @@ class TestFactory:
         ]
 
         assert len({id(router.assignments) for router in routers}) == 1  # type: ignore[attr-defined]
+
+    def test_record_events_is_assigned_wherever_it_is_listed(self) -> None:
+        producer = MessagingFactory.create_producer(
+            logging.getLogger("t"),
+            RedisStreamsConfig(),
+            MessageBrokerType.REDIS,
+            lane_config=LaneConfig(
+                lane_count=LANES,
+                assignment=LaneAssignmentMode.ASSIGNED,
+                laned_topics=("entity-events", "record-events"),
+            ),
+        )
+
+        router = self._router(producer)
+        assert isinstance(router, AssignedRedisLaneRouter)
+        assert router.assignments.topic == "record-events"
+
+    @pytest.mark.parametrize("laned_topics", [("entity-events",), ()])
+    def test_without_record_events_laned_there_is_nothing_to_assign(
+        self, laned_topics: tuple[str, ...]
+    ) -> None:
+        producer = MessagingFactory.create_producer(
+            logging.getLogger("t"),
+            RedisStreamsConfig(),
+            MessageBrokerType.REDIS,
+            lane_config=LaneConfig(
+                lane_count=LANES, assignment=LaneAssignmentMode.ASSIGNED, laned_topics=laned_topics
+            ),
+        )
+
+        assert type(self._router(producer)) is RedisLaneRouter
 
     def test_the_lane_rule_comes_from_the_edition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app import edition_services

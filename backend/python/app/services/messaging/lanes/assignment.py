@@ -185,7 +185,7 @@ return {entry or "", lane_count, now_ms, redis.call("HGETALL", KEYS[2])}
 # KEYS: map, meta.
 # ARGV: connector id, lane, class, expected meta version, mode ("assign" or
 # "move"), the lane its events may be on from before the map ("" if none),
-# fallback lane count.
+# fallback lane count, "1" if the class is known for sure.
 #
 # "assign" never touches a connector that already has a lane inside the lane
 # count; "move" does, unless a previous move is still settling. An entry
@@ -231,7 +231,19 @@ local old_lane = nil
 if old then old_lane = tonumber(old[2]) end
 
 if old_lane and old_lane < lane_count then
-    if mode ~= "move" or old_lane == lane then return {"existing", raw} end
+    if mode ~= "move" or old_lane == lane then
+        -- The caller knows the class for sure (creation): a first publish may
+        -- have guessed it, so correct the entry and its count in place.
+        if ARGV[8] == "1" and old[3] ~= class and old[4] == "live" then
+            redis.call("HINCRBY", meta, size_of(old[3]) .. old_lane, -1)
+            redis.call("HINCRBY", meta, size_of(class) .. old_lane, 1)
+            old[3] = class
+            raw = table.concat(old, "|")
+            redis.call("HSET", map, id, raw)
+            redis.call("HINCRBY", meta, "version", 1)
+        end
+        return {"existing", raw}
+    end
     if old[5] ~= "" then return {"settling", raw} end
 elseif old_lane and old[5] ~= "" then
     -- Outside the lane count but still settling a move: replacing prevLane
@@ -491,7 +503,9 @@ class LaneAssignments:
             connector_class=str(connector_class),
             connector_type=connector_type,
         )
-        return await self._lookup_or_place(connector_id, hint, is_new=is_new)
+        return await self._lookup_or_place(
+            connector_id, hint, is_new=is_new, class_is_known=True
+        )
 
     async def move(
         self,
@@ -551,7 +565,12 @@ class LaneAssignments:
         return await read_lane_map(self._client(), self.topic)
 
     async def _lookup_or_place(
-        self, connector_id: str, hint: LaneHint, *, is_new: bool
+        self,
+        connector_id: str,
+        hint: LaneHint,
+        *,
+        is_new: bool,
+        class_is_known: bool = False,
     ) -> int:
         reply = await self._eval(_LOOKUP_SCRIPT, connector_id, self._fallback_lane_count, "")
         lane_count = self._note_lane_count(reply[1])
@@ -560,6 +579,23 @@ class LaneAssignments:
             if entry is None:
                 raise RuntimeError(f"Unexpected lane map reply: {reply!r}")
             lane = entry.lane
+            if (
+                class_is_known
+                and hint.connector_class
+                and entry.connector_class != hint.connector_class
+            ):
+                # A first publish guessed the class; creation knows it.
+                await self._eval(
+                    _COMMIT_SCRIPT,
+                    connector_id,
+                    lane,
+                    hint.connector_class,
+                    0,
+                    "assign",
+                    "",
+                    self._fallback_lane_count,
+                    "1",
+                )
         else:
             lane = await self._place(
                 connector_id,
@@ -567,12 +603,21 @@ class LaneAssignments:
                 entry,
                 snapshot_from_meta(_pairs(reply[3]), lane_count, int(reply[2])),
                 is_new=is_new,
+                class_is_known=class_is_known,
             )
         self._remember(connector_id, lane)
         return lane
 
     def _note_lane_count(self, value: object) -> int:
         lane_count = max(1, int(value))  # type: ignore[call-overload]
+        if self._known_lane_count is not None and lane_count < self._known_lane_count:
+            # The consumer now reads fewer lanes: a cached lane past the new
+            # count is looked up again rather than used until it expires.
+            with self._lock:
+                for connector_id in [
+                    c for c, cached in self._cache.items() if cached.lane >= lane_count
+                ]:
+                    del self._cache[connector_id]
         self._known_lane_count = lane_count
         return lane_count
 
@@ -584,6 +629,7 @@ class LaneAssignments:
         snapshot: LaneSnapshot,
         *,
         is_new: bool = False,
+        class_is_known: bool = False,
     ) -> int:
         lock = self._placement_lock()
         async with lock:
@@ -615,7 +661,12 @@ class LaneAssignments:
             )
             legacy_lane = None if is_new else request.hash_lane
             status, value, occupancy = await self._commit_loop(
-                request, entry, snapshot, mode="assign", legacy_lane=legacy_lane
+                request,
+                entry,
+                snapshot,
+                mode="assign",
+                legacy_lane=legacy_lane,
+                class_is_known=class_is_known,
             )
             placed = LaneEntry.parse(value)
             if placed is None:
@@ -632,6 +683,7 @@ class LaneAssignments:
         *,
         mode: str,
         legacy_lane: int | None,
+        class_is_known: bool = False,
     ) -> tuple[str, object, tuple[int, int]]:
         """Commit the rule's choice, asking it again on a fresh snapshot for as
         long as another placement keeps getting in first.
@@ -667,6 +719,7 @@ class LaneAssignments:
                 mode,
                 "" if legacy_lane is None else legacy_lane,
                 self._fallback_lane_count,
+                "1" if class_is_known else "",
             )
             status = _text(reply[0])
             if status == "assigned":
