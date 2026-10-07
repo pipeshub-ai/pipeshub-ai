@@ -98,7 +98,7 @@ def test_a_route_with_an_all_text_body_accepts_it_form_encoded(pipeshub_client: 
         assert_strict_openapi_exchange(resp, KB_ROUTE)
         assert resp.json()["name"] == name, resp.text[:500]
     finally:
-        if resp.status_code == 201:
+        if resp.status_code < 300:
             pipeshub_client.request("DELETE", f"{KB_ROUTE}/{resp.json()['id']}")
 
 
