@@ -71,7 +71,7 @@ class TestCreateClient:
         provider.create_client(ClientOptions(retry_attempts=1))
 
         kwargs = mock_cluster_cls.call_args.kwargs
-        assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (1, 1)
+        assert (kwargs["cluster_error_retry_attempts"], kwargs["retry"]._retries) == (1, 1)
 
     def test_never_fewer_than_one_attempt_because_cluster_pipelines_need_one(
         self, mock_cluster_cls
@@ -80,26 +80,49 @@ class TestCreateClient:
         provider.create_client(ClientOptions(retry_attempts=0))
 
         kwargs = mock_cluster_cls.call_args.kwargs
-        assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (1, 1)
+        assert (kwargs["cluster_error_retry_attempts"], kwargs["retry"]._retries) == (1, 1)
 
     @pytest.mark.parametrize("attempts", [0, 1, 3])
     def test_the_real_cluster_client_accepts_these_options(self, attempts: int) -> None:
         """The mocked tests above cannot tell whether redis-py takes these
-        keyword arguments; building the real client (it connects lazily) can."""
+        keyword arguments; building the real client (it connects lazily) can.
+        Later redis-py releases removed ``connection_error_retry_attempts``,
+        and an argument RedisCluster does not know raises TypeError here."""
         from redis.asyncio.cluster import RedisCluster
 
         provider = ClusterRedisProvider(_config(cluster_endpoints=["127.0.0.1:1"]))
+        kwargs = provider._client_kwargs(ClientOptions(retry_attempts=attempts))
 
-        client = RedisCluster(**provider._client_kwargs(ClientOptions(retry_attempts=attempts)))
+        client = RedisCluster(**kwargs)
 
-        assert client.cluster_error_retry_attempts == max(1, attempts)
+        assert client.retry is kwargs["retry"]
+        assert client.retry._retries == max(1, attempts)
+
+    def test_every_option_is_one_the_installed_redis_cluster_takes(self) -> None:
+        import inspect
+
+        from redis.asyncio.cluster import RedisCluster
+
+        provider = ClusterRedisProvider(
+            _config(
+                cluster_endpoints=["127.0.0.1:1"],
+                username="u",
+                password="p",
+                tls=True,
+                tls_ca_path="/ca.pem",
+                nat_map={"10.0.0.1:7000": ("127.0.0.1", 7000)},
+            )
+        )
+        accepted = inspect.signature(RedisCluster.__init__).parameters
+
+        assert set(provider._client_kwargs(ClientOptions())) - set(accepted) == set()
 
     def test_three_retries_unless_asked_otherwise(self, mock_cluster_cls) -> None:
         provider = ClusterRedisProvider(_config())
         provider.create_client()
 
         kwargs = mock_cluster_cls.call_args.kwargs
-        assert (kwargs["cluster_error_retry_attempts"], kwargs["connection_error_retry_attempts"]) == (3, 3)
+        assert (kwargs["cluster_error_retry_attempts"], kwargs["retry"]._retries) == (3, 3)
 
     def test_fresh_instance_each_call(self, mock_cluster_cls):
         provider = ClusterRedisProvider(_config())
@@ -184,7 +207,7 @@ class TestCreatePubsubClient:
         # A plain node connection, not a cluster one.
         assert "startup_nodes" not in built[0]
         assert "cluster_error_retry_attempts" not in built[0]
-        assert "connection_error_retry_attempts" not in built[0]
+        assert "retry" not in built[0]
 
     def test_falls_back_to_the_configured_endpoint_before_discovery(
         self, mock_cluster_cls, monkeypatch
