@@ -5,6 +5,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, JsonValue
 
 from app.services.resource_governor.models import ParseTier
+from app.utils.env_config import env_choice as _env_choice
 from app.utils.env_config import env_int as _env_int
 from app.utils.env_config import env_seconds as _env_seconds
 
@@ -491,10 +492,10 @@ class MessagingEnvConfig:
         (``lanes/assignment.py``), so connectors stop sharing a lane by
         chance. ``hash``: the lane is a hash of the connector id, as before
         the lane map; set it on every service to switch the feature off.
-        Kafka always places by key. Anything else is treated as ``assigned``.
+        Kafka always places by key. Anything else is treated as ``assigned``,
+        with a warning, so a mistyped rollback does not pass silently.
         """
-        value = os.getenv("FAIR_SCHEDULING_LANE_ASSIGNMENT", "assigned").strip().lower()
-        return value if value in ("assigned", "hash") else "assigned"
+        return _env_choice("FAIR_SCHEDULING_LANE_ASSIGNMENT", "assigned", ("assigned", "hash"))
 
     @property
     def fair_scheduling_lane_cache_seconds(self) -> float:

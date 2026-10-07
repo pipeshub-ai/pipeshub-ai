@@ -11,7 +11,9 @@ import pytest
 from app.services.messaging.config import RedisStreamsConfig
 from tests.integration.messaging import report_scenario
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+# Publishing 20,000 events and then watching for 20 seconds takes longer
+# than the default 30-second test timeout the cluster job runs with.
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio, pytest.mark.timeout(180)]
 
 
 @pytest.fixture
