@@ -21,6 +21,7 @@ from app.utils.citations import (
 )
 from app.utils.image_utils import _fetch_image_as_base64, supported_mime_types
 from app.utils.logger import create_logger
+from app.utils.text_fragments import SourceFormat
 from app.config.constants.service import config_node_constants
 
 DEFAULT_WEB_SEARCH_INCLUDE_IMAGES = False
@@ -171,7 +172,9 @@ class WebSearchHandler(ToolResultHandler):
             link = result.get("link", "")
             snippet = result.get("snippet", "")
 
-            citation_url = generate_text_fragment_url(link, snippet) if snippet else link
+            citation_url = (
+                generate_text_fragment_url(link, snippet, SourceFormat.PLAIN) if snippet else link
+            )
             display_url = display_url_for_llm(citation_url, ref_mapper)
 
             formatted_blocks.append({
@@ -193,7 +196,9 @@ class WebSearchHandler(ToolResultHandler):
             link = result.get("link", "")
             snippet = result.get("snippet", "")
             title = result.get("title", "")
-            citation_url = generate_text_fragment_url(link, snippet) if snippet else link
+            citation_url = (
+                generate_text_fragment_url(link, snippet, SourceFormat.PLAIN) if snippet else link
+            )
             records.append({
                 "url": citation_url,
                 "title": title,
@@ -224,7 +229,9 @@ def _block_citation_url(base_url: str, block) -> str:
         if img_uri.startswith("http"):
             return img_uri
         return base_url
-    return generate_text_fragment_url(base_url, _block_attr(block, "content", ""))
+    return generate_text_fragment_url(
+        base_url, _block_attr(block, "content", ""), SourceFormat.PLAIN
+    )
 
 
 class UrlContentHandler(ToolResultHandler):

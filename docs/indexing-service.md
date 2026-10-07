@@ -271,9 +271,41 @@ Responsibilities by layer:
 | --- | --- | --- |
 | `ResourceGovernor.run` | 15s ± 1s | sample cgroup/CPU/memory, adjust pool limits |
 | `LeaseRenewer` (worker loop) | 30s | renew every held Redis lease in one pipeline; marks holders lost after ~90s of failures |
-| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS for longer than `RECORD_PROCESSING_TIMEOUT + lease` (~32 min); park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records untouched for `STRANDED_RECORD_REPUBLISH_AFTER_SECONDS` (1h), aged on the platform-owned `queuedAtTimestamp`, never on `updatedAtTimestamp` alone (connectors may fill it with source-system time); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
+| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS for longer than `RECORD_PROCESSING_TIMEOUT + lease` (~32 min); park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
 | `run_vector_membership_backfill_loop` | 30s | repair `connectorIds`/`recordGroupIds` on vector points |
 | `run_entity_index_rebuild_loop` | 2s while working, 60s idle, after a 60s startup grace | project the graph into the `entities` collection, one page per tick under its own Redis leader key; see `docs/entity-resolution.md` (Entity index rebuild) |
+
+### 4.6 Stranded-record sweep
+
+A record on a live connector whose event was lost (dropped by the broker, discarded by a consumer, or never published because the send failed after the graph write committed) sits in QUEUED or NOT_STARTED for ever: the stale scan only looks at IN_PROGRESS, and the inactive-connector sweep only at connectors that are gone. `indexing_main._republish_stranded_records` re-sends its event. It runs inside `run_stale_recovery_loop`, so once a minute under the cluster-wide `recovery` lock.
+
+The record's status cannot say whether its event is still on the broker, because QUEUED is written before the publish as well as by it. Age cannot say either: a record waiting behind a long backlog is exactly as old as one whose event was lost, and re-sending it makes that backlog longer. (Aged alone, a consumer more than an hour behind had every healthy record still in line sent another copy each hour: about 185,000 duplicate events for about 43,000 records in a day on one install.) So the sweep asks the broker. For each record, in order:
+
+1. **Minimum age.** The newest of `queuedAtTimestamp`, `updatedAtTimestamp` and `lastRepublishedAt` must be older than `STRANDED_RECORD_REPUBLISH_AFTER_SECONDS` (1h; `0` disables the sweep). `queuedAtTimestamp` is the platform's own "put in line" time; `updatedAtTimestamp` cannot carry this alone because connectors may fill it with source-system time. This is the youngest a record can be before it is looked at, not a promise to re-send at that age, so it does not need to be sized to the backlog.
+2. **The existing guards.** Connector-origin records only (plus a restored upload still NOT_STARTED); the connector must be readable and active; a duplicate parked behind an in-flight md5 twin is left to its twin.
+3. **Back-off.** Each re-send is counted on the record (`republishCount`), and the wait before the next one doubles: 1h, 2h, 4h, 8h, 16h, then 24h (`STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS`, or the minimum age if that is longer). A fresh `queuedAtTimestamp` starts the count over. No record is ever re-sent every period.
+4. **Is its event still waiting?** `IMessagingConsumer.lane_backlog(topic)` returns, per lane, the publish time of the oldest event the consumer group has not finished with (`lanes/backlog.py::LaneBacklog`). If a lane this record's event could be on still holds work at least as old as the record's own queue time, the consumer has not reached that event yet and the record is left alone. If those lanes have moved past it, or are empty, and the record is still waiting, its event is not coming and it is re-sent.
+
+The claim (`lastRepublishedAt`, `republishCount`) is written before the send and put back if the send fails, so a record can never be sent without a persisted claim.
+
+**What "not finished with" means.** An event that was read and is buffered in the scheduler, parked because its key is at its cap, waiting behind a lane the consumer has paused, sleeping out a retry back-off, or being processed right now is still waiting from the record's point of view. Both brokers report it that way, which is why the sweep reads the broker and not the consumer's memory (the answer is also the same from any replica):
+
+| Broker | Lane | Oldest unfinished event | Cost per pass |
+| --- | --- | --- | --- |
+| Redis Streams (`redis_streams/backlog.py`) | each subscribed stream of the topic | the older of the head of the group's pending list (`XPENDING`) and the first entry after `last-delivered-id` (`XINFO GROUPS`, `XRANGE … COUNT 1`); the entry id's millisecond half is the publish time on Redis's clock | 3 commands per stream |
+| Kafka (`kafka/consumer/backlog.py`) | each partition | the timestamp of the record at the group's committed offset, where that is below the end offset. Read by a short-lived consumer assigned by hand, which looks up the group's committed offsets without joining the group (no rebalance) and never commits | one offset lookup per partition, one fetch per partition that is behind |
+
+The broker is read once per pass, and only if some record got as far as step 4, so an idle system never asks. The Redis group `lag` field is not used: it is absent before Redis 7.0, null after deletions, and has been wrong in several releases.
+
+**Which lanes a record's event could be on.** On Redis: its own lane (`stable_lane(connectorId)`), the base stream (anything published before lanes were enabled or by a producer that is not laned, which the consumer still drains), the shared default lane (events published without `connectorId`, such as the stale-recovery requeue), and any lane outside the configured range that the consumer adopted after a lane-count reduction. Another connector's backlog on another lane does not hold a record back. On Kafka the broker's partitioner places each message and nothing in this codebase recomputes it (see `lanes/interface.py`), so every partition counts: a record is re-sent once the whole topic has been consumed past its queue time.
+
+**Clocks.** Queue times come from the application host and event timestamps from the broker (Redis) or the producing host (Kafka), and a record is stamped before its event is sent. An event up to 5 minutes newer than the record's queue time (`STRANDED_QUEUE_CLOCK_ALLOWANCE_MS`) is therefore still treated as possibly the record's own. Skew beyond that costs at most one early re-send per record, after which the back-off applies.
+
+**When the broker cannot be read** (unreachable, timed out, a stream or group missing) the pass logs one warning and decides on steps 1–3 alone.
+
+**Known limits.** Raising the Redis lane count moves a connector to a different lane while its older events are still on the previous one, which is inside the configured range and so indistinguishable from any other lane; such a record can be re-sent once before the back-off takes over. The re-sent event is idempotent either way: the handler skips a record that is already COMPLETED and the per-record lease stops two deliveries running at once.
+
+**Log line.** One per pass, at INFO when any record was considered: `Stranded-record sweep: N considered, N left alone because their queue still holds older work, N re-published, N waiting out a back-off`, with `(queue not readable; decided on age alone)` appended on a fallback pass. A steadily high "left alone" count is a backlog, not a fault.
 
 ---
 
@@ -406,6 +438,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | Shared admission, gate-waiter ceiling, leases, parse wait | `backend/python/app/services/messaging/consumer_concurrency.py` |
 | Env knobs, retry backoff, event models | `backend/python/app/services/messaging/config.py` |
 | DRR scheduler, lanes, Kafka offset tracker | `backend/python/app/services/messaging/scheduling/`, `lanes/` |
+| Lane backlog (what the stranded sweep asks the broker) | `lanes/backlog.py`, `redis_streams/backlog.py`, `kafka/consumer/backlog.py` |
 | Distributed leases, renewer, retry counters | `distributed_concurrency.py`, `lease.py`, `retry_manager.py` |
 | 429 backpressure, HTTP retry/circuit breaker | `messaging/backpressure.py`, `services/base_client.py` |
 | Tiers, gates, control law, probe, feedback | `backend/python/app/services/resource_governor/` |
@@ -431,3 +464,4 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `GOVERNOR_EMBEDDING_CPU_RESERVATION` | 2 (≤ 25% of quota) | CPUs withheld from heavy parse when embeddings are local |
 | `INDEXING_SPLIT_LEASE_POOLS` | false | separate cluster-wide light indexing lease |
 | `MAX_DELIVERY_ATTEMPTS` / `REDIS_MAX_DELIVERIES` | 3 / 10 | failure retries / delivery backstop |
+| `STRANDED_RECORD_REPUBLISH_AFTER_SECONDS` | 3600 | youngest a waiting record can be before the stranded sweep looks at it; `0` disables the sweep. Not a backlog-sized threshold (section 4.6) |

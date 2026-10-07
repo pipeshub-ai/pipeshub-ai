@@ -177,7 +177,7 @@ class TestWebSearchHandler:
                 {"title": "T2", "link": "https://t2.com", "snippet": "S2"},
             ],
         }
-        with patch("app.utils.tool_handlers.generate_text_fragment_url", side_effect=lambda l, s: f"{l}#{s}"), \
+        with patch("app.utils.tool_handlers.generate_text_fragment_url", side_effect=lambda l, s, fmt=None: f"{l}#{s}"), \
              patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u):
             result = asyncio.run(
                 handler.format_message(tool_result, {"ref_mapper": None})
@@ -187,6 +187,20 @@ class TestWebSearchHandler:
         # First block is the header
         assert "test query" in result[0]["text"]
         assert len(result) == 3  # header + 2 results
+
+    def test_snippets_are_treated_as_plain_text(self) -> None:
+        from app.utils.text_fragments import SourceFormat
+
+        handler = WebSearchHandler()
+        tool_result = {
+            "query": "q",
+            "web_results": [{"title": "T", "link": "https://t.com", "snippet": "**S1** words here"}],
+        }
+        with patch("app.utils.tool_handlers.generate_text_fragment_url", return_value="https://t.com") as gen, \
+             patch("app.utils.tool_handlers.display_url_for_llm", side_effect=lambda u, r: u):
+            asyncio.run(handler.format_message(tool_result, {"ref_mapper": None}))
+
+        gen.assert_called_once_with("https://t.com", "**S1** words here", SourceFormat.PLAIN)
 
     def test_format_message_with_no_snippet(self) -> None:
         handler = WebSearchHandler()

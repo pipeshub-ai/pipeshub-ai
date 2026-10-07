@@ -93,7 +93,7 @@ class TestR1FirstRecord:
         # Nothing exists yet, so no winner is offered; the one call exists
         # only to let the model group in-record siblings (two new topics).
         assert len(model.calls) == 1
-        assert all(item["match"] is None for item in model.calls[0])
+        assert all(item["matches"] == [] for item in model.calls[0])
         assert resolution.stats.winners_offered == 0
         assert resolution.stats.new_nodes == 6
         assert resolution.stats.names_deduped == 1
@@ -185,7 +185,7 @@ class TestR3SimilarButDistinct:
         kinds = {i["name"]: i["kind"] for i in items}
         assert kinds == {"Integration Testing": "subcategory level 2", "Integration testing": "topic"}
         level2 = next(i for i in items if i["kind"] == "subcategory level 2")
-        assert level2["match"]["name"] == "Manual Testing"
+        assert [m["name"] for m in level2["matches"]] == ["Manual Testing"]
 
         topic_key = k("acme", TOPICS, "integration testing")
         sub2_key = k("acme", SUB2, "integration testing")

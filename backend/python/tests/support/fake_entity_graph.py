@@ -9,6 +9,7 @@ from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.normalizer import normalize_name
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 
 RECORDS = CollectionNames.RECORDS.value
 DEPARTMENTS = CollectionNames.DEPARTMENTS.value
@@ -126,7 +127,8 @@ class FakeGraph:
         self.edges.setdefault(edge, {"from_id": child_key, "to_id": parent_key})
 
     async def add_taxonomy_aliases(
-        self, collection, key, aliases, normalized_aliases, *, org_id, max_aliases=20, transaction=None
+        self, collection, key, aliases, normalized_aliases, *, org_id, max_aliases=MAX_TAXONOMY_ALIASES,
+        transaction=None,
     ) -> None:
         self.calls.append(("add_taxonomy_aliases", (collection, key, list(aliases), list(normalized_aliases))))
         node = self.nodes.get((collection, key))

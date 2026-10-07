@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from tests.support.fake_entity_graph import FakeGraph
 
 RECORDS = CollectionNames.RECORDS.value
@@ -40,3 +41,11 @@ async def test_the_record_write_marks_the_record_completed(make_transformer, fak
     await make_transformer().save_metadata_to_db("r1", metadata_factory(topics=["Pricing"]), "vr-1")
     assert fake_graph.records["r1"]["extractionStatus"] == "COMPLETED"
     assert fake_graph.records["r1"]["virtualRecordId"] == "vr-1"
+
+
+async def test_aliases_are_capped_at_the_providers_limit_when_none_is_given() -> None:
+    graph = FakeGraph()
+    graph.nodes[(TOPICS, "t1")] = {"name": "Pricing", "orgId": "acme"}
+    names = [f"pricing {i}" for i in range(25)]
+    await graph.add_taxonomy_aliases(TOPICS, "t1", names, names, org_id="acme")
+    assert len(graph.nodes[(TOPICS, "t1")]["aliases"]) == 25 <= MAX_TAXONOMY_ALIASES

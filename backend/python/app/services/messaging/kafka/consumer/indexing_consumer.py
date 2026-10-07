@@ -38,6 +38,8 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.consumer.backlog import read_partition_backlog
+from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
@@ -72,6 +74,11 @@ if TYPE_CHECKING:
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 _MAIN_LOOP_OP_TIMEOUT = 5.0
+# The backlog read opens its own short-lived connection, so it gets longer
+# than a commit does; the caller's wait is a little longer still, so the read
+# reports its own timeout rather than being abandoned mid-way.
+_BACKLOG_READ_TIMEOUT = 10.0
+_BACKLOG_BRIDGE_TIMEOUT = _BACKLOG_READ_TIMEOUT + 5.0
 # How often the retry-backoff wait re-checks self.running, so a shutdown
 # request can interrupt a long (up to 300s) wait instead of holding an
 # active-future slot — and blocking graceful shutdown — for the full delay.
@@ -627,6 +634,38 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     def is_running(self) -> bool:
         """Check if consumer is running"""
         return self.running
+
+    @override
+    async def lane_backlog(self, topic: str) -> LaneBacklog:
+        return await concurrency.bridge_to_main_loop(
+            self, self._read_lane_backlog(topic), _BACKLOG_BRIDGE_TIMEOUT
+        )
+
+    async def _read_lane_backlog(self, topic: str) -> LaneBacklog:
+        if self.consumer is None:
+            raise RuntimeError("Kafka consumer is not started")
+        partitions = self.consumer.partitions_for_topic(topic)
+        if not partitions:
+            raise RuntimeError(f"No partition metadata for {topic}")
+        client_config = {
+            name: value
+            for name, value in IndexingKafkaConsumer.kafka_config_to_dict(
+                self.kafka_config
+            ).items()
+            if name not in ("topics", "enable_auto_commit", "auto_offset_reset")
+        }
+        client_config["client_id"] = f"{self.kafka_config.client_id}-backlog"
+        oldest = await read_partition_backlog(
+            client_config,
+            topic,
+            partitions,
+            auto_offset_reset=self.kafka_config.auto_offset_reset,
+            timeout_seconds=_BACKLOG_READ_TIMEOUT,
+        )
+        # No lanes_for_event: the broker's partitioner placed each message, and
+        # by design nothing here recomputes it (see lanes/interface.py), so an
+        # event may be waiting on any partition.
+        return LaneBacklog(topic, oldest)
 
     async def _on_partitions_revoked(self, revoked: "list[TopicPartition]") -> None:
         """Drop buffered (not-yet-dispatched) messages for partitions this

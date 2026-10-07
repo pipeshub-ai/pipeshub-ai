@@ -103,6 +103,21 @@ from app.utils.streaming import create_stream_record_response, stream_content
 
 # from dropbox.team import GroupSelector
 
+
+class GroupAccessRemovalError(Exception):
+    """A member removal or group deletion in the group event log that could not be saved.
+
+    Dropbox lists an event once, so the handlers let this one through instead of
+    logging it: the group is then queued, and what the event should have removed
+    is removed on a later run.
+    """
+
+    def __init__(self, message: str, group_id: str, *, group_deleted: bool) -> None:
+        super().__init__(message)
+        self.group_id = group_id
+        self.group_deleted = group_deleted
+
+
 # Add these helper functions at the top of the file
 def get_parent_path_from_path(path: str) -> Optional[str]:
     """Extracts the parent path from a file/folder path."""
@@ -1748,6 +1763,8 @@ class DropboxConnector(BaseConnector):
             has_more = True
             latest_cursor_to_save = cursor
             events_processed = 0
+            # Before the new events, so that they are applied on top of the corrected groups.
+            owed_member_reads, owed_deletes = await self._retry_owed_group_removals(sync_point)
 
             while has_more:
                 try:
@@ -1767,6 +1784,15 @@ class DropboxConnector(BaseConnector):
                         try:
                             await self._process_group_event(event)
                             events_processed += 1
+                        except GroupAccessRemovalError as e:
+                            # The cursor moves on and Dropbox won't list the event again, so
+                            # the group is queued with the cursor: every later run tries again
+                            # until what the event should have removed is gone.
+                            owed = owed_deletes if e.group_deleted else owed_member_reads
+                            if e.group_id not in owed:
+                                owed.append(e.group_id)
+                            self.logger.error(f"❌ {e}; it will be tried again on the next run", exc_info=True)
+                            continue
                         except Exception as e:
                             self.logger.error(f"Error processing group event: {e}", exc_info=True)
                             continue
@@ -1785,7 +1811,11 @@ class DropboxConnector(BaseConnector):
                 self.logger.info(f"Storing latest group sync cursor for key {sync_point_key}")
                 await self.dropbox_cursor_sync_point.update_sync_point(
                     sync_point_key,
-                    sync_point_data={"cursor": latest_cursor_to_save}
+                    sync_point_data={
+                        "cursor": latest_cursor_to_save,
+                        "pendingGroupMemberReads": owed_member_reads,
+                        "pendingGroupDeletes": owed_deletes,
+                    }
                 )
 
             self.logger.info(f"Incremental group sync completed. Processed {events_processed} events.")
@@ -1793,6 +1823,63 @@ class DropboxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"⚠️ Fatal error in incremental group sync: {e}", exc_info=True)
             raise
+
+    async def _retry_owed_group_removals(self, sync_point: dict) -> tuple[list[str], list[str]]:
+        """
+        Try again the group deletions and member removals that earlier runs could not save.
+
+        Returns the ids of the groups whose members still have to be read again, and
+        of the groups that still have to be deleted.
+        """
+        still_to_delete: list[str] = []
+        for group_id in sync_point.get('pendingGroupDeletes') or []:
+            try:
+                await self.data_entities_processor.on_user_group_deleted(
+                    external_group_id=group_id,
+                    connector_id=self.connector_id
+                )
+                self.logger.info(f"Deleted group {group_id}, which an earlier run could not delete")
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Deleted group {group_id} still could not be removed, so its members keep "
+                    f"its access; will try again next run: {e}",
+                    exc_info=True,
+                )
+                still_to_delete.append(group_id)
+
+        still_to_read: list[str] = []
+        for group_id in sync_point.get('pendingGroupMemberReads') or []:
+            try:
+                await self._replace_stored_group_members(group_id)
+            except Exception as e:
+                self.logger.error(
+                    f"❌ The members of group {group_id} still could not be read and saved, so a member "
+                    f"removed from it keeps its access; will try again next run: {e}",
+                    exc_info=True,
+                )
+                still_to_read.append(group_id)
+
+        return still_to_read, still_to_delete
+
+    async def _replace_stored_group_members(self, group_id: str) -> None:
+        """
+        Read a stored group's current members from Dropbox and save them in place of the
+        stored ones, which removes anyone a failed removal left behind. Raises if it can't.
+        """
+        stored_group = await self.data_entities_processor.get_user_group_by_external_id(
+            connector_id=self.connector_id,
+            external_id=group_id,
+            raise_on_error=True,
+        )
+        if stored_group is None:
+            # Deleted since, so there is no membership left to correct.
+            return
+
+        members = await self._fetch_group_members(group_id, stored_group.name, raise_on_partial=True)
+        await self.data_entities_processor.on_new_user_groups(
+            [self._create_user_group_with_permissions(group_id, stored_group.name, members)]
+        )
+        self.logger.info(f"Saved the current members of group {group_id}, which an earlier run could not correct")
 
     async def _process_group_event(self, event) -> None:
         """
@@ -1818,6 +1905,8 @@ class DropboxConnector(BaseConnector):
             else:
                 self.logger.debug(f"Ignoring event type: {event_type}")
 
+        except GroupAccessRemovalError:
+            raise
         except Exception as e:
             self.logger.error(f"Error processing group event of type {getattr(event, 'event_type', 'unknown')}: {e}", exc_info=True)
 
@@ -1864,11 +1953,17 @@ class DropboxConnector(BaseConnector):
         elif event_type == "group_remove_member":
             self.logger.info(f"Removing member '{member_name}' ({member_email}) from group '{group_name}' ({group_id})")
 
-            await self.data_entities_processor.on_user_group_member_removed(
-                external_group_id=group_id,
-                user_email=member_email,
-                connector_id=self.connector_id
-            )
+            try:
+                await self.data_entities_processor.on_user_group_member_removed(
+                    external_group_id=group_id,
+                    user_email=member_email,
+                    connector_id=self.connector_id
+                )
+            except Exception as e:
+                raise GroupAccessRemovalError(
+                    f"Could not remove {member_email} from group '{group_name}' ({group_id}): {e}",
+                    group_id, group_deleted=False,
+                ) from e
 
     async def _handle_group_deleted_event(self, event) -> None:
         """Handle group_delete events from Dropbox audit log."""
@@ -1891,10 +1986,15 @@ class DropboxConnector(BaseConnector):
 
         self.logger.info(f"Deleting group {group_name} ({group_id})")
 
-        await self.data_entities_processor.on_user_group_deleted(
-            external_group_id=group_id,
-            connector_id=self.connector_id
-        )
+        try:
+            await self.data_entities_processor.on_user_group_deleted(
+                external_group_id=group_id,
+                connector_id=self.connector_id
+            )
+        except Exception as e:
+            raise GroupAccessRemovalError(
+                f"Could not delete group '{group_name}' ({group_id}): {e}", group_id, group_deleted=True
+            ) from e
 
     async def _handle_group_created_event(self, event) -> None:
         """Handle group_create events from Dropbox audit log."""
@@ -1947,10 +2047,13 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"Failed to process single group {group_name} ({group_id}): {e}", exc_info=True)
 
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> list:
+    async def _fetch_group_members(self, group_id: str, group_name: str, *, raise_on_partial: bool = False) -> list:
         """
         Fetch all members for a group with pagination.
         Extracted from _sync_user_groups section 3a for reusability.
+
+        With raise_on_partial, a later page that can't be read raises instead of
+        ending the list early, for a caller that saves the list in place of the stored one.
         """
         all_members = []
 
@@ -1967,6 +2070,8 @@ class DropboxConnector(BaseConnector):
             members_response = await self.data_source.team_groups_members_list_continue(member_cursor)
 
             if not members_response.success:
+                if raise_on_partial:
+                    raise Exception(f"Error fetching more members for group {group_name}: {members_response.error}")
                 self.logger.error(f"Error during member pagination for {group_name}: {members_response.error}")
                 break
 

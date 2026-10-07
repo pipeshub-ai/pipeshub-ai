@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.keys import taxonomy_node_key
+from app.modules.entity_resolution.models import MAX_ALIASES_PER_NODE
 from app.modules.entity_resolution.normalizer import normalize_name
 
 LANGUAGES = CollectionNames.LANGUAGES.value
@@ -43,7 +44,7 @@ async def test_redirect_holds_when_the_winner_is_at_its_alias_cap(
     make_resolver, fake_graph, metadata_factory, ctx_factory,
 ) -> None:
     _node(fake_graph, _english_key(), "English", merged_into="win")
-    _node(fake_graph, "win", "English (US)", aliases=tuple(f"a{i}" for i in range(20)))
+    _node(fake_graph, "win", "English (US)", aliases=tuple(f"a{i}" for i in range(MAX_ALIASES_PER_NODE)))
     meta = metadata_factory(languages=["english"])
     resolution = await make_resolver().resolve(ctx_factory("r1", ORG, meta))
     (entity,) = resolution.entries.values()

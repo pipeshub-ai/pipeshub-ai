@@ -75,6 +75,23 @@ class FakeEntityVectorDB:
     def get_capabilities(self) -> VectorDBCapabilities:
         return VectorDBCapabilities()
 
+    @property
+    def entity_points(self) -> dict[str, VectorPoint]:
+        """The points that are entities: all but the collection's stamp."""
+        return {
+            point_id: point for point_id, point in self.points.items()
+            if (point.payload.get("metadata") or {}).get("entityId")
+        }
+
+    @property
+    def stamp(self) -> str | None:
+        """What ``EntityVectorStore.collection_stamp`` wrote, if it is still here."""
+        stamps = [
+            stamp for point in self.points.values()
+            if (stamp := (point.payload.get("metadata") or {}).get("indexStamp"))
+        ]
+        return stamps[0] if stamps else None
+
     def _require(self, collection_name: str) -> None:
         if self.dimension is None:
             raise RuntimeError(f"Collection {collection_name} not found")

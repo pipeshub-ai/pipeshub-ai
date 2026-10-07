@@ -800,6 +800,7 @@ class CommonFields:
             category=FilterCategory.SYNC,
             description=(
                 f"Folder paths inside each {container} to sync, such as reports/2026. "
+                "Press Enter after each folder; names may contain spaces. "
                 "Include syncs only these folders; Exclude syncs everything except them. "
                 f"Leave empty to sync the whole {container}."
             ),

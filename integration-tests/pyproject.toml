@@ -121,7 +121,7 @@ dependencies = [
   "tenacity==8.5.0",
   "thrift>=0.16.0",
   "uuid==1.30",
-  "uvicorn==0.35",
+  "uvicorn==0.37.0",
   "zstandard==0.25.0",
 ]
 

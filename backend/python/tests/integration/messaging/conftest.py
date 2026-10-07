@@ -20,6 +20,7 @@ import logging
 import os
 import uuid
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
@@ -212,3 +213,56 @@ async def stop_mid_flight(consumer, gate: threading.Event, parked: list[str]) ->
     finally:
         gate.set()
         await (stopping if stopping is not None else consumer.stop())
+
+
+async def wait_until_held(seen: list[str], parked: list[str]) -> None:
+    """Wait for a ``held_handler`` consumer to settle: some records indexed,
+    the rest parked or still on the broker, and nothing left in motion."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + DRAIN_TIMEOUT_SECONDS
+    while not parked:
+        if loop.time() > deadline:
+            raise AssertionError("no record was ever held")
+        await asyncio.sleep(0.05)
+    settled_at, count = loop.time(), len(seen)
+    while loop.time() - settled_at < 1.0:
+        await asyncio.sleep(0.1)
+        if len(seen) != count:
+            settled_at, count = loop.time(), len(seen)
+
+
+class OneTopicProducer:
+    """Sends events addressed to the production topic to this test's own."""
+
+    def __init__(self, inner, topic: str) -> None:
+        self._inner = inner
+        self._topic = topic
+
+    async def send_event(self, topic: str, event_type: str, payload: dict, key: str | None = None) -> bool:
+        return await self._inner.send_event(
+            topic=self._topic, event_type=event_type, payload=payload, key=key
+        )
+
+
+async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_later: float) -> int:
+    """The real stranded-record sweep, asking ``consumer`` what is still
+    waiting on ``topic``, run as if ``hours_later`` hours had gone by since."""
+    from app import indexing_main
+    from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+    async def run_coordination(coro):  # noqa: ANN202
+        return await coro
+
+    def later() -> int:
+        return get_epoch_timestamp_in_ms() + int(hours_later * 3600 * 1000)
+
+    with patch.object(indexing_main, "get_epoch_timestamp_in_ms", later):
+        return await indexing_main._republish_stranded_records(
+            graph_provider=graph,
+            logger=logging.getLogger("it-sweep"),
+            producer=producer,
+            run_coordination=run_coordination,
+            concurrency_manager=None,
+            page_size=100,
+            read_backlog=lambda: consumer.lane_backlog(topic),
+        )

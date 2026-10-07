@@ -1302,11 +1302,17 @@ class OneDriveConnector(BaseConnector):
             return False
 
         self.logger.info(f"    -> [DELTA] 👤⛔ REMOVING member: {email} ({user_id}) from group {group_id}")
-        success = await self.data_entities_processor.on_user_group_member_removed(
-            external_group_id=group_id,
-            user_email=email,
-            connector_id=self.connector_id
-        )
+        try:
+            success = await self.data_entities_processor.on_user_group_member_removed(
+                external_group_id=group_id,
+                user_email=email,
+                connector_id=self.connector_id
+            )
+        except Exception as e:
+            # Reported as not applied rather than raised, so the rest of the page is
+            # still applied and the caller holds the page for this group.
+            self.logger.error(f"❌ Error removing member {email} from group {group_id}: {e}", exc_info=True)
+            return False
         if not success:
             self.logger.error(f"❌ Error removing member {email} from group {group_id}")
         return bool(success)

@@ -31,6 +31,12 @@ interface TagInputProps {
   disabled?: boolean;
   /** Single-line-ish field for forms that stack several tag inputs (vs. the tall email-invite box). */
   compact?: boolean;
+  /**
+   * Values are free text that may contain spaces and commas (e.g. folder paths):
+   * only Enter or Tab ends a tag, a paste splits on newlines, and duplicates are
+   * compared case-sensitively.
+   */
+  freeText?: boolean;
 }
 
 // ========================================
@@ -45,6 +51,7 @@ export function TagInput({
   error,
   disabled = false,
   compact = false,
+  freeText = false,
 }: TagInputProps) {
   // No-op fallback when disabled or no handler provided
   const handleTagsChange = onTagsChange ?? (() => {});
@@ -61,13 +68,18 @@ export function TagInput({
     }
   }, [tags]);
 
+  const isDuplicate = useCallback(
+    (a: string, b: string) => (freeText ? a === b : a.toLowerCase() === b.toLowerCase()),
+    [freeText]
+  );
+
   const addTag = useCallback(
     (value: string) => {
       const trimmed = value.trim();
       if (!trimmed) return;
 
       // Check for duplicates
-      if (tags.some((t) => t.value.toLowerCase() === trimmed.toLowerCase())) {
+      if (tags.some((t) => isDuplicate(t.value, trimmed))) {
         setInputValue('');
         return;
       }
@@ -83,7 +95,7 @@ export function TagInput({
       setInputValue('');
       setEditingTagId(null);
     },
-    [tags, onTagsChange, validate]
+    [tags, onTagsChange, validate, isDuplicate]
   );
 
   const removeTag = useCallback(
@@ -95,7 +107,13 @@ export function TagInput({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab' || e.key === ' ') {
+      // Keys that confirm an IME candidate (CJK input) belong to the IME; Safari
+      // reports the confirming Enter with isComposing false but keyCode 229.
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      const endsTag = freeText
+        ? e.key === 'Enter' || e.key === 'Tab'
+        : e.key === 'Enter' || e.key === ',' || e.key === 'Tab' || e.key === ' ';
+      if (endsTag) {
         e.preventDefault();
         addTag(inputValue);
       } else if (
@@ -122,23 +140,22 @@ export function TagInput({
         }
       }
     },
-    [inputValue, tags, addTag, removeTag, onTagsChange]
+    [inputValue, tags, addTag, removeTag, onTagsChange, freeText]
   );
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent<HTMLInputElement>) => {
       e.preventDefault();
       const pastedText = e.clipboardData.getData('text');
-      // Split by commas, spaces, newlines
-      const values = pastedText.split(/[,\s\n]+/).filter((v) => v.trim());
+      const values = pastedText.split(freeText ? /[\r\n]+/ : /[,\s\n]+/).filter((v) => v.trim());
       const newTags: TagItem[] = [];
 
       for (const val of values) {
         const trimmed = val.trim();
         if (!trimmed) continue;
         if (
-          tags.some((t) => t.value.toLowerCase() === trimmed.toLowerCase()) ||
-          newTags.some((t) => t.value.toLowerCase() === trimmed.toLowerCase())
+          tags.some((t) => isDuplicate(t.value, trimmed)) ||
+          newTags.some((t) => isDuplicate(t.value, trimmed))
         ) {
           continue;
         }
@@ -155,7 +172,7 @@ export function TagInput({
         handleTagsChange([...tags, ...newTags]);
       }
     },
-    [tags, handleTagsChange, validate]
+    [tags, handleTagsChange, validate, freeText, isDuplicate]
   );
 
   // Handle click-to-edit on a pill

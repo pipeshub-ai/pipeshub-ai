@@ -693,7 +693,11 @@ class RecordEventHandler(BaseEventService):
         )
 
     async def _recreate_managed_collections(self) -> list[str]:
-        """Drop and rebuild every collection the registry manages.
+        """Drop and rebuild every records collection the registry manages.
+
+        The entity index is not one of them: it is a projection of the graph
+        that ``EntityVectorStore`` keeps on the current model by itself, and
+        nothing here would fill it again.
 
         The embedding dimension is re-derived from the *live* model rather
         than the manifest, because this event fires precisely when the model
@@ -715,14 +719,14 @@ class RecordEventHandler(BaseEventService):
             )
 
         registry = self.event_processor.processor.indexing_pipeline.collection_registry
-        recreated = await registry.recreate_all_collections(embedding_size)
+        recreated = await registry.recreate_records_collections(embedding_size)
         # A rebuild is also the supported way to change the strategy, and the
         # resolved one is memoised per process. Without this the collections
         # are rebuilt but every later resolution still uses the outgoing
         # strategy's names until the service restarts.
         reset_strategy_cache()
         self.logger.info(
-            "♻️ Recreated %d collection(s) at dimension %s: %s",
+            "♻️ Recreated %d records collection(s) at dimension %s: %s",
             len(recreated),
             embedding_size,
             recreated,

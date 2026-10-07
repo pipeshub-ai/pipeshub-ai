@@ -322,6 +322,10 @@ config:
   accessibleRecordsCacheTtl: 300
   # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
   signedUrlCacheSeconds: 0
+  # Most characters one agent turn may stream (text, reasoning and tool-call
+  # arguments together) before it is stopped as a runaway. "" keeps the
+  # built-in 1000000; 0 removes the limit.
+  agentMaxTurnOutputChars: ""
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
   # and service-account token. Leave false unless every org admin is trusted

@@ -1251,6 +1251,8 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
             workers = 1
     if reload and workers > 1:
         workers = 1
+    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+
     uvicorn.run(
         "app.connectors_main:app",
         host=host,
@@ -1258,6 +1260,7 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 

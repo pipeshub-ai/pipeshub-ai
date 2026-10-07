@@ -378,26 +378,27 @@ class TestOnUserGroupMemberRemoved:
         group = _make_user_group()
         tx.get_user_by_email.return_value = user
         tx.get_user_group_by_external_id.return_value = group
-        tx.delete_edge.return_value = True
+        tx.batch_delete_edges.return_value = 1
         result = await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
         assert result is True
-        tx.delete_edge.assert_awaited_once()
+        tx.batch_delete_edges.assert_awaited_once()
+        tx.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_edge_to_delete(self):
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = _make_user()
         tx.get_user_group_by_external_id.return_value = _make_user_group()
-        tx.delete_edge.return_value = False
+        tx.batch_delete_edges.return_value = 0
         result = await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc, tx = _make_processor()
         tx.get_user_by_email.side_effect = Exception("db down")
-        result = await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
-        assert result is False
+        with pytest.raises(Exception, match="db down"):
+            await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
 
 
 # ===========================================================================
@@ -475,11 +476,11 @@ class TestOnUserGroupDeleted:
         )
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc, tx = _make_processor()
         tx.get_user_group_by_external_id.side_effect = Exception("db down")
-        result = await proc.on_user_group_deleted("ext-g1", "conn-1")
-        assert result is False
+        with pytest.raises(Exception, match="db down"):
+            await proc.on_user_group_deleted("ext-g1", "conn-1")
 
 
 # ===========================================================================
@@ -681,11 +682,11 @@ class TestOnAppRoleDeleted:
         )
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc, tx = _make_processor()
         tx.get_app_role_by_external_id.side_effect = Exception("db error")
-        result = await proc.on_app_role_deleted("ext-r1", "conn-1")
-        assert result is False
+        with pytest.raises(Exception, match="db error"):
+            await proc.on_app_role_deleted("ext-r1", "conn-1")
 
 
 # ===========================================================================

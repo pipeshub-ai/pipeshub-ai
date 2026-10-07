@@ -127,9 +127,12 @@ class GoldOracle:
         decisions = []
         for item in items:
             entity = self.record_gold.get(item["name"])
-            match = item.get("match") or {}
-            if entity and match.get("id") and self.node_entity.get(match["id"]) == entity:
-                decisions.append(MergeDecision(i=item["i"], same=True, target=match["id"]))
+            target = next(
+                (m["id"] for m in item.get("matches") or [] if entity and self.node_entity.get(m["id"]) == entity),
+                None,
+            )
+            if target is not None:
+                decisions.append(MergeDecision(i=item["i"], same=True, target=target))
             elif entity in first_of_entity:
                 decisions.append(MergeDecision(i=item["i"], same=True, same_as_item=first_of_entity[entity]))
             else:

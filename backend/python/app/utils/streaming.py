@@ -46,6 +46,7 @@ from app.utils.concurrency import indexing_llm_slot
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.logger import create_logger
+from app.utils.message_chunks import merge_message_chunks_off_loop
 from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
@@ -986,13 +987,8 @@ async def call_aiter_llm_stream_simple(
 
 
         # Tool call detection
-        ai = None
         tool_calls_happened = True
-        for part in parts:
-            if ai is None:
-                ai = part
-            else:
-                ai += part
+        ai = await merge_message_chunks_off_loop(parts) if parts else None
 
         if tool_calls_happened and ai is not None:
             tool_calls = getattr(ai, 'tool_calls', [])
