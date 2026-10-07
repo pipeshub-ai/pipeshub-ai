@@ -1,6 +1,8 @@
 """Zendesk connector implementation."""
 
+import asyncio
 import base64
+import json
 import re
 from collections import OrderedDict, defaultdict
 from datetime import datetime
@@ -21,7 +23,11 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -30,6 +36,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
 )
+from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -87,7 +94,12 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_retry import call_with_retry
-from app.sources.client.zendesk.zendesk import ZendeskClient
+from app.sources.client.zendesk.zendesk import (
+    ZendeskClient,
+    ZendeskConfigError,
+    ZendeskResponse,
+    redact_attachment_url,
+)
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -127,6 +139,16 @@ CUSTOM_ROLES_UNAVAILABLE_STATUSES = frozenset({403, 404})
 # Base64 inflates by a third and the result is held in the record body.
 MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
 IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.IGNORECASE)
+# What the builder requests for team sync; the connector only ever reads.
+REQUIRED_OAUTH_SCOPES = ("read",)
+AUTH_FAILED_MESSAGE = (
+    "Zendesk rejected the stored credentials and refreshing them failed. "
+    "Re-authorize the connector."
+)
+
+
+class ZendeskAuthError(Exception):
+    """Zendesk answered 401 even after a token refresh; the message is user-facing."""
 
 
 @ConnectorBuilder("Zendesk")\
@@ -276,6 +298,7 @@ class ZendeskConnector(BaseConnector):
         self._user_id_to_app_user: Dict[str, AppUser] = {}
         self._rebuild_ticket_edges = False
         self._rebuild_article_edges = False
+        self._token_refresh_lock = asyncio.Lock()
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
@@ -295,6 +318,9 @@ class ZendeskConnector(BaseConnector):
             self.base_url = client.get_base_url()
             self.logger.info(f"Zendesk connector {self.connector_id} initialized")
             return True
+        except ZendeskConfigError as e:
+            self.logger.error(f"Failed to initialize Zendesk connector: {e}")
+            raise ConnectorInitError(str(e)) from e
         except Exception as e:
             self.logger.error(f"Failed to initialize Zendesk connector: {e}", exc_info=True)
             return False
@@ -1573,19 +1599,22 @@ class ZendeskConnector(BaseConnector):
         )
 
     async def _fetch_image_as_data_uri(self, datasource: ZendeskDataSource, url: str) -> Optional[str]:
+        safe_url = redact_attachment_url(url)
         try:
             status, raw, mime = await self._fetch_asset(datasource, url)
             if status >= HTTP_ERROR_STATUS:
-                self.logger.warning(f"Zendesk inline image {url} returned {status}")
+                self.logger.warning(f"Zendesk inline image {safe_url} returned {status}")
                 return None
             if len(raw) > MAX_INLINE_IMAGE_BYTES:
-                self.logger.warning(f"Skipping oversized Zendesk inline image ({len(raw)} bytes): {url}")
+                self.logger.warning(f"Skipping oversized Zendesk inline image ({len(raw)} bytes): {safe_url}")
                 return None
             if not mime.startswith("image/"):
                 return None
             return f"data:{mime};base64,{base64.b64encode(raw).decode('utf-8')}"
         except Exception as e:
-            self.logger.warning(f"Could not inline Zendesk image {url}: {e}")
+            self.logger.warning(
+                f"Could not inline Zendesk image {safe_url}: {redact_attachment_url(str(e))}"
+            )
             return None
 
     async def _build_attachment_child_records(
@@ -1839,15 +1868,57 @@ class ZendeskConnector(BaseConnector):
         await self.run_sync()
 
     async def test_connection_and_access(self) -> bool:
+        """Raises ConnectorInitError so the user sees why, not a generic failure."""
+        host = f"{self._subdomain()}.zendesk.com"
         try:
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.list_groups(page=1, per_page=1)
-            if not response.success:
-                self.logger.error(f"Zendesk connection test failed: {response.error}")
-            return bool(response.success)
-        except Exception as e:
-            self.logger.error(f"Zendesk connection test failed: {e}", exc_info=True)
-            return False
+            response = await self._call_api(self._show_current_token)
+        except ZendeskAuthError as e:
+            raise ConnectorInitError(str(e)) from e
+        except httpx.HTTPStatusError as e:
+            raise ConnectorInitError(
+                f"Zendesk at {host} is unavailable (HTTP {e.response.status_code}). Try again later."
+            ) from e
+        except httpx.HTTPError as e:
+            raise ConnectorInitError(
+                f"Could not reach {host}. Check the subdomain is correct."
+            ) from e
+
+        if response.status_code == HttpStatusCode.NOT_FOUND.value:
+            raise ConnectorInitError(
+                f"No Zendesk account found at {host}. Check the subdomain is correct."
+            )
+        if response.status_code == HttpStatusCode.FORBIDDEN.value:
+            # Zendesk refuses token introspection itself without "read" and names the
+            # missing scope in the body.
+            raise ConnectorInitError(
+                f"{self._zendesk_error_description(response.error)} "
+                "Re-authorize the connector and approve read access."
+            )
+        if not response.success:
+            self.logger.error(f"Zendesk connection test failed: {response.error}")
+            raise ConnectorInitError(
+                f"Zendesk connection test failed (HTTP {response.status_code}): {response.error}"
+            )
+
+        granted = set((response.data or {}).get("token", {}).get("scopes") or [])
+        missing = [scope for scope in REQUIRED_OAUTH_SCOPES if scope not in granted]
+        if missing:
+            raise ConnectorInitError(
+                f"The Zendesk token is missing the required scope(s): {', '.join(missing)}. "
+                f"Granted: {', '.join(sorted(granted)) or 'none'}. "
+                "Re-authorize the connector and approve read access."
+            )
+        return True
+
+    @staticmethod
+    def _zendesk_error_description(body: Optional[str]) -> str:
+        try:
+            parsed = json.loads(body or "")
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("description"):
+            return f"Zendesk: {str(parsed['description']).rstrip('.')}."
+        return "Zendesk denied access with this token."
 
     async def get_signed_url(self, record: Record) -> str:
         return ""
@@ -1877,6 +1948,14 @@ class ZendeskConnector(BaseConnector):
         far longer than the 0.5s/1.0s fallback backoff.
         """
         response = await api_method(**kwargs)
+        if response.status_code == HttpStatusCode.UNAUTHORIZED.value:
+            # Raised rather than returned: callers treat a failed response as a short
+            # page and carry on, which would end the sync as "completed".
+            if not await self._refresh_after_unauthorized():
+                raise ZendeskAuthError(AUTH_FAILED_MESSAGE)
+            response = await api_method(**kwargs)
+            if response.status_code == HttpStatusCode.UNAUTHORIZED.value:
+                raise ZendeskAuthError(AUTH_FAILED_MESSAGE)
         status = response.status_code
         if not response.success and status in RETRYABLE_STATUS_CODES:
             request = httpx.Request("GET", getattr(api_method, "__name__", "zendesk"))
@@ -1888,6 +1967,62 @@ class ZendeskConnector(BaseConnector):
                 ),
             )
         return response
+
+    async def _refresh_after_unauthorized(self) -> bool:
+        """Get a working access token after a 401, refreshing only if nobody else has.
+
+        The token is swapped into the live client rather than rebuilding it, so the
+        bound data-source method the caller retries picks it up.
+        """
+        client = self.external_client.get_client() if self.external_client else None
+        if client is None or not hasattr(client, "set_access_token"):
+            return False
+        token_at_entry = client.access_token
+        async with self._token_refresh_lock:
+            if client.access_token != token_at_entry:
+                return True
+            try:
+                config = await self.config_service.get_config(
+                    f"/services/connectors/{self.connector_id}/config", use_cache=False
+                )
+                credentials = (config or {}).get("credentials") or {}
+                stored_token = credentials.get("access_token")
+                if stored_token and stored_token != token_at_entry:
+                    client.set_access_token(stored_token)
+                    return True
+                refresh_token = credentials.get("refresh_token")
+                if not refresh_token:
+                    self.logger.error("Zendesk: 401 and no refresh token stored")
+                    return False
+                refresh_service = startup_service.get_token_refresh_service()
+                if not refresh_service:
+                    self.logger.error("Zendesk: token refresh service unavailable after a 401")
+                    return False
+                token = await refresh_service.refresh_now(
+                    self.connector_id, self.connector_name.value, refresh_token
+                )
+            except Exception as e:
+                self.logger.error(f"Zendesk token refresh after 401 failed: {e}")
+                return False
+            if not token or not token.access_token:
+                return False
+            client.set_access_token(token.access_token)
+            self.logger.info("Zendesk: refreshed the access token after a 401")
+            return True
+
+    async def _show_current_token(self) -> ZendeskResponse:
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.http.execute(
+            HTTPRequest(url=f"{self.base_url}/oauth/tokens/current.json", method="GET")
+        )
+        ok = response.status < HTTP_ERROR_STATUS
+        return ZendeskResponse(
+            success=ok,
+            data=response.json() if ok else None,
+            error=None if ok else response.text()[:300],
+            status_code=response.status,
+            headers=response.headers,
+        )
 
     async def _call_page(self, api_method: Any, page: int, **kwargs: Any) -> Any:
         return await self._call_api(api_method, page=page, per_page=PAGE_SIZE, **kwargs)

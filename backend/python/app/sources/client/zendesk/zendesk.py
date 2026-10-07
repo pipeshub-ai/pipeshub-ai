@@ -1,7 +1,10 @@
 import base64
+import logging
+import re
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
+import httpx
 from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
@@ -9,6 +12,49 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
+
+# The subdomain is interpolated into every request URL, so anything beyond a bare
+# DNS label ("acme.zendesk.com", "evil.com/x") would send the bearer token elsewhere.
+_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+
+
+class ZendeskConfigError(ValueError):
+    """Connector configuration the user has to correct; the message is user-facing."""
+
+
+def validate_subdomain(subdomain: str) -> str:
+    subdomain = (subdomain or "").strip()
+    if not _SUBDOMAIN_RE.match(subdomain):
+        raise ZendeskConfigError(
+            f"Invalid Zendesk subdomain '{subdomain}'. Enter only the subdomain, "
+            "e.g. 'acme' for acme.zendesk.com."
+        )
+    return subdomain
+
+
+# Attachment URLs are bearer links: anyone holding one can download the file, and
+# httpx logs every request URL at INFO.
+_ATTACHMENT_SECRET_RE = re.compile(r"(/attachments/token/|[?&]token=)[^/?&\s\"']+")
+
+
+def redact_attachment_url(text: str) -> str:
+    return _ATTACHMENT_SECRET_RE.sub(r"\1<redacted>", text)
+
+
+class _AttachmentTokenLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_attachment_url(str(arg)) if isinstance(arg, (str, httpx.URL)) else arg
+                for arg in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = redact_attachment_url(record.msg)
+        return True
+
+
+_ATTACHMENT_TOKEN_LOG_FILTER = _AttachmentTokenLogFilter()
+logging.getLogger("httpx").addFilter(_ATTACHMENT_TOKEN_LOG_FILTER)
 
 
 class ZendeskResponse(BaseModel):
@@ -47,6 +93,7 @@ class ZendeskRESTClientViaToken(HTTPClient):
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         # Initialize with empty token and override the headers manually
         super().__init__("", "")
+        subdomain = validate_subdomain(subdomain)
         self.subdomain = subdomain
         self.base_url = f"https://{subdomain}.zendesk.com/api/v2"
         # Set the correct Basic authentication header
@@ -84,6 +131,7 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
         # Initialize with empty token first, will be set after OAuth flow
         super().__init__(access_token or "", "Bearer")
 
+        subdomain = validate_subdomain(subdomain)
         self.subdomain = subdomain
         self.base_url = f"https://{subdomain}.zendesk.com/api/v2"
         self.oauth_base_url = f"https://{subdomain}.zendesk.com/oauth"
@@ -308,6 +356,12 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
 
         return self.access_token
 
+    def set_access_token(self, access_token: str) -> None:
+        """Swap the token in place so data sources already holding this client use it."""
+        self.access_token = access_token
+        self.headers["Authorization"] = f"Bearer {access_token}"
+        self._oauth_completed = True
+
 
 class ZendeskTokenConfig(BaseModel):
     """Configuration for Zendesk REST client via Personal Access Token or API Token
@@ -425,7 +479,9 @@ class ZendeskClient(IClient):
                 credentials_config = config.get("credentials", {}) or {}
                 access_token = credentials_config.get("access_token", "")
                 if not access_token:
-                    raise ValueError("OAuth token required for oauth auth type")
+                    raise ZendeskConfigError(
+                        "Zendesk is not authorized yet. Click Authorize to connect your Zendesk account."
+                    )
                 client = ZendeskRESTClientViaOAuth(
                     subdomain=auth_config.get("subdomain", ""),
                     client_id=auth_config.get("clientId", ""),
