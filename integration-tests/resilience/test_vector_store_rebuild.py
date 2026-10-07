@@ -505,19 +505,6 @@ async def test_deleting_all_embeddings_again_before_the_model_change(
 
 
 @pytest.mark.order(6)
-@pytest.mark.xfail(
-    strict=True,
-    raises=CollectionSizeMismatch,
-    reason=(
-        "Adding an embedding model that is not the default, while the vector store is "
-        "empty, rebuilds the collection at that model's size. The model health check "
-        "(health.py perform_embedding_health_check -> check_collection_info -> "
-        "handle_model_change) runs the collection guard for every add, whatever "
-        "isDefault says, and recreates the collections at the new model's dimension "
-        "when they hold no points. The default model is unchanged, so the next "
-        "upload is embedded at the old size and refused by the collection."
-    ),
-)
 async def test_adding_a_model_that_is_not_the_default_leaves_the_collection_alone(
     journey: Journey, pipeshub_client, vector_store
 ) -> None:
@@ -587,18 +574,6 @@ async def test_recreating_embeddings_with_the_new_model(
 
 
 @pytest.mark.order(9)
-@pytest.mark.xfail(
-    strict=True,
-    raises=CollectionSizeMismatch,
-    reason=(
-        "Deleting the default embedding model while the vector store holds its "
-        "vectors is accepted without any check. cm_controller.ts "
-        "deleteAIModelProvider makes the first remaining model the default and "
-        "calls no embedding health check, so the org silently switches to a model "
-        "of another size: the stored vectors no longer match queries, and every "
-        "new upload is refused by the collection."
-    ),
-)
 async def test_deleting_the_default_model_while_its_vectors_are_stored_is_refused(
     journey: Journey, pipeshub_client, vector_store
 ) -> None:
