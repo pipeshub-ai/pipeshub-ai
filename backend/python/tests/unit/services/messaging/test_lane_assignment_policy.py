@@ -118,6 +118,22 @@ class TestTheHashLaneIsKeptWhenItTies:
         assert choose_connector_lane(_request(12), _snapshot()) == 0
 
 
+class TestAMoveStaysPutUnlessALaneIsBetter:
+    def test_when_every_lane_ties_a_moving_connector_keeps_its_lane(self) -> None:
+        """Every lane already holds one large connector: hopping to the hash
+        lane would gain nothing and split the connector's order."""
+        snapshot = _snapshot(**{f"lane{lane}": (1, 0) for lane in range(LANES)})
+        request = LaneRequest(connector_id="slack", connector_class="team", hash_lane=0, current_lane=1)
+
+        assert choose_connector_lane(request, snapshot) == 1
+
+    def test_a_strictly_better_lane_still_wins(self) -> None:
+        snapshot = _snapshot(**{f"lane{lane}": (1, 0) for lane in range(LANES) if lane != 5})
+        request = LaneRequest(connector_id="slack", connector_class="team", hash_lane=0, current_lane=1)
+
+        assert choose_connector_lane(request, snapshot) == 5
+
+
 class TestDeterminism:
     def test_ties_go_to_the_lowest_lane(self) -> None:
         snapshot = _snapshot(lane0=(1, 0), lane1=(1, 0))
