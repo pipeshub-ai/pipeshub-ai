@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -73,11 +75,17 @@ async def test_two_processes_placing_the_same_connectors_agree_and_never_stack_a
     connectors = [f"connector-{i}" for i in range(100)]
     orders = [connectors, list(reversed(connectors))]
 
+    # Pinned to the backend root: pytest may run from the repository root,
+    # where `app` is not importable in a child interpreter.
+    backend_root = Path(__file__).resolve().parents[3]
+
     async def run(order: list[str]) -> dict[str, int]:
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-c", _PLACER, host, str(port), topic, json.dumps(order),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=backend_root,
+            env={**os.environ, "PYTHONPATH": str(backend_root)},
         )
         out, err = await asyncio.wait_for(process.communicate(), timeout=120)
         assert process.returncode == 0, err.decode()[-2000:]
