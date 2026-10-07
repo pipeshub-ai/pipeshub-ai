@@ -103,3 +103,25 @@ describe('resolveResponder', () => {
     expect(resolveResponder(undefined, null, 'ignored')).toEqual({ kind: 'assistant', name: null });
   });
 });
+
+describe('a retried question', () => {
+  const kinds = (pairs: MessagePair[]) => buildTimeline(pairs).map((g) => g.rows.map((r) => r.kind));
+
+  it('is drawn once: the question asked again after a failed answer has no row of its own', () => {
+    const failed = qa('1', '2026-09-18T10:00:00Z', alice, { question: 'same', failed: true });
+    expect(kinds([failed, qa('2', '2026-09-18T10:01:00Z', alice, { question: 'same' })])).toEqual([['human', 'reply'], ['reply']]);
+  });
+
+  it('has no row while the retry is still running, so an observer does not see the question twice', () => {
+    const failed = qa('1', '2026-09-18T10:00:00Z', alice, { question: 'same', failed: true });
+    const pending = pair('2', { question: 'same', unanswered: true, createdAt: '2026-09-18T10:01:00Z', author: alice });
+    expect(kinds([failed, pending])).toEqual([['human', 'reply']]);
+  });
+
+  it('keeps the row when the text differs, another person asks, or the earlier answer did not fail', () => {
+    const failed = qa('1', '2026-09-18T10:00:00Z', alice, { question: 'same', failed: true });
+    expect(kinds([failed, qa('2', '2026-09-18T10:01:00Z', alice, { question: 'other' })])[1]).toEqual(['human', 'reply']);
+    expect(kinds([failed, qa('2', '2026-09-18T10:01:00Z', bob, { question: 'same' })])[1]).toEqual(['human', 'reply']);
+    expect(kinds([qa('1', '2026-09-18T10:00:00Z', alice, { question: 'same' }), qa('2', '2026-09-18T10:01:00Z', alice, { question: 'same' })])[1]).toEqual(['human', 'reply']);
+  });
+});

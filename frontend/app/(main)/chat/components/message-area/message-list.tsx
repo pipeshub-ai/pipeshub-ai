@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next';
 import { ChatResponse, formatMessageTime } from './chat-response';
 import { NoteBubble } from './note-bubble';
 import { DayDivider } from './timeline/day-divider';
+import { ReplyMessage } from './timeline/reply-message';
+import { AnsweringLine } from './timeline/answering-line';
 import { useCollabMessageContext } from '../../hooks/use-collab-message-context';
 import { buildTimeline } from '../../utils/collab-timeline';
 import { useChatStore } from '../../store';
@@ -63,6 +65,9 @@ export function MessageList() {
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
+  );
+  const activeRun = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.activeRun ?? null : null
   );
   const streamingQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.streamingQuestion || EMPTY_STRING : EMPTY_STRING
@@ -1078,6 +1083,13 @@ export function MessageList() {
       ),
     [collabActive, collabAccess.collabEnabled, messagePairs, meUserId],
   );
+  // Someone else's turn is running on the server: this viewer has the question but no stream to draw the reply from.
+  const othersRunPending =
+    timelineActive &&
+    !isStreaming &&
+    activeRun !== null &&
+    activeRun.userId !== meUserId &&
+    messagePairs[messagePairs.length - 1]?.unanswered === true;
   const timelineGroups = useMemo(() => (timelineActive ? buildTimeline(messagePairs) : []), [timelineActive, messagePairs]);
 
   return (
@@ -1159,6 +1171,11 @@ export function MessageList() {
                   })}
                 </div>
               ))}
+              {othersRunPending ? (
+                <ReplyMessage meUserId={meUserId}>
+                  <AnsweringLine name={activeRun?.displayName || t('chat.collab.attribution.formerMember')} />
+                </ReplyMessage>
+              ) : null}
             </div>
           ) : messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;

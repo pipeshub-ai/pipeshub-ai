@@ -50,6 +50,13 @@ const dayKey = (ms: number): string => {
 const sameAuthor = (a: MessageAuthor | null | undefined, b: MessageAuthor | null | undefined): boolean =>
   Boolean(a && b && a.userId === b.userId);
 
+/** The question asked again, as is, right after its answer failed: Try again resends it, and one question row is enough. */
+const retriesFailedAnswer = (pair: MessagePair, prev: MessagePair | undefined): boolean =>
+  prev?.failed === true &&
+  !prev.note &&
+  prev.question === pair.question &&
+  (pair.author === undefined || prev.author?.userId === pair.author?.userId);
+
 /**
  * Turns message pairs into timeline rows. A pair with an answer is a human row plus a reply row; a note or an
  * unanswered question is a human row. A question that notes were posted after is drawn where it was asked, and its
@@ -57,8 +64,12 @@ const sameAuthor = (a: MessageAuthor | null | undefined, b: MessageAuthor | null
  */
 export function buildTimeline(pairs: readonly MessagePair[]): TimelineGroup[] {
   const groups: TimelineGroup[] = [];
-  for (const pair of pairs) {
+  for (const [index, pair] of pairs.entries()) {
     const human: HumanTimelineRow = { kind: 'human', key: `${pair.key}:human`, pair, showHeader: true, time: pair.createdAt };
+    if (pair.unanswered && !pair.note && retriesFailedAnswer(pair, pairs[index - 1])) {
+      // Someone else's retry still running: the failed pair above already shows the question.
+      continue;
+    }
     if (pair.note || pair.unanswered) {
       groups.push({ key: pair.key, refKey: pair.key, rows: [human] });
       continue;
@@ -68,6 +79,8 @@ export function buildTimeline(pairs: readonly MessagePair[]): TimelineGroup[] {
     if (between > 0) {
       reply.replyingTo = pair.author ?? null;
       groups.splice(groups.length - between, 0, { key: `${pair.key}:question`, refKey: null, rows: [human] });
+      groups.push({ key: pair.key, refKey: pair.key, rows: [reply] });
+    } else if (retriesFailedAnswer(pair, pairs[index - 1])) {
       groups.push({ key: pair.key, refKey: pair.key, rows: [reply] });
     } else {
       groups.push({ key: pair.key, refKey: pair.key, rows: [human, reply] });

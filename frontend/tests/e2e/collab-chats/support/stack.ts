@@ -172,7 +172,7 @@ export class NodeApi {
     });
     const text = await res.text();
     if (res.status !== 200) throw new Error(`start chat: ${res.status} ${text.slice(0, 300)}`);
-    const id = /"conversation":\{"_id":"([0-9a-f]{24})"/.exec(text)?.[1] ?? /"_id":"([0-9a-f]{24})"/.exec(text)?.[1];
+    const id = /"conversation":\{"_id":"([0-9a-f]{24})"/.exec(text)?.[1] ?? /"_id":"([0-9a-f]{24})"/.exec(text)?.[1] ?? /"conversationId":"([0-9a-f]{24})"/.exec(text)?.[1];
     if (!id) throw new Error(`start chat: no conversation id in the stream: ${text.slice(0, 400)}`);
     this.created.push(id);
     return id;

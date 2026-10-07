@@ -585,6 +585,17 @@ describe('loadHistoricalMessages', () => {
     }]);
   });
 
+  it('stamps an error row with its seq and the feed rev, so a later row is merged after it', () => {
+    const { messages } = loadHistoricalMessages(
+      [
+        message({ _id: 'q', messageType: 'user_query', content: 'hello', seq: 1 } as Partial<ConversationMessage>),
+        message({ _id: 'err', messageType: 'error', content: 'boom', seq: 2 } as Partial<ConversationMessage>),
+      ],
+      { rev: 7 },
+    );
+    expect(messages[1].metadata?.custom).toMatchObject({ failed: true, seq: 2, rev: 7 });
+  });
+
   it('absorbs an empty resume follow-up and keeps the card pending', () => {
     const payload = {
       name: 'ask_user_question',
