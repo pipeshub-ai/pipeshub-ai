@@ -269,8 +269,7 @@ class TestGraphConnectorOffFilter:
         assert graph.calls == {
             "get_nodes_by_field_in:apps": 1,
             "get_nodes_by_field_in:records": 1,
-            "compare_and_set_indexing_status": 1,
-            "batch_update_nodes:records": 1,
+            "update_nodes_fields_if_match:records": 1,
         }
         assert {r["indexingStatus"] for k, r in graph.records.items()} == {ProgressStatus.AUTO_INDEX_OFF.value}
 

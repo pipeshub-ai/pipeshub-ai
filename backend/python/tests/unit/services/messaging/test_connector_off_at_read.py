@@ -243,10 +243,10 @@ class TestRedisStreams:
         statuses = {r["indexingStatus"] for k, r in graph.records.items() if k.startswith("off-")}
         assert statuses == {ProgressStatus.AUTO_INDEX_OFF.value}
         # One write per read pass, not one per event.
-        assert graph.calls["batch_update_nodes:records"] <= BACKLOG // 100 + 5
+        assert graph.calls["update_nodes_fields_if_match:records"] <= BACKLOG // 100 + 5
         assert graph.calls["update_node:records"] == 0
         print(f"redis: {BACKLOG} settled in {elapsed:.1f}s, "
-              f"{graph.calls['batch_update_nodes:records']} batch writes")
+              f"{graph.calls['update_nodes_fields_if_match:records']} batch writes")
 
     async def test_rebuild_and_enrichment_resume_events_still_reach_the_handler(
         self, redis_harness: RedisHarness
@@ -376,9 +376,9 @@ class TestKafka:
         assert OFF not in watch.by_connector
         statuses = {r["indexingStatus"] for k, r in graph.records.items() if k.startswith("off-")}
         assert statuses == {ProgressStatus.AUTO_INDEX_OFF.value}
-        assert graph.calls["batch_update_nodes:records"] <= BACKLOG // 100 + 5
+        assert graph.calls["update_nodes_fields_if_match:records"] <= BACKLOG // 100 + 5
         print(f"kafka: {BACKLOG} settled in {elapsed:.1f}s, "
-              f"{graph.calls['batch_update_nodes:records']} batch writes")
+              f"{graph.calls['update_nodes_fields_if_match:records']} batch writes")
 
     async def test_a_settled_offset_never_carries_the_commit_past_unfinished_work(
         self, kafka_harness: KafkaHarness
@@ -478,7 +478,7 @@ class TestKafka:
         handler = Handler()
         await consumer.start(handler)
 
-        await _until(lambda: graph.calls["compare_and_set_indexing_status"] >= 1)
+        await _until(lambda: graph.calls["update_nodes_fields_if_match:records"] >= 1)
         await asyncio.sleep(0.2)
         assert handler.seen == []
         assert kafka_harness.broker.consumers[0].commit_calls == []
