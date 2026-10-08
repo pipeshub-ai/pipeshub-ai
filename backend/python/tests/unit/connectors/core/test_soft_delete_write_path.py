@@ -155,6 +155,17 @@ class TestFlagOff:
         store.soft_delete_records.assert_not_called()
         assert EventTypes.SOFT_DELETE_RECORDS.value not in _event_types(proc)
 
+    async def test_a_failed_record_read_deletes_nothing(self) -> None:
+        """The store answers None to a failed read as well as to a missing record; read
+        as "nothing stored", the record was deleted with no cleanup event for its vectors."""
+        proc = _processor()
+        store = _with_store(proc, AsyncMock())
+        store.get_record_by_key = AsyncMock(side_effect=RuntimeError("LockAcquisitionTimeout"))
+        with flag(False), pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await proc.on_record_deleted("r1")
+        store.get_record_by_key.assert_awaited_once_with("r1", raise_on_error=True)
+        store.delete_record_by_key.assert_not_called()
+
     async def test_a_failure_after_the_first_statement_leaves_no_live_record(self) -> None:
         proc = _processor()
         graph = _AutoCommitGraph()

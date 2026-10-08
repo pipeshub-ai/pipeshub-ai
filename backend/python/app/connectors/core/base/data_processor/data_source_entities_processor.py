@@ -2532,7 +2532,9 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             # The stored document, not a Record: reading Record attributes off it
             # found no virtualRecordId, so no delete ever published its cleanup.
-            existing = await tx_store.get_record_by_key(record_id) or {}
+            # A failed read must raise: None would read as "nothing stored", and the
+            # record would be deleted with no cleanup event for its vectors.
+            existing = await tx_store.get_record_by_key(record_id, raise_on_error=True) or {}
             await tx_store.delete_record_by_key(record_id)
             vrid = existing.get("virtualRecordId")
             if isinstance(vrid, str) and vrid:
