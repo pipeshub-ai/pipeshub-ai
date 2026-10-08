@@ -3211,7 +3211,7 @@ class TestGetInstanceStatus:
         config_service = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
-            """Return the NONE-auth instance and no stored credentials."""
+            """Return the OAuth instance and its authenticated credential record."""
             if "toolset-instances" in path:
                 return [{"_id": "i1", "orgId": "o1", "instanceName": "My Jira", "toolsetType": "jira", "authType": "OAUTH"}]
             if "toolsets/i1/u1" in path:
@@ -3234,6 +3234,7 @@ class TestGetInstanceStatus:
         config_service = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
+            """Return the NONE-auth instance and no stored credentials."""
             if "toolset-instances" in path:
                 return [
                     {
