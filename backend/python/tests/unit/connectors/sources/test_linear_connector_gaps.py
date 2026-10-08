@@ -365,6 +365,37 @@ class TestIssueBatchCommentFiles:
         assert batches
 
     @pytest.mark.asyncio
+    async def test_fetch_issues_batch_skips_sub_team_issues(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.indexing_filters = None
+        conn.organization_url_key = "org"
+
+        own = _make_issue_payload(id="iss-own", identifier="SAL-1", description="", team={"id": "team-1"})
+        sub_team = _make_issue_payload(id="iss-sub", identifier="MAR-1", description="", team={"id": "team-child"})
+
+        mock_ds = MagicMock()
+        mock_ds.issues = AsyncMock(return_value=_issues_resp([own, sub_team], has_next=False))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            batches = [batch async for batch in conn._fetch_issues_for_team_batch("team-1", "SAL")]
+
+        records = [record for batch in batches for record, _ in batch]
+        assert [r.external_record_id for r in records] == ["iss-own"]
+        assert records[0].external_record_group_id == "team-1"
+
+    def test_sub_issue_inherits_from_its_parent_issue(self) -> None:
+        conn = _make_connector()
+        conn.organization_url_key = "org"
+
+        sub_issue = _make_issue_payload(id="iss-sub", parent={"id": "iss-parent"})
+        ticket = conn._transform_issue_to_ticket_record(sub_issue, "team-1")
+
+        assert ticket.parent_external_record_id == "iss-parent"
+        assert ticket.inherit_permissions is True
+        assert ticket.inherit_permissions_from_group is False
+
+    @pytest.mark.asyncio
     async def test_fetch_issues_batch_skips_empty_comment_body(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
