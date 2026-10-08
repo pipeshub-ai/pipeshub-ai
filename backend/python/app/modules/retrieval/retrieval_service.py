@@ -27,6 +27,11 @@ from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailable
 from app.models.blocks import GroupType
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.models.entities import substitute_user_email
+from app.modules.retrieval.entity_filters import (
+    TOO_BROAD_MESSAGE,
+    EntityFilterResolver,
+    EntityFilterUnavailableError,
+)
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ResultMerger,
@@ -154,6 +159,20 @@ PERMISSION_CHECK_UNAVAILABLE_MESSAGE = (
     "We couldn't check which documents you have access to just now, so no results "
     "are shown. Please try again in a minute."
 )
+
+# Every empty outcome of an entity-filtered search reads the same, whether nothing
+# matched or the matches are in records this user cannot read.
+ENTITY_FILTER_NO_MATCH_MESSAGE = "No documents match this search and its entity filter."
+ENTITY_FILTER_UNAVAILABLE_MESSAGE = (
+    "We couldn't apply the entity filter just now. Please try again in a minute."
+)
+
+
+def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[str]:
+    if not current:
+        return allowed
+    keep = set(allowed)
+    return [vid for vid in dict.fromkeys(current) if vid in keep]
 
 
 valid_group_labels = [
@@ -469,6 +488,8 @@ class RetrievalService:
                 limit = DEFAULT_SEARCH_LIMIT
 
             filter_groups = filter_groups or {}
+            # Read, not popped: callers reuse their filter_groups across searches.
+            entity_filters = filter_groups.get("entityFilters")
 
             # Extract KB IDs for response metadata
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
@@ -477,6 +498,9 @@ class RetrievalService:
             filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
                 for key, values in filter_groups.items():
+                    # Lowercased it would become a metadata term the graph does not understand.
+                    if key == "entityFilters":
+                        continue
                     # strictScope is a control flag, not a metadata filter
                     # key — lowercasing it to "strictscope" would silently
                     # break the empty-project-scope short-circuit in
@@ -516,6 +540,27 @@ class RetrievalService:
                 self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
+            # The entity filter runs inside the permission scope: what it matches in
+            # records this user cannot read must change neither the answer nor "too broad".
+            entity_filtered = False
+            if entity_filters is not None:
+                entity_vids, early = await self._entity_filter_virtual_ids(
+                    org_id, user_id, entity_filters, filters, time_range,
+                    None if use_containers else accessible_virtual_id_to_record_id,
+                )
+                if early is not None:
+                    return early
+                if entity_vids is not None:
+                    entity_filtered = True
+                    virtual_record_ids_from_tool = _narrow_virtual_ids(virtual_record_ids_from_tool, entity_vids)
+                    if not virtual_record_ids_from_tool:
+                        return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
+
+            def empty(message: str, status: Status) -> dict[str, Any]:
+                if entity_filtered and status in (Status.EMPTY_RESPONSE, Status.ACCESSIBLE_RECORDS_NOT_FOUND):
+                    return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
+                return self._create_empty_response(message, status)
+
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
 
@@ -524,7 +569,7 @@ class RetrievalService:
                     org_id, containers, virtual_record_ids_from_tool
                 )
                 if clauses is None:
-                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
                 must, should = clauses
                 filter = await self.vector_db_service.filter_collection(
                     must=must, should=should
@@ -538,7 +583,7 @@ class RetrievalService:
                     if vid in accessible_virtual_id_to_record_id
                 ]
                 if not scoped_virtual_ids:
-                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
                 filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
                     )
@@ -571,7 +616,7 @@ class RetrievalService:
 
             if not search_results:
                 self.logger.debug("No search results found")
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+                return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
@@ -588,7 +633,7 @@ class RetrievalService:
             self.logger.debug(f"Vector DB returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             # Resolve only the permission-verified recordIds for the returned virtual IDs.
             # This prevents cross-connector leakage: if multiple connectors share the same
@@ -606,7 +651,7 @@ class RetrievalService:
 
             if not fetched_records:
                 self.logger.error("Failed to fetch records by record IDs")
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             # Resolve the viewer's email here, before the maps below start sharing
             # these dicts: `virtual_to_record_map` reaches the citation builders via
@@ -636,7 +681,7 @@ class RetrievalService:
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
             if not unique_record_ids:
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
@@ -926,7 +971,7 @@ class RetrievalService:
 
                 return response_data
             else:
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+                return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
         except VectorDBEmptyError:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
@@ -939,6 +984,48 @@ class RetrievalService:
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+
+    async def _entity_filter_virtual_ids(
+        self,
+        org_id: str,
+        user_id: str,
+        raw: object,
+        filters: dict[str, list[str]],
+        time_range: dict[str, int] | None,
+        accessible: dict[str, str] | None,
+    ) -> tuple[list[str] | None, dict[str, Any] | None]:
+        """Virtual record ids the entity filter matches among records this user may
+        read (None when it constrains nothing), or a response to return instead.
+
+        ``accessible`` is the user's vrid -> recordId map when the search already
+        built one; under container scoping it is None and the search adjudicates
+        the hits afterwards. A match too broad across the org is counted again over
+        the records the user may read, so "too broad" never reflects what they cannot.
+        """
+        resolver = EntityFilterResolver(self.graph_provider)
+        try:
+            match = await resolver.match(org_id, raw)
+            if match.error == TOO_BROAD_MESSAGE:
+                if accessible is None:
+                    accessible = await self._get_accessible_virtual_ids_task(
+                        user_id, org_id, filters, self.graph_provider, time_range=time_range,
+                        exclude_app_ids=await self._excluded_demo_apps(user_id, org_id),
+                    )
+                match = await resolver.match(org_id, raw, within=list(dict.fromkeys(accessible.values())))
+        except EntityFilterUnavailableError:
+            self.logger.warning("Named-entity filter lookup failed for org %s", org_id, exc_info=True)
+            return None, self._create_empty_response(ENTITY_FILTER_UNAVAILABLE_MESSAGE, Status.ERROR)
+        except PermissionVerificationUnavailableError as exc:
+            self.logger.warning("Could not read what user %s may access in org %s: %s", user_id, org_id, exc)
+            return None, self._create_empty_response(PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE)
+        if match.error:
+            return None, self._create_empty_response(match.error, Status.INVALID_FILTER)
+        if not match.constrained:
+            return None, None
+        vids = match.virtual_record_ids
+        if accessible is not None:
+            vids = [vid for vid in vids if vid in accessible]
+        return vids, None
 
     async def _container_filter_enabled(self) -> bool:
         """Whether searches scope by container instead of by record id.
@@ -1621,6 +1708,7 @@ class RetrievalService:
             Status.VECTOR_DB_NOT_READY: 503,  # Service Unavailable - vector DB not ready
             Status.EMPTY_RESPONSE: 200,  # OK but no results found
             Status.PERMISSION_CHECK_UNAVAILABLE: 503,  # graph could not adjudicate
+            Status.INVALID_FILTER: 422,  # the gateway passes the message through on a 422
         }
 
         status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status

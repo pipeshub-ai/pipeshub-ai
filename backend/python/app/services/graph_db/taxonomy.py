@@ -74,6 +74,7 @@ RECORD_ENRICHMENT_EDGE_COLLECTIONS: tuple[str, ...] = (
     CollectionNames.BELONGS_TO_CATEGORY.value,
     CollectionNames.BELONGS_TO_LANGUAGE.value,
     CollectionNames.BELONGS_TO_TOPIC.value,
+    CollectionNames.MENTIONS_ENTITY.value,
 )
 
 # The edge collection a record reaches each taxonomy collection over.

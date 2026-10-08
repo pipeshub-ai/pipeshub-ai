@@ -30,6 +30,7 @@ class config_node_constants(Enum):
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
     INHERITANCE = "/services/inheritance"
+    NAMED_ENTITIES = "/services/namedEntities"
 
 
     # Non-service paths

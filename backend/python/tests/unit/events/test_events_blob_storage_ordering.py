@@ -36,6 +36,8 @@ def _make_event_processor():
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
     sink_orchestrator.resolve_entities = AsyncMock()
+    sink_orchestrator.extract_named_entities = AsyncMock(return_value=None)
+    sink_orchestrator.persist_named_entities = AsyncMock()
     sink_orchestrator.blob_storage = MagicMock()
     sink_orchestrator.blob_storage.apply = AsyncMock()
     sink_orchestrator.vector_store = MagicMock()
@@ -183,3 +185,44 @@ class TestPostEnrichmentBlobRewrite:
                 await _collect_events(ep)
 
         ep.sink_orchestrator.blob_storage.apply.assert_not_called()
+
+
+class TestNamedEntityTaskOwnership:
+    @pytest.mark.asyncio
+    async def test_a_cancelled_handler_cancels_its_named_entity_run(self):
+        """A record timeout or lost lease lands while classify is awaited."""
+        import asyncio
+
+        ep = _make_event_processor()
+        _setup_parse_result(ep)
+        ner_started, ner_cancelled, classifying = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def extract(ctx, client=None):
+            ner_started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                ner_cancelled.set()
+                raise
+
+        async def classify(**_):
+            classifying.set()
+            await asyncio.sleep(60)
+
+        ep.sink_orchestrator.extract_named_entities = AsyncMock(side_effect=extract)
+        ep.extraction_client.classify = AsyncMock(side_effect=classify)
+
+        patches = _build_patches()
+        with patch.dict("os.environ", {
+            "USE_PARSING_SERVICE": "true",
+            "DEFER_EXTRACTION": "false",
+        }), patches["convert"], patches["transform_ctx"] as transform_ctx, patches["pipeline"]:
+            transform_ctx.return_value.settings = {}
+            handler = asyncio.create_task(_collect_events(ep))
+            await asyncio.wait_for(classifying.wait(), timeout=5)
+            await asyncio.wait_for(ner_started.wait(), timeout=5)
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+
+        await asyncio.wait_for(ner_cancelled.wait(), timeout=1)

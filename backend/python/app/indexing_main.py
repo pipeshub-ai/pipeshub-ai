@@ -1,19 +1,18 @@
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
-
 import asyncio
 import inspect
 import logging
 import os
-from uuid import uuid4
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Any, Protocol, TypeVar
+from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -21,6 +20,8 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.containers.indexing import initialize_container
+from app.edition_containers import IndexingAppContainer
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
@@ -28,32 +29,35 @@ from app.modules.indexing.duplicate_reconcile import (
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
+from app.modules.indexing.named_entity_persist_retry import retry_pending_named_entity_persists
+from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
-)
-from app.containers.indexing import initialize_container
-from app.edition_containers import IndexingAppContainer
-from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
-from app.services.graph_db.common.utils import RESTORED_AT_FIELD
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import (
-    ConsumerType,
-    Topic,
-    get_message_broker_type,
-    messaging_env,
-)
-from app.services.messaging.backpressure import (
-    get_default_backpressure_coordinator,
-)
-from app.services.messaging.distributed_concurrency import (
-    DistributedConcurrencyManager,
 )
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
 )
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
+)
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.backpressure import (
+    get_default_backpressure_coordinator,
+)
+from app.services.messaging.config import (
+    ConsumerType,
+    Topic,
+    get_message_broker_type,
+    messaging_env,
+)
+from app.services.messaging.distributed_concurrency import (
+    DistributedConcurrencyManager,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
@@ -631,6 +635,22 @@ async def recover_in_progress_records(
             )
         except Exception as exc:
             logger.warning(f"Duplicate reconcile retry skipped this pass: {exc}")
+
+        # A named-entity graph write that failed after its own retries left the
+        # record's last good entities in place and a retry marker for this pass.
+        try:
+            event_processor = app_container.event_processor()
+            if inspect.isawaitable(event_processor):
+                event_processor = await event_processor
+            total_records += await retry_pending_named_entity_persists(
+                graph_provider=graph_provider,
+                sink=getattr(event_processor, "sink_orchestrator", None),
+                logger=logger,
+                page_size=page_size,
+                concurrency_manager=concurrency_manager,
+            )
+        except Exception as exc:
+            logger.warning(f"Named-entity persist retry skipped this pass: {exc}")
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
@@ -1634,6 +1654,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_record_label_repair_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.named_entity_sweep_future = asyncio.run_coroutine_threadsafe(
+            run_named_entity_sweep_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -1646,6 +1670,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.label_repair_task = asyncio.create_task(
             run_record_label_repair_loop(app_container, graph_provider)
+        )
+        app.state.named_entity_sweep_task = asyncio.create_task(
+            run_named_entity_sweep_loop(app_container, graph_provider)
         )
 
     yield
@@ -1751,6 +1778,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during record label repair future shutdown: {str(e)}")
+
+    sweep_task = getattr(app.state, "named_entity_sweep_task", None)
+    if sweep_task:
+        if not sweep_task.done():
+            sweep_task.cancel()
+        try:
+            await sweep_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity sweep shutdown: {str(e)}")
+
+    sweep_future = getattr(app.state, "named_entity_sweep_future", None)
+    if sweep_future:
+        if not sweep_future.done():
+            sweep_future.cancel()
+        try:
+            await asyncio.wrap_future(sweep_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity sweep future shutdown: {str(e)}")
 
     # Stop message consumers
     try:

@@ -463,6 +463,25 @@ class TestAbstractMethodInventory:
         "filter_accessible_virtual_record_ids",
         "filter_accessible_record_ids",
         "get_record_parent_adjacency",
+        # Named entities (NamedEntityGraphMixin implements them for both providers)
+        "create_named_entities_if_absent",
+        "find_named_entities",
+        "add_named_entity_aliases",
+        "query_named_entities",
+        "get_records_for_named_entities",
+        "get_named_entities_for_record",
+        "copy_named_entity_mentions",
+        "find_orphan_named_entities",
+        "delete_orphan_named_entities",
+        "mark_orphan_named_entities",
+        "clear_orphan_named_entity_marks",
+        "delete_dangling_named_entity_mentions",
+        "resolve_named_entity_redirects",
+        "replace_named_entity_values",
+        "delete_dangling_named_entity_values",
+        "schedule_named_entity_persist_retry",
+        "get_due_named_entity_persist_retries",
+        "clear_named_entity_persist_retry",
     ]
 
     def test_all_expected_methods_are_abstract(self):

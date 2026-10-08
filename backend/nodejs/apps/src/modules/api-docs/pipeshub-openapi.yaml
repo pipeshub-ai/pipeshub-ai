@@ -6567,6 +6567,126 @@ components:
           description: |
             Knowledge-base app ids to scope retrieval for this turn.
             Each element must be a valid UUID.
+        entityFilters:
+          type: object
+          additionalProperties: false
+          x-pipeshub-stability: experimental
+          description: |
+            **Experimental** named-entity constraints (Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION`).
+            Every constraint must hold for the same record: an amount and a date match a record
+            that mentions both, not one entity that is both. `name`/`entityIds` match entity nodes;
+            `mentionedDate`, `amount`, `quantity` and `percent` match typed values the record
+            mentions (any date mentioned, not a role such as "signed on"). A kind of a typed
+            constraint's own kind narrows it (`currency` with `amount`); other kinds are a
+            constraint of their own. Only records the caller may read are considered: every empty
+            result reads the same.
+
+            An unusable filter (unknown kind, bad currency, a range whose low end is above its high
+            end, or a blank name) fails request validation with 400, including on conversation
+            requests. On `POST /search`, a valid filter matching too many readable records is
+            refused with 422. Conversation operations apply a valid filter to every search behind
+            the answer; if retrieval refuses it, the request does not fail and the answer says why
+            the filter could not be applied.
+          properties:
+            kinds:
+              type: array
+              minItems: 1
+              maxItems: 23
+              description: Lowercase, as listed. The server trims and lowercases each kind before checking it.
+              items:
+                type: string
+                enum:
+                  - person
+                  - person_type
+                  - organization
+                  - event
+                  - product
+                  - skill
+                  - location
+                  - city
+                  - state
+                  - country_region
+                  - address
+                  - date
+                  - date_range
+                  - date_time
+                  - duration
+                  - currency
+                  - percentage
+                  - age
+                  - dimension
+                  - email
+                  - url
+                  - phone
+                  - ip
+            name:
+              type: string
+              minLength: 1
+              maxLength: 256
+              description: Case-insensitive prefix of an entity name; surrounding blanks are trimmed and a blank name is refused.
+            entityIds:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: string
+                format: uuid
+              description: Entity node ids, as returned by entity search. Typed values have no id.
+            mentionedDate:
+              type: object
+              additionalProperties: false
+              description: Overlap with a date the record mentions; half-open, `from` must not be after `to`.
+              properties:
+                from:
+                  oneOf:
+                    - type: integer
+                      description: Epoch milliseconds.
+                    - type: string
+                      description: ISO-8601 date or date-time; a date alone is UTC midnight.
+                to:
+                  oneOf:
+                    - type: integer
+                      description: Epoch milliseconds.
+                    - type: string
+                      description: ISO-8601 date or date-time; a date alone is UTC midnight.
+            amount:
+              type: object
+              additionalProperties: false
+              description: "`min` must not be after `max`."
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                currency:
+                  type: string
+                  pattern: "^[A-Za-z]{3}$"
+                  description: ISO 4217 code, case-insensitive.
+            quantity:
+              type: object
+              additionalProperties: false
+              description: In SI units of the dimension. `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                dimension:
+                  type: string
+                  pattern: "^[A-Za-z_]{1,32}$"
+                  description: For example `length`, `weight`, `speed`, `temperature`, `age`.
+            percent:
+              type: object
+              additionalProperties: false
+              description: Fractions (0.125 is 12.5%). `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+        where:
+          description: Reserved for the typed filter tree that will replace `entityFilters`; any value is refused with 400.
+          not: {}
 
     AppliedFilterNode:
       type: object
@@ -13770,6 +13890,7 @@ components:
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+            - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -14456,7 +14577,7 @@ components:
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
             ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
-            ENABLE_USER_CONTEXT.
+            ENABLE_USER_CONTEXT, ENABLE_NAMED_ENTITY_EXTRACTION.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -32124,7 +32245,12 @@ paths:
         '400':
           description: |
             Invalid request — `query` is missing, empty, or the request
-            body fails validation.
+            body fails validation, including an unusable
+            `filters.entityFilters` or any `filters.where`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: |
             Missing or invalid bearer token.
@@ -32135,6 +32261,14 @@ paths:
           description: |
             A referenced knowledge base or app filter could not be
             resolved.
+        '422':
+          description: |
+            `filters.entityFilters` matches too many records the caller can
+            read. Narrow it: a tighter range, a name, or fewer kinds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Unexpected server error while executing the search, or the
@@ -41551,6 +41685,7 @@ paths:
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+        - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []

@@ -849,6 +849,17 @@ class KnowledgeGraph:
                 required=False,
                 default=10,
             ),
+            ToolParameter(
+                name="named_entity_kinds",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional kinds when searching extracted named entities "
+                    "(person, organization, product, date, currency, ...). "
+                    "Ignored unless named-entity extraction is enabled."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=lambda args: (
@@ -864,6 +875,7 @@ class KnowledgeGraph:
         query: str | None = None,
         entity_types: list[str] | None = None,
         top_k: int = 10,
+        named_entity_kinds: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Entity discovery — calls ops/entity_discovery.py."""
         from .ops.entity_discovery import execute_search_entities
@@ -872,6 +884,7 @@ class KnowledgeGraph:
             query=query,
             entity_types=entity_types,
             top_k=top_k,
+            named_entity_kinds=named_entity_kinds,
         )
 
     # -----------------------------------------------------------------------
@@ -961,6 +974,64 @@ class KnowledgeGraph:
             record_types=record_types,
             limit=limit,
             cursor=cursor,
+        )
+
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_value",
+        short_description="Find accessible records that mention a typed value",
+        description=(
+            "Find records the user can access that mention a typed value: a date range, "
+            "an amount in a currency, a quantity, or a percentage. Requires named-entity "
+            "extraction to be enabled. A match set that is too large is rejected rather "
+            "than truncated."
+        ),
+        parameters=[
+            ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name prefix.", required=False),
+            ToolParameter(name="date_from", type=ParameterType.INTEGER, description="Range start, epoch milliseconds.", required=False),
+            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds.", required=False),
+            ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
+            ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
+            ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),
+            ToolParameter(name="quantity_min", type=ParameterType.FLOAT, description="Minimum quantity in SI units.", required=False),
+            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in SI units.", required=False),
+            ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
+            ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
+            ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        display_name="Found records by typed value",
+    )
+    async def find_records_by_value(
+        self,
+        kinds: list[str] | None = None,
+        name: str | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        amount_min: float | None = None,
+        amount_max: float | None = None,
+        currency: str | None = None,
+        quantity_min: float | None = None,
+        quantity_max: float | None = None,
+        dimension: str | None = None,
+        percent_min: float | None = None,
+        percent_max: float | None = None,
+    ) -> tuple[bool, str]:
+        from .ops.values import execute_find_records_by_value
+        return await execute_find_records_by_value(
+            self.state,
+            kinds=kinds,
+            name=name,
+            date_from=date_from,
+            date_to=date_to,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            currency=currency,
+            quantity_min=quantity_min,
+            quantity_max=quantity_max,
+            dimension=dimension,
+            percent_min=percent_min,
+            percent_max=percent_max,
         )
 
     # -----------------------------------------------------------------------

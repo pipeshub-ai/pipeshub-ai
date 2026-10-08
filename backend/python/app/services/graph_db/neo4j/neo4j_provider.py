@@ -149,6 +149,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
     Neo4jClient,
 )
+from app.modules.named_entities.graph_ops import NamedEntityGraphMixin, named_entity_neo4j_indexes
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
@@ -162,6 +163,7 @@ from app.services.graph_db.taxonomy import (
     is_taxonomy_collection,
     own_record_labels,
     subcategory_level,
+    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_cypher,
@@ -381,7 +383,7 @@ def _purge_walk_query(hint: str) -> str:
     """
 
 
-class Neo4jProvider(IGraphDBProvider):
+class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     Neo4j implementation of IGraphDBProvider.
 
@@ -390,6 +392,8 @@ class Neo4jProvider(IGraphDBProvider):
     - _key → id property
     - Edges → Relationships
     """
+
+    _ner_dialect = "neo4j"
 
     def __init__(
         self,
@@ -960,6 +964,7 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
         )
 
+        indexes.extend(named_entity_neo4j_indexes())
         return indexes
 
     def _generate_required_field_constraints(self) -> list[str]:
@@ -5570,12 +5575,10 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🚀 Copying relationships from {source_key} to {target_key}")
 
-            # Define relationship types to copy
             relationship_types = [
-                "BELONGS_TO_DEPARTMENT",
-                "BELONGS_TO_CATEGORY",
-                "BELONGS_TO_LANGUAGE",
-                "BELONGS_TO_TOPIC"
+                edge_collection_to_relationship(edge)
+                for edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS
+                if edge != CollectionNames.MENTIONS_ENTITY.value
             ]
 
             # BELONGS_TO_CATEGORY targets both Categories and Subcategories1/2/3
@@ -17977,6 +17980,10 @@ class Neo4jProvider(IGraphDBProvider):
         KnowledgeGraphEntityType.LANGUAGE.value: (
             edge_collection_to_relationship(CollectionNames.BELONGS_TO_LANGUAGE.value),
             (collection_to_label(CollectionNames.LANGUAGES.value),),
+        ),
+        KnowledgeGraphEntityType.NAMED_ENTITY.value: (
+            edge_collection_to_relationship(CollectionNames.MENTIONS_ENTITY.value),
+            (collection_to_label(CollectionNames.NAMED_ENTITIES.value),),
         ),
         KnowledgeGraphEntityType.RECORD_GROUP.value: (
             edge_collection_to_relationship(CollectionNames.BELONGS_TO.value),

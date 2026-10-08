@@ -1,0 +1,72 @@
+{
+  "entities": [
+    {
+      "display_name": "Acme Inc.",
+      "kind": "organization",
+      "mentions": [
+        {
+          "block_id": "b0",
+          "block_index": 0,
+          "char_end": 13,
+          "char_start": 4,
+          "evidence_score": 1.0,
+          "extractor": "agent",
+          "extractor_version": "ner-1",
+          "grounding": "exact",
+          "surface": "Acme Inc."
+        }
+      ],
+      "norm_key": "name:organization:acme",
+      "normalized_raw": "",
+      "tags": [],
+      "value": {
+        "canonical": "Acme",
+        "value_type": "name"
+      }
+    },
+    {
+      "display_name": "$1,250",
+      "kind": "currency",
+      "mentions": [
+        {
+          "block_id": "b1",
+          "block_index": 1,
+          "char_end": 6,
+          "char_start": 0,
+          "evidence_score": 1.0,
+          "extractor": "value",
+          "extractor_version": "ner-1",
+          "grounding": "exact",
+          "surface": "$1,250"
+        }
+      ],
+      "norm_key": "money:USD:1250",
+      "normalized_raw": "",
+      "tags": [],
+      "value": {
+        "amount": "1250",
+        "amount_float": 1250.0,
+        "currency": "USD",
+        "currency_ambiguous": false,
+        "value_type": "money"
+      }
+    }
+  ],
+  "extractor_version": "ner-1",
+  "schema_version": 1,
+  "stats": {
+    "accepted": 2,
+    "deterministic": 0,
+    "dropped_cap": 0,
+    "rejected": 0,
+    "submitted": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "tool_calls": 0,
+    "turns": 0,
+    "units": 2
+  },
+  "status": "COMPLETED",
+  "strategy": "agent",
+  "termination_reason": "finish_ok"
+}

@@ -550,3 +550,60 @@ class TestNavigateTip:
             result = await r.search_internal_knowledge(query="test query")
 
         assert "Tip:" not in result
+
+
+class TestEntityFiltersInTheAgentSearch:
+    """The user's entity filter scopes the agent's own searches, as apps and kb do."""
+
+    @pytest.mark.asyncio
+    async def test_the_request_entity_filter_reaches_retrieval(self):
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        )
+        entity_filters = {"amount": {"min": 1000, "max": 2000, "currency": "USD"}}
+        state = _make_state(
+            retrieval_service=retrieval_service,
+            filters={"apps": [], "kb": ["kb-1"], "entityFilters": entity_filters},
+        )
+        await Retrieval(state=state).search_internal_knowledge(query="fees")
+        groups = retrieval_service.search_with_filters.await_args.kwargs["filter_groups"]
+        assert groups["entityFilters"] == entity_filters
+
+    @pytest.mark.asyncio
+    async def test_a_refused_entity_filter_is_an_error_the_model_can_relay(self):
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(return_value={
+            "status_code": 422, "message": "This entity filter matches too many documents. Narrow it.",
+        })
+        state = _make_state(
+            retrieval_service=retrieval_service,
+            filters={"apps": [], "kb": ["kb-1"], "entityFilters": {"kinds": ["date"]}},
+        )
+        parsed = json.loads(await Retrieval(state=state).search_internal_knowledge(query="dates"))
+        assert (parsed["status"], parsed["status_code"]) == ("error", 422)
+        assert "Narrow it" in parsed["message"]
+
+    @pytest.mark.asyncio
+    async def test_without_an_entity_filter_the_groups_are_unchanged(self):
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        )
+        await Retrieval(state=_make_state(retrieval_service=retrieval_service)).search_internal_knowledge(query="q")
+        assert "entityFilters" not in retrieval_service.search_with_filters.await_args.kwargs["filter_groups"]
+
+    @pytest.mark.asyncio
+    async def test_grep_does_not_widen_a_search_under_the_request_entity_filter(self) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        )
+        state = _make_state(
+            retrieval_service=retrieval_service,
+            filters={"apps": ["app-1"], "kb": [], "entityFilters": {"amount": {"min": -800, "max": -700}}},
+        )
+        grep = AsyncMock(return_value=[{"_key": "r9"}])
+        with patch("app.agents.actions.retrieval.retrieval.run_pattern_match_with_llm_grep", grep):
+            await Retrieval(state=state).search_internal_knowledge(query="refunds")
+        grep.assert_not_called()

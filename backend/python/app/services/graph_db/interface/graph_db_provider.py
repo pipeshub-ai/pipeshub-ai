@@ -6780,3 +6780,122 @@ class IGraphDBProvider(ABC):
             Exception: on write failure.
         """
         pass
+
+    @abstractmethod
+    async def create_named_entities_if_absent(self, nodes: list[dict]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities(self, org_id: str, kind: str, norm_keys: list[str]) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_named_entity_aliases(
+        self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def query_named_entities(self, org_id: str, query) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_records_for_named_entities(
+        self,
+        org_id: str,
+        entity_ids: list[str] | None = None,
+        query=None,
+        limit: int = 5000,
+        within: list[str] | None = None,
+    ) -> dict:
+        """Records matching every constraint. With ``within``, only those record ids
+        are considered, so a caller's answer never depends on records it cannot read."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entities_for_record(self, record_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def copy_named_entity_mentions(self, source_key: str, target_key: str) -> int:
+        raise NotImplementedError
+
+    def is_named_entity_write_retryable(self, error: BaseException) -> bool:
+        return False
+
+    @abstractmethod
+    async def find_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        skip_kinds: list[str] | None = None,
+    ) -> list[str]:
+        """Keys :meth:`delete_orphan_named_entities` would delete now, without deleting
+        them, leaving out ``skip_kinds``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Delete entities no record mentions. With ``marked_before_ms``, only those
+        marked orphaned at or before it, so a node written a moment ago and not yet
+        linked is not removed. With ``entity_ids``, only those of them still orphaned."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def mark_orphan_named_entities(self, org_id: str, now_ms: int, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_orphan_named_entity_marks(self, org_id: str, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_mentions(self, entity_ids: list[str]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_persist_retry(
+        self, org_id: str, record_id: str, error: str, attempts_so_far: int = 0,
+    ) -> int:
+        """Record that ``record_id``'s named-entity write failed: due again after a
+        backoff that doubles per failure. ``attempts_so_far`` carries a retry's count
+        when its marker is already gone (its claim committed before the failure).
+        Returns the record's failure count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_due_named_entity_persist_retries(self, limit: int) -> list[dict]:
+        """Retries due now, oldest first: ``recordId``, ``orgId``, ``attempts``, ``dueAt``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_named_entity_persist_retry(
+        self, record_id: str, due_at: int | None, transaction: str | None = None,
+    ) -> bool:
+        """Drop the retry, only while its due time is still ``due_at``; with no
+        ``due_at``, whatever is pending. Returns whether one was dropped."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def resolve_named_entity_redirects(self, org_id: str, ids: list[str]) -> dict[str, str]:
+        """Each named-entity id mapped to the node it was finally merged into."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def replace_named_entity_values(
+        self, record_id: str, docs: list[dict], transaction: str | None = None,
+    ) -> None:
+        """Make ``docs`` the typed values (dates, amounts, quantities…) the record mentions."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_values(self, org_id: str, batch_size: int = 200) -> int:
+        """Remove value rows whose record no longer exists; returns how many."""
+        raise NotImplementedError

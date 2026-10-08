@@ -230,3 +230,32 @@ class TestPrefetchImageCollection:
             )
 
         assert captured["image_budget"] is shared_budget
+
+
+class TestRefusedFilter:
+    async def test_a_refused_entity_filter_is_a_notice_not_an_empty_search(self) -> None:
+        from app.agents.chat_modes.prefetch import filter_notice_constraint
+
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 422,
+            "message": "This entity filter matches too many documents. Narrow it.",
+        }
+
+        result = await prefetch_retrieval(**_make_kwargs(
+            retrieval_service=retrieval_service,
+            filters={"kb": ["kb-1"], "entityFilters": {"kinds": ["date"]}},
+        ))
+
+        assert result.is_empty is True
+        assert result.filter_notice == "This entity filter matches too many documents. Narrow it."
+        assert retrieval_service.search_with_filters.await_args.kwargs["filter_groups"]["entityFilters"] == {"kinds": ["date"]}
+        constraint = filter_notice_constraint(result.filter_notice)
+        assert "Narrow it." in constraint and "Do not answer as if no documents matched" in constraint
+
+    @pytest.mark.parametrize("status_code", [202, 404, 500, 503])
+    async def test_other_failures_carry_no_filter_notice(self, status_code) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {"status_code": status_code, "message": "x"}
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+        assert result.filter_notice is None

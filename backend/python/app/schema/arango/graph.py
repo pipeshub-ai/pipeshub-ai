@@ -42,6 +42,11 @@ EDGE_DEFINITIONS = [
         "to_vertex_collections": [CollectionNames.TOPICS.value],
     },
     {
+        "edge_collection": CollectionNames.MENTIONS_ENTITY.value,
+        "from_vertex_collections": [CollectionNames.RECORDS.value],
+        "to_vertex_collections": [CollectionNames.NAMED_ENTITIES.value],
+    },
+    {
         "edge_collection": CollectionNames.BELONGS_TO_LANGUAGE.value,
         "from_vertex_collections": [CollectionNames.RECORDS.value],
         "to_vertex_collections": [CollectionNames.LANGUAGES.value],

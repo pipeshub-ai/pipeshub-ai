@@ -44,6 +44,7 @@ TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
 SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
+    "named_entity",
 }
 # Named by the records extracted into them; departments are the org's list.
 EXTRACTED_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES - {"department"}
@@ -373,7 +374,9 @@ async def search_entities_for_user(
     query: str,
     *,
     entity_types: list[str] | None = None,
+    kinds: list[str] | None = None,
     top_k: int = 10,
+    include_named: bool = True,
 ) -> list[EntityHit]:
     """Vector search in widening passes, keeping only entities the graph
     confirms the user can reach, best score first.
@@ -396,7 +399,9 @@ async def search_entities_for_user(
             context.org_id,
             [EntitySearchPass(rg_ids, connector_ids, org_wide) for _, rg_ids, connector_ids, org_wide in passes],
             entity_types=entity_types,
+            kinds=kinds,
             top_k=fetch_k,
+            include_named=include_named,
         )
     except Exception as exc:
         raise EntityAccessError("Entity vector search failed") from exc
@@ -410,6 +415,8 @@ async def search_entities_for_user(
             entity_id = hit.get("entityId")
             entity_type = hit.get("entityType")
             if not entity_id or entity_type not in SEARCHABLE_ENTITY_TYPES:
+                continue
+            if entity_type == "named_entity" and not include_named:
                 continue
             if (entity_type, entity_id) in seen or len(probes) >= MAX_EVALUATED_HITS:
                 continue

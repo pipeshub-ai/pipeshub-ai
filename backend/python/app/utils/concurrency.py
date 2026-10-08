@@ -53,6 +53,22 @@ def _indexing_llm_semaphore() -> asyncio.Semaphore:
     return sem
 
 
+def indexing_llm_slots_remaining() -> int:
+    """How many indexing LLM calls can start without waiting.
+
+    Used to skip the multi-turn extractor when the process is already
+    saturated. Returns the configured ceiling when no loop is running.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
+    sem = _sem_by_loop.get(loop)
+    if sem is None:
+        return scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
+    return int(getattr(sem, "_value", 0))
+
+
 @asynccontextmanager
 async def indexing_llm_slot() -> AsyncGenerator[None, None]:
     """Hold a slot in the process-wide indexing LLM budget."""

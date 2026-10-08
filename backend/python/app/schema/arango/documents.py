@@ -346,6 +346,12 @@ record_schema = {
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
+            # A pattern, not an enum: widening an enum on this strict schema is a
+            # release that must ship before any writer of the new value.
+            "entityExtractionStatus": {"type": "string", "pattern": "^[A-Z_]{1,32}$"},
+            "lastEntityExtractionTimestamp": {"type": ["number", "null"]},
+            "entityExtractionStrategy": {"type": ["string", "null"]},
+            "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
@@ -833,6 +839,115 @@ record_group_schema = {
     },
     "level": "strict",
     "message": "Document does not match the record group schema.",
+}
+
+named_entity_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "kind": {"type": "string"},
+            "category": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "name": {"type": "string"},
+            "normKey": {"type": "string"},
+            "aliases": {"type": "array", "items": {"type": "string"}},
+            "normalizedAliases": {"type": "array", "items": {"type": "string"}},
+            "schemaVersion": {"type": "integer"},
+            # Reserved: a field added to this strict schema later would break rollback.
+            "keyScheme": {"type": ["integer", "null"]},
+            "mergedInto": {"type": ["string", "null"]},
+            "orphanedAt": {"type": ["number", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mergedAt": {"type": ["number", "null"]},
+            "types": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["orgId", "kind", "name", "normKey"],
+        # Open: a field a later release adds must not make this release's schema,
+        # reapplied on rollback, reject updates to the documents that carry it.
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity schema.",
+}
+
+# One typed value (date, amount, quantity, percentage, duration, age) a record
+# mentions. Keyed by record, never shared between records: a shared value node
+# such as "2026" or "USD" becomes a hub every record write locks.
+value_mention_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            "kind": {"type": "string"},
+            "normKey": {"type": "string"},
+            "name": {"type": "string"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mentionCount": {"type": "integer"},
+            "maxEvidence": {"type": "number"},
+            "extractors": {"type": "array", "items": {"type": "string"}},
+            "extractedNames": {"type": "array", "items": {"type": "string"}},
+            "blockIndexes": {"type": "array", "items": {"type": "integer"}},
+            "blockIds": {"type": "array", "items": {"type": "string"}},
+            "extractorVersion": {"type": "string"},
+            "schemaVersion": {"type": "integer"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "kind", "normKey"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the value mention schema.",
+}
+
+# A record whose named-entity graph write failed after its retries. Keyed by the
+# record; the recovery pass writes the record's stored extraction again when due.
+named_entity_persist_retry_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            # AQL arithmetic yields a double, so a count it increments is a number.
+            "attempts": {"type": "number"},
+            "dueAt": {"type": "number"},
+            "lastError": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "attempts", "dueAt"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity persist retry schema.",
 }
 
 department_schema = {

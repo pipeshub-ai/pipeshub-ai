@@ -136,6 +136,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: false,
   },
   {
+    key: 'ENABLE_NAMED_ENTITY_EXTRACTION',
+    label: 'Extract Named Entities',
+    description:
+      'During indexing, extract typed named entities (people, organizations, dates, amounts) and store them for search filters and agent tools. Disable to skip extraction and remove mention links from records indexed while this is off.',
+    defaultEnabled: false,
+  },
+  {
     key: 'ENABLE_USER_CONTEXT',
     label: 'Send User & Organization Context to Agents',
     description:

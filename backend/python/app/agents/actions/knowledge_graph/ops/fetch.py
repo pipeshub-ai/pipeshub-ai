@@ -25,6 +25,42 @@ FETCH_RECORD_TOOL_NAME = "knowledgegraph__fetch_record"
 DEFAULT_FETCH_REASON = "Fetching full record content for comprehensive answer"
 
 
+async def _named_entity_note(context: "AgentContext", records: list[dict[str, Any]]) -> str:
+    """Entities on records this fetch already showed. Omitted when the flag is off."""
+    tool_state = getattr(context, "tool_state", None) or {}
+    graph = tool_state.get("graph_provider")
+    if graph is None or not records:
+        return ""
+    try:
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+
+        if not await is_named_entity_extraction_enabled(tool_state.get("config_service")):
+            return ""
+    except Exception:
+        return ""
+    lines: list[str] = []
+    for record in records:
+        record_id = record.get("id")
+        if not record_id:
+            continue
+        try:
+            entities = await graph.get_named_entities_for_record(str(record_id))
+        except Exception:
+            logger.warning("named entities unavailable for record %s", record_id, exc_info=True)
+            continue
+        shown = []
+        for entity in (entities or [])[:20]:
+            kind = entity.get("kind") or ""
+            name = entity.get("name") or ""
+            if kind and name:
+                shown.append(f"{kind}:{name}")
+        if shown:
+            lines.append(f"Named entities on {record_id}: " + ", ".join(shown))
+    if not lines:
+        return ""
+    return "\n" + "\n".join(lines) + "\n"
+
+
 def resolve_block_cap(requested_max: int | None) -> int:
     """Resolve the effective block cap for a fetch.
 
@@ -228,6 +264,7 @@ async def execute_fetch_record(
             parts.append(rendered)
 
         text = "\n".join(parts)
+        text += await _named_entity_note(context, result.get("records") or [])
         # TEMPORARY token-savings experiment: shorten every "Record ID:"
         # this fetch prints back down to the same "R<n>" label the model
         # already saw — see `RecordIdShortener`. No-op (full ids as-is)

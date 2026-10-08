@@ -872,6 +872,9 @@ class RecordEventHandler(BaseEventService):
 
         try:
             await sink.index(ctx)
+            # The stored extraction rebuilds the record's named entities and their
+            # vector points too, so a re-embed never drops them or calls a model.
+            await sink.reproject_named_entities(ctx)
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id

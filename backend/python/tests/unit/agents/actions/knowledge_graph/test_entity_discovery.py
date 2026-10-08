@@ -85,6 +85,30 @@ class TestGuards:
         patched[1].assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ask",
+        [{"entity_types": ["named_entity"]}, {"named_entity_kinds": ["currency"]}],
+    )
+    async def test_a_named_entity_search_with_the_flag_off_does_not_search_every_type(
+        self, patched, monkeypatch, ask,
+    ) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, text = await execute_search_entities(_state(), "acme", **ask)
+        assert ok is False
+        assert json.loads(text)["message"] == entity_discovery.NAMED_ENTITIES_DISABLED_MSG
+        patched[1].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_flag_off_drops_only_the_named_entity_type(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, _ = await execute_search_entities(
+            _state(), "acme", entity_types=["named_entity", "topic"], named_entity_kinds=["currency"],
+        )
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["topic"], None)
+
+    @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
         patched[0].side_effect = EntityAccessError("db down")
         ok, text = await execute_search_entities(_state(), "legal")

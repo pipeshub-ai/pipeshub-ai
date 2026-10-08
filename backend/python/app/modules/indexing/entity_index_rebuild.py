@@ -652,7 +652,7 @@ def _key_of(doc: dict[str, Any]) -> str | None:
     return key if isinstance(key, str) and key else None
 
 
-async def _resolve_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
+async def resolve_entity_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
     getter = getattr(app_container, "entity_vector_store", None)
     if getter is None:
         return None
@@ -701,7 +701,7 @@ async def run_entity_index_rebuild_loop(
                     )
                     rebuilder = None
                 if rebuilder is None:
-                    store = await _resolve_store(app_container)
+                    store = await resolve_entity_store(app_container)
                     if store is not None:
                         rebuilder = EntityIndexRebuilder(
                             logger=logger, graph_provider=graph_provider, store=store, lock=lock,
@@ -737,5 +737,6 @@ __all__ = [
     "EntityIndexState",
     "entity_index_marker",
     "fingerprint_of",
+    "resolve_entity_store",
     "run_entity_index_rebuild_loop",
 ]

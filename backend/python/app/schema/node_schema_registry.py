@@ -25,6 +25,9 @@ from app.schema.arango.documents import (
     artifact_record_schema,
     comment_record_schema,
     department_schema,
+    named_entity_schema,
+    named_entity_persist_retry_schema,
+    value_mention_schema,
     file_record_schema,
     link_record_schema,
     mail_record_schema,
@@ -94,6 +97,9 @@ NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.PAGE_TOKENS.value: None,  # No schema
     CollectionNames.APPS.value: adapt_schema(app_schema),
     CollectionNames.DEPARTMENTS.value: adapt_schema(department_schema),
+    CollectionNames.NAMED_ENTITIES.value: adapt_schema(named_entity_schema),
+    CollectionNames.VALUE_MENTIONS.value: adapt_schema(value_mention_schema),
+    CollectionNames.NAMED_ENTITY_PERSIST_RETRIES.value: adapt_schema(named_entity_persist_retry_schema),
     CollectionNames.CATEGORIES.value: None,  # No schema
     CollectionNames.LANGUAGES.value: None,  # No schema
     CollectionNames.TOPICS.value: None,  # No schema
