@@ -290,9 +290,12 @@ class TestDeleteNodesAndEdges:
             "graph": {"edgeDefinitions": [{"collection": "permission"}, {"collection": "belongsTo"}]}
         })
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.begin_transaction = AsyncMock(return_value="own-txn")
+        connected_provider.commit_transaction = AsyncMock()
         connected_provider.delete_nodes = AsyncMock()
         await connected_provider.delete_nodes_and_edges(["k1"], "records")
-        connected_provider.delete_nodes.assert_called_once_with(["k1"], "records", None)
+        # No transaction given: the delete runs the node delete inside its own.
+        connected_provider.delete_nodes.assert_called_once_with(["k1"], "records", "own-txn")
 
     @pytest.mark.asyncio
     async def test_graph_not_found_raises_and_deletes_nothing(self, connected_provider: ArangoHTTPProvider) -> None:
@@ -379,18 +382,65 @@ class TestDeleteNodesAndEdges:
         connected_provider.delete_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_failed_edge_delete_outside_a_transaction_is_raised_too(
+    async def test_without_a_transaction_the_whole_delete_runs_in_one_of_its_own(
         self, connected_provider: ArangoHTTPProvider
     ) -> None:
-        """A vertex whose edges could not be deleted is never deleted, in either mode."""
+        """Each statement commits on its own without a transaction id, so a failure
+        after the permission edges were removed left the record with no owner. The
+        delete opens its own transaction over the vertex and edge collections."""
+        connected_provider.http_client.get_graph = AsyncMock(return_value={
+            "graph": {"edgeDefinitions": [{"collection": "permission"}, {"collection": "belongsTo"}]}
+        })
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=[[], [], [], Exception("fail")])
+        connected_provider.begin_transaction = AsyncMock(return_value="own-txn")
+        connected_provider.commit_transaction = AsyncMock()
+        connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.delete_nodes = AsyncMock()
+
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_nodes_and_edges(["k1"], "records")
+
+        began = connected_provider.begin_transaction.await_args.kwargs
+        assert set(began["write"]) == {"records", "permission", "belongsTo"}
+        assert all(c.kwargs["txn_id"] == "own-txn" for c in connected_provider.http_client.execute_aql.await_args_list)
+        connected_provider.rollback_transaction.assert_awaited_once_with("own-txn")
+        connected_provider.commit_transaction.assert_not_awaited()
+        connected_provider.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_without_a_transaction_a_successful_delete_is_committed(
+        self, connected_provider: ArangoHTTPProvider
+    ) -> None:
         connected_provider.http_client.get_graph = AsyncMock(return_value={
             "graph": {"edgeDefinitions": [{"collection": "permission"}]}
         })
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.begin_transaction = AsyncMock(return_value="own-txn")
+        connected_provider.commit_transaction = AsyncMock()
+        connected_provider.rollback_transaction = AsyncMock()
         connected_provider.delete_nodes = AsyncMock()
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider.delete_nodes_and_edges(["k1"], "records")
-        connected_provider.delete_nodes.assert_not_awaited()
+
+        await connected_provider.delete_nodes_and_edges(["k1"], "records")
+
+        connected_provider.delete_nodes.assert_awaited_once_with(["k1"], "records", "own-txn")
+        connected_provider.commit_transaction.assert_awaited_once_with("own-txn")
+        connected_provider.rollback_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_given_transaction_is_used_and_left_open(self, connected_provider: ArangoHTTPProvider) -> None:
+        connected_provider.http_client.get_graph = AsyncMock(return_value={
+            "graph": {"edgeDefinitions": [{"collection": "permission"}]}
+        })
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.begin_transaction = AsyncMock()
+        connected_provider.commit_transaction = AsyncMock()
+        connected_provider.delete_nodes = AsyncMock()
+
+        await connected_provider.delete_nodes_and_edges(["k1"], "records", transaction="theirs")
+
+        connected_provider.begin_transaction.assert_not_awaited()
+        connected_provider.commit_transaction.assert_not_awaited()
+        connected_provider.delete_nodes.assert_awaited_once_with(["k1"], "records", "theirs")
 
 
 # ===========================================================================

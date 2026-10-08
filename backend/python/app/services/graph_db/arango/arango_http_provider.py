@@ -11659,7 +11659,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None
     ) -> None:
         """
-        Delete nodes and all their connected edges.
+        Delete nodes and all their connected edges, as one unit.
 
         Steps:
         1. Get the graph's edge collections (cached after a successful read)
@@ -11667,17 +11667,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
            edge collection: one statement each, so the edge index serves both
         3. Delete the nodes themselves
 
-        Raises on any failure before the nodes are deleted: a vertex whose edges
-        could not be removed is never deleted, so nothing is left dangling.
+        Without a transaction each statement would commit on its own, so a failure
+        partway left the edges already removed (the permission edges go early) with
+        the vertex still there. A caller that gives no transaction gets one here,
+        over the vertex and edge collections, committed on success and rolled back
+        on failure; a given transaction is used as it is and left to its owner.
+        Raises on any failure: a vertex whose edges could not be removed is never
+        deleted.
         """
         if not keys:
             self.logger.debug("No keys provided for deletion. Skipping.")
             return
 
+        owns_transaction = transaction is None
+        txn = transaction
         try:
             self.logger.debug(f"🚀 Starting deletion of nodes {keys} from '{collection}' and their edges in graph '{graph_name}'.")
 
             edge_collections = await self._edge_collections_of_graph(graph_name)
+
+            if owns_transaction:
+                txn = await self.begin_transaction(read=[], write=[collection, *edge_collections])
 
             # Construct the full node IDs to match against _from and _to fields
             node_ids = [f"{collection}/{key}" for key in keys]
@@ -11705,17 +11715,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             "node_ids": node_ids,
                             "@edge_collection": edge_collection
                         },
-                        txn_id=transaction
+                        txn_id=txn
                     )
 
             self.logger.debug(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
 
             # Step 3: Delete the nodes themselves
-            await self.delete_nodes(keys, collection, transaction)
+            await self.delete_nodes(keys, collection, txn)
+
+            if owns_transaction:
+                await self.commit_transaction(txn)
+                txn = None
 
             self.logger.debug(f"✅ Successfully deleted {len(keys)} nodes and their associated edges from '{collection}'")
 
         except Exception as e:
+            if owns_transaction and txn is not None:
+                try:
+                    await self.rollback_transaction(txn)
+                except Exception as rb_err:
+                    self.logger.warning(f"⚠️ Rollback of node delete failed: {rb_err}")
             self.logger.error(f"❌ Delete nodes and edges failed: {str(e)}")
             raise
 
