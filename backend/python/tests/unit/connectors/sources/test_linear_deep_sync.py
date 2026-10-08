@@ -1044,6 +1044,30 @@ class TestSyncDeletedIssues:
         await connector._sync_deleted_issues([(rg, [])])
         assert connector._mark_record_and_children_deleted.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_checkpoint_stays_put_when_a_later_page_fails(self) -> None:
+        """The query is unordered, so a trashed issue on the unread page may be older than the max seen."""
+        connector = _make_connector()
+        connector._get_deletion_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_deletion_sync_checkpoint = AsyncMock()
+        connector._mark_record_and_children_deleted = AsyncMock()
+        first_page = _mock_gql_response({
+            "issues": {
+                "nodes": [{"id": "i1", "identifier": "E-1", "trashed": True, "archivedAt": "2024-06-02T00:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur1"},
+            }
+        })
+        ds = MagicMock()
+        ds.issues = AsyncMock(side_effect=[first_page] + [_timed_out_page()] * (LINEAR_TRANSIENT_RETRIES + 1))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with _no_sleep():
+            await connector._sync_deleted_issues([(_team_rg(), [])])
+
+        assert ds.issues.await_count == LINEAR_TRANSIENT_RETRIES + 2
+        connector._mark_record_and_children_deleted.assert_awaited_once()
+        connector._update_deletion_sync_checkpoint.assert_not_awaited()
+
 
 # ===========================================================================
 # _sync_deleted_projects
@@ -1066,6 +1090,48 @@ class TestSyncDeletedProjects:
 
         await connector._sync_deleted_projects([(rg, [])])
         connector._update_deletion_sync_checkpoint.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_advances_when_every_page_was_read(self) -> None:
+        connector = _make_connector()
+        connector._get_deletion_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_deletion_sync_checkpoint = AsyncMock()
+        connector._mark_record_and_children_deleted = AsyncMock()
+        ds = MagicMock()
+        ds.projects = AsyncMock(return_value=_mock_gql_response({
+            "projects": {
+                "nodes": [{"id": "p1", "name": "P1", "trashed": True, "archivedAt": "2024-06-02T00:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": False},
+            }
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        await connector._sync_deleted_projects([(_team_rg(), [])])
+
+        connector._mark_record_and_children_deleted.assert_awaited_once()
+        connector._update_deletion_sync_checkpoint.assert_awaited_once_with("projects", 1717286400000)
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_stays_put_when_a_later_page_fails(self) -> None:
+        connector = _make_connector()
+        connector._get_deletion_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_deletion_sync_checkpoint = AsyncMock()
+        connector._mark_record_and_children_deleted = AsyncMock()
+        first_page = _mock_gql_response({
+            "projects": {
+                "nodes": [{"id": "p1", "name": "P1", "trashed": True, "archivedAt": "2024-06-02T00:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur1"},
+            }
+        })
+        ds = MagicMock()
+        ds.projects = AsyncMock(side_effect=[first_page, _refused_page()])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        await connector._sync_deleted_projects([(_team_rg(), [])])
+
+        assert ds.projects.await_count == 2
+        connector._mark_record_and_children_deleted.assert_awaited_once()
+        connector._update_deletion_sync_checkpoint.assert_not_awaited()
 
 
 # ===========================================================================

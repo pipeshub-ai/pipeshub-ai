@@ -3604,8 +3604,9 @@ class LinearConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch issues for deletion sync: {response.message}")
-                    break
+                    # The scan is unordered: a trashed issue on the unread pages may carry an
+                    # earlier archivedAt than the max seen, so the checkpoint must stay put.
+                    raise RuntimeError(f"Failed to fetch issues for deletion sync: {response.message}")
 
                 issues_data = response.data.get("issues", {}) if response.data else {}
                 issues_list = issues_data.get("nodes", [])
@@ -3728,8 +3729,8 @@ class LinearConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch projects for deletion sync: {response.message}")
-                    break
+                    # Same as the issues scan: unordered, so a failed page leaves the checkpoint alone.
+                    raise RuntimeError(f"Failed to fetch projects for deletion sync: {response.message}")
 
                 projects_data = response.data.get("projects", {}) if response.data else {}
                 projects_list = projects_data.get("nodes", [])
