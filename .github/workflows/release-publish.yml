@@ -305,17 +305,35 @@ jobs:
             echo "rehearsal of ${VERSION}: verified, publishing nothing"
             exit 0
           fi
-          # Without promote the copy itself refuses an existing tag
-          # (--no-clobber) and fails on any registry error, so a digest check
-          # that errors for another reason cannot turn into an overwrite.
-          clobber=()
-          if [ "$PROMOTE" != "true" ]; then clobber=(--no-clobber); fi
+          # install.sh pulls the app and the sandbox under one tag, so the four
+          # version tags are published as a set. Without promote: all absent
+          # means copy them all, all present means leave them, and a mix means
+          # an earlier run stopped halfway, which a retry must not paper over
+          # with images that were never verified together. The copy itself
+          # refuses an existing tag (--no-clobber) and fails on any registry
+          # error, so a digest check that errors cannot become an overwrite.
+          if [ "$PROMOTE" != "true" ]; then
+            present=0
+            for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+              for suffix in "" "-slim"; do
+                if crane digest "${repo}:${VERSION}${suffix}" >/dev/null 2>&1; then
+                  present=$((present + 1))
+                fi
+              done
+            done
+            if [ "$present" -eq 4 ]; then
+              echo "${VERSION}: all four tags already exist, left as they are (promote is off)"
+              exit 0
+            elif [ "$present" -ne 0 ]; then
+              echo "::error::${VERSION}: ${present} of the 4 version tags exist. A previous run stopped partway; delete the partial set on Docker Hub or re-run with promote=true."
+              exit 1
+            fi
+            clobber=(--no-clobber)
+          else
+            clobber=()
+          fi
           for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
             for suffix in "" "-slim"; do
-              if [ "$PROMOTE" != "true" ] && crane digest "${repo}:${VERSION}${suffix}" >/dev/null 2>&1; then
-                echo "${repo}:${VERSION}${suffix} already exists: left as it is (promote is off)"
-                continue
-              fi
               crane copy "${clobber[@]}" "${repo}:${CANDIDATE}${suffix}" "${repo}:${VERSION}${suffix}"
               echo "published ${repo}:${VERSION}${suffix}"
             done
