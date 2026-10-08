@@ -1833,6 +1833,42 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch create edges failed: {str(e)}")
             raise
 
+    async def create_edges_if_absent(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> None:
+        """Create the edges that are not there; an existing edge keeps its properties.
+
+        Not batch_create_edges: that does ``SET r = edge.props``, which would reset
+        a live edge (a sync state, a role) when a repair re-runs over it.
+        """
+        try:
+            if not edges:
+                return
+
+            relationship_type = edge_collection_to_relationship(collection)
+
+            for (from_label, to_label), group_edges in self._edges_by_labels(edges).items():
+                query = f"""
+                UNWIND $edges AS edge
+                MATCH (from:{from_label} {{id: edge.from_key}})
+                MATCH (to:{to_label} {{id: edge.to_key}})
+                MERGE (from)-[r:{relationship_type}]->(to)
+                ON CREATE SET r = edge.props
+                RETURN count(r) AS matched
+                """
+                await self.client.execute_query(
+                    query,
+                    parameters={"edges": group_edges},
+                    txn_id=transaction
+                )
+
+        except Exception as e:
+            self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
+            raise
+
     async def batch_create_entity_relations(
         self,
         edges: list[dict],

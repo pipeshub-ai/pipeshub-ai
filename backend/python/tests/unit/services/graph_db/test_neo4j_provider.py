@@ -5415,6 +5415,44 @@ class TestEnsureAppMembership:
         assert "ON CREATE SET r = $props" in q
         assert "SET r +=" not in q
 
+
+class TestCreateEdgesIfAbsent:
+    """The create-only counterpart of batch_create_edges, for a repair that must not
+    replace an edge that is already there."""
+
+    @pytest.fixture
+    def mocked(self) -> "Neo4jProvider":
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        p.client = AsyncMock()
+        return p
+
+    @pytest.mark.asyncio
+    async def test_is_create_only(self, mocked: "Neo4jProvider") -> None:
+        edge = {"from_id": "u1", "from_collection": "users", "to_id": "a1", "to_collection": "apps",
+                "role": "OWNER", "type": "USER"}
+        await mocked.create_edges_if_absent([edge], "permission", transaction="txn-1")
+        q = mocked.client.execute_query.await_args.args[0]
+        assert "MERGE (from)-[r:PERMISSION]->(to)" in q
+        assert "ON CREATE SET r = edge.props" in q
+        assert q.count("SET r") == 1, "a bare SET would replace an existing edge"
+        rows = mocked.client.execute_query.await_args.kwargs["parameters"]["edges"]
+        assert rows == [{"from_key": "u1", "to_key": "a1", "props": {"role": "OWNER", "type": "USER"}}]
+        assert mocked.client.execute_query.await_args.kwargs["txn_id"] == "txn-1"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_is_raised(self, mocked: "Neo4jProvider") -> None:
+        mocked.client.execute_query.side_effect = RuntimeError("lock timeout")
+        edge = {"from_id": "u1", "from_collection": "users", "to_id": "a1", "to_collection": "apps"}
+        with pytest.raises(RuntimeError, match="lock timeout"):
+            await mocked.create_edges_if_absent([edge], "permission")
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_write_is_no_statement(self, mocked: "Neo4jProvider") -> None:
+        await mocked.create_edges_if_absent([], "permission")
+        mocked.client.execute_query.assert_not_awaited()
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("is_external", [True, False])
     async def test_flag_is_written_explicitly(self, mocked, is_external):

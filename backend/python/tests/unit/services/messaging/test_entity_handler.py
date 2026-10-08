@@ -880,12 +880,26 @@ class _KbGraph:
 
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> None:
         self._statement()
-        for edge in edges:
+        for edge in edges:  # MERGE then SET r = props: an existing edge is replaced
             self.edges[(collection, edge["from_id"], edge["to_id"])] = edge
+
+    async def create_edges_if_absent(self, edges: list[dict], collection: str, transaction: str | None = None) -> None:
+        self._statement()
+        for edge in edges:  # MERGE then ON CREATE SET: an existing edge is left as it is
+            self.edges.setdefault((collection, edge["from_id"], edge["to_id"]), edge)
+
+    async def ensure_app_membership(self, principal_id: str, principal_collection: str, connector_id: str, *,
+                                    is_external: bool, source_user_id: str | None = None,
+                                    transaction: str | None = None) -> None:
+        self._statement()
+        self.edges.setdefault(
+            (CollectionNames.USER_APP_RELATION.value, principal_id, connector_id),
+            {"isExternalUser": is_external, "syncState": "NOT_STARTED"},
+        )
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str,
                        collection: str, transaction: str | None = None) -> dict | None:
-        return self.edges.get((collection, from_id, to_id))
+        return None  # What both providers answer when the read itself fails.
 
 
 def _kb_edges(graph: _KbGraph, kb_id: str) -> set[tuple[str, str]]:
@@ -943,18 +957,39 @@ class TestDefaultKbCreateConverges:
         assert _kb_edges(graph, "kb-1") == _ALL_KB_EDGES
 
     @pytest.mark.asyncio
-    async def test_a_complete_kb_is_returned_without_a_write(self) -> None:
+    async def test_a_complete_kb_keeps_its_edges_as_they_are(self) -> None:
+        """The providers answer None to a failed edge read as well as to a missing edge,
+        so the repair must never decide from a read: it writes create-only."""
         graph = _KbGraph()
         graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
-        for collection, from_id in _ALL_KB_EDGES:
-            graph.edges[(collection, from_id, "kb-1")] = {"createdAtTimestamp": 1}
+        graph.edges[(CollectionNames.PERMISSION.value, "user-key", "kb-1")] = {"role": "OWNER", "createdAtTimestamp": 1}
+        graph.edges[(CollectionNames.ORG_APP_RELATION.value, "org-1", "kb-1")] = {"createdAtTimestamp": 1}
+        graph.edges[(CollectionNames.USER_APP_RELATION.value, "user-key", "kb-1")] = {
+            "syncState": "COMPLETED", "isExternalUser": False, "sourceUserId": "src-1", "createdAtTimestamp": 1,
+        }
+        before = {key: dict(edge) for key, edge in graph.edges.items()}
         svc = _service_on(graph)
 
         result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
 
         assert result["id"] == "kb-1"
-        assert graph.writes == 0
-        assert all(edge == {"createdAtTimestamp": 1} for edge in graph.edges.values())
+        assert graph.edges == before
+
+    @pytest.mark.asyncio
+    async def test_a_failed_repair_is_raised_and_fails_the_user_event(self) -> None:
+        """Swallowed, the event is acknowledged with the knowledge base still incomplete."""
+        svc = _make_service()
+        gp = svc.graph_provider
+        gp.get_nodes_by_filters = AsyncMock(return_value=[{"id": "kb-1", "isDeleted": False}])
+        gp.create_edges_if_absent = AsyncMock(side_effect=RuntimeError("org node unavailable"))
+        with pytest.raises(RuntimeError, match="org node unavailable"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        gp.get_user_by_email = AsyncMock(return_value=None)
+        gp.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
+        svc._adopt_existing_person = AsyncMock()
+        payload = {"userId": "user-1", "orgId": "org-1", "email": "a@b.co", "syncAction": "none"}
+        assert await svc.process_event("userAdded", payload) is False
 
 
 # ===================================================================
@@ -1216,17 +1251,16 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
 
     @pytest.mark.asyncio
     async def test_rollback_on_kb_upsert_failure(self):
-        """Failed KB app write rolls back the transaction and returns empty."""
+        """A failed KB app write rolls back the transaction and is raised, so the
+        user event is not acknowledged with no knowledge base."""
         svc = _make_service()
         svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
         svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("upsert failed"))
         svc.graph_provider.rollback_transaction = AsyncMock()
 
-        result = await svc._get_or_create_knowledge_base(
-            "user-key", "user-1", "org-1"
-        )
-        assert result == {}
+        with pytest.raises(RuntimeError, match="upsert failed"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
         svc.graph_provider.rollback_transaction.assert_awaited_once_with("txn1")
 
     @pytest.mark.asyncio

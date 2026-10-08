@@ -518,6 +518,38 @@ class TestBatchCreateEdges:
             )
 
 
+class TestCreateEdgesIfAbsent:
+    """Create-only: an edge that is already there is left as it is."""
+
+    @pytest.mark.asyncio
+    async def test_is_create_only(self, connected_provider: ArangoHTTPProvider) -> None:
+        connected_provider.http_client.execute_aql.return_value = []
+        edge = {"from_id": "u1", "from_collection": "users", "to_id": "a1", "to_collection": "apps", "role": "OWNER"}
+        await connected_provider.create_edges_if_absent([edge], "permission", transaction="txn-1")
+        call = connected_provider.http_client.execute_aql.await_args
+        aql = call.args[0]
+        assert "UPSERT { _from: edge._from, _to: edge._to }" in aql
+        assert "INSERT edge" in aql
+        assert "UPDATE {}" in aql, "an UPDATE with the edge would replace an existing one"
+        assert call.args[1]["@collection"] == "permission"
+        assert call.args[1]["edges"][0]["_from"] == "users/u1"
+        assert call.args[1]["edges"][0]["_to"] == "apps/a1"
+        assert call.kwargs["txn_id"] == "txn-1"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_is_raised(self, connected_provider: ArangoHTTPProvider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception("write-write conflict")
+        with pytest.raises(Exception, match="write-write conflict"):
+            await connected_provider.create_edges_if_absent(
+                [{"from_id": "1", "from_collection": "u", "to_id": "1", "to_collection": "r"}], "edge_col"
+            )
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_write_is_no_statement(self, connected_provider: ArangoHTTPProvider) -> None:
+        await connected_provider.create_edges_if_absent([], "edge_col")
+        connected_provider.http_client.execute_aql.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # get_edge / delete_edge
 # ---------------------------------------------------------------------------

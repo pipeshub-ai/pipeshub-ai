@@ -766,6 +766,22 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def create_edges_if_absent(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """Create the edges that are not there and leave the ones that are untouched.
+
+        The create-only counterpart of :meth:`batch_create_edges`, which replaces an
+        existing edge's properties. For a repair or a re-run that must not reset what
+        a live edge already carries (a sync state, a role). Raises on failure.
+        *edges* take the same generic format.
+        """
+        pass
+
+    @abstractmethod
     async def get_edge(
         self,
         from_id: str,

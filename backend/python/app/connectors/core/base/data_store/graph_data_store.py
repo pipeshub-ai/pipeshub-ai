@@ -1038,6 +1038,9 @@ class GraphTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
+    async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
+        await self.graph_provider.create_edges_if_absent(edges, collection, transaction=self.txn)
+
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)
 

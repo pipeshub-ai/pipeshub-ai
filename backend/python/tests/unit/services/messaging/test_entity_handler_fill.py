@@ -186,12 +186,10 @@ class TestDefaultKbTransactionRollsBackOnCancellation:
         gp.get_nodes_by_filters = AsyncMock(return_value=[])  # no existing KB -> create path
         gp.begin_transaction = AsyncMock(return_value="txn-kb")
         gp.batch_upsert_nodes = AsyncMock()
-        gp.get_edge = AsyncMock(return_value=None)  # every edge is still to be written
-
         async def _hang(*_a, **_k) -> None:
             await asyncio.sleep(10)  # cancelled here, mid-transaction
 
-        gp.batch_create_edges = AsyncMock(side_effect=_hang)
+        gp.create_edges_if_absent = AsyncMock(side_effect=_hang)
 
         task = asyncio.create_task(
             svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")

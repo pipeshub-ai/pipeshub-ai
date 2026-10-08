@@ -643,49 +643,34 @@ class EntityEventService(BaseEventService):
             )
 
     @staticmethod
-    def _default_kb_edges(user_key: str, org_id: str, kb_key: str, timestamp: int) -> list[tuple[str, dict]]:
-        """The three edges that make a default knowledge base reachable, as (collection, edge)."""
-        return [
-            (CollectionNames.PERMISSION.value, {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "externalPermissionId": "",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-                "lastUpdatedTimestampAtSource": timestamp,
-            }),
-            (CollectionNames.ORG_APP_RELATION.value, {
-                "from_id": org_id,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "createdAtTimestamp": timestamp,
-            }),
-            (CollectionNames.USER_APP_RELATION.value, {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "syncState": "NOT_STARTED",
-                "lastSyncUpdate": timestamp,
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-            }),
-        ]
+    async def _ensure_kb_edges(tx_store: "TransactionStore", user_key: str, org_id: str, kb_key: str) -> None:
+        """The three edges that make a default knowledge base reachable, written create-only.
 
-    @staticmethod
-    async def _create_missing_kb_edges(tx_store: "TransactionStore", edges: list[tuple[str, dict]]) -> None:
-        """Write only the edges that are not there, so a re-run (or a heal) leaves the rest untouched."""
-        for collection, edge in edges:
-            found = await tx_store.get_edge(
-                edge["from_id"], edge["from_collection"], edge["to_id"], edge["to_collection"], collection
-            )
-            if not found:
-                await tx_store.batch_create_edges([edge], collection)
+        No read decides this: both providers answer None to a failed edge read as
+        well as to a missing edge, and a replacing write after that would reset a
+        live edge's sync state or role. An edge that is there is left as it is.
+        """
+        timestamp = get_epoch_timestamp_in_ms()
+        await tx_store.create_edges_if_absent([{
+            "from_id": user_key,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": kb_key,
+            "to_collection": CollectionNames.APPS.value,
+            "externalPermissionId": "",
+            "type": "USER",
+            "role": "OWNER",
+            "createdAtTimestamp": timestamp,
+            "updatedAtTimestamp": timestamp,
+            "lastUpdatedTimestampAtSource": timestamp,
+        }], CollectionNames.PERMISSION.value)
+        await tx_store.create_edges_if_absent([{
+            "from_id": org_id,
+            "from_collection": CollectionNames.ORGS.value,
+            "to_id": kb_key,
+            "to_collection": CollectionNames.APPS.value,
+            "createdAtTimestamp": timestamp,
+        }], CollectionNames.ORG_APP_RELATION.value)
+        await tx_store.ensure_app_membership(user_key, CollectionNames.USERS.value, kb_key, is_external=False)
 
     async def _get_or_create_knowledge_base(
         self,
@@ -694,103 +679,99 @@ class EntityEventService(BaseEventService):
         orgId: str,
         name: str = "Private"
     ) -> dict:
-        """Get or create a default knowledge base app for a user."""
-        try:
-            if not userId or not orgId:
-                self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
-                return {}
+        """Get or create a default knowledge base app for a user.
 
-            # Check if a KB app already exists for this user in this organization
-            existing_kbs = await self.graph_provider.get_nodes_by_filters(
-                collection=CollectionNames.APPS.value,
-                filters={
-                    "createdBy": userId,
-                    "orgId": orgId,
-                    "type": Connectors.KNOWLEDGE_BASE.value,
-                }
-            )
-            existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
-            current_timestamp = get_epoch_timestamp_in_ms()
-
-            if existing_kbs:
-                existing = existing_kbs[0]
-                existing_key = existing.get("id") or existing.get("_key")
-                self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
-                # A create that failed partway on Neo4j (each statement commits on its
-                # own) left the App without some of its edges; finish it rather than
-                # hand it out unusable again.
-                if existing_key:
-                    await self.graph_data_store.execute_idempotent_in_transaction(
-                        self._create_missing_kb_edges,
-                        self._default_kb_edges(user_key, orgId, existing_key, current_timestamp),
-                    )
-                return existing
-
-            kb_key = str(uuid4())
-
-            kb_data = {
-                "id": kb_key,
-                "createdBy": userId,
-                "orgId": orgId,
-                "name": name,
-                "type": Connectors.KNOWLEDGE_BASE.value,
-                "appGroup": AppGroups.LOCAL_STORAGE.value,
-                "authType": "NONE",
-                "scope": ConnectorScopes.PERSONAL.value,
-                "isActive": True,
-                "isAgentActive": True,
-                "isConfigured": True,
-                "isAuthenticated": True,
-                "vectorMembershipBackfilled": True,
-                "hideConnector": True,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-            edges = self._default_kb_edges(user_key, orgId, kb_key, current_timestamp)
-
-            async def write_kb(tx_store: "TransactionStore") -> None:
-                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
-                await self._create_missing_kb_edges(tx_store, edges)
-
-            # Every write is keyed by kb_key, so a re-run after a write conflict
-            # (the org node is shared by every onboarding message) completes the
-            # same App rather than starting a second one.
-            await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
-
-            # Register per-KB connector instance at runtime
-            try:
-                config_service = self.app_container.config_service()
-                data_store_provider = await self.app_container.data_store()
-                if not hasattr(self.app_container, 'connectors_map'):
-                    self.app_container.connectors_map = {}
-                connector = await ConnectorFactory.create_and_start_sync(
-                    name="kb",
-                    logger=self.logger,
-                    data_store_provider=data_store_provider,
-                    config_service=config_service,
-                    connector_id=kb_key,
-                    scope=ConnectorScopes.PERSONAL.value,
-                    created_by=userId,
-                    org_id=orgId,
-                    data_entities_processor_cls=get_data_entities_processor_cls(),
-                    notification_service=self.app_container.connector_notification_service(),
-                )
-                if connector:
-                    self.app_container.connectors_map[kb_key] = connector
-                    self.logger.info(f"✅ KB connector instance registered for kb_key={kb_key}")
-            except Exception as reg_err:
-                self.logger.warning(f"⚠️ Failed to register KB connector instance: {reg_err}")
-
-            self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
-            return {
-                "kb_id": kb_key,
-                "name": name,
-                "created_at": current_timestamp,
-                "updated_at": current_timestamp,
-                "success": True
-            }
-
-        except Exception as e:
-            self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
+        Raises when the graph write fails, so the user event is not acknowledged
+        with the knowledge base missing or incomplete.
+        """
+        if not userId or not orgId:
+            self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
             return {}
 
+        # Check if a KB app already exists for this user in this organization
+        existing_kbs = await self.graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.APPS.value,
+            filters={
+                "createdBy": userId,
+                "orgId": orgId,
+                "type": Connectors.KNOWLEDGE_BASE.value,
+            }
+        )
+        existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
+
+        if existing_kbs:
+            existing = existing_kbs[0]
+            existing_key = existing.get("id") or existing.get("_key")
+            self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
+            # A create that failed partway on Neo4j (each statement commits on its
+            # own) left the App without some of its edges; finish it rather than
+            # hand it out unusable again. Create-only, so a complete one is untouched.
+            if existing_key:
+                await self.graph_data_store.execute_idempotent_in_transaction(
+                    self._ensure_kb_edges, user_key, orgId, existing_key
+                )
+            return existing
+
+        current_timestamp = get_epoch_timestamp_in_ms()
+        kb_key = str(uuid4())
+
+        kb_data = {
+            "id": kb_key,
+            "createdBy": userId,
+            "orgId": orgId,
+            "name": name,
+            "type": Connectors.KNOWLEDGE_BASE.value,
+            "appGroup": AppGroups.LOCAL_STORAGE.value,
+            "authType": "NONE",
+            "scope": ConnectorScopes.PERSONAL.value,
+            "isActive": True,
+            "isAgentActive": True,
+            "isConfigured": True,
+            "isAuthenticated": True,
+            "vectorMembershipBackfilled": True,
+            "hideConnector": True,
+            "createdAtTimestamp": current_timestamp,
+            "updatedAtTimestamp": current_timestamp,
+        }
+
+        async def write_kb(tx_store: "TransactionStore") -> None:
+            await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
+            await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
+
+        # Every write is keyed by kb_key, so a re-run after a write conflict
+        # (the org node is shared by every onboarding message) completes the
+        # same App rather than starting a second one.
+        await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
+
+        # Register per-KB connector instance at runtime
+        try:
+            config_service = self.app_container.config_service()
+            data_store_provider = await self.app_container.data_store()
+            if not hasattr(self.app_container, 'connectors_map'):
+                self.app_container.connectors_map = {}
+            connector = await ConnectorFactory.create_and_start_sync(
+                name="kb",
+                logger=self.logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id=kb_key,
+                scope=ConnectorScopes.PERSONAL.value,
+                created_by=userId,
+                org_id=orgId,
+                data_entities_processor_cls=get_data_entities_processor_cls(),
+                notification_service=self.app_container.connector_notification_service(),
+            )
+            if connector:
+                self.app_container.connectors_map[kb_key] = connector
+                self.logger.info(f"✅ KB connector instance registered for kb_key={kb_key}")
+        except Exception as reg_err:
+            self.logger.warning(f"⚠️ Failed to register KB connector instance: {reg_err}")
+
+        self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
+        return {
+            "kb_id": kb_key,
+            "name": name,
+            "created_at": current_timestamp,
+            "updated_at": current_timestamp,
+            "success": True
+        }

@@ -2792,6 +2792,40 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch edge creation failed: {str(e)}")
             raise
 
+    async def create_edges_if_absent(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> None:
+        """Create the edges that are not there; an existing edge keeps its document.
+
+        Not batch_create_edges: that does ``UPDATE edge``, which would reset a live
+        edge (a sync state, a role) when a repair re-runs over it.
+        """
+        try:
+            if not edges:
+                return
+
+            arango_edges = self._translate_edges_to_arango(edges)
+
+            query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to }
+                INSERT edge
+                UPDATE {}
+                IN @@collection
+            """
+            await self.http_client.execute_aql(
+                query,
+                {"edges": arango_edges, "@collection": collection},
+                txn_id=transaction
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
+            raise
+
     async def batch_create_entity_relations(
         self,
         edges: list[dict],
