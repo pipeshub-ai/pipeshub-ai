@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -12,6 +13,7 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -24,6 +26,9 @@ from app.edition_services import get_data_entities_processor_cls
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+if TYPE_CHECKING:
+    from app.connectors.core.base.data_store.data_store import TransactionStore
+
 
 class EntityEventService(BaseEventService):
     def __init__(
@@ -34,6 +39,7 @@ class EntityEventService(BaseEventService):
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+        self.graph_data_store = GraphDataStore(logger, graph_provider)
         self.app_container = app_container
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -636,6 +642,51 @@ class EntityEventService(BaseEventService):
                 exc_info=True
             )
 
+    @staticmethod
+    def _default_kb_edges(user_key: str, org_id: str, kb_key: str, timestamp: int) -> list[tuple[str, dict]]:
+        """The three edges that make a default knowledge base reachable, as (collection, edge)."""
+        return [
+            (CollectionNames.PERMISSION.value, {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_key,
+                "to_collection": CollectionNames.APPS.value,
+                "externalPermissionId": "",
+                "type": "USER",
+                "role": "OWNER",
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+                "lastUpdatedTimestampAtSource": timestamp,
+            }),
+            (CollectionNames.ORG_APP_RELATION.value, {
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": kb_key,
+                "to_collection": CollectionNames.APPS.value,
+                "createdAtTimestamp": timestamp,
+            }),
+            (CollectionNames.USER_APP_RELATION.value, {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_key,
+                "to_collection": CollectionNames.APPS.value,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": timestamp,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            }),
+        ]
+
+    @staticmethod
+    async def _create_missing_kb_edges(tx_store: "TransactionStore", edges: list[tuple[str, dict]]) -> None:
+        """Write only the edges that are not there, so a re-run (or a heal) leaves the rest untouched."""
+        for collection, edge in edges:
+            found = await tx_store.get_edge(
+                edge["from_id"], edge["from_collection"], edge["to_id"], edge["to_collection"], collection
+            )
+            if not found:
+                await tx_store.batch_create_edges([edge], collection)
+
     async def _get_or_create_knowledge_base(
         self,
         user_key: str,
@@ -659,12 +710,22 @@ class EntityEventService(BaseEventService):
                 }
             )
             existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
+            current_timestamp = get_epoch_timestamp_in_ms()
 
             if existing_kbs:
+                existing = existing_kbs[0]
+                existing_key = existing.get("id") or existing.get("_key")
                 self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
-                return existing_kbs[0]
+                # A create that failed partway on Neo4j (each statement commits on its
+                # own) left the App without some of its edges; finish it rather than
+                # hand it out unusable again.
+                if existing_key:
+                    await self.graph_data_store.execute_idempotent_in_transaction(
+                        self._create_missing_kb_edges,
+                        self._default_kb_edges(user_key, orgId, existing_key, current_timestamp),
+                    )
+                return existing
 
-            current_timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid4())
 
             kb_data = {
@@ -685,65 +746,16 @@ class EntityEventService(BaseEventService):
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
             }
-            permission_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "externalPermissionId": "",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-                "lastUpdatedTimestampAtSource": current_timestamp,
-            }
+            edges = self._default_kb_edges(user_key, orgId, kb_key, current_timestamp)
 
-            org_app_edge = {
-                "from_id": orgId,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "createdAtTimestamp": current_timestamp,
-            }
+            async def write_kb(tx_store: "TransactionStore") -> None:
+                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
+                await self._create_missing_kb_edges(tx_store, edges)
 
-            user_app_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "syncState": "NOT_STARTED",
-                "lastSyncUpdate": current_timestamp,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-
-            txn_id = None
-            try:
-                txn_id = await self.graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.APPS.value,
-                        CollectionNames.ORG_APP_RELATION.value,
-                        CollectionNames.USER_APP_RELATION.value,
-                        CollectionNames.PERMISSION.value,
-                    ],
-                )
-                await self.graph_provider.batch_upsert_nodes([kb_data], CollectionNames.APPS.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value, transaction=txn_id)
-                await self.graph_provider.commit_transaction(txn_id)
-                txn_id = None  # mark committed so the except block below doesn't roll it back
-            except BaseException:
-                # BaseException so a cancellation also rolls back -- otherwise
-                # the transaction's session leaks a pooled Neo4j connection
-                # (see GraphDataStore.transaction for the full account).
-                if txn_id is not None:
-                    try:
-                        await self.graph_provider.rollback_transaction(txn_id)
-                    except Exception as rb_err:
-                        self.logger.warning(f"⚠️ Rollback of default KB creation failed: {rb_err}")
-                raise
+            # Every write is keyed by kb_key, so a re-run after a write conflict
+            # (the org node is shared by every onboarding message) completes the
+            # same App rather than starting a second one.
+            await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
 
             # Register per-KB connector instance at runtime
             try:

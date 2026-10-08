@@ -829,7 +829,132 @@ def _make_service():
     app_container.messaging_producer.send_message = AsyncMock()
     app_container.config_service.return_value = AsyncMock()
     app_container.data_store = AsyncMock()
+    # A mock's coroutine is truthy, which would read as "retry" to the idempotent writer.
+    graph_provider.is_write_conflict = MagicMock(return_value=False)
     return EntityEventService(logger, graph_provider, app_container)
+
+
+class _Conflict(RuntimeError):
+    pass
+
+
+class _KbGraph:
+    """The apps and edges of one org, on a graph where each statement lands as it
+    runs (Neo4j's default) and the write numbered *conflicts_on* hits another writer."""
+
+    def __init__(self, *, conflicts_on: int | None = None) -> None:
+        self.logger = MagicMock()
+        self.apps: dict[str, dict] = {}
+        self.edges: dict[tuple[str, str, str], dict] = {}
+        self.writes = 0
+        self.conflicts_on = conflicts_on
+
+    async def get_nodes_by_filters(self, collection: str, filters: dict) -> list[dict]:
+        return [app for app in self.apps.values() if all(app.get(k) == v for k, v in filters.items())]
+
+    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
+        return "txn"
+
+    async def commit_transaction(self, txn: str) -> None:
+        pass
+
+    async def rollback_transaction(self, txn: str) -> None:
+        pass  # Nothing to undo: every statement already committed.
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return isinstance(error, _Conflict)
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
+    def _statement(self) -> None:
+        self.writes += 1
+        if self.writes == self.conflicts_on:
+            raise _Conflict("DeadlockDetected")
+
+    async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
+        self._statement()
+        for node in nodes:
+            self.apps.setdefault(node["id"], {}).update(node)
+        return True
+
+    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> None:
+        self._statement()
+        for edge in edges:
+            self.edges[(collection, edge["from_id"], edge["to_id"])] = edge
+
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str,
+                       collection: str, transaction: str | None = None) -> dict | None:
+        return self.edges.get((collection, from_id, to_id))
+
+
+def _kb_edges(graph: _KbGraph, kb_id: str) -> set[tuple[str, str]]:
+    return {(collection, from_id) for collection, from_id, to_id in graph.edges if to_id == kb_id}
+
+
+_ALL_KB_EDGES = {
+    (CollectionNames.PERMISSION.value, "user-key"),
+    (CollectionNames.ORG_APP_RELATION.value, "org-1"),
+    (CollectionNames.USER_APP_RELATION.value, "user-key"),
+}
+
+
+def _service_on(graph: _KbGraph) -> EntityEventService:
+    svc = _make_service()
+    svc = EntityEventService(svc.logger, graph, svc.app_container)
+    svc.app_container.connectors_map = {}
+    return svc
+
+
+class TestDefaultKbCreateConverges:
+    """The default knowledge base is four writes. On Neo4j each commits on its own, so
+    a failure partway used to leave an App with edges missing, and every later call
+    found it by filter and handed it back as it was."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_on_the_second_write_is_retried_into_one_complete_kb(self) -> None:
+        graph = _KbGraph(conflicts_on=2)
+        svc = _service_on(graph)
+        with patch(
+            "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock, return_value=None,
+        ):
+            result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert result.get("success") is True, result
+        assert list(graph.apps) == [result["kb_id"]]
+        assert _kb_edges(graph, result["kb_id"]) == _ALL_KB_EDGES
+
+    @pytest.mark.asyncio
+    async def test_a_half_built_kb_is_completed_on_the_next_call(self) -> None:
+        graph = _KbGraph()
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        graph.edges[(CollectionNames.ORG_APP_RELATION.value, "org-1", "kb-1")] = {}
+        svc = _service_on(graph)
+
+        result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert result["id"] == "kb-1"
+        assert list(graph.apps) == ["kb-1"]
+        assert _kb_edges(graph, "kb-1") == _ALL_KB_EDGES
+
+    @pytest.mark.asyncio
+    async def test_a_complete_kb_is_returned_without_a_write(self) -> None:
+        graph = _KbGraph()
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        for collection, from_id in _ALL_KB_EDGES:
+            graph.edges[(collection, from_id, "kb-1")] = {"createdAtTimestamp": 1}
+        svc = _service_on(graph)
+
+        result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert result["id"] == "kb-1"
+        assert graph.writes == 0
+        assert all(edge == {"createdAtTimestamp": 1} for edge in graph.edges.values())
 
 
 # ===================================================================
