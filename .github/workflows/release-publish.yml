@@ -36,7 +36,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-publish-${{ github.ref }}
+  # Manual runs for one version serialise on that version whatever branch
+  # they come from, so two of them cannot both pass the "tags absent" check.
+  group: release-publish-${{ inputs.version || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -307,6 +309,23 @@ jobs:
             echo "rehearsal of ${VERSION}: verified, publishing nothing"
             exit 0
           fi
+          # One answer for "what is at this tag": present with its digest,
+          # absent (the registry said not-found), or unknown (anything else).
+          # Unknown is never treated as absent: both the pre-check and the
+          # undo snapshot stop before a copy instead of guessing.
+          tag_state() {
+            local digest err
+            if digest="$(crane digest "$1" 2>/dev/null)"; then
+              echo "present $digest"
+            else
+              err="$(crane digest "$1" 2>&1 >/dev/null || true)"
+              if printf '%s' "$err" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|404'; then
+                echo "absent"
+              else
+                echo "unknown $err"
+              fi
+            fi
+          }
           # Docker Hub removes a tag by name through its own API; the registry
           # API deletes manifests only by digest. Used to undo a half-written
           # set below and by the candidate cleanup step.
@@ -330,14 +349,12 @@ jobs:
             for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
               for suffix in "" "-slim"; do
                 ref="${repo}:${VERSION}${suffix}"
-                if err="$(crane digest "$ref" 2>&1 >/dev/null)"; then
-                  present=$((present + 1))
-                elif printf '%s' "$err" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|404'; then
-                  absent=$((absent + 1))
-                else
-                  echo "::error::could not tell whether ${ref} exists (${err}). Nothing was published; re-run once Docker Hub answers."
-                  exit 1
-                fi
+                state="$(tag_state "$ref")"
+                case "$state" in
+                  present*) present=$((present + 1)) ;;
+                  absent)   absent=$((absent + 1)) ;;
+                  *) echo "::error::could not tell whether ${ref} exists (${state#unknown }). Nothing was published; re-run once Docker Hub answers."; exit 1 ;;
+                esac
               done
             done
             if [ "$present" -eq 4 ]; then
@@ -359,10 +376,15 @@ jobs:
           # and one old.
           publish_set() {
             local -a prev=() written=() prevw=()
-            local pair src dst old i=0 j
+            local pair src dst state i=0 j
             for pair in "$@"; do
               dst="${pair#* }"
-              if old="$(crane digest "$dst" 2>/dev/null)"; then prev+=("$old"); else prev+=(""); fi
+              state="$(tag_state "$dst")"
+              case "$state" in
+                present*) prev+=("${state#present }") ;;
+                absent)   prev+=("") ;;
+                *) echo "::error::could not read the current digest of ${dst} (${state#unknown }); nothing in this set was moved. Re-run once Docker Hub answers."; return 1 ;;
+              esac
             done
             for pair in "$@"; do
               src="${pair% *}"; dst="${pair#* }"
