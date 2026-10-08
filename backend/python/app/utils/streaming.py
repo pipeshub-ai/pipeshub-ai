@@ -1053,7 +1053,7 @@ async def call_aiter_llm_stream_simple(
         yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
         return
 
-def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
+def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
@@ -1071,6 +1071,8 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
         if not isinstance(llm, (ChatBedrock, ChatBedrockConverse)):
             additional_kwargs["method"] = "json_schema"
+        if include_raw:
+            additional_kwargs["include_raw"] = True
 
         try:
             model_with_structure = llm.with_structured_output(

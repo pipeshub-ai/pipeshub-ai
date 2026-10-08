@@ -9,11 +9,9 @@ import shlex
 import time
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.storage_search.storage_search import (
     _GREP_SHORT_VALUE_LETTERS,
@@ -32,6 +30,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     requested_scope_ids,
 )
+from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.chat_helpers import (
     _build_record_dict_from_graph_base,
@@ -43,8 +42,15 @@ from app.utils.chat_helpers import (
 if TYPE_CHECKING:
     from app.utils.stage_timer import RunTimer
 
+logger = logging.getLogger(__name__)
+
 _PATTERN_MATCH_TIMEOUT = 30
+# Whole command generation, a retry included.
 _LLM_GREP_TIMEOUT = 15.0
+_LLM_GREP_ATTEMPT_TIMEOUT = 10.0
+_LLM_GREP_MIN_RETRY_SECS = 4.0
+_GREP_LLM_ROLE = "query"
+_GREP_LLM_TTL_SECS = 300.0
 # Whole pattern match per search call: LLM grep generation plus every grep round.
 _PATTERN_MATCH_TOTAL_BUDGET = 35.0
 _MAX_PATTERN_MATCH_RECORDS = 50
@@ -174,9 +180,22 @@ def build_grep_command_from_query(query: str) -> str | None:
     return f'grep -rci -e "{pattern}" .'
 
 
+_MAX_GREP_REASONING_CHARS = 200
+
+
 class GrepCommandResult(BaseModel):
-    reasoning: str
+    # Commands first: a completion cut off mid-way still carries them.
     grep_commands: list[str]
+    # Capped by truncation, not max_length: several providers reject string
+    # length keywords in a response schema, and an over-long note is harmless.
+    reasoning: str = Field(description=f"One short sentence, under {_MAX_GREP_REASONING_CHARS} characters.")
+
+    @field_validator("reasoning", mode="before")
+    @classmethod
+    def _cap_reasoning(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value[:_MAX_GREP_REASONING_CHARS]
+        return value
 
 
 _MAX_LLM_GREP_COMMANDS = 3
@@ -226,7 +245,7 @@ number with no filename prefix, which breaks result parsing. Always include -H.
 - Two-concept intersection: grep -rliZ "group_a1\\|group_a2" . | \
 xargs -0 grep -Hci "group_b1\\|group_b2"
 - When piping grep to xargs, ALWAYS use -Z on grep and -0 on xargs (handles filenames with spaces)
-- Allowed binaries: grep, egrep, fgrep, rg, xargs ONLY
+- Allowed binaries: grep, egrep, fgrep, xargs ONLY
 - No shell operators: ; && || $( ${ ` > <
 - Max 1000 characters per command
 - Do NOT include common words like "how", "what", "setup", "use", "explain" as \
@@ -387,7 +406,8 @@ async def generate_grep_command_via_llm(
     """Generate targeted grep commands via LLM structured output.
 
     Returns a list of 1-3 commands that passed ``validate_pattern_match_command``,
-    or None on timeout, LLM failure, or when every command is rejected.
+    or None on timeout, LLM failure, or when every command is rejected. A failed
+    attempt is retried once while ``_LLM_GREP_TIMEOUT`` leaves room for it.
 
     Uses LangChain's ``ainvoke`` with Opik callbacks so the call appears
     in the Opik trace alongside the rest of the agent loop.
@@ -403,26 +423,48 @@ async def generate_grep_command_via_llm(
     ]
 
     try:
-        structured_llm = _apply_structured_output(llm, schema=GrepCommandResult)
-        opik_callbacks = build_langchain_opik_callbacks()
-        config = {"callbacks": opik_callbacks} if opik_callbacks else {}
-        response = await asyncio.wait_for(
-            structured_llm.ainvoke(messages, config=config),
-            timeout=_LLM_GREP_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger_instance.info("generate_grep_command_via_llm: timed out after %.1fs", _LLM_GREP_TIMEOUT)
-        return None
+        structured_llm = _apply_structured_output(llm, schema=GrepCommandResult, include_raw=True)
     except Exception as exc:
-        logger_instance.warning("generate_grep_command_via_llm: LLM call failed: %s", exc)
+        logger_instance.warning("generate_grep_command_via_llm: LLM setup failed: %s", exc)
         return None
+    opik_callbacks = build_langchain_opik_callbacks()
+    config = {"callbacks": opik_callbacks} if opik_callbacks else {}
 
-    result = _parse_grep_response(response, logger_instance)
-    if result is None:
-        return None
+    deadline = time.monotonic() + _LLM_GREP_TIMEOUT
+    for attempt in (1, 2):
+        remaining = deadline - time.monotonic()
+        if attempt > 1 and remaining < _LLM_GREP_MIN_RETRY_SECS:
+            break
+        try:
+            response = await asyncio.wait_for(
+                structured_llm.ainvoke(messages, config=config),
+                timeout=min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
+            )
+        except asyncio.TimeoutError:
+            logger_instance.info(
+                "generate_grep_command_via_llm: attempt %d timed out after %.1fs",
+                attempt, min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
+            )
+            continue
+        except Exception as exc:
+            logger_instance.warning(
+                "generate_grep_command_via_llm: attempt %d, LLM call failed: %s", attempt, exc,
+            )
+            continue
+        commands = _parse_grep_response(response, logger_instance)
+        valid_commands = _valid_llm_grep_commands(commands or [], logger_instance)
+        if valid_commands:
+            logger_instance.info(
+                "generate_grep_command_via_llm: generated %d command(s) on attempt %d: %r",
+                len(valid_commands), attempt, valid_commands,
+            )
+            return valid_commands
+    return None
 
+
+def _valid_llm_grep_commands(commands: list[str], logger_instance: logging.Logger) -> list[str]:
     valid_commands: list[str] = []
-    for cmd in result.grep_commands[:_MAX_LLM_GREP_COMMANDS]:
+    for cmd in commands[:_MAX_LLM_GREP_COMMANDS]:
         ok, reason = validate_pattern_match_command(cmd)
         if ok:
             valid_commands.append(cmd.strip())
@@ -431,55 +473,121 @@ async def generate_grep_command_via_llm(
                 "generate_grep_command_via_llm: rejected %r: %s",
                 cmd[:100] if cmd else "", reason,
             )
-
-    if not valid_commands:
-        return None
-
-    logger_instance.info(
-        "generate_grep_command_via_llm: generated %d command(s): %r",
-        len(valid_commands), valid_commands,
-    )
     return valid_commands
+
+
+_GREP_COMMANDS_KEY_RE = re.compile(r'"grep_commands"\s*:\s*\[')
+
+
+def _recover_grep_commands(text: str) -> list[str]:
+    """The complete strings of a ``grep_commands`` array in *text*, even when
+    the JSON around them was cut off."""
+    m = _GREP_COMMANDS_KEY_RE.search(text)
+    if not m:
+        return []
+    decoder = json.JSONDecoder()
+    commands: list[str] = []
+    pos = m.end()
+    while True:
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(text) or text[pos] != '"':
+            break
+        try:
+            value, pos = decoder.raw_decode(text, pos)
+        except ValueError:
+            break
+        if isinstance(value, str):
+            commands.append(value)
+    return commands
+
+
+def _message_text(message: object) -> str:
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return ""
 
 
 def _parse_grep_response(
     response: Any,
     logger_instance: logging.Logger,
-) -> GrepCommandResult | None:
-    """Parse the LLM response into a ``GrepCommandResult``."""
+) -> list[str] | None:
+    """The generated commands in an LLM response, or None when it holds none.
+
+    Accepts the ``include_raw`` envelope (``{"raw", "parsed", "parsing_error"}``):
+    when parsing failed, the commands are recovered from the raw completion.
+    """
     if response is None:
         logger_instance.info("generate_grep_command_via_llm: LLM returned no output")
         return None
 
+    if isinstance(response, dict) and "raw" in response and "parsed" in response:
+        parsed = response.get("parsed")
+        if parsed is not None:
+            return _parse_grep_response(parsed, logger_instance)
+        recovered = _recover_grep_commands(_message_text(response.get("raw")))
+        logger_instance.info(
+            "generate_grep_command_via_llm: unparseable output (%s), recovered %d command(s)",
+            str(response.get("parsing_error"))[:200], len(recovered),
+        )
+        return recovered or None
+
     if isinstance(response, GrepCommandResult):
-        return response
+        return response.grep_commands
 
     if isinstance(response, dict):
         try:
-            return GrepCommandResult.model_validate(response)
+            return GrepCommandResult.model_validate(response).grep_commands
         except Exception:
+            recovered = response.get("grep_commands")
+            if isinstance(recovered, list) and all(isinstance(c, str) for c in recovered):
+                return recovered
             logger_instance.warning(
                 "generate_grep_command_via_llm: dict response failed validation",
             )
             return None
 
     if hasattr(response, "content"):
-        content = response.content
-        if isinstance(content, str):
-            try:
-                return GrepCommandResult.model_validate_json(content)
-            except Exception:
-                pass
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    try:
-                        return GrepCommandResult.model_validate_json(block["text"])
-                    except Exception:
-                        pass
+        text = _message_text(response)
+        try:
+            return GrepCommandResult.model_validate_json(text).grep_commands
+        except Exception:
+            recovered = _recover_grep_commands(text)
+            if recovered:
+                return recovered
 
     logger_instance.info("generate_grep_command_via_llm: could not parse LLM response")
     return None
+
+
+_grep_llm_cache: dict[str, tuple[ConfigurationService, float, BaseChatModel]] = {}
+
+
+async def _grep_generation_llm(
+    config_service: ConfigurationService, fallback: BaseChatModel,
+) -> BaseChatModel:
+    """The model for the ``query`` role (else the default model) at low
+    reasoning effort, cached; *fallback* (the chat's model) when none can be built.
+
+    The chat's own model runs at the conversation's effort, often high, and its
+    completions were often cut off before any command was written.
+    """
+    cached = _grep_llm_cache.get("llm")
+    if cached is not None and cached[0] is config_service and cached[1] > time.monotonic():
+        return cached[2]
+    try:
+        llm, _ = await get_llm_for_role(config_service, _GREP_LLM_ROLE, reasoning_effort="low")
+    except Exception as exc:
+        logger.info("pattern_match: no low-effort LLM for grep generation, using the chat's: %s", exc)
+        return fallback
+    _grep_llm_cache["llm"] = (config_service, time.monotonic() + _GREP_LLM_TTL_SECS, llm)
+    return llm
 
 
 async def check_pattern_match_eligible(
@@ -860,8 +968,8 @@ async def _run_pattern_match_with_llm_grep(
     llm_grep_cmds: list[str] | None = None
     if llm is not None:
         llm_grep_cmds = await generate_grep_command_via_llm(
-            query=query, llm=llm, logger_instance=logger_instance,
-            user_query=user_query,
+            query=query, llm=await _grep_generation_llm(config_service, llm),
+            logger_instance=logger_instance, user_query=user_query,
         )
 
     common: dict[str, Any] = {
