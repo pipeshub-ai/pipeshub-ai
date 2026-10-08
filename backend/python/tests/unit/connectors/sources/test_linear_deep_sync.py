@@ -8,6 +8,7 @@ _process_issue_attachments, _process_issue_documents.
 """
 
 import logging
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -102,7 +103,7 @@ def _refused_page() -> GraphQLResponse:
     ])
 
 
-def _no_sleep():
+def _no_sleep() -> AbstractContextManager[AsyncMock]:
     return patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock())
 
 
