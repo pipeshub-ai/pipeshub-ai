@@ -680,7 +680,8 @@ class ZendeskConnector(BaseConnector):
             ]
             record_groups.append((record_group, permissions))
 
-        record_groups.append(self._build_unassigned_record_group())
+        if self._is_group_allowed_by_filter(UNASSIGNED_GROUP_ID):
+            record_groups.append(self._build_unassigned_record_group())
 
         # Both feed a rebuild-from-scratch that would revoke whatever fell off the end.
         return record_groups, user_groups, groups_complete and memberships_complete
@@ -1144,7 +1145,8 @@ class ZendeskConnector(BaseConnector):
         self._ticket_sync_complete = True
         if removed:
             self.logger.info(
-                f"Zendesk: removed {removed} tickets deleted at source or outside the filters"
+                f"Zendesk: removed {removed} tickets and attachments deleted at source or "
+                "outside the filters"
             )
         return synced
 
@@ -1245,7 +1247,7 @@ class ZendeskConnector(BaseConnector):
                 )
                 if existing:
                     await self.data_entities_processor.on_records_deleted_cascade(
-                        [existing.id], self.connector_id
+                        await self._with_attachment_ids(existing), self.connector_id
                     )
                 continue
             ticket = (
@@ -1289,8 +1291,10 @@ class ZendeskConnector(BaseConnector):
         """Whether this ticket belongs in the graph at all under the current filters."""
         if self._is_deleted_ticket(ticket_data):
             return False
+        # A groupless ticket is filed under Unassigned, which an "in" group filter
+        # never selects.
         group_id = ticket_data.get("group_id")
-        if group_id and not self._is_group_allowed_by_filter(str(group_id)):
+        if not self._is_group_allowed_by_filter(str(group_id) if group_id else UNASSIGNED_GROUP_ID):
             return False
         return self._is_allowed_by_date_filters(
             self._parse_datetime(ticket_data.get("created_at")),
@@ -1313,8 +1317,21 @@ class ZendeskConnector(BaseConnector):
                 external_record_id=str(ticket_data["id"]),
             )
             if existing:
-                record_ids.append(existing.id)
+                record_ids.extend(await self._with_attachment_ids(existing))
         return record_ids
+
+    async def _with_attachment_ids(self, record: Record) -> List[str]:
+        """The record's id plus its attachments', for a cascade delete.
+
+        Found by parent id, not by edge: a full sync wipes the ATTACHMENT edges the
+        cascade follows, and a ticket the new filters drop would leave its files behind.
+        """
+        children = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id,
+            record.external_record_id,
+            record_type=RecordType.FILE.value,
+        )
+        return [record.id, *(child.id for child in children)]
 
     async def _ticket_to_record(
         self,
@@ -1492,7 +1509,8 @@ class ZendeskConnector(BaseConnector):
                 removed_ids, self.connector_id
             )
             self.logger.info(
-                f"Zendesk: removed {len(removed_ids)} articles no longer published org-wide"
+                f"Zendesk: removed {len(removed_ids)} articles and attachments no longer "
+                "published org-wide"
             )
         await self._remove_vanished_articles()
 
@@ -1654,13 +1672,14 @@ class ZendeskConnector(BaseConnector):
                 external_record_id=f"article_{article_id}",
             )
             if existing:
-                removed_ids.append(existing.id)
+                removed_ids.extend(await self._with_attachment_ids(existing))
         if removed_ids:
             await self.data_entities_processor.on_records_deleted_cascade(
                 removed_ids, self.connector_id
             )
             self.logger.info(
-                f"Zendesk: removed {len(removed_ids)} articles deleted or archived at source"
+                f"Zendesk: removed {len(removed_ids)} articles and attachments deleted or "
+                "archived at source"
             )
         await self.records_sync_point.update_sync_point(
             ARTICLE_IDS_STATE_KEY,
@@ -1675,7 +1694,16 @@ class ZendeskConnector(BaseConnector):
         """
         previous = await self.records_sync_point.read_sync_point(TICKET_GROUPS_STATE_KEY)
         current = set(self._current_ticket_group_ids)
-        stale = sorted(set(previous.get("groupIds") or []) - current)
+        # A filter change forces a full sync, which wipes the saved state above, so
+        # the groups the filter now drops are named from the source as well.
+        deselected = {
+            f"group_{group_id}"
+            for group_id in self._group_id_to_data
+            if not self._is_group_allowed_by_filter(group_id)
+        }
+        if not self._is_group_allowed_by_filter(UNASSIGNED_GROUP_ID):
+            deselected.add(UNASSIGNED_GROUP_ID)
+        stale = sorted((set(previous.get("groupIds") or []) | deselected) - current)
         remaining = await self._delete_empty_record_groups(stale) if stale else []
         await self.records_sync_point.update_sync_point(
             TICKET_GROUPS_STATE_KEY,
@@ -2026,7 +2054,7 @@ class ZendeskConnector(BaseConnector):
                 external_record_id=f"article_{article_data['id']}",
             )
             if existing:
-                record_ids.append(existing.id)
+                record_ids.extend(await self._with_attachment_ids(existing))
         return record_ids
 
     async def _article_to_record(
