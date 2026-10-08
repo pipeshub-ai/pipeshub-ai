@@ -100,6 +100,15 @@ def test_schema_of_a_beta_type_is_forbidden(
     assert BETA_DISABLED in _message(resp)
 
 
+def test_connection_check_of_a_beta_type_is_forbidden(
+    connectors_client: ConnectorsAuditClient, beta_connectors_disabled: None
+) -> None:
+    resp = connectors_client.post("/registry/Zendesk/test-connection", json={"auth": {}})
+    assert resp.status_code == 403, resp.text[:500]
+    assert_strict_openapi_exchange(resp, f"{BASE}/registry/{{connectorType}}/test-connection")
+    assert BETA_DISABLED in _message(resp)
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [

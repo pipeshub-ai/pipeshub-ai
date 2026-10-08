@@ -47916,7 +47916,9 @@ paths:
         - name: connectorType
           in: path
           required: true
-          description: Connector type identifier
+          description: |
+            Connector type as listed by `GET /connectors/registry` (its `type`),
+            URL-encoded. The lookup is case-sensitive.
           schema:
             type: string
           example: "PostgreSQL"
@@ -47952,12 +47954,14 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - success
                   - message
                 properties:
                   success:
                     type: boolean
+                    description: Whether the connector reached the source with these settings
                   message:
                     type: string
                     description: What happened, written for the user
@@ -47965,13 +47969,55 @@ paths:
                 success: false
                 message: 'PostgreSQL rejected the login for user "reader". Check the username and password.'
         '400':
-          description: Invalid request, or the connector type has no connection check
+          description: |
+            Refused. Possible reasons:<br>
+            <ul>
+            <li><code>VALIDATION_ERROR</code> - the body is not a JSON object; <code>auth</code> is missing, <code>null</code> or not an object; or <code>connectorId</code> is not a string of 1-64 letters, digits, underscores or hyphens</li>
+            <li>The connector type has no connection check (<code>&lt;type&gt; has no connection check</code>)</li>
+            <li><code>connectorId</code> names an instance of another connector type</li>
+            <li><code>connectorType</code> is not a safe path segment (for example it contains an encoded <code>/</code>); answered before the token is checked</li>
+            </ul>
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Not allowed to update the given instance
+          description: |
+            The OAuth token lacks the `connector:write` scope.
+            Also returned for a beta connector type (Calendar, Meet, Forms, Slides,
+            Docs, Zendesk, Airtable) while the platform feature flag
+            `ENABLE_BETA_CONNECTORS` is off (the default), with the message
+            `Beta connectors are not enabled. The connector '<type>' is a beta connector and cannot be accessed. ...`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector type or instance not found
+          description: |
+            Connector type not found in the registry, or `connectorId` matches no
+            instance the caller can see (another user's personal connector, or
+            another user's team connector for a member).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Returned, before the token is checked, when the request carries a body that
+            is not valid JSON: the body parser fails and the failure is reported with
+            code `INTERNAL_ERROR`, not as a `400`.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Service unavailable - Connector service is unreachable
           content:
@@ -48002,6 +48048,7 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
                 required:
                   - success
                   - egressIps
@@ -48013,8 +48060,36 @@ paths:
                     items:
                       type: string
                     example: ["203.0.113.10"]
+        '400':
+          description: |
+            Returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth token lacks the `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Returned, before the token is checked, when the request carries a body that
+            is not valid JSON: the body parser fails and the failure is reported with
+            code `INTERNAL_ERROR`, not as a `400`.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Service unavailable - Connector service is unreachable
           content:
