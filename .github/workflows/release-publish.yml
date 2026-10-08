@@ -11,7 +11,10 @@ name: Release — build, publish, verify
 # install is never reachable as :latest or :slim.
 #
 # Manual runs are supported for rehearsal: workflow_dispatch with promote=false
-# builds and verifies without moving any published tag.
+# builds and verifies without touching any tag that already exists. The one
+# thing it may publish is a prerelease version (1.2.3-rc.1) whose tags are not
+# on Docker Hub yet, so a build for someone to try is a single run; :latest and
+# :slim move only with promote=true, and never for a prerelease.
 
 on:
   push:
@@ -144,19 +147,21 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push the sandbox candidate
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: deployment/sandbox
           file: deployment/sandbox/Dockerfile
@@ -263,8 +268,11 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # The version tags are written whenever the gate passes. Only :latest and
-  # :slim wait for "promote", and a prerelease version never moves them.
+  # With promote=true the version tags are written (overwriting if present)
+  # and, for a stable version, :latest and :slim move. With promote=false a
+  # prerelease version is published only onto tags that do not exist yet, and
+  # a stable version is a rehearsal that publishes nothing. crane copy
+  # overwrites, so an existing tag is never replaced without promote.
   promote:
     name: Publish release tags
     needs: [resolve, verify]
@@ -291,15 +299,24 @@ jobs:
           PROMOTE: ${{ needs.resolve.outputs.promote }}
         run: |
           set -euo pipefail
+          prerelease=false
+          if printf '%s' "$VERSION" | grep -q -- '-'; then prerelease=true; fi
+          if [ "$PROMOTE" != "true" ] && [ "$prerelease" != "true" ]; then
+            echo "rehearsal of ${VERSION}: verified, publishing nothing"
+            exit 0
+          fi
           for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
-            crane copy "${repo}:${CANDIDATE}"       "${repo}:${VERSION}"
-            crane copy "${repo}:${CANDIDATE}-slim"  "${repo}:${VERSION}-slim"
+            for suffix in "" "-slim"; do
+              if [ "$PROMOTE" != "true" ] && crane digest "${repo}:${VERSION}${suffix}" >/dev/null 2>&1; then
+                echo "${repo}:${VERSION}${suffix} already exists: left as it is (promote is off)"
+                continue
+              fi
+              crane copy "${repo}:${CANDIDATE}${suffix}" "${repo}:${VERSION}${suffix}"
+              echo "published ${repo}:${VERSION}${suffix}"
+            done
           done
-          echo "published ${IMAGE}:${VERSION} (+slim) and ${SANDBOX_IMAGE}:${VERSION} (+slim)"
-          if printf '%s' "$VERSION" | grep -q -- '-'; then
+          if [ "$prerelease" = "true" ]; then
             echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
-          elif [ "$PROMOTE" != "true" ]; then
-            echo "promote is off: leaving :latest and :slim untouched"
           else
             for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
               crane copy "${repo}:${CANDIDATE}"      "${repo}:latest"
@@ -308,12 +325,25 @@ jobs:
             echo "moved :latest and :slim to ${VERSION}"
           fi
 
+      # Docker Hub deletes a manifest only by digest, so `crane delete` of a tag
+      # fails there and the candidate tags used to linger. Its own API removes
+      # a tag without touching the manifest the release tags share.
       - name: Remove candidate tags
         continue-on-error: true
         env:
           CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          jwt="$(curl -fsS -H 'Content-Type: application/json' \
+            -d "$(jq -cn --arg u "$HUB_USERNAME" --arg p "$HUB_TOKEN" '{username:$u,password:$p}')" \
+            https://hub.docker.com/v2/users/login | jq -r .token)"
           for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
-            crane delete "${repo}:${CANDIDATE}"      || true
-            crane delete "${repo}:${CANDIDATE}-slim" || true
+            for tag in "${CANDIDATE}" "${CANDIDATE}-slim"; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: JWT ${jwt}" \
+                "https://hub.docker.com/v2/repositories/${repo}/tags/${tag}/")"
+              echo "delete ${repo}:${tag} -> HTTP ${code}"
+            done
           done
