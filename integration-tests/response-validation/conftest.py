@@ -87,3 +87,18 @@ def smtp_configured(config_client: ConfigClient) -> None:
     assert resp.status_code in (200, 201), (
         f"Failed to configure SMTP: {resp.status_code} {resp.text}"
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _spec_audit_stack_prepared(request: pytest.FixtureRequest) -> None:
+    """Seed AI models and SMTP before the first spec_audit test.
+
+    A stack the audit meets first has neither. The models go in before anything
+    is indexed: PipesHub refuses to change the embedding model once vectors are
+    stored.
+    """
+    if not any(item.get_closest_marker("spec_audit") for item in request.session.items):
+        return
+    request.getfixturevalue("ai_models_configured")
+    if _smtp_env() is not None:
+        request.getfixturevalue("smtp_configured")
