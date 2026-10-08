@@ -289,7 +289,10 @@ async def run_upgrade(
     producer = MessagingFactory.create_producer(logger, redis_config, MessageBrokerType.REDIS)
     await producer.initialize()
     try:
-        # GitLab publishes first after the switch, as the busier connector would.
+        # GitLab publishes first after the switch. This is the order the assertion
+        # covers: the first publisher keeps the hash lane. Were Slack first, it would
+        # keep that lane and its new events would wait behind GitLab's backlog until
+        # it drained (docs/indexing-service.md, section 4.9, "Existing installs").
         await producer.send_messages(
             topic, [_event(gitlab, i) for i in range(GITLAB_EVENTS, GITLAB_EVENTS + SLACK_EVENTS)]
         )
@@ -316,11 +319,13 @@ async def run_upgrade(
 
 
 def assert_upgrade_separated_them(lanes: dict[str, object], outcome: Outcome) -> None:
-    """After the switch, nothing is re-arranged. GitLab, publishing first,
-    keeps its hash lane and its own order. Slack, finding that lane taken,
-    moves on its first publish: its new events are dispatched without waiting
-    for GitLab. The events Slack queued before the switch stay on the old
-    lane and finish there, behind GitLab's backlog."""
+    """After the switch, nothing is re-arranged. The first connector to publish
+    keeps the hash lane; here that is GitLab, which also keeps its own order.
+    Slack, finding that lane taken, moves on its first publish: its new events
+    are dispatched without waiting for GitLab. The events Slack queued before
+    the switch stay on the old lane and finish there, behind GitLab's backlog.
+    The other order (Slack first, keeping the hash lane and waiting for the
+    drain) is accepted and documented, not covered here."""
     assert lanes["gitlab"] == lanes["hash_lane"], lanes
     assert lanes["gitlab_prev"] is None, lanes
     assert lanes["slack"] != lanes["hash_lane"], lanes
