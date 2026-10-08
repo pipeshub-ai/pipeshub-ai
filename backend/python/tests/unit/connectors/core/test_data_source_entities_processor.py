@@ -7035,7 +7035,11 @@ class TestOnRecordsMovedDuplicateGuard:
         await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
 
         tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
-        tx_store.delete_parent_child_edge_to_record.assert_any_await("rec-duplicate")
+        # One statement: the delete takes the duplicate's parent edge with it. A
+        # separate edge delete could commit on its own (Neo4j) and leave the
+        # duplicate live but in no folder.
+        edge_deletes = [c.args for c in tx_store.delete_parent_child_edge_to_record.await_args_list]
+        assert ("rec-duplicate",) not in edge_deletes
         # The move still reuses the original vertex, so its edges survive.
         assert new_record.id == "rec-original"
 

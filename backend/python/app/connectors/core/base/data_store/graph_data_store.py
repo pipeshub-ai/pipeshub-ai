@@ -346,7 +346,10 @@ class GraphTransactionStore(TransactionStore):
         # The node with its edges: on Neo4j that is the same single DETACH DELETE,
         # and on ArangoDB the edges no longer dangle after the record is gone.
         return await self.graph_provider.delete_nodes_and_edges(
-            [key], CollectionNames.RECORDS.value, graph_name="knowledgeGraph", transaction=self.txn
+            [key],
+            CollectionNames.RECORDS.value,
+            graph_name="knowledgeGraph",
+            transaction=self.txn,
         )
 
     async def delete_record_by_external_id(

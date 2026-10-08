@@ -2129,7 +2129,8 @@ class DataSourceEntitiesProcessor:
                                     old_record.id, child_id, RecordRelations.PARENT_CHILD.value
                                 )
 
-                        await tx_store.delete_parent_child_edge_to_record(duplicate.id)
+                        # One write: the delete takes the duplicate's own parent edge
+                        # with it, where a separate edge delete could commit alone.
                         await tx_store.delete_record_by_key(duplicate.id)
 
                     old_path = old_path_snap.get(old_external_id)
