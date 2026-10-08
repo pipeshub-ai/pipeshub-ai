@@ -11626,33 +11626,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
     async def _edge_collections_of_graph(self, graph_name: str) -> list[str]:
-        """The graph's edge collections, read once per provider: the definition does
-        not change while the service runs, and a per-record delete must not pay for
-        the read every time."""
+        """The graph's edge collections, cached after one successful read: the
+        definition does not change while the service runs, and a per-record delete
+        must not pay for the read every time.
+
+        A miss is never cached and never guessed. get_graph answers None to a 404,
+        any other status and a transport error; a guessed list would miss the
+        knowledge graph's other record edges (department, category, topic,
+        language, deal) and leave them dangling on every later delete.
+        """
         cached = self._edge_collections_by_graph.get(graph_name)
-        if cached is not None:
+        if cached:
             return cached
 
         graph_info = await self.http_client.get_graph(graph_name)
         if not graph_info:
-            self.logger.warning(f"⚠️ Graph '{graph_name}' not found. Using fallback edge collections.")
-            edge_collections = [
-                CollectionNames.PERMISSION.value,
-                CollectionNames.BELONGS_TO.value,
-                CollectionNames.RECORD_RELATIONS.value,
-                CollectionNames.INHERIT_PERMISSIONS.value,
-                CollectionNames.IS_OF_TYPE.value,
-                CollectionNames.USER_APP_RELATION.value,
-                CollectionNames.ENTITY_RELATIONS.value,
-                CollectionNames.ANYONE.value,
-            ]
-        else:
-            # ArangoDB REST API returns graph info with 'graph' key containing the definition
-            graph_def = graph_info.get('graph', graph_info)  # Handle both nested and direct formats
-            edge_definitions = graph_def.get('edgeDefinitions', [])
-            edge_collections = [e.get('collection') for e in edge_definitions if e.get('collection')]
-            if not edge_collections:
-                self.logger.warning(f"⚠️ Graph '{graph_name}' has no edge collections defined.")
+            raise Exception(f"Graph '{graph_name}' not found")
+        # ArangoDB REST API returns graph info with 'graph' key containing the definition
+        graph_def = graph_info.get('graph', graph_info)  # Handle both nested and direct formats
+        edge_definitions = graph_def.get('edgeDefinitions', [])
+        edge_collections = [e.get('collection') for e in edge_definitions if e.get('collection')]
+        if not edge_collections:
+            raise Exception(f"Graph '{graph_name}' has no edge collections defined")
         self._edge_collections_by_graph[graph_name] = edge_collections
         return edge_collections
 
@@ -11667,10 +11662,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete nodes and all their connected edges.
 
         Steps:
-        1. Get the graph's edge collections (cached after the first read)
+        1. Get the graph's edge collections (cached after a successful read)
         2. Delete all edges FROM the nodes, then all edges TO the nodes, in every
            edge collection: one statement each, so the edge index serves both
         3. Delete the nodes themselves
+
+        Raises on any failure before the nodes are deleted: a vertex whose edges
+        could not be removed is never deleted, so nothing is left dangling.
         """
         if not keys:
             self.logger.debug("No keys provided for deletion. Skipping.")
@@ -11701,21 +11699,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             for edge_collection in edge_collections:
                 for query in (delete_edges_from_query, delete_edges_to_query):
-                    try:
-                        await self.http_client.execute_aql(
-                            query,
-                            bind_vars={
-                                "node_ids": node_ids,
-                                "@edge_collection": edge_collection
-                            },
-                            txn_id=transaction
-                        )
-                    except Exception as e:
-                        # Inside a transaction the node delete below would still commit,
-                        # leaving these edges dangling; let the caller roll back instead.
-                        if transaction:
-                            raise
-                        self.logger.warning(f"⚠️ Failed to delete edges from {edge_collection}: {str(e)}")
+                    await self.http_client.execute_aql(
+                        query,
+                        bind_vars={
+                            "node_ids": node_ids,
+                            "@edge_collection": edge_collection
+                        },
+                        txn_id=transaction
+                    )
 
             self.logger.debug(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
 

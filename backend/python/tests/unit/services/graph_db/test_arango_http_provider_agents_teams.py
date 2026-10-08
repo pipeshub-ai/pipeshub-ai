@@ -295,12 +295,35 @@ class TestDeleteNodesAndEdges:
         connected_provider.delete_nodes.assert_called_once_with(["k1"], "records", None)
 
     @pytest.mark.asyncio
-    async def test_graph_not_found_fallback(self, connected_provider):
+    async def test_graph_not_found_raises_and_deletes_nothing(self, connected_provider: ArangoHTTPProvider) -> None:
+        """A guessed list of edge collections left the knowledge graph's other record
+        edges dangling; without the definition the record stays whole."""
         connected_provider.http_client.get_graph = AsyncMock(return_value=None)
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         connected_provider.delete_nodes = AsyncMock()
+        with pytest.raises(Exception, match="not found"):
+            await connected_provider.delete_nodes_and_edges(["k1"], "records")
+        connected_provider.http_client.execute_aql.assert_not_awaited()
+        connected_provider.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("miss", [None, {"graph": {"edgeDefinitions": []}}], ids=["not-found", "no-edges"])
+    async def test_a_missed_graph_read_is_not_cached(self, connected_provider: ArangoHTTPProvider, miss: object) -> None:
+        """get_graph answers None to a 404, any other status and a transport error; a miss
+        must not stand in for the definition for the life of the provider."""
+        real = {"graph": {"edgeDefinitions": [{"collection": "permission"}, {"collection": "belongsToTopic"}]}}
+        connected_provider.http_client.get_graph = AsyncMock(side_effect=[miss, real])
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.delete_nodes = AsyncMock()
+        with pytest.raises(Exception):
+            await connected_provider.delete_nodes_and_edges(["k1"], "records")
         await connected_provider.delete_nodes_and_edges(["k1"], "records")
-        connected_provider.delete_nodes.assert_called_once()
+        assert connected_provider.http_client.get_graph.await_count == 2
+        assert [c.kwargs["bind_vars"]["@edge_collection"]
+                for c in connected_provider.http_client.execute_aql.await_args_list] == [
+            "permission", "permission", "belongsToTopic", "belongsToTopic",
+        ]
+        connected_provider.delete_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_exception_raises(self, connected_provider):
@@ -356,16 +379,18 @@ class TestDeleteNodesAndEdges:
         connected_provider.delete_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_failed_edge_delete_outside_a_transaction_is_logged_and_the_node_still_goes(
+    async def test_a_failed_edge_delete_outside_a_transaction_is_raised_too(
         self, connected_provider: ArangoHTTPProvider
     ) -> None:
+        """A vertex whose edges could not be deleted is never deleted, in either mode."""
         connected_provider.http_client.get_graph = AsyncMock(return_value={
             "graph": {"edgeDefinitions": [{"collection": "permission"}]}
         })
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
         connected_provider.delete_nodes = AsyncMock()
-        await connected_provider.delete_nodes_and_edges(["k1"], "records")
-        connected_provider.delete_nodes.assert_awaited_once()
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_nodes_and_edges(["k1"], "records")
+        connected_provider.delete_nodes.assert_not_awaited()
 
 
 # ===========================================================================

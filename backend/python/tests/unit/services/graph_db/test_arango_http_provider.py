@@ -2898,12 +2898,17 @@ class TestDeleteNodesAndEdges:
         connected_provider.http_client.get_graph.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_graph_not_found_uses_fallback(self, connected_provider):
+    async def test_graph_not_found_raises_and_deletes_nothing(self, connected_provider: ArangoHTTPProvider) -> None:
+        """No guessed edge-collection list: it missed the knowledge graph's other
+        record edges, which were left dangling."""
         connected_provider.http_client.get_graph.return_value = None
         connected_provider.http_client.execute_aql.return_value = []
         connected_provider.http_client.batch_delete_documents.return_value = 1
 
-        await connected_provider.delete_nodes_and_edges(["k1"], "records")
+        with pytest.raises(Exception, match="not found"):
+            await connected_provider.delete_nodes_and_edges(["k1"], "records")
+        connected_provider.http_client.execute_aql.assert_not_awaited()
+        connected_provider.http_client.batch_delete_documents.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
