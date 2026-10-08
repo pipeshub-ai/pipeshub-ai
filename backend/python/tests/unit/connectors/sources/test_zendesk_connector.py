@@ -746,6 +746,32 @@ class TestFilterNarrowing:
         )
         mock_data_entities_processor.on_new_records.assert_not_awaited()
 
+    async def test_dropped_ticket_takes_its_attachments_without_edges(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        """A full sync wipes the ATTACHMENT edges the cascade would follow."""
+        existing = MagicMock()
+        existing.id = "rec-99"
+        existing.external_record_id = "99"
+        attachment = MagicMock()
+        attachment.id = "file-1"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        mock_data_entities_processor.get_records_by_parent = AsyncMock(return_value=[attachment])
+        mock_data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        self._only_group(zendesk_connector, ["7"])
+        TestDeletedTickets._page(zendesk_connector, [
+            {"id": 99, "subject": "Excluded group", "group_id": 42, "status": "open"},
+        ])
+
+        await zendesk_connector._sync_tickets()
+
+        mock_data_entities_processor.get_records_by_parent.assert_awaited_once_with(
+            "zd-conn-1", "99", record_type=RecordType.FILE.value
+        )
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-99", "file-1"], "zd-conn-1"
+        )
+
     async def test_ticket_still_in_filter_survives(
         self, zendesk_connector, mock_tx_store, mock_data_entities_processor
     ):
@@ -790,6 +816,16 @@ class TestFilterNarrowing:
         assert zendesk_connector._is_ticket_in_scope(
             {"id": 1, "group_id": 7, "status": "deleted"}
         ) is False
+
+    def test_groupless_ticket_follows_the_filter_operator(self, zendesk_connector):
+        group_filter = MagicMock()
+        group_filter.get_value.return_value = ["7"]
+        group_filter.get_operator.return_value = "in"
+        zendesk_connector.sync_filters = {SyncFilterKey.GROUP_IDS: group_filter}
+        assert zendesk_connector._is_ticket_in_scope({"id": 1, "group_id": None}) is False
+
+        group_filter.get_operator.return_value = "not_in"
+        assert zendesk_connector._is_ticket_in_scope({"id": 1, "group_id": None}) is True
 
 
 # ===========================================================================
@@ -1957,10 +1993,27 @@ class TestFetchGroups:
 
         record_groups, user_groups, _ = await zendesk_connector._fetch_groups({})
 
+        assert [rg.external_group_id for rg, _ in record_groups] == ["group_7"]
+        assert [ug.source_user_group_id for ug, _ in user_groups] == ["group_7"]
+
+    async def test_excluding_filter_keeps_unassigned_folder(self, zendesk_connector):
+        group_filter = MagicMock()
+        group_filter.get_value.return_value = ["99"]
+        group_filter.get_operator.return_value = "not_in"
+        zendesk_connector.sync_filters = {SyncFilterKey.GROUP_IDS: group_filter}
+        datasource = _ready(zendesk_connector)
+        datasource.list_groups = AsyncMock(return_value=_make_response(data={
+            "groups": [{"id": 7, "name": "Billing"}, {"id": 99, "name": "Sales"}],
+        }))
+        datasource.list_group_memberships = AsyncMock(
+            return_value=_make_response(data={"group_memberships": []})
+        )
+
+        record_groups, _, _ = await zendesk_connector._fetch_groups({})
+
         assert [rg.external_group_id for rg, _ in record_groups] == [
             "group_7", UNASSIGNED_GROUP_ID,
         ]
-        assert [ug.source_user_group_id for ug, _ in user_groups] == ["group_7"]
 
     async def test_deselected_group_is_still_cached(self, zendesk_connector):
         """_ticket_to_record needs it to tell a deselected group from an unknown one."""
@@ -4368,6 +4421,29 @@ class TestDeletedTicketGroupFolder:
 
         mock_data_entities_processor.on_record_group_deleted.assert_not_awaited()
         assert states["zendesk_ticket_groups"]["groupIds"] == ["group_8"]
+
+    async def test_deselected_folders_are_removed_after_full_sync_wiped_state(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        states = _stateful_sync_points(zendesk_connector, {})
+        group_filter = MagicMock()
+        group_filter.get_value.return_value = ["7"]
+        group_filter.get_operator.return_value = "in"
+        zendesk_connector.sync_filters = {SyncFilterKey.GROUP_IDS: group_filter}
+        zendesk_connector._group_id_to_data = {"7": {"id": 7}, "8": {"id": 8}}
+        zendesk_connector._current_ticket_group_ids = ["group_7"]
+        group = MagicMock()
+        group.id = "rg"
+        mock_tx_store.get_record_group_by_external_id = AsyncMock(return_value=group)
+
+        await zendesk_connector._delete_removed_ticket_group_folders()
+
+        deleted = sorted(
+            call.args[0]
+            for call in mock_data_entities_processor.on_record_group_deleted.await_args_list
+        )
+        assert deleted == ["group_8", UNASSIGNED_GROUP_ID]
+        assert states["zendesk_ticket_groups"]["groupIds"] == ["group_7"]
 
 
 class TestVanishedArticles:
