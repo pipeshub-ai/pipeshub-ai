@@ -20,6 +20,8 @@ def mock_graph_provider():
     # The folder-depth checks compare these with a number; a bare mock can't be compared.
     provider.get_folder_depth = AsyncMock(return_value=1)
     provider.get_folder_subtree_height = AsyncMock(return_value=0)
+    # Synchronous like the real providers; an AsyncMock's coroutine would read as a yes.
+    provider.is_write_conflict = MagicMock(return_value=False)
     return provider
 
 

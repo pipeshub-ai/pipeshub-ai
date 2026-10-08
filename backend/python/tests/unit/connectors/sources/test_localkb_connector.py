@@ -54,6 +54,8 @@ def _make_kb_service():
     """Build a KnowledgeBaseService with mocked dependencies."""
     logger = MagicMock()
     graph_provider = AsyncMock()
+    # Synchronous like the real providers; an AsyncMock's coroutine would read as a yes.
+    graph_provider.is_write_conflict = MagicMock(return_value=False)
     kafka_service = MagicMock()
     processor = AsyncMock()
     processor.on_new_records = AsyncMock()

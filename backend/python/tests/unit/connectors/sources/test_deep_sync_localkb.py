@@ -28,6 +28,8 @@ def mock_graph_provider():
     gp.begin_transaction = AsyncMock(return_value="txn-1")
     gp.commit_transaction = AsyncMock()
     gp.rollback_transaction = AsyncMock()
+    # Synchronous like the real providers; an AsyncMock's coroutine would read as a yes.
+    gp.is_write_conflict = MagicMock(return_value=False)
     gp.batch_upsert_nodes = AsyncMock()
     gp.batch_create_edges = AsyncMock()
     gp.get_user_kb_permission = AsyncMock(return_value="OWNER")

@@ -3109,9 +3109,14 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 parameters[f"v{i}"] = value
                 conditions.append(f"n[$f{i}] = $v{i}")
+        # The lock comes first so the check reads a write that committed while
+        # this waited, instead of overwriting it (Neo4j's lost-update pattern).
         rows = await self.client.execute_query(
             f"""
             MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
             WHERE {" AND ".join(conditions)}
             SET n += $updates
             RETURN 1 AS n
