@@ -12,6 +12,7 @@ Install:
   pip install cloudscraper requests   # optional fallbacks
 """
 
+import asyncio
 import ipaddress
 import os
 import random
@@ -260,6 +261,64 @@ def resolve_public_http_target(url: str, *, block_non_global: bool = True) -> Pu
     if not addresses:
         raise FetchError(f"No addresses resolved for hostname {hostname!r}")
     return PublicTarget(parsed.scheme, hostname, port, tuple(addresses))
+
+
+class HostCheckError(ValueError):
+    """A host a user typed may not be connected to. The message is written for that user."""
+
+
+async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[IPAddress]:
+    """The addresses to connect to for ``host`` (a database server, say), looked up once.
+
+    Connect to these, not to ``host``: a second lookup could answer differently. The rule
+    model endpoints follow (``model_egress.address_refusal``) applies: link-local and cloud
+    metadata addresses never, private or internal ones not while
+    PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. Empty for a Unix socket path the deployment
+    allows, which has nothing to look up.
+
+    Raises:
+        HostCheckError: the host is refused, doesn't resolve, or its lookup timed out. The
+            message does not say what a name resolves to, which would describe the
+            deployment's network.
+    """
+    # model_egress imports this module.
+    from app.utils.model_egress import address_refusal, parse_answers
+
+    allow_private = not private_addresses_blocked()
+    private_reason = (
+        f'"{host}" is a private or internal address, which this deployment does not allow '
+        f"({PRIVATE_ADDRESS_SWITCH_ENV})."
+    )
+    # Database drivers read a path as a local Unix socket.
+    if host.startswith("/"):
+        if not allow_private:
+            raise HostCheckError(private_reason)
+        return []
+    if host.lower().removesuffix(".") == "metadata.google.internal":
+        raise HostCheckError(f'"{host}" is a cloud metadata address, which is never allowed.')
+    if not allow_private and _hostname_is_blocked(host):
+        raise HostCheckError(private_reason)
+
+    ip = literal_ip(host)
+    if ip is not None:
+        addresses = [ip]
+    else:
+        try:
+            infos = await asyncio.wait_for(
+                asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM),
+                lookup_timeout_s,
+            )
+        except (socket.gaierror, UnicodeError) as e:
+            raise HostCheckError(f'Could not find a server named "{host}". Check the host name.') from e
+        except TimeoutError as e:
+            raise HostCheckError(f'Looking up "{host}" timed out. Check the host name.') from e
+        addresses = parse_answers(infos)
+        if not addresses:
+            raise HostCheckError(f'Could not find a server named "{host}". Check the host name.')
+    reason = address_refusal(addresses, allow_private=allow_private)
+    if reason is not None:
+        raise HostCheckError(f'"{host}" is {reason}.')
+    return addresses
 
 
 def validate_public_http_url(url: str, *, block_non_global: bool = True) -> None:

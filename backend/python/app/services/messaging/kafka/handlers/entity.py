@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -12,6 +13,7 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -28,6 +30,9 @@ from app.edition_services import get_data_entities_processor_cls
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+if TYPE_CHECKING:
+    from app.connectors.core.base.data_store.data_store import TransactionStore
+
 
 class EntityEventService(BaseEventService):
     def __init__(
@@ -38,6 +43,7 @@ class EntityEventService(BaseEventService):
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+        self.graph_data_store = GraphDataStore(logger, graph_provider)
         self.app_container = app_container
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -136,10 +142,12 @@ class EntityEventService(BaseEventService):
                 [org_data], CollectionNames.ORGS.value
             )
 
-            # Get departments with orgId == None using provider
+            # raise_on_error: a failed read would otherwise create the org with no
+            # department links and acknowledge the event.
             departments = await self.graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.DEPARTMENTS.value,
-                filters={"orgId": None}
+                filters={"orgId": None},
+                raise_on_error=True,
             )
 
             # Create relationships between org and departments
@@ -234,9 +242,10 @@ class EntityEventService(BaseEventService):
         """Handle user creation event"""
         try:
             self.logger.info(f"📥 Processing user added event: {payload}")
-            # Check if user already exists by email
+            # raise_on_error: the providers answer None to a failed read too, and
+            # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
-                payload["email"]
+                payload["email"], raise_on_error=True
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()
@@ -656,6 +665,36 @@ class EntityEventService(BaseEventService):
                 exc_info=True
             )
 
+    @staticmethod
+    async def _ensure_kb_edges(tx_store: "TransactionStore", user_key: str, org_id: str, kb_key: str) -> None:
+        """The three edges that make a default knowledge base reachable, written create-only.
+
+        No read decides this: both providers answer None to a failed edge read as
+        well as to a missing edge, and a replacing write after that would reset a
+        live edge's sync state or role. An edge that is there is left as it is.
+        """
+        timestamp = get_epoch_timestamp_in_ms()
+        await tx_store.create_edges_if_absent([{
+            "from_id": user_key,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": kb_key,
+            "to_collection": CollectionNames.APPS.value,
+            "externalPermissionId": "",
+            "type": "USER",
+            "role": "OWNER",
+            "createdAtTimestamp": timestamp,
+            "updatedAtTimestamp": timestamp,
+            "lastUpdatedTimestampAtSource": timestamp,
+        }], CollectionNames.PERMISSION.value)
+        await tx_store.create_edges_if_absent([{
+            "from_id": org_id,
+            "from_collection": CollectionNames.ORGS.value,
+            "to_id": kb_key,
+            "to_collection": CollectionNames.APPS.value,
+            "createdAtTimestamp": timestamp,
+        }], CollectionNames.ORG_APP_RELATION.value)
+        await tx_store.ensure_app_membership(user_key, CollectionNames.USERS.value, kb_key, is_external=False)
+
     async def _get_or_create_knowledge_base(
         self,
         user_key: str,
@@ -663,142 +702,102 @@ class EntityEventService(BaseEventService):
         orgId: str,
         name: str = "Private"
     ) -> dict:
-        """Get or create a default knowledge base app for a user."""
-        try:
-            if not userId or not orgId:
-                self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
-                return {}
+        """Get or create a default knowledge base app for a user.
 
-            # Check if a KB app already exists for this user in this organization
-            existing_kbs = await self.graph_provider.get_nodes_by_filters(
-                collection=CollectionNames.APPS.value,
-                filters={
-                    "createdBy": userId,
-                    "orgId": orgId,
-                    "type": Connectors.KNOWLEDGE_BASE.value,
-                }
-            )
-            existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
-
-            if existing_kbs:
-                self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
-                return existing_kbs[0]
-
-            current_timestamp = get_epoch_timestamp_in_ms()
-            kb_key = str(uuid4())
-
-            kb_data = {
-                "id": kb_key,
-                "createdBy": userId,
-                "orgId": orgId,
-                "name": name,
-                "type": Connectors.KNOWLEDGE_BASE.value,
-                "appGroup": AppGroups.LOCAL_STORAGE.value,
-                "authType": "NONE",
-                "scope": ConnectorScopes.PERSONAL.value,
-                "isActive": True,
-                "isAgentActive": True,
-                "isConfigured": True,
-                "isAuthenticated": True,
-                "vectorMembershipBackfilled": True,
-                "hideConnector": True,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-            permission_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "externalPermissionId": "",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-                "lastUpdatedTimestampAtSource": current_timestamp,
-            }
-
-            org_app_edge = {
-                "from_id": orgId,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "createdAtTimestamp": current_timestamp,
-            }
-
-            user_app_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "syncState": "NOT_STARTED",
-                "lastSyncUpdate": current_timestamp,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-
-            txn_id = None
-            try:
-                txn_id = await self.graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.APPS.value,
-                        CollectionNames.ORG_APP_RELATION.value,
-                        CollectionNames.USER_APP_RELATION.value,
-                        CollectionNames.PERMISSION.value,
-                    ],
-                )
-                await self.graph_provider.batch_upsert_nodes([kb_data], CollectionNames.APPS.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value, transaction=txn_id)
-                await self.graph_provider.commit_transaction(txn_id)
-                txn_id = None  # mark committed so the except block below doesn't roll it back
-            except BaseException:
-                # BaseException so a cancellation also rolls back -- otherwise
-                # the transaction's session leaks a pooled Neo4j connection
-                # (see GraphDataStore.transaction for the full account).
-                if txn_id is not None:
-                    try:
-                        await self.graph_provider.rollback_transaction(txn_id)
-                    except Exception as rb_err:
-                        self.logger.warning(f"⚠️ Rollback of default KB creation failed: {rb_err}")
-                raise
-
-            # Register per-KB connector instance at runtime
-            try:
-                config_service = self.app_container.config_service()
-                data_store_provider = await self.app_container.data_store()
-                if not hasattr(self.app_container, 'connectors_map'):
-                    self.app_container.connectors_map = {}
-                connector = await ConnectorFactory.create_and_start_sync(
-                    name="kb",
-                    logger=self.logger,
-                    data_store_provider=data_store_provider,
-                    config_service=config_service,
-                    connector_id=kb_key,
-                    scope=ConnectorScopes.PERSONAL.value,
-                    created_by=userId,
-                    org_id=orgId,
-                    data_entities_processor_cls=get_data_entities_processor_cls(),
-                    notification_service=self.app_container.connector_notification_service(),
-                )
-                if connector:
-                    self.app_container.connectors_map[kb_key] = connector
-                    self.logger.info(f"✅ KB connector instance registered for kb_key={kb_key}")
-            except Exception as reg_err:
-                self.logger.warning(f"⚠️ Failed to register KB connector instance: {reg_err}")
-
-            self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
-            return {
-                "kb_id": kb_key,
-                "name": name,
-                "created_at": current_timestamp,
-                "updated_at": current_timestamp,
-                "success": True
-            }
-
-        except Exception as e:
-            self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
+        Raises when the graph write fails, so the user event is not acknowledged
+        with the knowledge base missing or incomplete.
+        """
+        if not userId or not orgId:
+            self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
             return {}
 
+        # raise_on_error: the providers answer [] to a failed lookup too, and "no
+        # knowledge base" here would mint a second App under a new id.
+        existing_kbs = await self.graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.APPS.value,
+            filters={
+                "createdBy": userId,
+                "orgId": orgId,
+                "type": Connectors.KNOWLEDGE_BASE.value,
+            },
+            raise_on_error=True,
+        )
+        existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
+
+        if existing_kbs:
+            self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
+            # A create that failed partway on Neo4j (each statement commits on its
+            # own) left the App without some of its edges; finish it rather than
+            # hand it out unusable again. Create-only, so a complete one is untouched.
+            # Every match, not the first: the lookup is unordered.
+            for existing in existing_kbs:
+                existing_key = existing.get("id") or existing.get("_key")
+                if existing_key:
+                    await self.graph_data_store.execute_idempotent_in_transaction(
+                        self._ensure_kb_edges, user_key, orgId, existing_key
+                    )
+            return existing_kbs[0]
+
+        current_timestamp = get_epoch_timestamp_in_ms()
+        kb_key = str(uuid4())
+
+        kb_data = {
+            "id": kb_key,
+            "createdBy": userId,
+            "orgId": orgId,
+            "name": name,
+            "type": Connectors.KNOWLEDGE_BASE.value,
+            "appGroup": AppGroups.LOCAL_STORAGE.value,
+            "authType": "NONE",
+            "scope": ConnectorScopes.PERSONAL.value,
+            "isActive": True,
+            "isAgentActive": True,
+            "isConfigured": True,
+            "isAuthenticated": True,
+            "vectorMembershipBackfilled": True,
+            "hideConnector": True,
+            "createdAtTimestamp": current_timestamp,
+            "updatedAtTimestamp": current_timestamp,
+        }
+
+        async def write_kb(tx_store: "TransactionStore") -> None:
+            await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
+            await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
+
+        # Every write is keyed by kb_key, so a re-run after a write conflict
+        # (the org node is shared by every onboarding message) completes the
+        # same App rather than starting a second one.
+        await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
+
+        # Register per-KB connector instance at runtime
+        try:
+            config_service = self.app_container.config_service()
+            data_store_provider = await self.app_container.data_store()
+            if not hasattr(self.app_container, 'connectors_map'):
+                self.app_container.connectors_map = {}
+            connector = await ConnectorFactory.create_and_start_sync(
+                name="kb",
+                logger=self.logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id=kb_key,
+                scope=ConnectorScopes.PERSONAL.value,
+                created_by=userId,
+                org_id=orgId,
+                data_entities_processor_cls=get_data_entities_processor_cls(),
+                notification_service=self.app_container.connector_notification_service(),
+            )
+            if connector:
+                self.app_container.connectors_map[kb_key] = connector
+                self.logger.info(f"✅ KB connector instance registered for kb_key={kb_key}")
+        except Exception as reg_err:
+            self.logger.warning(f"⚠️ Failed to register KB connector instance: {reg_err}")
+
+        self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
+        return {
+            "kb_id": kb_key,
+            "name": name,
+            "created_at": current_timestamp,
+            "updated_at": current_timestamp,
+            "success": True
+        }

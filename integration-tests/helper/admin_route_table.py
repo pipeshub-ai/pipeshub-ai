@@ -290,6 +290,8 @@ PYTHON_CONDITIONAL_ADMIN = {
     "connectors/api/router.py::save_connector_instance_filters": "team connectors need admin",
     "connectors/api/router.py::toggle_connector_instance": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_auth_config": "team connectors need admin",
+    # Only when the check is for an instance being edited; a new connector's has no admin check.
+    "connectors/api/router.py::check_connector_connection": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_config": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_filters_sync_config": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_name": "team connectors need admin",

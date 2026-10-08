@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from typing import TYPE_CHECKING
 
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY, LaneConfig
+
+if TYPE_CHECKING:
+    from app.services.messaging.lanes.interface import LaneHint
 
 __all__ = ["KafkaLaneRouter", "RedisLaneRouter", "stable_lane", "build_lane_router"]
 
@@ -16,13 +20,12 @@ def stable_lane(lane_key: str, lane_count: int) -> int:
     hashing per process, so two producer replicas would place the same key on
     different lanes and a consumer's per-lane view would be meaningless.
 
-    SHA-256 rather than BLAKE2b for the same reason one step further out: the
-    Node producer has to land a given connector on the same lane as this one,
-    and Node's crypto cannot produce BLAKE2b at an 8-byte digest (the digest
-    length is mixed into BLAKE2b's IV, so truncating blake2b512 gives a
-    different value). Both runtimes compute SHA-256 natively and agree
-    byte-for-byte. See laneStreamFor in the Node lane utils; the two must
-    stay in step.
+    With assigned lanes on, this is a connector's hash lane: where producers
+    put it before the lane map existed and whenever a lookup falls back, and
+    so one of the lanes the stranded-record sweep counts for it. It must not
+    change between releases, or the sweep would stop looking where older
+    events are. SHA-256 because the Node service used to compute the same
+    hash; it no longer publishes record events.
     """
     if lane_count <= 1:
         return 0
@@ -54,6 +57,11 @@ class KafkaLaneRouter:
     def route(self, topic: str, lane_key: str | None) -> tuple[str, str | None]:
         return topic, lane_key or DEFAULT_LANE_KEY
 
+    async def place(
+        self, topic: str, lane_key: str | None, hint: LaneHint | None = None
+    ) -> tuple[str, str | None]:
+        return self.route(topic, lane_key)
+
     def lane_topics(self, topic: str) -> list[str]:
         return [topic]
 
@@ -79,6 +87,11 @@ class RedisLaneRouter:
     def route(self, topic: str, lane_key: str | None) -> tuple[str, str | None]:
         lane = stable_lane(lane_key or DEFAULT_LANE_KEY, self._lane_count)
         return self.lane_name(topic, lane), lane_key
+
+    async def place(
+        self, topic: str, lane_key: str | None, hint: LaneHint | None = None
+    ) -> tuple[str, str | None]:
+        return self.route(topic, lane_key)
 
     def lane_topics(self, topic: str) -> list[str]:
         """Base stream first, then the lanes.

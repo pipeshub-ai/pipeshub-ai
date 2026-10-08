@@ -16,8 +16,12 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
-from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
+from app.services.graph_db.common.utils import (
+    ROOT_SCOPED_CONNECTOR_TYPES,
+    org_id_from_app_edge,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.lanes.lifecycle import assign_lane_to_new_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -294,19 +298,7 @@ class ConnectorRegistry:
         connector_id = connector_instance.get("_key") or connector_instance.get("id")
         if not connector_id:
             return None
-        graph_provider = await self._get_graph_provider()
-        edges = await graph_provider.get_edges_to_node(
-            f"{CollectionNames.APPS.value}/{connector_id}",
-            CollectionNames.ORG_APP_RELATION.value,
-        )
-        for edge in edges or []:
-            if not isinstance(edge, dict):
-                continue
-            # Neo4j returns a bare id in from_id; Arango a handle in _from.
-            source = edge.get("from_id") or edge.get("_from")
-            if source:
-                return str(source).rsplit("/", 1)[-1]
-        return None
+        return await org_id_from_app_edge(await self._get_graph_provider(), connector_id)
 
     async def _can_delete_connector(
         self,
@@ -612,6 +604,13 @@ class ConnectorRegistry:
             self.logger.info(
                 f"Created connector instance '{instance_name}' of type {connector_type} "
                 f"with scope {scope} for user {created_by}"
+            )
+            await assign_lane_to_new_connector(
+                self.logger,
+                instance_key,
+                connector_type=connector_type,
+                scope=scope,
+                org_id=org_id,
             )
             return instance_document
 

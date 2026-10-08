@@ -9,6 +9,7 @@ import type {
   ConnectorConfig,
   FilterOptionsResponse,
   ConnectorStatsResponse,
+  ConnectionCheckResponse,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -124,6 +125,26 @@ export const ConnectorsApi = {
       `${BASE_URL}/registry/${connectorType}/schema`
     );
     return data;
+  },
+
+  /** Try auth settings before saving them; `connectorId` when editing an instance. */
+  async testConnection(
+    connectorType: string,
+    payload: { auth: Record<string, unknown>; connectorId?: string }
+  ): Promise<ConnectionCheckResponse> {
+    const { data } = await apiClient.post<ConnectionCheckResponse>(
+      `${BASE_URL}/registry/${encodeURIComponent(connectorType)}/test-connection`,
+      payload
+    );
+    return data;
+  },
+
+  /** Public IPs connectors connect from, for the user's firewall allowlist. */
+  async getEgressIps(): Promise<string[]> {
+    const { data } = await apiClient.get<{ egressIps?: string[] }>(
+      `${BASE_URL}/network/egress-ips`
+    );
+    return data.egressIps ?? [];
   },
 
   // ── Instance Management ──

@@ -186,6 +186,7 @@ class TestRestoreTrashedRecords:
             "the same item was added again after this one was deleted. To restore this one, delete "
             "'report.pdf' first, then try again."
         )
+        assert refused.value.details["blockedRecordId"] == "r1"
         assert refused.value.details["conflicting_record_id"] == "live"
         assert store.restored == [] and store.released == []
 

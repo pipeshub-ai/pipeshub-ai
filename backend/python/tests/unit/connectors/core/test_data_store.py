@@ -251,6 +251,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges, collection):
         pass
 
+    async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
+        pass
+
     async def delete_edges_between_collections(self, from_id, from_collection, edge_collection, to_collection):
         pass
 

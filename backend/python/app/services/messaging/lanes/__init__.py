@@ -4,7 +4,9 @@ See ``interface.py`` for the contract and why producers route into a lane
 while consumers read it off the message; ``hash_router.py`` for the Kafka and
 Redis implementations; ``producer.py`` for the decorator that applies routing
 to every existing publish site without editing any of them; ``backlog.py``
-for what a consumer reports as still waiting on each lane.
+for what a consumer reports as still waiting on each lane; ``assignment.py``
+for the lane map that gives each connector a recorded lane on Redis, and
+``assignment_policy.py`` for the edition hook that chooses it.
 """
 from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_key
 from app.services.messaging.lanes.hash_router import (
@@ -15,7 +17,9 @@ from app.services.messaging.lanes.hash_router import (
 )
 from app.services.messaging.lanes.interface import (
     DEFAULT_LANE_KEY,
+    LaneAssignmentMode,
     LaneConfig,
+    LaneHint,
     LaneRouter,
 )
 from app.services.messaging.lanes.producer import LaneAwareProducer
@@ -23,9 +27,11 @@ from app.services.messaging.lanes.producer import LaneAwareProducer
 __all__ = [
     "DEFAULT_LANE_KEY",
     "KafkaLaneRouter",
+    "LaneAssignmentMode",
     "LaneAwareProducer",
     "LaneBacklog",
     "LaneConfig",
+    "LaneHint",
     "LaneRouter",
     "RedisLaneRouter",
     "build_lane_router",

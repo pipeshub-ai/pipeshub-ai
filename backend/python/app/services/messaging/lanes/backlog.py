@@ -18,14 +18,22 @@ offset does not pass it until it is done.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
+from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
 
+    from app.services.messaging.lanes.assignment import LaneEntry
+
 __all__ = ["LaneBacklog", "redis_lanes_for_key"]
+
+_NO_PENDING: Mapping[str, int] = MappingProxyType({})
+# Nothing assigned: hashing is the whole story.
+_NO_ASSIGNMENTS: Mapping[str, LaneEntry] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,9 @@ class LaneBacklog:
     # broker places messages itself and the lane cannot be recomputed here
     # (Kafka's partitioner), so any lane might hold it.
     lanes_for_event: Callable[[Mapping[str, object]], Collection[str]] | None = None
+    # Lane name -> entries delivered but not yet acknowledged, where the broker
+    # reports it (Redis). For the lane view on /health.
+    pending: Mapping[str, int] = _NO_PENDING
 
     def oldest_waiting_for(self, payload: Mapping[str, object]) -> float | None:
         """Oldest event still waiting on any lane ``payload`` could be on; None if none is."""
@@ -59,19 +70,33 @@ def redis_lanes_for_key(
     lane_key: str | None,
     streams: Collection[str],
     lane_count: int,
+    assignments: Mapping[str, LaneEntry] | None = _NO_ASSIGNMENTS,
 ) -> set[str]:
     """Streams an event with ``lane_key`` may be waiting on, out of ``streams``.
 
-    Its own lane, plus every stream it could have been written to by another
+    Its own lanes, plus every stream it could have been written to by another
     route: the base stream (written before lanes were switched on, and by any
     producer that is not laned), the shared default lane (events published
     without the key), and lanes outside the configured range (left over from a
     larger lane count, which the consumer still drains).
+
+    Its own lanes are its hash lane (old producers, a rolled-back switch, and
+    lookups that fell back) and, from the lane map snapshot ``assignments``,
+    its assigned lane and the lane a move is still settling off. ``None`` for
+    ``assignments`` means the map could not be read, so any stream could hold
+    it; an empty map means nothing has been assigned and hashing is the whole
+    story.
     """
-    if lane_count <= 1:
+    if lane_count <= 1 or assignments is None:
         return set(streams)
     router = RedisLaneRouter(lane_count)
     configured = set(router.lane_topics(topic))
-    own, _ = router.route(topic, lane_key)
-    default, _ = router.route(topic, None)
-    return {topic, own, default} | {s for s in streams if s not in configured}
+    lanes = {topic} | {s for s in streams if s not in configured}
+    for key in {lane_key or DEFAULT_LANE_KEY, DEFAULT_LANE_KEY}:
+        lanes.add(router.route(topic, key)[0])
+        entry = assignments.get(key)
+        if entry is not None:
+            lanes.add(router.lane_name(topic, entry.lane))
+            if entry.prev_lane is not None:
+                lanes.add(router.lane_name(topic, entry.prev_lane))
+    return lanes

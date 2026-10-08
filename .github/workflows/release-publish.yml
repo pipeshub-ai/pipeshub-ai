@@ -11,7 +11,10 @@ name: Release — build, publish, verify
 # install is never reachable as :latest or :slim.
 #
 # Manual runs are supported for rehearsal: workflow_dispatch with promote=false
-# builds and verifies without moving any published tag.
+# builds and verifies without touching any tag that already exists. The one
+# thing it may publish is a prerelease version (1.2.3-rc.1) whose tags are not
+# on Docker Hub yet, so a build for someone to try is a single run; :latest and
+# :slim move only with promote=true, and never for a prerelease.
 
 on:
   push:
@@ -33,12 +36,23 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-publish-${{ github.ref }}
+  # One key per version for both triggers (v1.2.3 from a tag push, or
+  # inputs.version with a v prefix on dispatch), so two builds of one version
+  # queue whatever branch they come from and cannot both pass the "tags
+  # absent" check. The publish job adds a single group across all versions.
+  group: release-publish-${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+  # `queue: max` keeps every waiting run; the default keeps only the newest
+  # pending one and cancels the rest.
+  queue: max
   cancel-in-progress: false
 
 env:
   IMAGE: pipeshubai/pipeshub-ai
   BASE_IMAGE: pipeshubai/pipeshub-ai-base
+  # The code-execution sandbox the app pulls at install time, tagged in step
+  # with the app image (docker-compose.yml, sandbox-image). It was pushed by
+  # hand for every release before this workflow built it.
+  SANDBOX_IMAGE: pipeshubai/pipeshub-sandbox
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -130,11 +144,50 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.variant }},mode=max
 
   # ---------------------------------------------------------------------------
+  # install.sh pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}, so the candidate
+  # needs a sandbox image under both its tags (slim installs use the -slim
+  # tag). Without it compose tries to build the sandbox from source, which a
+  # standalone install does not have, and every verify job fails.
+  build-sandbox:
+    name: Build sandbox
+    needs: resolve
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push the sandbox candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: deployment/sandbox
+          file: deployment/sandbox/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ env.SANDBOX_IMAGE }}:${{ needs.resolve.outputs.candidate }}
+            ${{ env.SANDBOX_IMAGE }}:${{ needs.resolve.outputs.candidate }}-slim
+          cache-from: type=gha,scope=sandbox
+          cache-to: type=gha,scope=sandbox,mode=max
+
+  # ---------------------------------------------------------------------------
   # The gate. These images are on Docker Hub but no published tag points at them
   # yet, so this runs against exactly what a user would install.
   verify:
     name: Verify ${{ matrix.deploy }} candidate (${{ matrix.arch }}${{ matrix.graph && format(', {0}', matrix.graph) || '' }})
-    needs: [resolve, build]
+    needs: [resolve, build, build-sandbox]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -222,11 +275,24 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  # With promote=true the version tags are written (overwriting if present)
+  # and, for a stable version, :latest and :slim move. With promote=false a
+  # prerelease version is published only onto tags that do not exist yet, and
+  # a stable version is a rehearsal that publishes nothing. crane copy
+  # overwrites, so an existing tag is never replaced without promote.
   promote:
-    name: Promote to release tags
+    name: Publish release tags
     needs: [resolve, verify]
-    if: needs.resolve.outputs.promote == 'true'
     runs-on: ubuntu-latest
+    # Every publisher of the shared tags queues here, across versions and
+    # triggers, so two runs cannot interleave their copies of :latest/:slim
+    # or undo each other's moves.
+    concurrency:
+      group: release-publish-tags
+      # A waiting publish has already passed verify; the default queue would
+      # cancel it when a third arrives, and its version would get no tags.
+      queue: max
+      cancel-in-progress: false
     steps:
       - name: Log in to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -241,27 +307,157 @@ jobs:
 
       # Copy by digest rather than rebuilding, so the tag a user pulls is
       # byte-identical to the image the smoke and upgrade tests just passed.
-      # A prerelease version never moves :latest or :slim.
-      - name: Point release tags at the verified image
+      # The sandbox moves with the app: install.sh pulls both under one tag.
+      - name: Point release tags at the verified images
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          PROMOTE: ${{ needs.resolve.outputs.promote }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          crane copy "${IMAGE}:${CANDIDATE}"       "${IMAGE}:${VERSION}"
-          crane copy "${IMAGE}:${CANDIDATE}-slim"  "${IMAGE}:${VERSION}-slim"
-          if printf '%s' "$VERSION" | grep -q -- '-'; then
-            echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
-          else
-            crane copy "${IMAGE}:${CANDIDATE}"      "${IMAGE}:latest"
-            crane copy "${IMAGE}:${CANDIDATE}-slim" "${IMAGE}:slim"
+          prerelease=false
+          if printf '%s' "$VERSION" | grep -q -- '-'; then prerelease=true; fi
+          if [ "$PROMOTE" != "true" ] && [ "$prerelease" != "true" ]; then
+            echo "rehearsal of ${VERSION}: verified, publishing nothing"
+            exit 0
           fi
-          echo "published ${IMAGE}:${VERSION} (+slim)"
+          # One answer for "what is at this tag": present with its digest,
+          # absent (the registry said not-found), or unknown (anything else).
+          # Unknown is never treated as absent: both the pre-check and the
+          # undo snapshot stop before a copy instead of guessing.
+          # crane logs a "HEAD request failed, falling back on GET" line on
+          # stderr before the GET's own error, so only the final error line
+          # decides, and only the registry's not-found codes mean absent.
+          tag_state() {
+            local digest err
+            if digest="$(crane digest "$1" 2>"${RUNNER_TEMP}/digest.err")"; then
+              echo "present $digest"
+              return
+            fi
+            err="$(grep -v 'falling back on GET' "${RUNNER_TEMP}/digest.err" | tail -n 1)"
+            if printf '%s' "$err" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN'; then
+              echo "absent"
+            else
+              echo "unknown ${err:-no error output}"
+            fi
+          }
+          # Docker Hub removes a tag by name through its own API; the registry
+          # API deletes manifests only by digest. Used to undo a half-written
+          # set below and by the candidate cleanup step.
+          hub_delete_tag() {
+            local jwt
+            jwt="$(curl -fsS -H 'Content-Type: application/json' \
+              -d "$(jq -cn --arg u "$HUB_USERNAME" --arg p "$HUB_TOKEN" '{username:$u,password:$p}')" \
+              https://hub.docker.com/v2/users/login | jq -r .token)"
+            curl -sS -o /dev/null -w "delete $1:$2 -> HTTP %{http_code}\n" -X DELETE \
+              -H "Authorization: JWT ${jwt}" "https://hub.docker.com/v2/repositories/$1/tags/$2/"
+          }
+          # install.sh pulls the app and the sandbox under one tag, so the four
+          # version tags are published as a set. Without promote: all absent
+          # means copy them all, all present means leave them, a confirmed mix
+          # means an earlier run stopped halfway (never papered over with
+          # images that were not verified together), and a lookup that fails
+          # for any reason other than not-found stops the step before any
+          # copy, since "absent" must never be a guess.
+          if [ "$PROMOTE" != "true" ]; then
+            present=0; absent=0
+            for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+              for suffix in "" "-slim"; do
+                ref="${repo}:${VERSION}${suffix}"
+                state="$(tag_state "$ref")"
+                case "$state" in
+                  present*) present=$((present + 1)) ;;
+                  absent)   absent=$((absent + 1)) ;;
+                  *) echo "::error::could not tell whether ${ref} exists (${state#unknown }). Nothing was published; re-run once Docker Hub answers."; exit 1 ;;
+                esac
+              done
+            done
+            if [ "$present" -eq 4 ]; then
+              echo "${VERSION}: all four tags already exist, left as they are (promote is off)"
+              exit 0
+            elif [ "$absent" -ne 4 ]; then
+              echo "::error::${VERSION}: ${present} of the 4 version tags exist. A previous run stopped partway; delete the partial set on Docker Hub or re-run with promote=true."
+              exit 1
+            fi
+            clobber=(--no-clobber)
+          else
+            clobber=()
+          fi
+          # Each set of tags is published as a unit. Every destination's
+          # current digest is recorded first; if any copy in the set fails,
+          # the tags this step already moved are pointed back at those
+          # digests (or deleted if they did not exist), so an install that
+          # pulls the app and the sandbox under one tag never gets one new
+          # and one old.
+          publish_set() {
+            local -a prev=() written=() prevw=()
+            local pair src dst state i=0 j
+            for pair in "$@"; do
+              dst="${pair#* }"
+              state="$(tag_state "$dst")"
+              case "$state" in
+                present*) prev+=("${state#present }") ;;
+                absent)   prev+=("") ;;
+                *) echo "::error::could not read the current digest of ${dst} (${state#unknown }); nothing in this set was moved. Re-run once Docker Hub answers."; return 1 ;;
+              esac
+            done
+            for pair in "$@"; do
+              src="${pair% *}"; dst="${pair#* }"
+              if ! crane copy "${clobber[@]}" "$src" "$dst"; then
+                echo "::error::copy of ${dst} failed; putting back the ${#written[@]} tag(s) this step had already moved"
+                for j in "${!written[@]}"; do
+                  if [ -n "${prevw[$j]}" ]; then
+                    crane tag "${written[$j]%%:*}@${prevw[$j]}" "${written[$j]#*:}" || true
+                  else
+                    hub_delete_tag "${written[$j]%%:*}" "${written[$j]#*:}" || true
+                  fi
+                done
+                return 1
+              fi
+              written+=("$dst"); prevw+=("${prev[$i]}"); i=$((i + 1))
+              echo "published ${dst}"
+            done
+          }
+          publish_set \
+            "${IMAGE}:${CANDIDATE} ${IMAGE}:${VERSION}" \
+            "${IMAGE}:${CANDIDATE}-slim ${IMAGE}:${VERSION}-slim" \
+            "${SANDBOX_IMAGE}:${CANDIDATE} ${SANDBOX_IMAGE}:${VERSION}" \
+            "${SANDBOX_IMAGE}:${CANDIDATE}-slim ${SANDBOX_IMAGE}:${VERSION}-slim"
+          if [ "$prerelease" = "true" ]; then
+            echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
+          elif [ "$PROMOTE" != "true" ]; then
+            echo "promote is off: leaving :latest and :slim untouched"
+          else
+            clobber=()
+            publish_set \
+              "${IMAGE}:${CANDIDATE} ${IMAGE}:latest" \
+              "${IMAGE}:${CANDIDATE}-slim ${IMAGE}:slim" \
+              "${SANDBOX_IMAGE}:${CANDIDATE} ${SANDBOX_IMAGE}:latest" \
+              "${SANDBOX_IMAGE}:${CANDIDATE}-slim ${SANDBOX_IMAGE}:slim"
+            echo "moved :latest and :slim to ${VERSION}"
+          fi
 
+      # Docker Hub deletes a manifest only by digest, so `crane delete` of a tag
+      # fails there and the candidate tags used to linger. Its own API removes
+      # a tag without touching the manifest the release tags share.
       - name: Remove candidate tags
         continue-on-error: true
         env:
           CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          crane delete "${IMAGE}:${CANDIDATE}"      || true
-          crane delete "${IMAGE}:${CANDIDATE}-slim" || true
+          set -euo pipefail
+          jwt="$(curl -fsS -H 'Content-Type: application/json' \
+            -d "$(jq -cn --arg u "$HUB_USERNAME" --arg p "$HUB_TOKEN" '{username:$u,password:$p}')" \
+            https://hub.docker.com/v2/users/login | jq -r .token)"
+          for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+            for tag in "${CANDIDATE}" "${CANDIDATE}-slim"; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: JWT ${jwt}" \
+                "https://hub.docker.com/v2/repositories/${repo}/tags/${tag}/")"
+              echo "delete ${repo}:${tag} -> HTTP ${code}"
+            done
+          done

@@ -45,6 +45,8 @@ import type { PanelTab } from '../types';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import { isLocalFsConfigReadOnly } from '../utils/local-fs-helpers';
 
+let connectionCheckSeq = 0;
+
 /** Non-admin OAuth instances must pick an OAuth app before save. */
 function oauthAppSelectionError(
   selectedAuthType: string,
@@ -126,6 +128,8 @@ export function ConnectorPanel() {
     bumpCatalogRefresh,
     oauthAuthorizeUiEpoch,
     selectedScope,
+    connectionCheck,
+    setConnectionCheck,
   } = useConnectorsStore();
 
   const openInstancePanel = useConnectorsStore((s) => s.openInstancePanel);
@@ -492,8 +496,53 @@ export function ConnectorPanel() {
     t,
   ]);
 
+  /** Try the credentials before saving them; on failure the reason is shown on the Authenticate tab. */
+  const passesConnectionCheck = useCallback(
+    async (auth: Record<string, unknown>): Promise<boolean> => {
+      const id = ++connectionCheckSeq;
+      const isStale = () => useConnectorsStore.getState().connectionCheck.id !== id;
+      setConnectionCheck({ status: 'checking', message: null, id });
+      let message: string;
+      try {
+        const result = await ConnectorsApi.testConnection(connectorType, {
+          auth,
+          ...(panelConnectorId ? { connectorId: panelConnectorId } : {}),
+        });
+        if (isStale()) return false;
+        if (result.success) {
+          setConnectionCheck({ status: 'idle', message: null });
+          return true;
+        }
+        message = result.message;
+      } catch (err: unknown) {
+        if (isStale()) return false;
+        message = getUserFacingErrorMessage(
+          err,
+          t('workspace.connectors.authTab.connectionCheck.requestFailed')
+        );
+      }
+      setConnectionCheck({ status: 'failed', message });
+      requestAnimationFrame(() => {
+        document
+          .querySelector('[data-ph-connection-check-error]')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      return false;
+    },
+    [connectorType, panelConnectorId, setConnectionCheck, t]
+  );
+
   const handleSaveAuth = useCallback(async () => {
     if (!resolveAuthenticateOrReturn()) {
+      return;
+    }
+
+    const trimmedAuth = trimAuthPayloadForApi(formData.auth);
+    const finalAuth = useConnectorsStore.getState().disableCredentialEditWhenLinked
+      ? stripLinkedOAuthAppCredentials(trimmedAuth)
+      : trimmedAuth;
+
+    if (connectorSchema?.supportsConnectionCheck && !(await passesConnectionCheck(finalAuth))) {
       return;
     }
     setIsSavingAuth(true);
@@ -502,12 +551,6 @@ export function ConnectorPanel() {
       // Create mode: POST /connectors
       try {
         setSaveError(null);
-
-        const trimmedAuth = trimAuthPayloadForApi(formData.auth);
-        const disableCredEditFlag = useConnectorsStore.getState().disableCredentialEditWhenLinked;
-        const finalAuth = disableCredEditFlag
-          ? stripLinkedOAuthAppCredentials(trimmedAuth)
-          : trimmedAuth;
 
         const result = (await ConnectorsApi.createConnectorInstance({
           connectorType,
@@ -582,15 +625,9 @@ export function ConnectorPanel() {
       try {
         setSaveError(null);
 
-        const editTrimmedAuth = trimAuthPayloadForApi(formData.auth);
-        const editDisableCredFlag = useConnectorsStore.getState().disableCredentialEditWhenLinked;
-        const editFinalAuth = editDisableCredFlag
-          ? stripLinkedOAuthAppCredentials(editTrimmedAuth)
-          : editTrimmedAuth;
-
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
           auth: {
-            ...editFinalAuth,
+            ...finalAuth,
             connectorScope: selectedScope,
           },
           baseUrl: window.location.origin,
@@ -637,6 +674,8 @@ export function ConnectorPanel() {
     isCreateMode,
     selectedScope,
     resolveAuthenticateOrReturn,
+    connectorSchema,
+    passesConnectionCheck,
     instanceName,
     connectorType,
     selectedAuthType,
@@ -902,6 +941,7 @@ export function ConnectorPanel() {
     authTypeForConfigureGate,
     instanceAuthenticated,
     isSavingAuth,
+    isCheckingConnection: connectionCheck.status === 'checking',
     isSavingConfig,
     isLoadingSchema,
     isLoadingConfig,
@@ -910,6 +950,7 @@ export function ConnectorPanel() {
     onSave: handleSaveConfig,
     labels: {
       next: t('common.next'),
+      testingConnection: t('workspace.connectors.authTab.connectionCheck.testing'),
       saving: t('action.saving'),
       cancel: t('action.cancel'),
       loadingConfig: t('workspace.connectors.loadingConfig'),
@@ -1099,6 +1140,7 @@ function getFooterConfig({
   authTypeForConfigureGate,
   instanceAuthenticated,
   isSavingAuth,
+  isCheckingConnection,
   isSavingConfig,
   isLoadingSchema,
   isLoadingConfig,
@@ -1118,6 +1160,7 @@ function getFooterConfig({
   authTypeForConfigureGate: string;
   instanceAuthenticated: boolean;
   isSavingAuth: boolean;
+  isCheckingConnection: boolean;
   isSavingConfig: boolean;
   isLoadingSchema: boolean;
   isLoadingConfig: boolean;
@@ -1126,6 +1169,7 @@ function getFooterConfig({
   onSave: () => void;
   labels: {
     next: string;
+    testingConnection: string;
     saving: string;
     cancel: string;
     loadingConfig: string;
@@ -1155,10 +1199,10 @@ function getFooterConfig({
 
   if (panelActiveTab === 'authenticate') {
     return {
-      primaryLabel: `${labels.next} →`,
-      /** Validation runs on click; only disable while the save request is in flight. */
-      primaryDisabled: isSavingAuth,
-      primaryLoading: isSavingAuth,
+      primaryLabel: isCheckingConnection ? labels.testingConnection : `${labels.next} →`,
+      /** Validation runs on click; only disable while the check or save request is in flight. */
+      primaryDisabled: isSavingAuth || isCheckingConnection,
+      primaryLoading: isSavingAuth || isCheckingConnection,
       primaryTooltip: isSavingAuth ? labels.saving : undefined,
       onPrimary: onNext,
       secondaryLabel: labels.cancel,

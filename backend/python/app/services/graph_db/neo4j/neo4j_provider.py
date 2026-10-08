@@ -238,6 +238,8 @@ _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus
 _PURGE_LOCK = "purgeLock"
 # Written and removed at the start of a move statement to take its new parent's write lock.
 _MOVE_LOCK = "moveLock"
+# Written and removed before a conditional write reads its expectation, to take the node's write lock.
+_MATCH_LOCK = "matchLock"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # The roots of a connector's delete batches: records in the trash whose parent is
@@ -1844,6 +1846,42 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch create edges failed: {str(e)}")
             raise
 
+    async def create_edges_if_absent(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> None:
+        """Create the edges that are not there; an existing edge keeps its properties.
+
+        Not batch_create_edges: that does ``SET r = edge.props``, which would reset
+        a live edge (a sync state, a role) when a repair re-runs over it.
+        """
+        try:
+            if not edges:
+                return
+
+            relationship_type = edge_collection_to_relationship(collection)
+
+            for (from_label, to_label), group_edges in self._edges_by_labels(edges).items():
+                query = f"""
+                UNWIND $edges AS edge
+                MATCH (from:{from_label} {{id: edge.from_key}})
+                MATCH (to:{to_label} {{id: edge.to_key}})
+                MERGE (from)-[r:{relationship_type}]->(to)
+                ON CREATE SET r = edge.props
+                RETURN count(r) AS matched
+                """
+                await self.client.execute_query(
+                    query,
+                    parameters={"edges": group_edges},
+                    txn_id=transaction
+                )
+
+        except Exception as e:
+            self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
+            raise
+
     async def batch_create_entity_relations(
         self,
         edges: list[dict],
@@ -3120,9 +3158,14 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 parameters[f"v{i}"] = value
                 conditions.append(f"n[$f{i}] = $v{i}")
+        # The lock comes first so the check reads a write that committed while
+        # this waited, instead of overwriting it (Neo4j's lost-update pattern).
         rows = await self.client.execute_query(
             f"""
             MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
             WHERE {" AND ".join(conditions)}
             SET n += $updates
             RETURN 1 AS n
@@ -3131,6 +3174,51 @@ class Neo4jProvider(IGraphDBProvider):
             txn_id=transaction,
         )
         return bool(rows)
+
+    async def update_nodes_fields_if_match(
+        self,
+        collection: str,
+        rows: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.update_nodes_fields_if_match`. One statement."""
+        if not rows:
+            return []
+        label = collection_to_label(collection)
+        params = []
+        for key, updates, expected in rows:
+            if not expected:
+                raise ValueError("update_nodes_fields_if_match needs an expectation per row")
+            neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+            self.validator.validate_node_update(collection, neo4j_updates)
+            params.append({
+                "key": key,
+                "updates": neo4j_updates,
+                "fields": list(expected),
+                "values": list(expected.values()),
+            })
+        # Expected values travel as parallel lists: a null inside a map
+        # parameter means "absent" here, and a list keeps it addressable.
+        # The lock comes first so the check reads a write that committed while
+        # this waited, instead of overwriting it (Neo4j's lost-update pattern).
+        result = await self.client.execute_query(
+            f"""
+            UNWIND $rows AS row
+            MATCH (n:{label} {{id: row.key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n, row
+            WHERE all(i IN range(0, size(row.fields) - 1) WHERE
+                CASE WHEN row.values[i] IS NULL
+                     THEN n[row.fields[i]] IS NULL
+                     ELSE n[row.fields[i]] = row.values[i] END)
+            SET n += row.updates
+            RETURN n.id AS id
+            """,
+            parameters={"rows": params},
+            txn_id=transaction,
+        )
+        return [r["id"] for r in result or [] if r.get("id")]
 
     async def get_records_pending_duplicate_reconcile(
         self,

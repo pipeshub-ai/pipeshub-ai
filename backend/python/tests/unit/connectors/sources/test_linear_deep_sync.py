@@ -8,6 +8,8 @@ _process_issue_attachments, _process_issue_documents.
 """
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +20,7 @@ import pytest
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
+    LINEAR_TRANSIENT_RETRIES,
     LinearConnector,
 )
 from app.models.entities import (
@@ -33,6 +36,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.graphql.response import GraphQLError, GraphQLResponse
 
 
 # ===========================================================================
@@ -87,6 +91,21 @@ def _team_rg(team_id="t1", key="ENG"):
         short_name=key,
         group_type=RecordGroupType.PROJECT,
     )
+
+
+def _timed_out_page(query: str = "issues") -> GraphQLResponse:
+    """What the data source returns for a read timeout: no status, no errors."""
+    return GraphQLResponse(success=False, message=f"Failed to execute query {query}: ")
+
+
+def _refused_page() -> GraphQLResponse:
+    return GraphQLResponse(success=False, message="Argument Validation Error", status_code=200, errors=[
+        GraphQLError(message="Argument Validation Error", extensions={"code": "GRAPHQL_VALIDATION_FAILED"}),
+    ])
+
+
+def _no_sleep() -> AbstractContextManager[AsyncMock]:
+    return patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock())
 
 
 def _make_issue_data(issue_id="iss-1", identifier="ENG-1", updated="2024-06-01T00:00:00.000Z"):
@@ -476,6 +495,65 @@ class TestSyncIssuesForTeams:
         await connector._sync_issues_for_teams([(rg1, []), (rg2, [])])
         assert call_count == 2
 
+    @staticmethod
+    def _connector_with_issue_pages(*responses: GraphQLResponse) -> tuple[LinearConnector, MagicMock]:
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector._get_team_sync_checkpoint = AsyncMock(return_value=None)
+        connector._update_team_sync_checkpoint = AsyncMock()
+        ds = MagicMock()
+        ds.issues = AsyncMock(side_effect=list(responses))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._transform_issue_to_ticket_record = MagicMock(return_value=MagicMock(
+            spec=TicketRecord, id="rec-1", weburl="url", indexing_status=None,
+            source_updated_at=1700000000000,
+        ))
+        connector._extract_files_from_markdown = AsyncMock(return_value=([], []))
+        return connector, ds
+
+    @pytest.mark.asyncio
+    async def test_a_team_whose_page_still_fails_after_the_retries_is_reported_failed(self) -> None:
+        """#3991 retried the page; a page that never came back still left the team counted as synced."""
+        connector, ds = self._connector_with_issue_pages(*[_timed_out_page()] * (LINEAR_TRANSIENT_RETRIES + 1))
+
+        with _no_sleep():
+            _, failed = await connector._sync_issues_for_teams([(_team_rg("t1", "FRO"), [])])
+
+        assert ds.issues.await_count == LINEAR_TRANSIENT_RETRIES + 1
+        assert failed == ["Team FRO"]
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_team_keeps_the_records_read_but_not_the_checkpoint_when_a_later_page_fails(self) -> None:
+        """Pages are not ordered by updatedAt, so the unread page may hold older issues than the max seen."""
+        first_page = GraphQLResponse(success=True, status_code=200, data={
+            "issues": {"nodes": [_make_issue_data()], "pageInfo": {"hasNextPage": True, "endCursor": "cur1"}},
+        })
+        connector, ds = self._connector_with_issue_pages(first_page, _refused_page())
+
+        _, failed = await connector._sync_issues_for_teams([(_team_rg("t1", "FRO"), [])])
+
+        assert failed == ["Team FRO"]
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+        connector._update_team_sync_checkpoint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_checkpoint_is_written_once_the_whole_scan_was_read(self) -> None:
+        first_page = GraphQLResponse(success=True, status_code=200, data={
+            "issues": {"nodes": [_make_issue_data()], "pageInfo": {"hasNextPage": True, "endCursor": "cur1"}},
+        })
+        last_page = GraphQLResponse(success=True, status_code=200, data={
+            "issues": {"nodes": [_make_issue_data("iss-2", "ENG-2")], "pageInfo": {"hasNextPage": False}},
+        })
+        connector, ds = self._connector_with_issue_pages(first_page, last_page)
+
+        _, failed = await connector._sync_issues_for_teams([(_team_rg("t1", "FRO"), [])])
+
+        assert failed == []
+        assert connector.data_entities_processor.on_new_records.await_count == 2
+        connector._update_team_sync_checkpoint.assert_awaited_once_with("FRO", 1700000000000)
+
     @pytest.mark.asyncio
     async def test_skips_team_without_external_id(self):
         connector = _make_connector()
@@ -492,6 +570,63 @@ class TestSyncIssuesForTeams:
 
 
 class TestFetchIssuesForTeamBatch:
+
+    @staticmethod
+    def _connector_with_issue_pages(*responses: GraphQLResponse) -> tuple[LinearConnector, MagicMock]:
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        ds = MagicMock()
+        ds.issues = AsyncMock(side_effect=list(responses))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._transform_issue_to_ticket_record = MagicMock(return_value=MagicMock(
+            spec=TicketRecord, id="rec-1", weburl="url", indexing_status=None,
+            source_updated_at=1700000000000,
+        ))
+        connector._extract_files_from_markdown = AsyncMock(return_value=([], []))
+        return connector, ds
+
+    @staticmethod
+    def _issues_page() -> GraphQLResponse:
+        return GraphQLResponse(success=True, data={
+            "issues": {"nodes": [_make_issue_data()], "pageInfo": {"hasNextPage": False}},
+        }, status_code=200)
+
+    async def _batches(self, connector: LinearConnector) -> list:
+        with patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock()):
+            return [b async for b in connector._fetch_issues_for_team_batch(team_id="t1", team_key="FRO")]
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_timed_out_is_fetched_again(self) -> None:
+        """The 10/07 nightly lost team FRO's issues to one 30s read timeout."""
+        timed_out = GraphQLResponse(success=False, message="Failed to execute query issues: ")
+        connector, ds = self._connector_with_issue_pages(timed_out, self._issues_page())
+
+        batches = await self._batches(connector)
+
+        assert ds.issues.await_count == 2
+        assert len(batches) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limited_page_is_fetched_again(self) -> None:
+        limited = GraphQLResponse(success=False, message="Rate limit exceeded", status_code=400, errors=[
+            GraphQLError(message="Rate limit exceeded", extensions={"code": "RATELIMITED"}),
+        ])
+        connector, ds = self._connector_with_issue_pages(limited, self._issues_page())
+
+        batches = await self._batches(connector)
+
+        assert ds.issues.await_count == 2
+        assert len(batches) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_refused_query_is_not_fetched_again(self) -> None:
+        connector, ds = self._connector_with_issue_pages(_refused_page(), self._issues_page())
+
+        with pytest.raises(RuntimeError, match="Argument Validation Error"):
+            await self._batches(connector)
+
+        assert ds.issues.await_count == 1
 
     @pytest.mark.asyncio
     async def test_single_page(self):
@@ -564,7 +699,7 @@ class TestFetchIssuesForTeamBatch:
         assert len(batches) == 2
 
     @pytest.mark.asyncio
-    async def test_api_failure_breaks(self):
+    async def test_api_failure_raises(self):
         connector = _make_connector()
         connector.sync_filters = None
         connector.indexing_filters = None
@@ -572,13 +707,9 @@ class TestFetchIssuesForTeamBatch:
         ds.issues = AsyncMock(return_value=_mock_gql_response(success=False, message="Error"))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        batches = []
-        async for batch in connector._fetch_issues_for_team_batch(
-            team_id="t1", team_key="ENG"
-        ):
-            batches.append(batch)
-
-        assert len(batches) == 0
+        with pytest.raises(RuntimeError, match="Error"):
+            async for _ in connector._fetch_issues_for_team_batch(team_id="t1", team_key="ENG"):
+                pass
 
 
 # ===========================================================================
@@ -659,6 +790,58 @@ class TestSyncAttachments:
         await connector._sync_attachments([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_a_page_that_still_fails_after_the_retries_raises_the_attachments_warning(self) -> None:
+        connector = _make_connector()
+        connector._get_attachments_sync_checkpoint = AsyncMock(return_value=None)
+        connector._update_attachments_sync_checkpoint = AsyncMock()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector.notify = AsyncMock()
+        ds = MagicMock()
+        ds.attachments = AsyncMock(return_value=_timed_out_page("attachments"))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with _no_sleep():
+            await connector._sync_attachments([(_team_rg(), [])])
+
+        assert ds.attachments.await_count == LINEAR_TRANSIENT_RETRIES + 1
+        connector.notify.assert_awaited_once()
+        assert "couldn't sync attachments" in connector.notify.await_args.kwargs["title"]
+        connector._update_attachments_sync_checkpoint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_records_read_are_kept_but_not_the_checkpoint_when_a_later_page_fails(self) -> None:
+        connector = _make_connector()
+        connector._get_attachments_sync_checkpoint = AsyncMock(return_value=None)
+        connector._update_attachments_sync_checkpoint = AsyncMock()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector.notify = AsyncMock()
+        first_page = _mock_gql_response({
+            "attachments": {
+                "nodes": [{"id": "att-1", "issue": {"id": "iss-1", "team": {"id": "t1"}}}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur1"},
+            }
+        })
+        ds = MagicMock()
+        ds.attachments = AsyncMock(side_effect=[first_page, _refused_page()])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        mock_parent = MagicMock()
+        mock_parent.id = "parent-rec-id"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: mock_parent if external_record_id == "iss-1" else None
+        )
+        connector._transform_attachment_to_link_record = MagicMock(return_value=MagicMock(
+            spec=LinkRecord, source_updated_at=1700000001000, weburl=None, indexing_status=None,
+        ))
+
+        await connector._sync_attachments([(_team_rg(), [])])
+
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+        connector._update_attachments_sync_checkpoint.assert_not_awaited()
+        connector.notify.assert_awaited_once()
+
 
 # ===========================================================================
 # _sync_documents
@@ -737,6 +920,61 @@ class TestSyncDocuments:
         await connector._sync_documents([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_a_page_that_still_fails_after_the_retries_raises_the_documents_warning(self) -> None:
+        connector = _make_connector()
+        connector._get_documents_sync_checkpoint = AsyncMock(return_value=None)
+        connector._update_documents_sync_checkpoint = AsyncMock()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector.notify = AsyncMock()
+        ds = MagicMock()
+        ds.documents = AsyncMock(return_value=_timed_out_page("documents"))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with _no_sleep():
+            await connector._sync_documents([(_team_rg(), [])])
+
+        assert ds.documents.await_count == LINEAR_TRANSIENT_RETRIES + 1
+        connector.notify.assert_awaited_once()
+        assert "couldn't sync documents" in connector.notify.await_args.kwargs["title"]
+        connector._update_documents_sync_checkpoint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_records_read_are_kept_but_not_the_checkpoint_when_a_later_page_fails(self) -> None:
+        connector = _make_connector()
+        connector._get_documents_sync_checkpoint = AsyncMock(return_value=None)
+        connector._update_documents_sync_checkpoint = AsyncMock()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector.notify = AsyncMock()
+        first_page = _mock_gql_response({
+            "documents": {
+                "nodes": [{
+                    "id": "doc-1", "title": "Design Doc", "updatedAt": "2024-01-02T00:00:00.000Z",
+                    "issue": {"id": "iss-1", "identifier": "ENG-1", "team": {"id": "t1"}},
+                }],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur1"},
+            }
+        })
+        ds = MagicMock()
+        ds.documents = AsyncMock(side_effect=[first_page, _refused_page()])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        mock_parent = MagicMock()
+        mock_parent.id = "parent-rec-id"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: mock_parent if external_record_id == "iss-1" else None
+        )
+        connector._transform_document_to_webpage_record = MagicMock(return_value=MagicMock(
+            spec=WebpageRecord, source_updated_at=1700000001000, indexing_status=None,
+        ))
+
+        await connector._sync_documents([(_team_rg(), [])])
+
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+        connector._update_documents_sync_checkpoint.assert_not_awaited()
+        connector.notify.assert_awaited_once()
+
 
 # ===========================================================================
 # _sync_projects_for_teams
@@ -790,6 +1028,48 @@ class TestSyncProjectsForTeams:
 
         await connector._sync_projects_for_teams([(rg1, []), (rg2, [])])
         assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_team_whose_projects_page_still_fails_after_the_retries_is_reported(self) -> None:
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector._get_team_project_sync_checkpoint = AsyncMock(return_value=None)
+        connector._update_team_project_sync_checkpoint = AsyncMock()
+        connector.notify = AsyncMock()
+        ds = MagicMock()
+        ds.projects = AsyncMock(return_value=_timed_out_page("projects"))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with _no_sleep():
+            await connector._sync_projects_for_teams([(_team_rg("t1", "FRO"), [])])
+
+        assert ds.projects.await_count == LINEAR_TRANSIENT_RETRIES + 1
+        connector.notify.assert_awaited_once()
+        assert "couldn't sync projects for some teams" in connector.notify.await_args.kwargs["title"]
+        assert "Team FRO" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_team_keeps_the_records_read_but_not_the_checkpoint_when_a_later_page_fails(self) -> None:
+        connector = _make_connector()
+        connector._get_team_project_sync_checkpoint = AsyncMock(return_value=None)
+        connector._update_team_project_sync_checkpoint = AsyncMock()
+        connector.notify = AsyncMock()
+        mock_proj = MagicMock(spec=ProjectRecord)
+        mock_proj.source_updated_at = 1700000001000
+
+        async def one_page_then_a_failed_one(**kw: object) -> AsyncIterator[list]:
+            yield [(mock_proj, [])]
+            raise RuntimeError("Failed to fetch projects for team FRO: Argument Validation Error")
+
+        connector._fetch_projects_for_team_batch = one_page_then_a_failed_one
+
+        await connector._sync_projects_for_teams([(_team_rg("t1", "FRO"), [])])
+
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+        connector._update_team_project_sync_checkpoint.assert_not_awaited()
+        connector.notify.assert_awaited_once()
+        assert "Team FRO" in connector.notify.await_args.kwargs["message"]
 
 
 # ===========================================================================
@@ -872,6 +1152,30 @@ class TestSyncDeletedIssues:
         await connector._sync_deleted_issues([(rg, [])])
         assert connector._mark_record_and_children_deleted.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_checkpoint_stays_put_when_a_later_page_fails(self) -> None:
+        """The query is unordered, so a trashed issue on the unread page may be older than the max seen."""
+        connector = _make_connector()
+        connector._get_deletion_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_deletion_sync_checkpoint = AsyncMock()
+        connector._mark_record_and_children_deleted = AsyncMock()
+        first_page = _mock_gql_response({
+            "issues": {
+                "nodes": [{"id": "i1", "identifier": "E-1", "trashed": True, "archivedAt": "2024-06-02T00:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur1"},
+            }
+        })
+        ds = MagicMock()
+        ds.issues = AsyncMock(side_effect=[first_page] + [_timed_out_page()] * (LINEAR_TRANSIENT_RETRIES + 1))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with _no_sleep():
+            await connector._sync_deleted_issues([(_team_rg(), [])])
+
+        assert ds.issues.await_count == LINEAR_TRANSIENT_RETRIES + 2
+        connector._mark_record_and_children_deleted.assert_awaited_once()
+        connector._update_deletion_sync_checkpoint.assert_not_awaited()
+
 
 # ===========================================================================
 # _sync_deleted_projects
@@ -894,6 +1198,48 @@ class TestSyncDeletedProjects:
 
         await connector._sync_deleted_projects([(rg, [])])
         connector._update_deletion_sync_checkpoint.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_advances_when_every_page_was_read(self) -> None:
+        connector = _make_connector()
+        connector._get_deletion_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_deletion_sync_checkpoint = AsyncMock()
+        connector._mark_record_and_children_deleted = AsyncMock()
+        ds = MagicMock()
+        ds.projects = AsyncMock(return_value=_mock_gql_response({
+            "projects": {
+                "nodes": [{"id": "p1", "name": "P1", "trashed": True, "archivedAt": "2024-06-02T00:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": False},
+            }
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        await connector._sync_deleted_projects([(_team_rg(), [])])
+
+        connector._mark_record_and_children_deleted.assert_awaited_once()
+        connector._update_deletion_sync_checkpoint.assert_awaited_once_with("projects", 1717286400000)
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_stays_put_when_a_later_page_fails(self) -> None:
+        connector = _make_connector()
+        connector._get_deletion_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        connector._update_deletion_sync_checkpoint = AsyncMock()
+        connector._mark_record_and_children_deleted = AsyncMock()
+        first_page = _mock_gql_response({
+            "projects": {
+                "nodes": [{"id": "p1", "name": "P1", "trashed": True, "archivedAt": "2024-06-02T00:00:00.000Z"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cur1"},
+            }
+        })
+        ds = MagicMock()
+        ds.projects = AsyncMock(side_effect=[first_page, _refused_page()])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        await connector._sync_deleted_projects([(_team_rg(), [])])
+
+        assert ds.projects.await_count == 2
+        connector._mark_record_and_children_deleted.assert_awaited_once()
+        connector._update_deletion_sync_checkpoint.assert_not_awaited()
 
 
 # ===========================================================================

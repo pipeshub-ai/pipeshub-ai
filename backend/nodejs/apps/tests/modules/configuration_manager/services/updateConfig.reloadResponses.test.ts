@@ -98,7 +98,6 @@ function buildContainer(): Container {
   }
   bind('EntitiesEventProducer', events);
   bind('SyncEventProducer', events);
-  bind('RecordsEventProducer', events);
   bind('KeyValueStoreService', { get: sinon.stub().resolves(null) });
   bind('StorageController', { watchStorageType: noop });
   container

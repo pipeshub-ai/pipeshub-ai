@@ -49,6 +49,7 @@ def _make_container():
     mock_config_service.close = AsyncMock()
     container.config_service.return_value = mock_config_service
     container.graph_provider = AsyncMock()
+    container.connector_off_filter = AsyncMock(return_value=None)
     mock_producer = AsyncMock()
     mock_producer.send_event = AsyncMock(return_value=True)
     mock_consumer = MagicMock()
@@ -505,6 +506,36 @@ class TestRecoverInProgressRecords:
         assert send_kwargs["topic"] == "record-events"
         assert send_kwargs["payload"]["recordId"] == "r1"
         assert send_kwargs["key"] == "r1"
+
+    async def test_recovered_event_names_its_connector_so_it_goes_to_that_connectors_lane(
+        self,
+    ) -> None:
+        """Without it every recovered record shared the default lane, where one
+        connector's recovered backlog sat in front of everyone else's."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_document = AsyncMock(
+            side_effect=_document_lookup(gp, connector={"_key": "gitlab-1", "isActive": True})
+        )
+        in_progress = [
+            {
+                "_key": "r1",
+                "recordName": "README.md",
+                "version": 0,
+                "orgId": "org1",
+                "connectorId": "gitlab-1",
+                "origin": "CONNECTOR",
+            }
+        ]
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
+        assert producer.send_event.await_args.kwargs["payload"]["connectorId"] == "gitlab-1"
 
     async def test_in_progress_record_reindex_when_version_gt_zero_and_virtual_record_id(self):
         """Record with version > 0 and virtualRecordId is treated as REINDEX_RECORD."""
@@ -1061,6 +1092,30 @@ class TestStartKafkaConsumers:
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
 
+    async def test_connector_off_filter_reaches_the_record_consumer(self) -> None:
+        """The container's filter is what lets the consumer settle a turned-off
+        connector's backlog as it is read; built but not passed, it does nothing."""
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        connector_off_filter = MagicMock()
+        mock_container.connector_off_filter = AsyncMock(return_value=connector_off_filter)
+        mock_consumer = MagicMock(start=AsyncMock())
+
+        with (
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.REDIS),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer) as create_consumer,
+        ):
+            await start_kafka_consumers(mock_container)
+
+        assert create_consumer.call_args.kwargs["connector_off_filter"] is connector_off_filter
+
     async def test_distributed_concurrency_failure_aborts_startup(self) -> None:
         """Redis is a startup requirement: an unreachable one fails the boot.
 
@@ -1385,6 +1440,36 @@ class TestIndexingHealthCheck:
 
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
+
+    async def test_the_queue_lane_view_is_included_once_upkeep_has_run(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+        from app.modules.indexing.lane_upkeep import LaneReport
+
+        report = LaneReport(
+            topic="record-events",
+            updated_at_ms=5,
+            lane_count=8,
+            backlog_read=True,
+            lanes=[{"lane": 0, "stream": "record-events.0"}],
+        )
+        with patch("app.indexing_main.last_lane_report", return_value=report):
+            result = await health_check(_make_health_request())
+
+        body = json.loads(result.body)
+        assert body["lanes"]["laneCount"] == 8
+        assert body["lanes"]["lanes"] == [{"lane": 0, "stream": "record-events.0"}]
+
+    async def test_no_lane_view_before_upkeep_has_run(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+
+        with patch("app.indexing_main.last_lane_report", return_value=None):
+            result = await health_check(_make_health_request())
+
+        assert "lanes" not in json.loads(result.body)
 
     async def test_stats_failures_are_not_echoed(self):
         """Still healthy; the exceptions go to the log and the payload says only that stats are unavailable."""
@@ -3005,3 +3090,59 @@ class TestRecoveryAsksTheRecordConsumerForItsBacklog:
 
         consumer.lane_backlog.assert_awaited_once_with("record-events")
         container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+
+class TestLaneUpkeepInTheRecoveryPass:
+    async def test_the_backlog_is_read_once_and_shared(self) -> None:
+        from app.indexing_main import _read_once
+
+        read = AsyncMock(return_value="backlog")
+        once = _read_once(read)
+
+        assert (await once(), await once()) == ("backlog", "backlog")
+        read.assert_awaited_once()
+
+    async def test_a_failed_read_fails_every_caller_the_same_way_without_reading_again(self) -> None:
+        from app.indexing_main import _read_once
+
+        read = AsyncMock(side_effect=ConnectionError("broker down"))
+        once = _read_once(read)
+
+        for _ in range(2):
+            with pytest.raises(ConnectionError):
+                await once()
+        read.assert_awaited_once()
+
+    async def test_with_hashing_upkeep_does_nothing(self) -> None:
+        from app.indexing_main import _upkeep_lanes
+
+        read = AsyncMock()
+        with patch("app.indexing_main.lane_assignments_in_use", return_value=None), \
+             patch("app.indexing_main.run_lane_upkeep", new_callable=AsyncMock) as upkeep:
+            await _upkeep_lanes(
+                graph_provider=MagicMock(), read_backlog=read, logger=MagicMock(),
+            )
+
+        upkeep.assert_not_awaited()
+        read.assert_not_awaited()
+
+    async def test_upkeep_gets_the_backlog_or_none_and_never_fails_the_pass(self) -> None:
+        from app.indexing_main import _upkeep_lanes
+
+        assignments = MagicMock()
+        logger = MagicMock()
+        with patch("app.indexing_main.lane_assignments_in_use", return_value=assignments), \
+             patch(
+                 "app.indexing_main.run_lane_upkeep",
+                 new_callable=AsyncMock,
+                 side_effect=RuntimeError("redis gone"),
+             ) as upkeep:
+            await _upkeep_lanes(
+                graph_provider=MagicMock(),
+                read_backlog=AsyncMock(side_effect=ConnectionError("broker down")),
+                logger=logger,
+            )
+
+        assert upkeep.await_args.kwargs["backlog"] is None
+        assert upkeep.await_args.kwargs["assignments"] is assignments
+        logger.warning.assert_called_once()

@@ -140,16 +140,9 @@ function createMockAppConfig(): any {
 
 function createMockRecordRelationService(): any {
   return {
-    publishRecordEvents: sinon.stub().resolves(),
-    createNewRecordEventPayload: sinon.stub().resolves({}),
     createUpdateRecordEventPayload: sinon.stub().resolves({}),
     createDeleteRecordEvent: sinon.stub().resolves(),
     resyncConnectorRecords: sinon.stub().resolves({ success: true }),
-    eventProducer: {
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-      stop: sinon.stub().resolves(),
-    },
     syncEventProducer: {
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),

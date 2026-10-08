@@ -370,6 +370,47 @@ class TestHandleDelete:
         # The record cleanup, then the entity cleanup.
         assert service.app_container.messaging_producer.send_message.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_a_deleted_connector_frees_its_queue_lane_after_its_cleanup_events(
+        self, service
+    ) -> None:
+        """Freed after, so the cleanup events still go to the lane its earlier
+        events are on."""
+        order: list[str] = []
+        service.app_container.messaging_producer.send_message = AsyncMock(
+            side_effect=lambda **kwargs: order.append(kwargs["message"]["eventType"])
+        )
+
+        async def freed(_logger, connector_id) -> None:
+            order.append(f"free:{connector_id}")
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch(
+                 "app.connectors.services.event_service.free_lane_of_deleted_connector",
+                 side_effect=freed,
+             ):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is True
+        assert order[-1] == "free:c1"
+        assert len(order) > 1
+
+    @pytest.mark.asyncio
+    async def test_a_connector_whose_delete_failed_keeps_its_queue_lane(self, service) -> None:
+        service.graph_provider.delete_connector_instance = AsyncMock(
+            return_value={"success": False, "error": "boom"}
+        )
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch(
+                 "app.connectors.services.event_service.free_lane_of_deleted_connector",
+                 new_callable=AsyncMock,
+             ) as free:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        free.assert_not_awaited()
+
     async def _delete_with_helper(self, service, helper):
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):

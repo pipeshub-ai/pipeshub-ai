@@ -246,7 +246,6 @@ export const startHarness = async ({
   container.bind(COLLAB_TYPES.ConversationTurnDeps).toConstantValue({})
   bindCollaborationStubs(container)
   container.bind('EntitiesEventProducer').toConstantValue(entityEvents)
-  container.bind('RecordsEventProducer').toConstantValue(new RecordingProducer())
   container.bind('SyncEventProducer').toConstantValue(syncEvents)
   const crawlingContainer = new Container()
   crawlingContainer.bind(CrawlingSchedulerService).toConstantValue({

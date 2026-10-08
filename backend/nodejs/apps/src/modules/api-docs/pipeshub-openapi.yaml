@@ -6318,7 +6318,8 @@ components:
       description: |
         The outcome for one id of POST /knowledgeBase/records/restore. A restored item
         carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
-        and, when the refusal names other records, the snake_case details below.
+        and, when the refusal names other records, `blockedRecordId` plus the snake_case
+        fields below (`external_id`, `conflicting_record_id`, `conflicting_record_name`).
       required:
         - recordId
         - success
@@ -6359,7 +6360,7 @@ components:
           description: Items restored under a name another item next to them has; rename them
         renamePendingReason:
           type: string
-        record_id:
+        blockedRecordId:
           type: string
           description: The item a refusal is about
         external_id:
@@ -14580,6 +14581,12 @@ components:
           items:
             type: string
           description: Required field names
+        supportsConnectionCheck:
+          type: boolean
+          description: |
+            Whether <code>POST /connectors/registry/{connectorType}/test-connection</code>
+            can try this connector's auth settings before they are saved.
+
 
     # Sub-schemas for connector configuration
     ConnectorAuthConfig:
@@ -38501,6 +38508,138 @@ paths:
           description: Unauthorized
         '404':
           description: Connector type not found
+
+  /connectors/registry/{connectorType}/test-connection:
+    post:
+      tags:
+        - Connector Registry
+      summary: Test connector credentials before saving
+      description: |
+        Try the auth settings from a connector's setup form without creating or
+        changing an instance.<br><br>
+        <b>Overview:</b><br>
+        Only connector types whose schema has <code>supportsConnectionCheck: true</code>
+        can be tested. A failed check is not an error: the response is
+        <code>200</code> with <code>success: false</code> and a <code>message</code>
+        to show the user (for example a wrong password, an unknown database, or a
+        timeout because a firewall blocks PipesHub's IP address).<br><br>
+        <b>Editing an instance:</b><br>
+        Pass <code>connectorId</code> to lay the settings over the instance's saved
+        ones, as <code>PUT /connectors/{connectorId}/config/auth</code> does. The
+        caller must be allowed to update that instance.
+      operationId: testConnectorConnection
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorType
+          in: path
+          required: true
+          description: Connector type identifier
+          schema:
+            type: string
+          example: "PostgreSQL"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                  description: Auth values, keyed by the fields of the connector's auth schema
+                  additionalProperties: true
+                  example:
+                    host: db.example.com
+                    port: "5432"
+                    database: analytics
+                    username: reader
+                    password: your-password
+                connectorId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{1,64}$'
+                  description: |
+                    Instance being edited; its saved auth values fill in fields left out.
+                    A value that is sent, even a masked one, replaces the saved one.
+      responses:
+        '200':
+          description: Check ran; see <code>success</code>
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - message
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                    description: What happened, written for the user
+              example:
+                success: false
+                message: 'PostgreSQL rejected the login for user "reader". Check the username and password.'
+        '400':
+          description: Invalid request, or the connector type has no connection check
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not allowed to update the given instance
+        '404':
+          description: Connector type or instance not found
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/network/egress-ips:
+    get:
+      tags:
+        - Connector Registry
+      summary: Get the IP addresses connectors connect from
+      description: |
+        Public IP addresses PipesHub's connectors use to reach external systems, for
+        users to allow in a database's or API's firewall.<br><br>
+        Set by the deployment through <code>CONNECTOR_EGRESS_IPS</code>; otherwise
+        looked up by the connector service and cached. The list is empty when the
+        address cannot be determined, or when the deployment sets
+        <code>CONNECTOR_EGRESS_IPS=none</code>.
+      operationId: getConnectorEgressIps
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: Egress IP addresses
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - egressIps
+                properties:
+                  success:
+                    type: boolean
+                  egressIps:
+                    type: array
+                    items:
+                      type: string
+                    example: ["203.0.113.10"]
+        '401':
+          description: Unauthorized
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Connector Instances --------------------
   /connectors:

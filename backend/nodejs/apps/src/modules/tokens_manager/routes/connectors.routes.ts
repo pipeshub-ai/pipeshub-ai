@@ -50,6 +50,8 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
+  testConnectorConnection,
+  getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
   getRecordContent,
@@ -62,7 +64,6 @@ import {
   stopConnectorSync,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
-import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
@@ -418,6 +419,22 @@ const lookupRecordSchema = z.object({
   }),
 });
 
+const testConnectorConnectionSchema = z.object({
+  params: z.object({
+    connectorType: z.string().min(1, 'Connector type is required'),
+  }),
+  body: z.object({
+    auth: z.record(z.unknown()),
+    connectorId: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      )
+      .optional(),
+  }),
+});
+
 // ============================================================================
 // Router Factory
 // ============================================================================
@@ -448,13 +465,9 @@ export function createConnectorRouter(
   const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
   );
-  const recordsEventProducer = container.get<RecordsEventProducer>(
-    'RecordsEventProducer',
-  );
   const syncEventProducer =
     container.get<SyncEventProducer>('SyncEventProducer');
   const recordRelationService = new RecordRelationService(
-    recordsEventProducer,
     syncEventProducer,
     config.storage,
   );
@@ -485,6 +498,29 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(connectorTypeParamSchema),
     getConnectorSchema(config)
+  );
+
+  /**
+   * POST /registry/:connectorType/test-connection
+   * Try auth settings from the setup form before they are saved
+   */
+  router.post(
+    '/registry/:connectorType/test-connection',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(testConnectorConnectionSchema),
+    testConnectorConnection(config)
+  );
+
+  /**
+   * GET /network/egress-ips
+   * Public IPs connectors connect from, to allow in a firewall
+   */
+  router.get(
+    '/network/egress-ips',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    getConnectorEgressIps(config)
   );
 
   // ============================================================================

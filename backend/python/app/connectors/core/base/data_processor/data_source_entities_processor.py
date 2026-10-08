@@ -94,7 +94,7 @@ def _same_source_refusal(record_id: str, external_id: str) -> RestoreRefused:
         409,
         "Two of the items being restored came from the same source item, so only one of them "
         "can come back. Restore them one at a time, starting with the one you want to keep.",
-        record_id=record_id,
+        blockedRecordId=record_id,
         external_id=external_id,
     )
 
@@ -2129,7 +2129,8 @@ class DataSourceEntitiesProcessor:
                                     old_record.id, child_id, RecordRelations.PARENT_CHILD.value
                                 )
 
-                        await tx_store.delete_parent_child_edge_to_record(duplicate.id)
+                        # One write: the delete takes the duplicate's own parent edge
+                        # with it, where a separate edge delete could commit alone.
                         await tx_store.delete_record_by_key(duplicate.id)
 
                     old_path = old_path_snap.get(old_external_id)
@@ -2433,7 +2434,7 @@ class DataSourceEntitiesProcessor:
                     f"'{name}' can't be restored because '{holder.record_name}' has taken its place. "
                     "That usually means the same item was added again after this one was deleted. "
                     f"To restore this one, delete '{holder.record_name}' first, then try again.",
-                    record_id=item["id"],
+                    blockedRecordId=item["id"],
                     conflicting_record_id=holder.id,
                     conflicting_record_name=holder.record_name,
                 )
@@ -2522,16 +2523,18 @@ class DataSourceEntitiesProcessor:
                 [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
             )
             return True
-        # Connector per-record delete: remove the record vertex and its incoming
-        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
-        # call is a no-op for root records with no parent). Capture VRID before the
-        # vertex is gone so indexing can strip/delete embeddings.
+        # Connector per-record delete: one write that removes the record vertex with
+        # every edge on it, its incoming PARENT_CHILD edge included. Neo4j commits each
+        # statement on its own, so deleting the edge in a statement of its own could
+        # leave the record live and searchable but in no folder. Capture VRID before
+        # the vertex is gone so indexing can strip/delete embeddings.
         event_payload = None
         async with self.data_store_provider.transaction() as tx_store:
             # The stored document, not a Record: reading Record attributes off it
             # found no virtualRecordId, so no delete ever published its cleanup.
-            existing = await tx_store.get_record_by_key(record_id) or {}
-            await tx_store.delete_parent_child_edge_to_record(record_id)
+            # A failed read must raise: None would read as "nothing stored", and the
+            # record would be deleted with no cleanup event for its vectors.
+            existing = await tx_store.get_record_by_key(record_id, raise_on_error=True) or {}
             await tx_store.delete_record_by_key(record_id)
             vrid = existing.get("virtualRecordId")
             if isinstance(vrid, str) and vrid:

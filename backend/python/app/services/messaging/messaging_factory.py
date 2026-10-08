@@ -7,6 +7,7 @@ from app.services.messaging.config import (
     MessageBrokerType,
     RedisConfig,
     RedisStreamsConfig,
+    Topic,
     get_message_broker_type,
     messaging_env,
 )
@@ -24,8 +25,12 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
+from app.services.messaging.lanes.assignment import (
+    AssignedRedisLaneRouter,
+    shared_lane_assignments,
+)
 from app.services.messaging.lanes.hash_router import build_lane_router
-from app.services.messaging.lanes.interface import LaneConfig
+from app.services.messaging.lanes.interface import LaneAssignmentMode, LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
@@ -43,10 +48,14 @@ from app.services.messaging.scheduling.interface import (
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
+from app.services.redis.config import RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
+    from app.services.messaging.connector_off import ConnectorOffFilter
     from app.services.messaging.disposition import AbandonedMessageSink
+    from app.services.messaging.lanes.interface import LaneRouter
     from app.services.resource_governor import ResourceGovernor
 
 
@@ -65,6 +74,7 @@ def _fair_scheduler_config_from_env() -> FairSchedulerConfig:
         max_per_entity_messages=messaging_env.fair_scheduling_max_per_entity,
         max_dwell_seconds=messaging_env.fair_scheduling_max_dwell_seconds,
         parallel_partitions=messaging_env.fair_scheduling_parallel_partitions,
+        max_remembered_positions=messaging_env.fair_scheduling_max_remembered_positions,
     )
 
 
@@ -74,7 +84,40 @@ def lane_config_from_env() -> LaneConfig:
         lane_count=messaging_env.fair_scheduling_lane_count,
         lane_key_field=messaging_env.fair_scheduling_lane_key_field,
         laned_topics=messaging_env.fair_scheduling_laned_topics,
+        assignment=LaneAssignmentMode(messaging_env.fair_scheduling_lane_assignment),
+        assignment_cache_seconds=messaging_env.fair_scheduling_lane_cache_seconds,
     )
+
+
+def _build_producer_lane_router(
+    logger: Logger,
+    lane_config: LaneConfig,
+    broker_type: MessageBrokerType,
+    config: KafkaProducerConfig | RedisStreamsConfig,
+) -> "LaneRouter":
+    """The hash router, or on Redis with assignment on, the lane map's router.
+
+    The lane map lives on the broker's own Redis, so a lookup and the publish
+    it serves fail together. Only ``record-events`` is assigned, since that is
+    the topic the creation and delete hooks and the indexing consumer keep the
+    map for; any other laned topic keeps hashing, and with ``record-events``
+    not laned there is nothing to assign.
+    """
+    topic = Topic.RECORD_EVENTS.value
+    if (
+        broker_type == MessageBrokerType.KAFKA
+        or lane_config.assignment is not LaneAssignmentMode.ASSIGNED
+        or topic not in lane_config.laned_topics
+    ):
+        return build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA)
+    assignments = shared_lane_assignments(
+        logger,
+        get_redis_provider(RedisConnectionConfig.from_redis_config(config)),
+        topic=topic,
+        fallback_lane_count=lane_config.lane_count,
+        cache_seconds=lane_config.assignment_cache_seconds,
+    )
+    return AssignedRedisLaneRouter(assignments, logger)
 
 
 def lane_topics_for(topic: str, broker_type: MessageBrokerType | None = None) -> list[str]:
@@ -199,7 +242,7 @@ class MessagingFactory:
         return LaneAwareProducer(
             logger,
             producer,
-            build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA),
+            _build_producer_lane_router(logger, lane_config, broker_type, config),
             lane_config,
         )
 
@@ -218,6 +261,7 @@ class MessagingFactory:
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
         disposition_sink: "AbandonedMessageSink | None" = None,
+        connector_off_filter: "ConnectorOffFilter | None" = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -250,6 +294,9 @@ class MessagingFactory:
             weight_provider: Optional per-key DRR quantum provider (INDEXING consumers only),
                       for giving some keys a larger share than others. Defaults to a
                       flat quantum for every key.
+            connector_off_filter: Optional (INDEXING consumers only). Settles, as they
+                      are read, the record events the handler would only skip because
+                      their connector is turned off or removed.
 
         Returns:
             IMessagingConsumer instance
@@ -284,6 +331,7 @@ class MessagingFactory:
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
+                    connector_off_filter=connector_off_filter,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -306,5 +354,6 @@ class MessagingFactory:
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
+                    connector_off_filter=connector_off_filter,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

@@ -712,6 +712,11 @@ etcd:
 messageBroker:
   type: redis
   redisStreamsMaxLen: "500000"
+  # Indexing lanes on Redis Streams: how many, and how a connector is given
+  # one -- "assigned" (the least busy lane, recorded once) or "hash" (as
+  # before), which switches assigned lanes off.
+  laneCount: "8"
+  laneAssignment: assigned
 
 # Celery (backend/python/app/core/celery_app.py) has no Redis Cluster
 # transport. Required when redis.mode is not "standalone" -- the app fails

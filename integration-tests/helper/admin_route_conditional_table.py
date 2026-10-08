@@ -322,6 +322,12 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
                     "does not support agent functionality", body={"type": "agent"}),
     _on_a_connector("update_connector_instance_auth_config", "PUT", "/{target}/config/auth", 200,
                     "Authentication configuration saved", body={"auth": {}}),
+    # The connector being edited goes in the body. The test world's connectors are
+    # not PostgreSQL, so a caller allowed to use one is stopped by the type check
+    # that follows, before any connection is tried.
+    _on_a_connector("check_connector_connection", "POST", "/registry/PostgreSQL/test-connection", 400,
+                    "connectorId is not a connector of this type",
+                    body={"auth": {}, "connectorId": "{target}"}),
     _on_a_connector("update_connector_instance_config", "PUT", "/{target}/config", 400,
                     _FILTERS_REFUSED, body=_MALFORMED_FILTERS),
     _on_a_connector("update_connector_instance_filters_sync_config", "PUT",

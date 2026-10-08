@@ -26,6 +26,8 @@ from app.modules.indexing.duplicate_reconcile import (
     retry_pending_duplicate_reconciles,
 )
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
+from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
+from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
@@ -53,6 +55,7 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
+from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -165,7 +168,9 @@ async def recover_in_progress_records(
             if lane_backlog is not None:
                 # Not through run_coordination: the consumer hops to the loop
                 # that owns its broker client by itself, with its own timeout.
-                read_backlog = partial(lane_backlog, Topic.RECORD_EVENTS.value)
+                # Read at most once per pass, shared by the sweep and the lane
+                # upkeep below.
+                read_backlog = _read_once(partial(lane_backlog, Topic.RECORD_EVENTS.value))
             if concurrency_manager is None:
                 concurrency_manager = getattr(
                     record_consumer, "concurrency_manager", None
@@ -333,13 +338,16 @@ async def recover_in_progress_records(
                             results["skipped"] += 1
                             return True
 
-                    # Reconstruct the payload from the record data
+                    # Reconstruct the payload from the record data. With the
+                    # connector id the event goes to its connector's own lane;
+                    # without it every recovered record shared the default lane.
                     payload = {
                         "recordId": record_id,
                         "recordName": record.get("recordName"),
                         "orgId": record.get("orgId"),
                         "version": record.get("version", 0),
                         "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
+                        "connectorId": record.get("connectorId"),
                         "extension": record.get("extension"),
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),
@@ -577,6 +585,12 @@ async def recover_in_progress_records(
             read_backlog=read_backlog,
         )
 
+        await _upkeep_lanes(
+            graph_provider=graph_provider,
+            read_backlog=read_backlog,
+            logger=logger,
+        )
+
         # Vectors whose last referencing record was repointed elsewhere are
         # reachable from neither the record scan above nor the membership
         # backfill (both walk records, and this VRID has none). Left alone they
@@ -646,6 +660,60 @@ async def recover_in_progress_records(
                     "Failed to release stale-record recovery lease: %s",
                     release_exc,
                 )
+
+
+def _read_once(read: Callable[[], Awaitable[_T]]) -> Callable[[], Awaitable[_T]]:
+    """``read``, run on first call only; later calls get the same answer or error."""
+    outcome: list[tuple[_T | None, BaseException | None]] = []
+
+    async def once() -> _T:
+        if not outcome:
+            try:
+                outcome.append((await read(), None))
+            except Exception as e:
+                outcome.append((None, e))
+        value, error = outcome[0]
+        if error is not None:
+            raise error
+        return value  # type: ignore[return-value]
+
+    return once
+
+
+async def _upkeep_lanes(
+    *,
+    graph_provider: IGraphDBProvider,
+    read_backlog: Callable[[], Awaitable[LaneBacklog]] | None,
+    logger: logging.Logger,
+) -> None:
+    """Keep the Redis Streams lane map in step, when producers place by it.
+
+    Never fails the recovery pass: the map only steers placement, and the
+    next pass tries again.
+    """
+    assignments = lane_assignments_in_use(Topic.RECORD_EVENTS.value)
+    if assignments is None:
+        return
+    backlog: LaneBacklog | None = None
+    if read_backlog is not None:
+        try:
+            backlog = await read_backlog()
+        except Exception as e:
+            # The sweep has already said so; upkeep only skips what needs it.
+            logger.debug("Lane upkeep runs without the backlog this pass: %s", e)
+    try:
+        await run_lane_upkeep(
+            assignments=assignments,
+            graph_provider=graph_provider,
+            backlog=backlog,
+            logger=logger,
+        )
+    except Exception as e:
+        logger.warning(
+            "Queue lane upkeep failed this pass; it runs again next minute: %s: %s",
+            type(e).__name__,
+            e,
+        )
 
 
 # How much of virtualRecordToDocIdMapping one recovery tick will walk. Bounded
@@ -1097,12 +1165,7 @@ async def _republish_stranded_records(
                     # The sweep above owns these; moving them here would race it.
                     continue
 
-                # A duplicate parked behind an in-flight twin is legitimately
-                # QUEUED with its message already acked — it is released by the
-                # twin's completion, not by us.
-                # Parking writes QUEUED, so a restored file still NOT_STARTED is
-                # not parked, though it keeps the checksum and content id it had.
-                if record.get("md5Checksum") and record.get("virtualRecordId") and not restored_upload:
+                if is_parked_duplicate(record, restored_upload=restored_upload):
                     continue
 
                 considered += 1
@@ -1111,19 +1174,12 @@ async def _republish_stranded_records(
                     backed_off += 1
                     continue
 
-                payload = {
-                    "recordId": record_key,
-                    "recordName": record.get("recordName"),
-                    "orgId": record.get("orgId"),
-                    "version": record.get("version", 0),
-                    "connectorName": record.get("connectorName"),
-                    "connectorId": connector_id,
-                    "extension": record.get("extension"),
-                    "mimeType": record.get("mimeType"),
-                    "origin": record.get("origin"),
-                    "recordType": record.get("recordType"),
-                    "virtualRecordId": record.get("virtualRecordId"),
-                }
+                event_type, payload = record_event(
+                    record,
+                    record_key=record_key,
+                    connector_id=connector_id,
+                    restored_upload=restored_upload,
+                )
 
                 # Older work still on a lane this record's event could be on
                 # means the consumer has not got as far as that event yet. A
@@ -1154,14 +1210,6 @@ async def _republish_stranded_records(
                         if not lock_held:
                             # Someone is working on it after all.
                             continue
-
-                    version = int(payload.get("version", 0) or 0)
-                    # An upload keeps version 0; a restored one was indexed before.
-                    event_type = (
-                        EventTypes.REINDEX_RECORD.value
-                        if (version > 0 or restored_upload) and payload.get("virtualRecordId")
-                        else EventTypes.NEW_RECORD.value
-                    )
 
                     # The marker is a durable claim written BEFORE the send, not
                     # a receipt written after it. Written after, a Neo4j failure
@@ -1364,6 +1412,7 @@ async def start_kafka_consumers(
         record_event_handler = await KafkaUtils.create_record_event_handler(
             app_container, producer=retry_producer
         )
+        connector_off_filter = await app_container.connector_off_filter()
 
         # Same process-wide singleton the ParsingClient/DoclingClient/
         # EmbeddingServerEmbeddings instances used by this consumer's
@@ -1381,6 +1430,7 @@ async def start_kafka_consumers(
             governor=governor,
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
+            connector_off_filter=connector_off_filter,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
@@ -1783,6 +1833,11 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        # Which connector is on which Redis Streams lane, from the last lane
+        # upkeep this replica ran (the one holding the recovery lock).
+        lane_report = last_lane_report(Topic.RECORD_EVENTS.value)
+        if lane_report is not None:
+            content["lanes"] = lane_report.as_dict()
         return JSONResponse(
             status_code=200,
             content=content,

@@ -343,8 +343,14 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_record_by_key(self, key: str) -> None:
         self._memo_forget_record(key)
-        # Delete the record node from the records collection
-        return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
+        # The node with its edges: on Neo4j that is the same single DETACH DELETE,
+        # and on ArangoDB the edges no longer dangle after the record is gone.
+        return await self.graph_provider.delete_nodes_and_edges(
+            [key],
+            CollectionNames.RECORDS.value,
+            graph_name="knowledgeGraph",
+            transaction=self.txn,
+        )
 
     async def delete_record_by_external_id(
         self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
@@ -1037,6 +1043,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
+
+    async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
+        await self.graph_provider.create_edges_if_absent(edges, collection, transaction=self.txn)
 
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)

@@ -114,12 +114,13 @@ class TestCreateKnowledgeBase:
         service.graph_provider.rollback_transaction.assert_called_once_with("txn1")
 
     @pytest.mark.asyncio
-    async def test_exception_before_txn_raises_unbound(self, service):
+    async def test_a_failed_user_lookup_answers_a_plain_500(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(
             side_effect=Exception("unexpected")
         )
-        with pytest.raises(UnboundLocalError):
-            await service.create_knowledge_base("user1", "org1", "KB")
+        result = await service.create_knowledge_base("user1", "org1", "KB")
+        assert result == {"success": False, "code": 500, "reason": action_failed("create this knowledge base")}
+        service.graph_provider.begin_transaction.assert_not_awaited()
 
 
 class TestGetKnowledgeBase:

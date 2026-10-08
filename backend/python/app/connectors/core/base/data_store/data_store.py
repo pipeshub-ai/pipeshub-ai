@@ -284,6 +284,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
+        pass
+
+    @abstractmethod
     async def get_users(self, org_id: str, active: bool = True) -> list[User]:
         pass
 
