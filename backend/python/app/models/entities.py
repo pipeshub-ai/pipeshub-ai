@@ -3414,6 +3414,7 @@ class EntityType(str, Enum):
     LANGUAGE = "language"
     RELATIONSHIP = "relationship"
     CUSTOM = "custom"
+    NAMED_ENTITY = "named_entity"
 
 
 class EntityTypeCategory(str, Enum):
@@ -3456,6 +3457,7 @@ class EntityRecord(BaseModel):
     connector_ids: list[str] = Field(default_factory=list, description="Connector instances that reference this entity; used for targeted disconnect cleanup")
     record_group_ids: list[str] = Field(default_factory=list, description="Record groups (e.g. folders, Jira projects) of records that reference this entity")
     level: str | None = Field(default=None, description="Subcategory level (\"1\", \"2\" or \"3\"); None for every other entity type. Subcategories only resolve against their own level.")
+    kind: str | None = Field(default=None, description="Named-entity kind. Set only for entity_type named_entity.")
 
     @property
     def embedding_text(self) -> str:
@@ -3512,7 +3514,7 @@ class EntityRecord(BaseModel):
         it), matching the records collection's ``VectorChunkPayload`` — see
         ``EntityVectorStore.upsert_entities_batch``.
         """
-        return {
+        payload = {
             "entityId": self.entity_id,
             "entityType": self.entity_type.value,
             "orgId": self.org_id,
@@ -3523,6 +3525,9 @@ class EntityRecord(BaseModel):
             "aliases": self.aliases,
             "level": self.level,
         }
+        if self.kind:
+            payload["kind"] = self.kind
+        return payload
 
 
 # Rebuild models to resolve forward references after all imports are complete

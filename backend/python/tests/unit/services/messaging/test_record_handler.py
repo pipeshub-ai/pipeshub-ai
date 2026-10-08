@@ -700,6 +700,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock(return_value=None)
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         await _collect_events(
@@ -774,6 +775,7 @@ class TestVectorDbOnlyReindex:
             return_value={"block_containers": {"blocks": [{"bogus": object()}]}}
         )
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         await _collect_events(
@@ -849,6 +851,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock(return_value=_blob_with_blocks())
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         with patch(
@@ -881,6 +884,8 @@ class TestVectorDbOnlyReindex:
         sink.blob_storage.get_record_from_storage.assert_awaited_once_with("vr-1", "org-1")
         sink.index.assert_awaited_once()
         assert sink.index.await_args.args[0].settings["skip_blob"] is True
+        # The stored extraction rebuilds the named entities on the same context.
+        sink.reproject_named_entities.assert_awaited_once_with(sink.index.await_args.args[0])
         handler._download_from_signed_url.assert_not_awaited()
         stream_call.assert_not_awaited()
         assert all(e.event != "start_parsing" for e in events)
@@ -903,6 +908,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock(return_value=None)
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         events = await _collect_events(
@@ -946,6 +952,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock()
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         events = await _collect_events(

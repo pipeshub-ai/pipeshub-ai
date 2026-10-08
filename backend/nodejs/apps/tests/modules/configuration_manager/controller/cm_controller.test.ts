@@ -747,6 +747,20 @@ describe('ConfigurationManager Controller', () => {
       expect(skillsFlag.defaultEnabled).to.equal(true)
     })
 
+    it('should include ENABLE_NAMED_ENTITY_EXTRACTION, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const flag = flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')
+      expect(flag).to.exist
+      expect(flag.defaultEnabled).to.equal(false)
+    })
+
     it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()

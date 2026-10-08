@@ -766,3 +766,31 @@ class TestSearchPasses:
         types = [h["entityType"] for h in hits]
         assert {"sec-topic", "audit-topic"} <= {h["entityId"] for h in hits}
         assert types.count("record") == 2  # top_k split evenly between the two requests
+
+    async def test_named_entities_filter_by_kind(self, store: EntityVectorStore) -> None:
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+        org = f"org-{uuid.uuid4().hex[:6]}"
+
+        def named(entity_id: str, name: str, kind: str) -> EntityRecord:
+            return EntityRecord(
+                entity_id=entity_id,
+                entity_type=EntityType.NAMED_ENTITY,
+                name=name,
+                org_id=org,
+                kind=kind,
+                type_category=EntityTypeCategory.PREDEFINED,
+                connector_ids=["c1"],
+            )
+
+        await store.upsert_entities_batch([
+            named("acme-org", "Acme Robotics", "organization"),
+            named("acme-product", "Acme Robotics Arm", "product"),
+            _entity("acme-topic", org=org, name="Acme Robotics", connectors=["c1"]),
+        ])
+        await _publish_writes(store)
+        (hits,) = await store.search_entities_passes(
+            "acme robotics", org, [EntitySearchPass(org_wide=True)],
+            entity_types=["named_entity"], kinds=["organization"], score_threshold=0.0,
+        )
+        assert {h["entityId"] for h in hits} == {"acme-org"}

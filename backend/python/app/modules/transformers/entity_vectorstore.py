@@ -177,6 +177,7 @@ _STAMP_FIELD = "indexStamp"
 
 _STRING_METADATA_FIELDS = (
     "entityId", "entityType", "orgId", "name", "canonicalName", "domain", "typeCategory", "level",
+    "kind",
     EMBEDDING_MODEL_FIELD,
 )
 
@@ -212,18 +213,40 @@ def _entity_metadata(payload: dict[str, Any] | None) -> dict[str, Any]:
 
 def _type_groups(
     entity_types: list[str] | None,
-) -> list[tuple[str | list[str] | None, str | None]]:
+    *,
+    by_kind: bool = False,
+    include_named: bool = True,
+) -> list[tuple[str | list[str] | None, str | list[str] | None]]:
     """``(must entityType, must_not entityType)`` per request of a pass:
-    record titles apart from everything else when both are wanted."""
+    record titles apart from everything else when both are wanted.
+
+    ``by_kind`` gives named entities a request of their own, the only one
+    that carries the kind filter; no other request may return them.
+    """
     from app.models.entities import EntityType
 
     record = EntityType.RECORD.value
+    named = EntityType.NAMED_ENTITY.value
     if not entity_types:
-        return [(None, record), (record, None)]
+        if by_kind:
+            return [(None, [record, named]), ([named], None), (record, None)]
+        # "Every type" leaves named entities out while their flag is off, so
+        # points a past flag-on period wrote take no candidate slot.
+        return [(None, record if include_named else [record, named]), (record, None)]
     others = [t for t in entity_types if t != record]
-    if record in entity_types and others:
-        return [(others, None), (record, None)]
-    return [(list(entity_types), None)]
+    groups: list[tuple[str | list[str] | None, str | list[str] | None]] = (
+        [(others, None), (record, None)] if record in entity_types and others else [(list(entity_types), None)]
+    )
+    if not by_kind:
+        return groups
+    split: list[tuple[str | list[str] | None, str | list[str] | None]] = []
+    for must, must_not in groups:
+        if isinstance(must, list) and named in must and len(must) > 1:
+            split.append(([t for t in must if t != named], must_not))
+            split.append(([named], None))
+        else:
+            split.append((must, must_not))
+    return split
 
 
 def _interleave(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -547,6 +570,7 @@ class EntityVectorStore:
             ("metadata.entityType", {"type": "keyword"}),
             ("metadata.entityId", {"type": "keyword"}),
             ("metadata.level", {"type": "keyword"}),
+            ("metadata.kind", {"type": "keyword"}),
             (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
             (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
         ]:
@@ -1457,6 +1481,8 @@ class EntityVectorStore:
         passes: list[EntitySearchPass],
         *,
         entity_types: list[str] | None = None,
+        kinds: list[str] | None = None,
+        include_named: bool = True,
         top_k: int = 10,
         score_threshold: float = _CONFIDENCE_THRESHOLD,
     ) -> list[list[dict[str, Any]]]:
@@ -1507,7 +1533,7 @@ class EntityVectorStore:
         from app.services.vector_db.models import FusionMethod, HybridSearchRequest
 
         dense_vec, sparse_vec = await self._query_vectors(query)
-        groups = _type_groups(entity_types)
+        groups = _type_groups(entity_types, by_kind=bool(kinds), include_named=include_named)
         requests = []
         for index in searchable:
             scope = passes[index]
@@ -1520,6 +1546,8 @@ class EntityVectorStore:
                 must: dict[str, Any] = {"metadata.orgId": org_id}
                 if must_types is not None:
                     must["metadata.entityType"] = must_types  # list → "any of" filter
+                if kinds and must_types == ["named_entity"]:
+                    must["metadata.kind"] = list(kinds)
                 filter_kwargs: dict[str, Any] = {"must": must, "should": should}
                 if must_not_types is not None:
                     filter_kwargs["must_not"] = {"metadata.entityType": must_not_types}
@@ -1549,7 +1577,7 @@ class EntityVectorStore:
                 [self._search_hit(hit) for hit in hits if hit.score >= score_threshold]
                 for hits in batch[position * len(groups):(position + 1) * len(groups)]
             ]
-            results[index] = _interleave(per_group)
+            results[index] = _interleave(per_group)[:top_k]
         return results
 
     @staticmethod

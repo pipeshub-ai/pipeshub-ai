@@ -208,13 +208,22 @@ class IndexingPipeline:
 
     async def _enrich(self, ctx: TransformContext) -> None:
         """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
-        await self.document_extraction.apply(ctx)
+        import asyncio
+
+        ner_task = asyncio.create_task(self.sink_orchestrator.extract_named_entities(ctx))
+        try:
+            await self.document_extraction.apply(ctx)
+            extraction = await ner_task
+        finally:
+            if not ner_task.done():
+                ner_task.cancel()
 
         record = ctx.record
         if record.semantic_metadata:
             # Taxonomy names must be resolved before the blob, summary and
             # graph writes below all consume them.
             await self.sink_orchestrator.resolve_entities(ctx)
+            self.sink_orchestrator.attach_named_entities(ctx, extraction)
             await self.sink_orchestrator.blob_storage.apply(ctx)
             if (record.semantic_metadata.summary or "").strip():
                 await self.sink_orchestrator.vector_store.index_record_summary(
@@ -226,6 +235,12 @@ class IndexingPipeline:
                 )
 
         await self.sink_orchestrator.enrich(ctx)
+        await self.sink_orchestrator.persist_named_entities(ctx, extraction)
+        from app.modules.named_entities.stage import extraction_blob_holder
+
+        with extraction_blob_holder(record, extraction) as held:
+            if held:
+                await self.sink_orchestrator.blob_storage.apply(ctx)
 
     async def _publish_enrichment_event(self, ctx: TransformContext) -> None:
         """Stub: publish an event for deferred enrichment via Kafka.
