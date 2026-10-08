@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.factory.connector_factory import (
+    ConnectorFactory,
+    SnowflakeConnector,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +93,7 @@ class TestListConnectors:
         assert "jiracloudpersonal" in result
         assert "jiradatacenter" in result
         assert "jiradatacenterpersonal" in result
+        assert result["snowflake"] is SnowflakeConnector
 
 
 # ===========================================================================
