@@ -351,30 +351,52 @@ jobs:
           else
             clobber=()
           fi
-          written=()
-          for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
-            for suffix in "" "-slim"; do
-              if ! crane copy "${clobber[@]}" "${repo}:${CANDIDATE}${suffix}" "${repo}:${VERSION}${suffix}"; then
-                echo "::error::copy of ${repo}:${VERSION}${suffix} failed"
-                if [ "$PROMOTE" != "true" ] && [ "${#written[@]}" -gt 0 ]; then
-                  echo "removing the ${#written[@]} tag(s) this run had already written, so no partial set is left"
-                  for w in "${written[@]}"; do hub_delete_tag "${w%%:*}" "${w#*:}" || true; done
-                fi
-                exit 1
-              fi
-              written+=("${repo}:${VERSION}${suffix}")
-              echo "published ${repo}:${VERSION}${suffix}"
+          # Each set of tags is published as a unit. Every destination's
+          # current digest is recorded first; if any copy in the set fails,
+          # the tags this step already moved are pointed back at those
+          # digests (or deleted if they did not exist), so an install that
+          # pulls the app and the sandbox under one tag never gets one new
+          # and one old.
+          publish_set() {
+            local -a prev=() written=() prevw=()
+            local pair src dst old i=0 j
+            for pair in "$@"; do
+              dst="${pair#* }"
+              if old="$(crane digest "$dst" 2>/dev/null)"; then prev+=("$old"); else prev+=(""); fi
             done
-          done
+            for pair in "$@"; do
+              src="${pair% *}"; dst="${pair#* }"
+              if ! crane copy "${clobber[@]}" "$src" "$dst"; then
+                echo "::error::copy of ${dst} failed; putting back the ${#written[@]} tag(s) this step had already moved"
+                for j in "${!written[@]}"; do
+                  if [ -n "${prevw[$j]}" ]; then
+                    crane tag "${written[$j]%%:*}@${prevw[$j]}" "${written[$j]#*:}" || true
+                  else
+                    hub_delete_tag "${written[$j]%%:*}" "${written[$j]#*:}" || true
+                  fi
+                done
+                return 1
+              fi
+              written+=("$dst"); prevw+=("${prev[$i]}"); i=$((i + 1))
+              echo "published ${dst}"
+            done
+          }
+          publish_set \
+            "${IMAGE}:${CANDIDATE} ${IMAGE}:${VERSION}" \
+            "${IMAGE}:${CANDIDATE}-slim ${IMAGE}:${VERSION}-slim" \
+            "${SANDBOX_IMAGE}:${CANDIDATE} ${SANDBOX_IMAGE}:${VERSION}" \
+            "${SANDBOX_IMAGE}:${CANDIDATE}-slim ${SANDBOX_IMAGE}:${VERSION}-slim"
           if [ "$prerelease" = "true" ]; then
             echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
           elif [ "$PROMOTE" != "true" ]; then
             echo "promote is off: leaving :latest and :slim untouched"
           else
-            for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
-              crane copy "${repo}:${CANDIDATE}"      "${repo}:latest"
-              crane copy "${repo}:${CANDIDATE}-slim" "${repo}:slim"
-            done
+            clobber=()
+            publish_set \
+              "${IMAGE}:${CANDIDATE} ${IMAGE}:latest" \
+              "${IMAGE}:${CANDIDATE}-slim ${IMAGE}:slim" \
+              "${SANDBOX_IMAGE}:${CANDIDATE} ${SANDBOX_IMAGE}:latest" \
+              "${SANDBOX_IMAGE}:${CANDIDATE}-slim ${SANDBOX_IMAGE}:slim"
             echo "moved :latest and :slim to ${VERSION}"
           fi
 
