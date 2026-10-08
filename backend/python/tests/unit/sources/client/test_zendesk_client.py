@@ -254,6 +254,31 @@ class TestZendeskClient:
         assert isinstance(inner, ZendeskRESTClientViaOAuth)
         assert inner.headers["Authorization"] == "Bearer tok"
 
+    async def test_build_from_services_reads_the_linked_oauth_app(
+        self, logger, mock_config_service
+    ):
+        """A connector created from an existing OAuth app stores only its id."""
+        connector_config = {
+            "auth": {"authType": "OAUTH", "oauthConfigId": "app-1"},
+            "credentials": {"access_token": "tok"},
+        }
+        shared_apps = [{"_id": "app-1", "config": {
+            "subdomain": SUBDOMAIN, "clientId": "cid", "clientSecret": "secret",
+        }}]
+
+        async def _get_config(path, *args, **kwargs):
+            return shared_apps if path == "/services/oauth/zendesk" else connector_config
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get_config)
+
+        client = await ZendeskClient.build_from_services(
+            logger=logger,
+            config_service=mock_config_service,
+            connector_instance_id="zd-1",
+        )
+
+        assert client.get_client().get_subdomain() == SUBDOMAIN
+
     async def test_build_from_services_oauth_rejects_missing_token(
         self, logger, mock_config_service
     ):
