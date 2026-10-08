@@ -2774,12 +2774,11 @@ class TestFetchProjectsForTeamBatch:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 0
+            with pytest.raises(RuntimeError, match="Error"):
+                async for _ in connector._fetch_projects_for_team_batch(
+                    team_id="team-1", team_key="ENG"
+                ):
+                    pass
 
     @pytest.mark.asyncio
     async def test_project_with_pagination(self):
