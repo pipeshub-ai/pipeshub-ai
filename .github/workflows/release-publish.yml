@@ -41,6 +41,9 @@ concurrency:
   # queue whatever branch they come from and cannot both pass the "tags
   # absent" check. The publish job adds a single group across all versions.
   group: release-publish-${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+  # `queue: max` keeps every waiting run; the default keeps only the newest
+  # pending one and cancels the rest.
+  queue: max
   cancel-in-progress: false
 
 env:
@@ -286,6 +289,9 @@ jobs:
     # or undo each other's moves.
     concurrency:
       group: release-publish-tags
+      # A waiting publish has already passed verify; the default queue would
+      # cancel it when a third arrives, and its version would get no tags.
+      queue: max
       cancel-in-progress: false
     steps:
       - name: Log in to Docker Hub
