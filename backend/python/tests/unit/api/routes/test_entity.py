@@ -32,6 +32,8 @@ def _make_request(body_dict=None, query_params=None):
     req.app.container = MagicMock()
     req.app.container.logger.return_value = MagicMock()
     req.app.state.graph_provider = AsyncMock()
+    # A mock's coroutine is truthy, which would read as "retry" to the idempotent writer.
+    req.app.state.graph_provider.is_write_conflict = MagicMock(return_value=False)
 
     if body_dict is not None:
         body_bytes = json.dumps(body_dict).encode("utf-8")
@@ -453,18 +455,94 @@ class TestCreateTeam:
         gp.rollback_transaction.assert_called_once_with("tx-1")
 
     @pytest.mark.asyncio
-    async def test_exception_no_transaction_id(self):
-        body = {"name": "Team"}
-        req = _make_request(body)
+    async def test_a_failed_read_back_after_the_commit_is_not_rolled_back(self) -> None:
+        """The team is committed by then; a rollback of a committed id raises and hides that."""
+        req = _make_request({"name": "Team"})
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
-        gp.begin_transaction.return_value = None
-        gp.batch_upsert_nodes.side_effect = RuntimeError("db error")
+        gp.begin_transaction.return_value = "tx-1"
+        gp.batch_upsert_nodes.return_value = True
+        gp.batch_create_edges.return_value = True
+        gp.get_team_with_users.side_effect = RuntimeError("read timed out")
 
         with pytest.raises(HTTPException) as exc:
             await create_team(req)
         assert exc.value.status_code == 500
+        assert "was created" in exc.value.detail
+        gp.commit_transaction.assert_awaited_once_with("tx-1")
         gp.rollback_transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_on_the_edge_write_is_retried_into_one_team(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On Neo4j the team node commits before its edges; a retry must finish that team, not add one."""
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        req = _make_request({"name": "Team"})
+        graph = _TeamGraph(conflicts_on=2)
+        req.app.state.graph_provider = graph
+
+        resp = await create_team(req)
+
+        assert resp.status_code == 200
+        assert len(graph.teams) == 1, graph.teams
+        (team_key,) = graph.teams
+        assert graph.edges == {("permission", "user-key-1", team_key)}
+        assert graph.read_back == [team_key]
+
+
+class _Conflict(RuntimeError):
+    pass
+
+
+class _TeamGraph:
+    """One user's teams on a graph where each statement lands as it runs (Neo4j's
+    default) and the write numbered *conflicts_on* hits another writer."""
+
+    def __init__(self, *, conflicts_on: int | None = None) -> None:
+        self.logger = MagicMock()
+        self.teams: dict[str, dict] = {}
+        self.edges: set[tuple[str, str, str]] = set()
+        self.read_back: list[str] = []
+        self.writes = 0
+        self.conflicts_on = conflicts_on
+
+    async def get_user_by_user_id(self, user_id: str) -> dict:
+        return {"_key": "user-key-1"}
+
+    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
+        return "txn"
+
+    async def commit_transaction(self, txn: str) -> None:
+        pass
+
+    async def rollback_transaction(self, txn: str) -> None:
+        pass  # Nothing to undo: every statement already committed.
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return isinstance(error, _Conflict)
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
+    def _statement(self) -> None:
+        self.writes += 1
+        if self.writes == self.conflicts_on:
+            raise _Conflict("DeadlockDetected")
+
+    async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
+        self._statement()
+        for node in nodes:
+            self.teams.setdefault(node["_key"], {}).update(node)
+        return True
+
+    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+        self._statement()
+        self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
+        return True
+
+    async def get_team_with_users(self, team_id: str, user_key: str) -> dict:
+        self.read_back.append(team_id)
+        return {"_key": team_id, "users": sorted(f for _, f, t in self.edges if t == team_id)}
+
 
 class TestGetTeam:
     @pytest.mark.asyncio

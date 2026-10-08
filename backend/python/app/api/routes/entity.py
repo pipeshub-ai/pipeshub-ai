@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -8,8 +8,12 @@ from fastapi.responses import JSONResponse
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
+
+if TYPE_CHECKING:
+    from app.connectors.core.base.data_store.data_store import TransactionStore
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
@@ -222,35 +226,33 @@ async def create_team(request: Request) -> JSONResponse:
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         })
     logger.info(f"User team edges: {user_team_edges}")
-    transaction_id = None
+
+    async def write_team(tx_store: "TransactionStore") -> None:
+        if not await tx_store.batch_upsert_nodes([team_body], CollectionNames.TEAMS.value):
+            raise RuntimeError("Failed to create team")
+        if not await tx_store.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value):
+            raise RuntimeError("Failed to create creator permissions")
+
+    # The edges lock the creator's and every member's user node, so two creates can
+    # collide. Every write is keyed by team_key, so the re-run completes the same
+    # team: on Neo4j the node may already have committed on its own.
     try:
-        transaction_id = await graph_provider.begin_transaction(
-            read=[],
-            write=[
-                CollectionNames.TEAMS.value,
-                CollectionNames.PERMISSION.value,
-            ]
-        )
-
-        # Create the team first
-        result = await graph_provider.batch_upsert_nodes([team_body], CollectionNames.TEAMS.value, transaction=transaction_id)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to create team")
-        result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to create creator permissions")
-
-        await graph_provider.commit_transaction(transaction_id)
-        logger.info(f"Team created successfully: {team_body}")
-
-        # Fetch the created team with users and permissions
-        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
-
+        await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_team)
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
-        if transaction_id:
-            await graph_provider.rollback_transaction(transaction_id)
-        raise HTTPException(status_code=500, detail=action_failed("create this team"))
+        raise HTTPException(status_code=500, detail=action_failed("create this team")) from e
+    logger.info(f"Team created successfully: {team_body}")
+
+    # The team is committed by now, so a failed read-back must not send the person
+    # back to "try again": that would create the team a second time.
+    try:
+        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
+    except Exception as e:
+        logger.error(f"Team {team_key} was created but could not be read back: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="The team was created, but its details couldn't be loaded. Refresh the page to see it.",
+        ) from e
 
     return JSONResponse(
         status_code=200,
