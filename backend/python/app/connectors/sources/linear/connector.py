@@ -1406,8 +1406,7 @@ class LinearConnector(BaseConnector):
             )
 
             if not response.success:
-                self.logger.error(f"❌ Failed to fetch issues for team {team_key}: {response.message}")
-                break
+                raise RuntimeError(f"Failed to fetch issues for team {team_key}: {response.message}")
 
             issues_data = response.data.get("issues", {}) if response.data else {}
             issues_list = issues_data.get("nodes", [])
@@ -1558,8 +1557,7 @@ class LinearConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch attachments: {response.message}")
-                    break
+                    raise RuntimeError(f"Failed to fetch attachments: {response.message}")
 
                 attachments_data = response.data.get("attachments", {}) if response.data else {}
                 attachments_list = attachments_data.get("nodes", [])
@@ -1717,8 +1715,7 @@ class LinearConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch documents: {response.message}")
-                    break
+                    raise RuntimeError(f"Failed to fetch documents: {response.message}")
 
                 documents_data = response.data.get("documents", {}) if response.data else {}
                 documents_list = documents_data.get("nodes", [])
@@ -1990,8 +1987,7 @@ class LinearConnector(BaseConnector):
             )
 
             if not response.success:
-                self.logger.error(f"❌ Failed to fetch projects for team {team_key}: {response.message}")
-                break
+                raise RuntimeError(f"Failed to fetch projects for team {team_key}: {response.message}")
 
             projects_data = response.data.get("projects", {}) if response.data else {}
             projects_list = projects_data.get("nodes", [])
