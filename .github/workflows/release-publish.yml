@@ -297,6 +297,8 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
           CANDIDATE: ${{ needs.resolve.outputs.candidate }}
           PROMOTE: ${{ needs.resolve.outputs.promote }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
           prerelease=false
@@ -305,26 +307,43 @@ jobs:
             echo "rehearsal of ${VERSION}: verified, publishing nothing"
             exit 0
           fi
+          # Docker Hub removes a tag by name through its own API; the registry
+          # API deletes manifests only by digest. Used to undo a half-written
+          # set below and by the candidate cleanup step.
+          hub_delete_tag() {
+            local jwt
+            jwt="$(curl -fsS -H 'Content-Type: application/json' \
+              -d "$(jq -cn --arg u "$HUB_USERNAME" --arg p "$HUB_TOKEN" '{username:$u,password:$p}')" \
+              https://hub.docker.com/v2/users/login | jq -r .token)"
+            curl -sS -o /dev/null -w "delete $1:$2 -> HTTP %{http_code}\n" -X DELETE \
+              -H "Authorization: JWT ${jwt}" "https://hub.docker.com/v2/repositories/$1/tags/$2/"
+          }
           # install.sh pulls the app and the sandbox under one tag, so the four
           # version tags are published as a set. Without promote: all absent
-          # means copy them all, all present means leave them, and a mix means
-          # an earlier run stopped halfway, which a retry must not paper over
-          # with images that were never verified together. The copy itself
-          # refuses an existing tag (--no-clobber) and fails on any registry
-          # error, so a digest check that errors cannot become an overwrite.
+          # means copy them all, all present means leave them, a confirmed mix
+          # means an earlier run stopped halfway (never papered over with
+          # images that were not verified together), and a lookup that fails
+          # for any reason other than not-found stops the step before any
+          # copy, since "absent" must never be a guess.
           if [ "$PROMOTE" != "true" ]; then
-            present=0
+            present=0; absent=0
             for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
               for suffix in "" "-slim"; do
-                if crane digest "${repo}:${VERSION}${suffix}" >/dev/null 2>&1; then
+                ref="${repo}:${VERSION}${suffix}"
+                if err="$(crane digest "$ref" 2>&1 >/dev/null)"; then
                   present=$((present + 1))
+                elif printf '%s' "$err" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|404'; then
+                  absent=$((absent + 1))
+                else
+                  echo "::error::could not tell whether ${ref} exists (${err}). Nothing was published; re-run once Docker Hub answers."
+                  exit 1
                 fi
               done
             done
             if [ "$present" -eq 4 ]; then
               echo "${VERSION}: all four tags already exist, left as they are (promote is off)"
               exit 0
-            elif [ "$present" -ne 0 ]; then
+            elif [ "$absent" -ne 4 ]; then
               echo "::error::${VERSION}: ${present} of the 4 version tags exist. A previous run stopped partway; delete the partial set on Docker Hub or re-run with promote=true."
               exit 1
             fi
@@ -332,14 +351,25 @@ jobs:
           else
             clobber=()
           fi
+          written=()
           for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
             for suffix in "" "-slim"; do
-              crane copy "${clobber[@]}" "${repo}:${CANDIDATE}${suffix}" "${repo}:${VERSION}${suffix}"
+              if ! crane copy "${clobber[@]}" "${repo}:${CANDIDATE}${suffix}" "${repo}:${VERSION}${suffix}"; then
+                echo "::error::copy of ${repo}:${VERSION}${suffix} failed"
+                if [ "$PROMOTE" != "true" ] && [ "${#written[@]}" -gt 0 ]; then
+                  echo "removing the ${#written[@]} tag(s) this run had already written, so no partial set is left"
+                  for w in "${written[@]}"; do hub_delete_tag "${w%%:*}" "${w#*:}" || true; done
+                fi
+                exit 1
+              fi
+              written+=("${repo}:${VERSION}${suffix}")
               echo "published ${repo}:${VERSION}${suffix}"
             done
           done
           if [ "$prerelease" = "true" ]; then
             echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
+          elif [ "$PROMOTE" != "true" ]; then
+            echo "promote is off: leaving :latest and :slim untouched"
           else
             for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
               crane copy "${repo}:${CANDIDATE}"      "${repo}:latest"
