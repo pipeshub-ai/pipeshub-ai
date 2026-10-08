@@ -22376,8 +22376,11 @@ paths:
         known to be registered, every outcome is a `200`:
         - consent page data (`requiresConsent: true`) when the request can go ahead;
         - `{redirectUrl}` carrying `error`, `error_description` and `state` when a requested
-          scope is not allowed for the app (`invalid_scope`) or a public client sent no
-          `code_challenge` (`invalid_request`).
+          scope is unknown or none of them is allowed for the app (`invalid_scope`), or a public
+          client sent no `code_challenge` (`invalid_request`).
+
+        Requested scopes the app does not allow are dropped rather than refused: the consent page
+        lists them under `consentData.notGrantedScopes` and the code never carries them.
 
         The token is checked only for its signature, not for being a session: an OAuth access
         token (for example a client-credentials token) is accepted too, and then
@@ -22453,7 +22456,8 @@ paths:
         '200':
           description: |
             Either the data for the consent page, or a redirect URL carrying an OAuth error
-            (scope not allowed for the app, or a public client without `code_challenge`).
+            (an unknown scope or none allowed for the app, or a public client without
+            `code_challenge`).
           content:
             application/json:
               schema:
@@ -22474,6 +22478,7 @@ paths:
                         required:
                           - app
                           - scopes
+                          - notGrantedScopes
                           - user
                           - redirectUri
                           - state
@@ -22501,7 +22506,27 @@ paths:
                                 description: Whether the app was created through dynamic client registration
                           scopes:
                             type: array
-                            description: The requested scopes, in request order
+                            description: The requested scopes the app allows, in request order, each once
+                            items:
+                              type: object
+                              additionalProperties: false
+                              required:
+                                - name
+                                - description
+                                - category
+                              properties:
+                                name:
+                                  type: string
+                                description:
+                                  type: string
+                                category:
+                                  type: string
+                          notGrantedScopes:
+                            type: array
+                            description: |
+                              The requested scopes the app does not allow, in request order, each once.
+                              Shown on the consent page and never granted; empty when every requested
+                              scope is allowed.
                             items:
                               type: object
                               additionalProperties: false
@@ -22638,8 +22663,9 @@ paths:
         '400':
           description: |
             The body fails validation (`VALIDATION_ERROR`), the `redirect_uri` is not registered for
-            the app (`OAUTH_INVALID_REDIRECT_URI`), or a requested scope is not allowed for the app
-            (`OAUTH_INVALID_SCOPE`). The scope is checked only when consent is `granted`.
+            the app (`OAUTH_INVALID_REDIRECT_URI`), or a requested scope is unknown or none of them is
+            allowed for the app (`OAUTH_INVALID_SCOPE`). The scope is checked only when consent is
+            `granted`; scopes the app does not allow are otherwise dropped from the code.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.").
           content:
@@ -23172,7 +23198,8 @@ paths:
             Either the body fails schema validation (standard error envelope, `VALIDATION_ERROR`),
             or the request is refused with an OAuth error: `unsupported_grant_type` when the app
             does not have the device_code grant or the grant is disabled on this instance, and
-            `invalid_scope` when a requested scope is unknown or not allowed for the app.
+            `invalid_scope` when a requested scope is unknown or none of them is allowed for the app.
+            Scopes the app does not allow are otherwise dropped from the grant.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.").
           content:

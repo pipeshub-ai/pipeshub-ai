@@ -92,6 +92,7 @@ def test_session_gets_the_consent_page_data(
     data = body["consentData"]
     assert data["app"] == {"name": data["app"]["name"], "isDynamic": False}
     assert [s["name"] for s in data["scopes"]] == ["openid", "email"]
+    assert data["notGrantedScopes"] == []
     assert data["user"]["email"]
     # The redirect middleware does not copy the user's name onto the request.
     assert "name" not in data["user"]
@@ -102,6 +103,22 @@ def test_session_gets_the_consent_page_data(
         assert body["codeChallengeMethod"] == "S256"
     else:
         assert "codeChallenge" not in body and "codeChallengeMethod" not in body
+
+
+def test_scopes_the_app_does_not_allow_are_listed_as_not_granted(
+    oauth2_session_client: OAuth2Client, confidential_app: OAuthApp
+) -> None:
+    # The allowed part is granted and the rest is dropped, not refused; a repeated scope shows once.
+    params = authorize_params(confidential_app, scope="openid kb:write openid")
+
+    resp = oauth2_session_client.authorize(**params)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    data = resp.json()["consentData"]
+    assert [s["name"] for s in data["scopes"]] == ["openid"]
+    assert [s["name"] for s in data["notGrantedScopes"]] == ["kb:write"]
+    assert all(s["description"] and s["category"] for s in data["notGrantedScopes"])
 
 
 def test_oauth_access_token_gets_consent_data_without_a_user(

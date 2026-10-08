@@ -51,6 +51,18 @@ def test_confidential_client_may_omit_pkce(
     assert "code" in redirect_params(resp.json()["redirectUrl"])
 
 
+def test_partly_allowed_scope_redirects_with_a_code(
+    oauth2_session_client: OAuth2Client, confidential_app: OAuthApp
+) -> None:
+    body = consent_body(confidential_app, scope="openid kb:write")
+
+    resp = oauth2_session_client.authorize_consent(**body)
+
+    assert resp.status_code == 200, resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+    assert set(redirect_params(resp.json()["redirectUrl"])) == {"code", "state"}
+
+
 @pytest.mark.parametrize(
     ("app_fixture", "consent", "error"),
     [

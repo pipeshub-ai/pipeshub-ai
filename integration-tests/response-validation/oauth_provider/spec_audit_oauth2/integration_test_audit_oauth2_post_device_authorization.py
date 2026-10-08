@@ -105,6 +105,19 @@ def test_unknown_scope_is_invalid_scope(oauth2_client: OAuth2Client) -> None:
     assert resp.json()["error"] == "invalid_scope"
 
 
+def test_partly_allowed_scope_starts_a_device_grant(oauth2_client: OAuth2Client) -> None:
+    # The first-party client allows kb:read but not kb:write; the rest is dropped, not refused.
+    resp = oauth2_client.device_authorization(
+        client_id=FIRST_PARTY_DEVICE_CLIENT_ID, scope="kb:read kb:write"
+    )
+    try:
+        assert resp.status_code == 200, resp.text[:500]
+        assert_strict_openapi_exchange(resp, ROUTE)
+    finally:
+        if resp.status_code == 200:
+            delete_device_grants([resp.json()["user_code"]])
+
+
 def test_client_without_device_grant_is_unsupported_grant_type(
     oauth2_client: OAuth2Client, user_session_client: SessionClient
 ) -> None:
