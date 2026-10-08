@@ -16,6 +16,7 @@ from app.agents.agent_loop.retrieval_ledger import (
     RetrievalContextLedger,
     emit_retrieval_context,
 )
+from app.modules.retrieval.provenance import note_retrieved_by
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -215,6 +216,42 @@ class TestLedger:
             FetchedRangePayload(startBlock=0, blocksRendered=12, complete=False)
         ]
         assert [f.startBlock for f in second.records[0].fetched] == [12]
+
+    def test_a_record_found_by_several_layers_lists_each_once(self) -> None:
+        ledger = RetrievalContextLedger()
+        state = _state(include_retrieval_context=True, final_results=[_block("vr-1", 0)])
+        note_retrieved_by(state, "vector", [("vr-1", "rec-vr-1", None)])
+        note_retrieved_by(state, "pattern_match", [("vr-1", None, None)])
+
+        first = ledger.take_delta(state)
+        note_retrieved_by(state, "entity", [("vr-1", None, None)])
+        second = ledger.take_delta(state)
+
+        assert first.records[0].retrievedBy == ["vector", "pattern_match"]
+        assert second.records[0].retrievedBy == ["entity"]
+        assert second.records[0].blockIndices == []
+        assert ledger.take_delta(state).is_empty
+
+    def test_a_record_named_without_content_is_reported_with_its_identity(self) -> None:
+        state = _state(include_retrieval_context=True)
+        note_retrieved_by(state, "pattern_match", [("vr-9", "rec-9", "Runbook")])
+
+        (record,) = RetrievalContextLedger().take_delta(state).records
+
+        assert (record.recordId, record.recordName) == ("rec-9", "Runbook")
+        assert record.blockIndices == [] and record.fetched == []
+        assert record.retrievedBy == ["pattern_match"]
+
+    def test_a_fetch_is_reported_as_a_layer(self) -> None:
+        outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": True}
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        assert delta.records[0].retrievedBy == ["fetch"]
+
+    def test_records_without_provenance_leave_the_key_off_the_wire(self) -> None:
+        delta = RetrievalContextLedger().take_delta(_state(final_results=[_block("vr-1", 0)]))
+
+        assert "retrievedBy" not in delta.records[0].model_dump(exclude_none=True)
 
     def test_malformed_entries_are_skipped(self) -> None:
         state = _state(final_results=["junk", {"block_index": 1}, _block("vr-1", 2)])

@@ -180,6 +180,7 @@ class ChatState(TypedDict):
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
     known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
+    retrieved_by: dict[str, Any] | None  # Which layer found each record — see modules/retrieval/provenance.py
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results

@@ -3,7 +3,9 @@ CUSTOM `retrieval_context` stream frames.
 
 Retrieval tools mutate (or replace) `final_results`,
 `virtual_record_id_to_result` and `known_record_ids`; `fetch_record` also
-records `fetch_render_outcomes` when the flag is on. Instead of teaching every
+records `fetch_render_outcomes`, and search, prefetch and the entity tools
+note which layer found each record (`retrieved_by`), when the flag is on.
+Instead of teaching every
 tool to report, the ledger diffs that shared state after prefetch and after
 every tool call and reports only what is new — a future retrieval tool is
 covered without touching this module.
@@ -21,6 +23,11 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RetrievalSource,
     RetrievalStatus,
     RetrievedRecordPayload,
+)
+from app.modules.retrieval.provenance import (
+    RETRIEVED_BY_KEY,
+    RecordProvenance,
+    RetrievalLayer,
 )
 from app.utils.chat_helpers import group_child_results
 
@@ -44,6 +51,7 @@ class _RecordDelta:
     summary_hit: bool = False
     max_score: float | None = None
     fetched: list[FetchedRangePayload] = field(default_factory=list)
+    retrieved_by: list[RetrievalLayer] = field(default_factory=list)
 
     def observe_score(self, score: object) -> None:
         if isinstance(score, (int, float)) and not isinstance(score, bool):
@@ -60,6 +68,7 @@ class _RecordDelta:
             summaryHit=self.summary_hit,
             maxScore=self.max_score,
             fetched=self.fetched,
+            retrievedBy=self.retrieved_by or None,
         )
 
 
@@ -109,6 +118,7 @@ class RetrievalContextLedger:
         self._seen_records: set[str] = set()
         self._seen_known: set[str] = set()
         self._seen_fetches: set[FetchKey] = set()
+        self._seen_layers: set[tuple[str, str]] = set()
         self._seq = 0
 
     def next_seq(self) -> int:
@@ -120,6 +130,7 @@ class RetrievalContextLedger:
         deltas: dict[str, _RecordDelta] = {}
         self._collect_blocks(tool_state.get("final_results") or [], records_map, deltas)
         self._collect_fetches(tool_state.get("fetch_render_outcomes") or {}, records_map, deltas)
+        self._collect_provenance(tool_state.get(RETRIEVED_BY_KEY) or {}, records_map, deltas)
         self._collect_records(records_map, deltas)
         known = self._collect_known(tool_state.get("known_record_ids") or ())
         return RetrievalDelta(
@@ -206,6 +217,33 @@ class RetrievalContextLedger:
                 delta = self._delta_for(virtual_record_id, records_map, deltas)
                 delta.record_id = delta.record_id or str(record_id)
                 delta.fetched.append(fetched)
+                self._observe_layer(delta, "fetch")
+
+    def _collect_provenance(
+        self,
+        provenance: Mapping[str, RecordProvenance],
+        records_map: Mapping[str, Any],
+        deltas: dict[str, _RecordDelta],
+    ) -> None:
+        for virtual_record_id, entry in provenance.items():
+            new_layers = [
+                layer for layer in entry.layers
+                if (virtual_record_id, layer) not in self._seen_layers
+            ]
+            if not new_layers:
+                continue
+            delta = self._delta_for(
+                virtual_record_id, records_map, deltas,
+                {"recordId": entry.record_id, "recordName": entry.record_name},
+            )
+            for layer in new_layers:
+                self._observe_layer(delta, layer)
+
+    def _observe_layer(self, delta: _RecordDelta, layer: RetrievalLayer) -> None:
+        key = (delta.virtual_record_id, layer)
+        if key not in self._seen_layers:
+            self._seen_layers.add(key)
+            delta.retrieved_by.append(layer)
 
     def _collect_records(
         self, records_map: Mapping[str, Any], deltas: dict[str, _RecordDelta],

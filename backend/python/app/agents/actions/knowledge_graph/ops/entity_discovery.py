@@ -28,6 +28,7 @@ from app.modules.retrieval.entity_permissions import (
     EntitySearchTimedOut,
     search_entities_for_user,
 )
+from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 
 if TYPE_CHECKING:
@@ -150,6 +151,10 @@ async def execute_search_entities(
         (r["_key"], r.get("recordName") or "") for h in hits for r in h.records if r.get("_key")
     )
     remember_record_ids(state, shown_record_ids, names=names)
+    shown = set(shown_record_ids)
+    note_retrieved_by(state, "entity", graph_record_refs(
+        row for hit in hits for row in hit.records if row.get("_key") in shown
+    ))
 
     payload = {"status": "success", "results": results}
     if ignored:

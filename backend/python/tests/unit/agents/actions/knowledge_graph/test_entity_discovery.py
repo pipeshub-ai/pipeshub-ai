@@ -190,6 +190,20 @@ class TestSearch:
         assert state[RECORD_SCOPED_ENTITY_CACHE_KEY] == {"rg-1": "record_group"}
 
     @pytest.mark.asyncio
+    async def test_records_it_shows_are_noted_as_found_by_entity(self, patched) -> None:
+        patched[1].return_value = [
+            _hit(f"t{i}", "topic", records=[{**_row(f"r{i}"), "virtualRecordId": f"vr-{i}"}])
+            for i in range(1, 5)
+        ]
+        state = _state(include_retrieval_context=True)
+
+        await execute_search_entities(state, "legal")
+
+        assert state["retrieved_by"]["vr-1"].layers == ["entity"]
+        # Only the first three entities' records are previewed.
+        assert set(state["retrieved_by"]) == {"vr-1", "vr-2", "vr-3"}
+
+    @pytest.mark.asyncio
     async def test_record_ids_go_through_shortener(self, patched) -> None:
         patched[1].return_value = [
             _hit("rec-9", "record", records=[_row("rec-9")]),

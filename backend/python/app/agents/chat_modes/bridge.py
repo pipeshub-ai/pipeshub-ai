@@ -73,6 +73,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval.provenance import note_retrieved_by
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
@@ -532,6 +533,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     prefetch_result.ranked_results,
                     prefetch_result.virtual_record_id_to_result,
                 )
+                note_retrieved_by(context.tool_state, "prefetch", [
+                    (vrid, record.get("id"), record.get("record_name"))
+                    for vrid, record in prefetch_result.virtual_record_id_to_result.items()
+                    if isinstance(record, dict)
+                ])
                 # No `citation_ref_mapper` reassignment here: `prefetch_result.
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`

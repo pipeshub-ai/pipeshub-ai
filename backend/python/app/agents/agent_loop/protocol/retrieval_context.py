@@ -13,6 +13,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.modules.retrieval.provenance import (
+    RetrievalLayer,  # noqa: TC001 - pydantic resolves it at runtime
+)
+
 RETRIEVAL_CONTEXT_EVENT_NAME = "retrieval_context"
 RETRIEVAL_CONTEXT_SCHEMA_VERSION = 1
 
@@ -43,6 +47,10 @@ class RetrievedRecordPayload(BaseModel):
     summaryHit: bool = False
     maxScore: float | None = None
     fetched: list[FetchedRangePayload] = Field(default_factory=list)
+    # Layers that found the record and were not reported for it before. A
+    # record with no blocks, summary or fetch was named to the model (title
+    # and Record ID) without content.
+    retrievedBy: list[RetrievalLayer] | None = None
 
 
 class RetrievalContextPayload(BaseModel):
