@@ -38,6 +38,7 @@ class InMemoryGraph:
     """The slice of the graph provider the entity handler uses."""
 
     def __init__(self) -> None:
+        self.logger = logging.getLogger("test.graph")  # the transaction store logs through the provider's
         self.nodes: dict[str, dict[str, dict]] = {}
         self.edges: dict[str, list[dict]] = {}
         self.fail_next: dict[str, BaseException] = {}
@@ -73,7 +74,25 @@ class InMemoryGraph:
                 match.update(edge)
         return True
 
-    async def get_nodes_by_filters(self, collection: str, filters: dict) -> list[dict]:
+    async def create_edges_if_absent(self, edges: list[dict], collection: str, transaction: str | None = None) -> None:
+        self._maybe_fail(f"edges:{collection}")
+        bucket = self.edges.setdefault(collection, [])
+        for edge in edges:
+            # Same rule as the Arango and Neo4j providers: an edge that is there is left as it is.
+            if not any(e["from_id"] == edge["from_id"] and e["to_id"] == edge["to_id"] for e in bucket):
+                bucket.append(dict(edge))
+
+    async def ensure_app_membership(
+        self, principal_id: str, principal_collection: str, connector_id: str, *,
+        is_external: bool, source_user_id: str | None = None, transaction: str | None = None,
+    ) -> None:
+        await self.create_edges_if_absent([{
+            "from_id": principal_id, "from_collection": principal_collection,
+            "to_id": connector_id, "to_collection": CollectionNames.APPS.value,
+            "isExternalUser": is_external, "syncState": "NOT_STARTED",
+        }], CollectionNames.USER_APP_RELATION.value)
+
+    async def get_nodes_by_filters(self, collection: str, filters: dict, *, raise_on_error: bool = False) -> list[dict]:
         return [
             dict(n) for n in self.nodes.get(collection, {}).values()
             if all(n.get(k) == v for k, v in filters.items())
@@ -109,6 +128,13 @@ class InMemoryGraph:
 
     async def rollback_transaction(self, txn_id: str) -> None:
         return None
+
+    # Synchronous on the real providers; the idempotent writer asks before a retry.
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return False
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
 
     async def reset_indexing_status_for_connector(self, connector_id: str, status: str, **_: Any) -> None:  # noqa: ANN401
         return None
@@ -256,15 +282,6 @@ class TestOrganisationScoping:
 
 
 class TestPartialFailure:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Left alone: entity.py is part of open PRs. When creating the user's "
-            "private knowledge base fails, the error is logged and swallowed, so the "
-            "event is acknowledged and nothing ever retries it: the user exists but has "
-            "no private knowledge base."
-        ),
-    )
     async def test_a_brief_graph_failure_while_creating_the_private_kb_is_reported_for_retry(
         self, broker, graph
     ) -> None:

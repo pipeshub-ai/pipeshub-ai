@@ -842,14 +842,19 @@ class _KbGraph:
     """The apps and edges of one org, on a graph where each statement lands as it
     runs (Neo4j's default) and the write numbered *conflicts_on* hits another writer."""
 
-    def __init__(self, *, conflicts_on: int | None = None) -> None:
+    def __init__(self, *, conflicts_on: int | None = None, lookup_fails: bool = False) -> None:
         self.logger = MagicMock()
         self.apps: dict[str, dict] = {}
         self.edges: dict[tuple[str, str, str], dict] = {}
         self.writes = 0
         self.conflicts_on = conflicts_on
+        self.lookup_fails = lookup_fails
 
-    async def get_nodes_by_filters(self, collection: str, filters: dict) -> list[dict]:
+    async def get_nodes_by_filters(self, collection: str, filters: dict, *, raise_on_error: bool = False) -> list[dict]:
+        if self.lookup_fails:  # As both providers do: raise only when asked, else answer "nothing".
+            if raise_on_error:
+                raise RuntimeError("LockAcquisitionTimeout")
+            return []
         return [app for app in self.apps.values() if all(app.get(k) == v for k, v in filters.items())]
 
     async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
@@ -974,6 +979,27 @@ class TestDefaultKbCreateConverges:
 
         assert result["id"] == "kb-1"
         assert graph.edges == before
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised_and_adds_no_second_kb(self) -> None:
+        """The providers answer [] to a failed lookup unless told to raise; read as "no
+        knowledge base", that minted a second App and acknowledged the event."""
+        graph = _KbGraph(lookup_fails=True)
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        svc = _service_on(graph)
+
+        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+        assert list(graph.apps) == ["kb-1"]
+
+        graph.get_user_by_email = AsyncMock(return_value=None)
+        graph.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
+        graph.batch_upsert_nodes = AsyncMock()
+        graph.batch_create_edges = AsyncMock()
+        svc._adopt_existing_person = AsyncMock()
+        payload = {"userId": "user-1", "orgId": "org-1", "email": "a@b.co", "syncAction": "none"}
+        assert await svc.process_event("userAdded", payload) is False
+        assert list(graph.apps) == ["kb-1"]
 
     @pytest.mark.asyncio
     async def test_a_failed_repair_is_raised_and_fails_the_user_event(self) -> None:

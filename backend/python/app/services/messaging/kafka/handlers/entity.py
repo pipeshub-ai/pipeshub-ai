@@ -688,14 +688,16 @@ class EntityEventService(BaseEventService):
             self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
             return {}
 
-        # Check if a KB app already exists for this user in this organization
+        # raise_on_error: the providers answer [] to a failed lookup too, and "no
+        # knowledge base" here would mint a second App under a new id.
         existing_kbs = await self.graph_provider.get_nodes_by_filters(
             collection=CollectionNames.APPS.value,
             filters={
                 "createdBy": userId,
                 "orgId": orgId,
                 "type": Connectors.KNOWLEDGE_BASE.value,
-            }
+            },
+            raise_on_error=True,
         )
         existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
 

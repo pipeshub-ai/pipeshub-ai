@@ -5416,6 +5416,40 @@ class TestEnsureAppMembership:
         assert "SET r +=" not in q
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_external", [True, False])
+    async def test_flag_is_written_explicitly(self, mocked, is_external):
+        from app.config.constants.arangodb import CollectionNames
+
+        await mocked.ensure_app_membership(
+            "user-1", CollectionNames.USERS.value, "conn-1", is_external=is_external
+        )
+        props = mocked.client.execute_query.await_args.kwargs["parameters"]["props"]
+        assert props["isExternalUser"] is is_external
+
+    @pytest.mark.asyncio
+    async def test_person_principal_uses_person_label(self, mocked):
+        """An external collaborator who is not yet a platform user holds membership as a
+        Person, so the label has to follow the collection."""
+        from app.config.constants.arangodb import CollectionNames
+
+        await mocked.ensure_app_membership(
+            "person-1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
+        )
+        q = mocked.client.execute_query.await_args.args[0]
+        assert "MATCH (principal:Person {id: $principal_id})" in q
+
+    @pytest.mark.asyncio
+    async def test_source_user_id_omitted_when_unknown(self, mocked):
+        from app.config.constants.arangodb import CollectionNames
+
+        await mocked.ensure_app_membership(
+            "person-1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
+        )
+        props = mocked.client.execute_query.await_args.kwargs["parameters"]["props"]
+        assert "sourceUserId" not in props
+
+
 class TestCreateEdgesIfAbsent:
     """The create-only counterpart of batch_create_edges, for a repair that must not
     replace an edge that is already there."""
@@ -5452,39 +5486,6 @@ class TestCreateEdgesIfAbsent:
     async def test_nothing_to_write_is_no_statement(self, mocked: "Neo4jProvider") -> None:
         await mocked.create_edges_if_absent([], "permission")
         mocked.client.execute_query.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("is_external", [True, False])
-    async def test_flag_is_written_explicitly(self, mocked, is_external):
-        from app.config.constants.arangodb import CollectionNames
-
-        await mocked.ensure_app_membership(
-            "user-1", CollectionNames.USERS.value, "conn-1", is_external=is_external
-        )
-        props = mocked.client.execute_query.await_args.kwargs["parameters"]["props"]
-        assert props["isExternalUser"] is is_external
-
-    @pytest.mark.asyncio
-    async def test_person_principal_uses_person_label(self, mocked):
-        """An external collaborator who is not yet a platform user holds membership as a
-        Person, so the label has to follow the collection."""
-        from app.config.constants.arangodb import CollectionNames
-
-        await mocked.ensure_app_membership(
-            "person-1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
-        )
-        q = mocked.client.execute_query.await_args.args[0]
-        assert "MATCH (principal:Person {id: $principal_id})" in q
-
-    @pytest.mark.asyncio
-    async def test_source_user_id_omitted_when_unknown(self, mocked):
-        from app.config.constants.arangodb import CollectionNames
-
-        await mocked.ensure_app_membership(
-            "person-1", CollectionNames.PEOPLE.value, "conn-1", is_external=True
-        )
-        props = mocked.client.execute_query.await_args.kwargs["parameters"]["props"]
-        assert "sourceUserId" not in props
 
 
 class TestPersonUpsertByEmail:
