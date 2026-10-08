@@ -122,10 +122,12 @@ class EntityEventService(BaseEventService):
                 [org_data], CollectionNames.ORGS.value
             )
 
-            # Get departments with orgId == None using provider
+            # raise_on_error: a failed read would otherwise create the org with no
+            # department links and acknowledge the event.
             departments = await self.graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.DEPARTMENTS.value,
-                filters={"orgId": None}
+                filters={"orgId": None},
+                raise_on_error=True,
             )
 
             # Create relationships between org and departments
@@ -220,9 +222,10 @@ class EntityEventService(BaseEventService):
         """Handle user creation event"""
         try:
             self.logger.info(f"📥 Processing user added event: {payload}")
-            # Check if user already exists by email
+            # raise_on_error: the providers answer None to a failed read too, and
+            # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
-                payload["email"]
+                payload["email"], raise_on_error=True
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()
@@ -702,17 +705,18 @@ class EntityEventService(BaseEventService):
         existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
 
         if existing_kbs:
-            existing = existing_kbs[0]
-            existing_key = existing.get("id") or existing.get("_key")
             self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
             # A create that failed partway on Neo4j (each statement commits on its
             # own) left the App without some of its edges; finish it rather than
             # hand it out unusable again. Create-only, so a complete one is untouched.
-            if existing_key:
-                await self.graph_data_store.execute_idempotent_in_transaction(
-                    self._ensure_kb_edges, user_key, orgId, existing_key
-                )
-            return existing
+            # Every match, not the first: the lookup is unordered.
+            for existing in existing_kbs:
+                existing_key = existing.get("id") or existing.get("_key")
+                if existing_key:
+                    await self.graph_data_store.execute_idempotent_in_transaction(
+                        self._ensure_kb_edges, user_key, orgId, existing_key
+                    )
+            return existing_kbs[0]
 
         current_timestamp = get_epoch_timestamp_in_ms()
         kb_key = str(uuid4())

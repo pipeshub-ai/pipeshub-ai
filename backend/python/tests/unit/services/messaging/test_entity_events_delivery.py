@@ -98,7 +98,8 @@ class InMemoryGraph:
             if all(n.get(k) == v for k, v in filters.items())
         ]
 
-    async def get_user_by_email(self, email: str, transaction: str | None = None) -> SimpleNamespace | None:
+    async def get_user_by_email(self, email: str, transaction: str | None = None, *,
+                                raise_on_error: bool = False) -> SimpleNamespace | None:
         for node in self.nodes.get(CollectionNames.USERS.value, {}).values():
             if node.get("email") == email:
                 return SimpleNamespace(id=node["id"])
