@@ -1370,6 +1370,11 @@ class LinearConnector(BaseConnector):
                 try:
                     issue_id = issue_data.get("id", "")
 
+                    # Linear's team filter also returns sub-team issues; each is synced in its own team's pass.
+                    issue_team_id = (issue_data.get("team") or {}).get("id")
+                    if issue_team_id and issue_team_id != team_id:
+                        continue
+
                     # Look up existing record to handle versioning
                     existing_record = await self.data_entities_processor.get_record_by_external_id(
                         connector_id=self.connector_id,
@@ -2997,7 +3002,6 @@ class LinearConnector(BaseConnector):
             creator_email=creator_email,
             creator_name=creator_name,
             inherit_permissions=True,
-            inherit_permissions_from_group=bool(parent_external_record_id),
         )
 
         # Extract and map issue relationships
