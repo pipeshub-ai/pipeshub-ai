@@ -997,8 +997,8 @@ class LinearConnector(BaseConnector):
         Sync point logic:
         - Before sync: Read last_sync_time
         - Query: Fetch issues with updatedAt > last_sync_time
-        - After EACH batch: Update last_sync_time to max issue updated_at (fault tolerance)
-        - After all batches: Update last_sync_time to current time
+        - After the whole scan was read: Update last_sync_time to max issue updated_at.
+          Pages are not ordered by updatedAt, so a partial scan must not move it.
 
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
@@ -1064,9 +1064,8 @@ class LinearConnector(BaseConnector):
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                    # Update sync point after each batch for fault tolerance
-                    if max_issue_updated_at:
-                        await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
+                if max_issue_updated_at:
+                    await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
 
                 # Log final status
                 if total_records_processed > 0:
@@ -1391,18 +1390,13 @@ class LinearConnector(BaseConnector):
         # Apply date filters to team_filter
         self._apply_date_filters_to_linear_filter(team_filter, last_sync_time)
 
-        # This ensures each batch's max updatedAt >= previous batches, so checkpoint
-        order_by = {"updatedAt": "ASC"}
-
         while True:
-            # Fetch issues batch ordered by updatedAt ASC
             response = await self._with_transient_retry(
                 f"issues page for team {team_key}",
                 datasource.issues,
                 first=batch_size,
                 after=after_cursor,
                 filter=team_filter,
-                orderBy=order_by,
             )
 
             if not response.success:
@@ -1643,15 +1637,15 @@ class LinearConnector(BaseConnector):
                 if batch_records:
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                # Update sync point after each batch
-                if max_attachment_updated_at:
-                    await self._update_attachments_sync_checkpoint(max_attachment_updated_at)
-
                 # Check for more pages
                 if page_info.get("hasNextPage") and page_info.get("endCursor"):
                     after_cursor = page_info.get("endCursor")
                 else:
                     break
+
+            # Pages are not ordered by updatedAt, so only a fully read scan may move the checkpoint
+            if max_attachment_updated_at:
+                await self._update_attachments_sync_checkpoint(max_attachment_updated_at)
 
             if total_attachments > 0:
                 self.logger.info(f"✅ Synced {total_attachments} attachments")
@@ -1815,15 +1809,15 @@ class LinearConnector(BaseConnector):
                         self.logger.debug("✅ Batch processed successfully")
                         batch_records = []  # Clear batch after processing
 
-                # Update sync point after each batch
-                if max_document_updated_at:
-                    await self._update_documents_sync_checkpoint(max_document_updated_at)
-
                 # Check for more pages
                 if page_info.get("hasNextPage") and page_info.get("endCursor"):
                     after_cursor = page_info.get("endCursor")
                 else:
                     break
+
+            # Pages are not ordered by updatedAt, so only a fully read scan may move the checkpoint
+            if max_document_updated_at:
+                await self._update_documents_sync_checkpoint(max_document_updated_at)
 
             if total_documents > 0:
                 self.logger.info(f"✅ Synced {total_documents} documents")
@@ -1853,7 +1847,8 @@ class LinearConnector(BaseConnector):
         Sync point logic:
         - Before sync: Read last_sync_time for each team
         - Query: Fetch projects with teams filter and updatedAt > last_sync_time
-        - After EACH batch: Update last_sync_time to max project updated_at (fault tolerance)
+        - After the whole scan was read: Update last_sync_time to max project updated_at.
+          Pages are not ordered by updatedAt, so a partial scan must not move it.
 
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
@@ -1909,10 +1904,8 @@ class LinearConnector(BaseConnector):
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                    # Update sync point after each batch for fault tolerance
-                    # Uses max from PROJECTS ONLY (we query by project.updatedAt)
-                    if max_project_updated_at:
-                        await self._update_team_project_sync_checkpoint(team_key, max_project_updated_at)
+                if max_project_updated_at:
+                    await self._update_team_project_sync_checkpoint(team_key, max_project_updated_at)
 
                 # Log final status
                 if total_records_processed > 0:
