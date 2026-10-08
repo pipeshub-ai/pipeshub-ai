@@ -2,7 +2,9 @@
 
 import asyncio
 import base64
+import hashlib
 import json
+import mimetypes
 import re
 from collections import OrderedDict, defaultdict
 from datetime import datetime
@@ -33,7 +35,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.error.stream_errors import not_found_at_source
+from app.connectors.core.base.error.stream_errors import (
+    map_source_status,
+    not_found_at_source,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -135,6 +140,7 @@ INCREMENTAL_SAFETY_LAG_SECONDS = 60
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 HTTP_ERROR_STATUS = 400
 CDN_FETCH_TIMEOUT_SECONDS = 60.0
+UNRELIABLE_MIME_TYPES = frozenset({"application/unknown", "application/octet-stream", "application/binary"})
 # Zendesk reports trashed tickets in the incremental export under this status.
 DELETED_TICKET_STATUS = "deleted"
 # Admins and agents whose role grants ticket_access "all" read every ticket in Zendesk
@@ -1188,6 +1194,7 @@ class ZendeskConnector(BaseConnector):
                 ticket_data,
                 has_public_comment=bool(public_comments_by_ticket.get(str(ticket_id))),
                 include_unchanged=True,
+                comments=public_comments_by_ticket.get(str(ticket_id)),
             )
             if record_tuple:
                 records_with_permissions.append(record_tuple)
@@ -1315,6 +1322,7 @@ class ZendeskConnector(BaseConnector):
         *,
         has_public_comment: bool = True,
         include_unchanged: bool = False,
+        comments: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Tuple[Record, List[Permission]]]:
         ticket_id = ticket_data.get("id")
         group_id = ticket_data.get("group_id")
@@ -1367,7 +1375,11 @@ class ZendeskConnector(BaseConnector):
             record_name=ticket_data.get("subject") or f"Zendesk ticket {ticket_id}",
             record_type=RecordType.TICKET,
             external_record_id=str(ticket_id),
-            external_revision_id=str(updated_at) if updated_at else None,
+            external_revision_id=(
+                self._ticket_content_revision(ticket_data, comments)
+                if comments is not None
+                else str(updated_at) if updated_at else None
+            ),
             external_record_group_id=external_group_id,
             record_group_type=RecordGroupType.PROJECT,
             version=version,
@@ -2066,7 +2078,7 @@ class ZendeskConnector(BaseConnector):
             record_name=article_data.get("title") or f"Zendesk article {article_id}",
             record_type=RecordType.WEBPAGE,
             external_record_id=f"article_{article_id}",
-            external_revision_id=str(updated_at) if updated_at else None,
+            external_revision_id=self._content_revision(article_data.get("body") or ""),
             external_record_group_id=external_group_id,
             record_group_type=RecordGroupType.KB if external_group_id else None,
             version=version,
@@ -2110,26 +2122,30 @@ class ZendeskConnector(BaseConnector):
                 self.connector_id,
                 self.logger,
             )
-        if record.record_type == RecordType.FILE:
-            # Attachment bytes are not a BlocksContainer.
-            content = await self._process_file_for_streaming(record)
+        # A linked ticket that has not synced yet: nothing was checked against the filters.
+        if getattr(record, "is_placeholder", False) is True:
+            raise not_found_at_source(self.display_name)
+        try:
+            if record.record_type == RecordType.FILE:
+                # Attachment bytes are not a BlocksContainer.
+                return create_stream_record_response(
+                    await self._process_file_for_streaming(record),
+                    filename=record.record_name,
+                    mime_type=record.mime_type or MimeTypes.UNKNOWN.value,
+                    fallback_filename=record.external_record_id,
+                )
 
-            async def file_bytes() -> AsyncGenerator[bytes, None]:
-                yield content
-
-            return create_stream_record_response(
-                file_bytes(),
-                filename=record.record_name,
-                mime_type=record.mime_type or MimeTypes.UNKNOWN.value,
-                fallback_filename=record.external_record_id,
-            )
-
-        if record.record_type == RecordType.TICKET:
-            content = await self._process_ticket_blockgroups_for_streaming(record)
-        elif record.record_type == RecordType.WEBPAGE:
-            content = await self._process_article_blockgroups_for_streaming(record)
-        else:
-            raise ValueError(f"Unsupported Zendesk record type: {record.record_type}")
+            if record.record_type == RecordType.TICKET:
+                content = await self._process_ticket_blockgroups_for_streaming(record)
+            elif record.record_type == RecordType.WEBPAGE:
+                content = await self._process_article_blockgroups_for_streaming(record)
+            else:
+                raise ValueError(f"Unsupported Zendesk record type: {record.record_type}")
+        except ZendeskAuthError as e:
+            # 409 reconnect, never 401: the frontend treats a 401 as its own session ending.
+            raise map_source_status(
+                HttpStatusCode.UNAUTHORIZED.value, connector=self.display_name
+            ) from e
         return StreamingResponse(iter([content]), media_type=MimeTypes.BLOCKS.value)
 
     async def _fetch_public_comments(self, ticket_id: str) -> List[Dict[str, Any]]:
@@ -2499,7 +2515,7 @@ class ZendeskConnector(BaseConnector):
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.ZENDESK,
                 connector_id=self.connector_id,
-                mime_type=attachment.get("content_type") or MimeTypes.UNKNOWN.value,
+                mime_type=self._attachment_mime_type(attachment),
                 # Parent page, not content_url: that URL is a bearer capability and
                 # weburl is readable from metadata. Re-fetched per download instead.
                 weburl=parent_record.weburl,
@@ -2537,7 +2553,8 @@ class ZendeskConnector(BaseConnector):
             )
         return child_records
 
-    async def _process_file_for_streaming(self, record: Record) -> bytes:
+    async def _process_file_for_streaming(self, record: Record) -> AsyncGenerator[bytes, None]:
+        """Open the download before returning, so a source error becomes a real status."""
         attachment_id = (record.external_record_id or "").rsplit("_attachment_", 1)[-1]
         if not attachment_id.isdigit():
             raise ValueError(
@@ -2554,12 +2571,30 @@ class ZendeskConnector(BaseConnector):
             )
 
         datasource = await self._get_fresh_datasource()
-        status, raw, _ = await self._fetch_asset(datasource, content_url)
-        if status >= HTTP_ERROR_STATUS:
-            raise Exception(
-                f"Failed to download Zendesk attachment {record.external_record_id}: {status}"
-            )
-        return raw
+        # Same host rule as _fetch_asset; httpx drops the header on a cross-host redirect.
+        headers = dict(datasource.http.headers) if self._is_tenant_api_url(content_url) else None
+        client = httpx.AsyncClient(
+            follow_redirects=True, timeout=CDN_FETCH_TIMEOUT_SECONDS, headers=headers
+        )
+        try:
+            response = await client.send(client.build_request("GET", content_url), stream=True)
+        except BaseException:
+            await client.aclose()
+            raise
+        if response.status_code >= HTTP_ERROR_STATUS:
+            await response.aclose()
+            await client.aclose()
+            raise map_source_status(response.status_code, connector=self.display_name)
+
+        async def chunks() -> AsyncGenerator[bytes, None]:
+            try:
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+            finally:
+                await response.aclose()
+                await client.aclose()
+
+        return chunks()
 
     async def _is_attachment_currently_public(self, record: Record) -> bool:
         """Re-check the parent visibility before serving bytes cached as a record."""
@@ -2759,8 +2794,9 @@ class ZendeskConnector(BaseConnector):
             return f"Zendesk: {str(parsed['description']).rstrip('.')}."
         return "Zendesk denied access with this token."
 
-    async def get_signed_url(self, record: Record) -> str:
-        return ""
+    async def get_signed_url(self, record: Record) -> Optional[str]:
+        # Zendesk's content_url is a bearer link, so downloads are proxied by stream_record.
+        return None
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         pass
@@ -3300,9 +3336,41 @@ class ZendeskConnector(BaseConnector):
         index the same bytes twice. An inline non-image — a linked PDF — is not
         embedded by anything, so it still needs its own record.
         """
-        return bool(attachment.get("inline")) and str(
-            attachment.get("content_type") or ""
+        return bool(attachment.get("inline")) and ZendeskConnector._attachment_mime_type(
+            attachment
         ).startswith("image/")
+
+    @staticmethod
+    def _content_revision(*parts: Any) -> str:
+        # The title is not hashed: a rename updates the record without re-indexing it.
+        return hashlib.sha256(
+            json.dumps(parts, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+
+    @classmethod
+    def _ticket_content_revision(
+        cls, ticket_data: Dict[str, Any], comments: List[Dict[str, Any]]
+    ) -> str:
+        if not comments:
+            # The streamed body falls back to the subject, so it is the content here.
+            return cls._content_revision(ticket_data.get("subject") or "")
+        return cls._content_revision([
+            (
+                comment.get("id"),
+                comment.get("html_body") or comment.get("body") or "",
+                [attachment.get("id") for attachment in comment.get("attachments") or []],
+            )
+            for comment in comments
+        ])
+
+    @staticmethod
+    def _attachment_mime_type(attachment: Dict[str, Any]) -> str:
+        """Zendesk reports application/unknown for files uploaded without a type."""
+        content_type = attachment.get("content_type")
+        if content_type and content_type not in UNRELIABLE_MIME_TYPES:
+            return content_type
+        guessed, _ = mimetypes.guess_type(attachment.get("file_name") or "", strict=False)
+        return guessed or content_type or MimeTypes.UNKNOWN.value
 
     def _extension(self, file_name: str) -> Optional[str]:
         if "." not in file_name:

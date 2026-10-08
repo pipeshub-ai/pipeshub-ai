@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, RecordRelations
 from app.config.constants.arangodb import ProgressStatus
@@ -546,6 +547,34 @@ class TestTicketToRecord:
         )
         assert isinstance(record, WebpageRecord)
         assert record.version == 2
+
+    async def test_title_edit_keeps_the_revision_and_comment_edit_changes_it(self, zendesk_connector):
+        comments = [{"id": 1, "body": "hello", "attachments": [{"id": 5}]}]
+        base = {"id": 555, "subject": "Old", "updated_at": "2026-01-02T00:00:00Z"}
+        renamed = {**base, "subject": "New", "updated_at": "2026-01-03T00:00:00Z"}
+        edited = [{"id": 1, "body": "hello again", "attachments": [{"id": 5}]}]
+
+        def revision(ticket, ticket_comments):
+            return ZendeskConnector._ticket_content_revision(ticket, ticket_comments)
+
+        assert revision(base, comments) == revision(renamed, comments)
+        assert revision(base, comments) != revision(base, edited)
+        assert revision(base, comments) != revision(base, comments + [{"id": 2, "body": "later"}])
+
+    def test_article_revision_ignores_the_title(self):
+        assert ZendeskConnector._content_revision("<p>body</p>") == ZendeskConnector._content_revision("<p>body</p>")
+        assert ZendeskConnector._content_revision("<p>body</p>") != ZendeskConnector._content_revision("<p>new</p>")
+
+    @pytest.mark.parametrize("content_type,file_name,expected", [
+        ("application/unknown", "pixel.png", "image/png"),
+        (None, "notes.txt", "text/plain"),
+        ("application/pdf", "x.bin", "application/pdf"),
+        ("application/unknown", "noext", "application/unknown"),
+    ])
+    def test_attachment_mime_type(self, content_type, file_name, expected):
+        assert ZendeskConnector._attachment_mime_type(
+            {"content_type": content_type, "file_name": file_name}
+        ) == expected
 
     async def test_bumps_version_on_changed_ticket(self, zendesk_connector, mock_tx_store):
         existing = MagicMock()
@@ -2359,68 +2388,82 @@ class TestStreamRecord:
         with pytest.raises(ValueError, match="Unsupported Zendesk record type"):
             await zendesk_connector.stream_record(record)
 
-    async def test_tenant_download_goes_through_the_authenticated_client(self, zendesk_connector):
+    @staticmethod
+    def _download_via(status, body, seen):
+        real_client = httpx.AsyncClient
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(status, content=body)
+
+        def factory(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        return patch("app.connectors.sources.zendesk.connector.httpx.AsyncClient", side_effect=factory)
+
+    async def _download(self, zendesk_connector, url, status=200, body=b"filebytes"):
         datasource = _ready(zendesk_connector)
         _make_ticket_attachment_public(datasource)
         datasource.http = MagicMock()
-        datasource.http.headers = {"Authorization": "Basic secret"}
-        response = MagicMock()
-        response.status = 200
-        response.bytes.return_value = b"filebytes"
-        datasource.http.execute = AsyncMock(return_value=response)
-
-        _attachment_lookup(datasource, "https://acme.zendesk.com/attachments/9")
+        datasource.http.headers = {"Authorization": "Bearer secret"}
+        datasource.http.execute = AsyncMock()
+        _attachment_lookup(datasource, url)
         record = MagicMock()
         record.external_record_id = "ticket_1_comment_2_attachment_9"
+        seen = []
+        with self._download_via(status, body, seen):
+            chunks = await zendesk_connector._process_file_for_streaming(record)
+            data = b"".join([chunk async for chunk in chunks])
+        return data, seen, datasource
 
-        assert await zendesk_connector._process_file_for_streaming(record) == b"filebytes"
-        datasource.http.execute.assert_awaited_once()
+    async def test_tenant_download_streams_with_the_token(self, zendesk_connector):
+        data, seen, _ = await self._download(
+            zendesk_connector, "https://acme.zendesk.com/attachments/9"
+        )
+        assert data == b"filebytes"
+        assert seen[0].headers["Authorization"] == "Bearer secret"
 
-    async def test_cdn_download_never_touches_the_authenticated_client(self, zendesk_connector):
+    async def test_cdn_download_never_carries_the_token(self, zendesk_connector):
         """Regression: headers={} did not withhold the credential — HTTPClient merges
         its own — so the token reached the shared CDN."""
-        datasource = _ready(zendesk_connector)
-        _make_ticket_attachment_public(datasource)
-        datasource.http = MagicMock()
-        datasource.http.headers = {"Authorization": "Basic secret"}
-        datasource.http.execute = AsyncMock()
-
-        _attachment_lookup(datasource, "https://p1.zdusercontent.com/attachment/9")
-        record = MagicMock()
-        record.external_record_id = "ticket_1_comment_2_attachment_9"
-
-        cdn_response = MagicMock()
-        cdn_response.status_code = 200
-        cdn_response.content = b"filebytes"
-        cdn_client = MagicMock()
-        cdn_client.get = AsyncMock(return_value=cdn_response)
-        cdn_client.__aenter__ = AsyncMock(return_value=cdn_client)
-        cdn_client.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("app.connectors.sources.zendesk.connector.httpx.AsyncClient",
-                   return_value=cdn_client) as client_cls:
-            assert await zendesk_connector._process_file_for_streaming(record) == b"filebytes"
-
-        # The credential-bearing client is never used for a CDN URL.
+        data, seen, datasource = await self._download(
+            zendesk_connector, "https://p1.zdusercontent.com/attachment/9"
+        )
+        assert data == b"filebytes"
+        assert "Authorization" not in seen[0].headers
         datasource.http.execute.assert_not_awaited()
-        cdn_client.get.assert_awaited_once_with("https://p1.zdusercontent.com/attachment/9")
-        assert "headers" not in client_cls.call_args.kwargs
 
-    async def test_file_download_raises_on_error_status(self, zendesk_connector):
-        datasource = _ready(zendesk_connector)
-        _make_ticket_attachment_public(datasource)
-        datasource.http = MagicMock()
-        datasource.http.headers = {}
-        response = MagicMock()
-        response.status = 404
-        datasource.http.execute = AsyncMock(return_value=response)
+    @pytest.mark.parametrize("status,expected", [(404, 404), (401, 409), (503, 502)])
+    async def test_file_download_maps_source_status(self, zendesk_connector, status, expected):
+        with pytest.raises(HTTPException) as exc:
+            await self._download(
+                zendesk_connector, "https://acme.zendesk.com/attachments/9", status=status
+            )
+        assert exc.value.status_code == expected
 
-        _attachment_lookup(datasource, "https://acme.zendesk.com/attachments/9")
+    async def test_placeholder_is_refused(self, zendesk_connector):
+        _ready(zendesk_connector)
+        zendesk_connector._process_ticket_blockgroups_for_streaming = AsyncMock()
         record = MagicMock()
-        record.external_record_id = "ticket_1_comment_2_attachment_9"
+        record.record_type = RecordType.TICKET
+        record.is_placeholder = True
+        with pytest.raises(HTTPException) as exc:
+            await zendesk_connector.stream_record(record)
+        assert exc.value.status_code == 404
+        zendesk_connector._process_ticket_blockgroups_for_streaming.assert_not_awaited()
 
-        with pytest.raises(Exception, match="Failed to download"):
-            await zendesk_connector._process_file_for_streaming(record)
+    async def test_auth_failure_while_streaming_asks_to_reconnect(self, zendesk_connector):
+        """A 401 would log the PipesHub user out; the frontend renders 409 as 'reconnect'."""
+        _ready(zendesk_connector)
+        zendesk_connector._process_ticket_blockgroups_for_streaming = AsyncMock(
+            side_effect=ZendeskAuthError("expired")
+        )
+        record = MagicMock()
+        record.record_type = RecordType.TICKET
+        with pytest.raises(HTTPException) as exc:
+            await zendesk_connector.stream_record(record)
+        assert exc.value.status_code == 409
+        assert "Reconnect" in exc.value.detail
 
 
 # ===========================================================================
@@ -2798,7 +2841,7 @@ class TestConnectionAndLifecycle:
         await zendesk_connector.cleanup()
 
     async def test_signed_url_is_empty(self, zendesk_connector):
-        assert await zendesk_connector.get_signed_url(MagicMock()) == ""
+        assert await zendesk_connector.get_signed_url(MagicMock()) is None
 
     async def test_webhook_notification_is_noop(self, zendesk_connector):
         assert await zendesk_connector.handle_webhook_notification({"a": 1}) is None
