@@ -305,13 +305,18 @@ jobs:
             echo "rehearsal of ${VERSION}: verified, publishing nothing"
             exit 0
           fi
+          # Without promote the copy itself refuses an existing tag
+          # (--no-clobber) and fails on any registry error, so a digest check
+          # that errors for another reason cannot turn into an overwrite.
+          clobber=()
+          if [ "$PROMOTE" != "true" ]; then clobber=(--no-clobber); fi
           for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
             for suffix in "" "-slim"; do
               if [ "$PROMOTE" != "true" ] && crane digest "${repo}:${VERSION}${suffix}" >/dev/null 2>&1; then
                 echo "${repo}:${VERSION}${suffix} already exists: left as it is (promote is off)"
                 continue
               fi
-              crane copy "${repo}:${CANDIDATE}${suffix}" "${repo}:${VERSION}${suffix}"
+              crane copy "${clobber[@]}" "${repo}:${CANDIDATE}${suffix}" "${repo}:${VERSION}${suffix}"
               echo "published ${repo}:${VERSION}${suffix}"
             done
           done
