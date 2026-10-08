@@ -55,6 +55,9 @@ OVERFETCH_FACTOR = 3
 OVERFETCH_CAP = 50
 MAX_EVALUATED_HITS = 40
 SEARCH_DEADLINE_SECONDS = 4.0
+# On a large entity collection under load the vector search alone can use the
+# whole deadline, leaving no time for a single permission probe.
+PROBE_MIN_SECONDS = 1.5
 # A listing scans in batches; past this it returns what it found with a
 # cursor to continue from, instead of running batch after batch.
 LISTING_DEADLINE_SECONDS = 8.0
@@ -85,6 +88,11 @@ _T = TypeVar("_T")
 class EntityAccessError(Exception):
     """Entity access could not be resolved. Callers report a failure; they
     must never treat this as the user having no access."""
+
+
+class EntitySearchTimedOut(EntityAccessError):
+    """The deadline passed before any match was confirmed reachable. Not an
+    empty result: reported as "no entities matched", it reads as a fact."""
 
 
 @dataclass(frozen=True)
@@ -382,7 +390,9 @@ async def search_entities_for_user(
     de-duplicated in pass order and the union is probed together, so a call
     costs one vector request and at most ``len(PROBE_WINDOWS)`` graph
     queries, each checking permissions in the query, all within
-    ``SEARCH_DEADLINE_SECONDS``.
+    ``SEARCH_DEADLINE_SECONDS``, extended so the probes get at least
+    ``PROBE_MIN_SECONDS`` after the vector request. Raises
+    ``EntitySearchTimedOut`` when time ran out before any match was confirmed.
     """
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
@@ -423,6 +433,7 @@ async def search_entities_for_user(
             ))
         stats.append(f"{pass_name}=hits:{len(hits)},new:{added}")
 
+    deadline = max(deadline, time.monotonic() + PROBE_MIN_SECONDS)
     rounds, timed_out = await _run_probes(graph_provider, context, probes, deadline) if probes else (0, False)
     kept_probes = [probe for probe in probes if _is_kept(context, probe)]
     shown_names = await _names_from_permitted_records(graph_provider, context, kept_probes, deadline)
@@ -449,6 +460,8 @@ async def search_entities_for_user(
         context.org_id, "; ".join(stats), len(probes), rounds, len(kept), timed_out,
         int((time.monotonic() - started) * 1000),
     )
+    if timed_out and not kept:
+        raise EntitySearchTimedOut("Entity search timed out before confirming access to any match")
     return kept[:top_k]
 
 

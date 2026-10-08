@@ -7,6 +7,7 @@ calls, and any failure raises ``EntityAccessError`` instead of looking like
 """
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -541,6 +542,7 @@ class TestReadPathRoundTrips:
         import asyncio
 
         monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
         store = _store([_hit("t1", "topic", 0.9)])
 
         async def _slow(*args: object, **kwargs: object) -> dict:
@@ -551,9 +553,9 @@ class TestReadPathRoundTrips:
         graph.get_permitted_entity_records = AsyncMock(side_effect=_slow)
         started = asyncio.get_running_loop().time()
 
-        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
 
-        assert hits == []
         assert asyncio.get_running_loop().time() - started < 2
 
     @pytest.mark.asyncio
@@ -571,10 +573,27 @@ class TestReadPathRoundTrips:
         store = _store([_hit("t1", "topic", 0.9)])
         graph = _graph(candidates=_slow_round)
 
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert graph.get_permitted_entity_records.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_vector_search_that_uses_the_deadline_still_leaves_time_to_probe(self, monkeypatch) -> None:
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        store = _store([_hit("t1", "topic", 0.9)])
+
+        async def _slow_vectors(*args: object, **kwargs: object) -> list:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + 0.5
+            return [[_hit("t1", "topic", 0.9)]]
+
+        store.search_entities_passes = AsyncMock(side_effect=_slow_vectors)
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r", "kb-1")]})
+
         hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
 
-        assert hits == []
-        assert graph.get_permitted_entity_records.await_count == 1
+        assert [h.entity_id for h in hits] == ["t1"]
 
 
 class TestListingDeadline:
