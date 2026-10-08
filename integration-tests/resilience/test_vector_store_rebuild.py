@@ -44,7 +44,7 @@ import pytest
 import pytest_asyncio
 
 from helper.clients.kb_client import KBClient
-from helper.indexing_progress import record_fields, wait_until_finished
+from helper.indexing_progress import record_fields, wait_until_enriched, wait_until_finished
 from helper.mongo_store import records_folder
 from helper.vector_rebuild import (
     DELETE_REFUSED_PHRASE,
@@ -82,6 +82,9 @@ TIMEOUT = int(os.getenv("RESILIENCE_VECTOR_REBUILD_TIMEOUT_SEC", "1800"))
 DROP_TIMEOUT = 660
 POLL = 5
 COLLECTION = "records"
+# Search answers 404 with this message, not an empty 200, when the knowledge base
+# holds no indexed record, as it does right after "Delete all embeddings".
+NOTHING_INDEXED_MESSAGE = "No documents are available for you to search yet"
 
 
 class CollectionSizeMismatch(AssertionError):
@@ -170,6 +173,9 @@ async def _upload(
     )
     virtual_id = str(record_fields(kb_client.get_record(record_id)).get("virtualRecordId") or "")
     assert virtual_id, f"{name} finished indexing without a virtualRecordId."
+    # The record reads COMPLETED before enrichment rewrites its summary vector, so a
+    # point count taken earlier is not the one the later steps compare against.
+    await wait_until_enriched(kb_client, record_id, timeout=TIMEOUT)
     await _wait_for(
         lambda: vector_store.count_for_virtual_record(virtual_id), f"embeddings for {name}"
     )
@@ -188,8 +194,10 @@ async def _upload(
     )
 
 
-def _hits(search_client, kb_id: str, query: str) -> set[str]:
+def _hits(search_client, kb_id: str, query: str, *, nothing_indexed_ok: bool = False) -> set[str]:
     resp = search_client.search(query, limit=10, filters={"kb": [kb_id]})
+    if nothing_indexed_ok and resp.status_code == 404 and NOTHING_INDEXED_MESSAGE in error_message(resp):
+        return set()
     assert resp.status_code == 200, f"Search failed with HTTP {resp.status_code}: {resp.text[:400]}"
     results = (resp.json().get("searchResponse") or {}).get("searchResults") or []
     return {vid for vid in (virtual_id_of(hit) for hit in results) if vid}
@@ -466,7 +474,7 @@ async def test_deleting_all_embeddings_empties_the_vector_store_and_keeps_everyt
         assert await mongo_store.count_documents_under_path(doc.storage_prefix) == journey.mongo_counts[doc.name], (
             f"Deleting embeddings changed {doc.name}'s storage documents in MongoDB."
         )
-        found = _hits(search_client, journey.kb_id, doc.token)
+        found = _hits(search_client, journey.kb_id, doc.token, nothing_indexed_ok=True)
         assert doc.virtual_record_id not in found, (
             f"Search still returns {doc.name} after every embedding was deleted."
         )
