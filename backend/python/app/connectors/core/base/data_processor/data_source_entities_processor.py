@@ -2522,16 +2522,16 @@ class DataSourceEntitiesProcessor:
                 [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
             )
             return True
-        # Connector per-record delete: remove the record vertex and its incoming
-        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
-        # call is a no-op for root records with no parent). Capture VRID before the
-        # vertex is gone so indexing can strip/delete embeddings.
+        # Connector per-record delete: one write that removes the record vertex with
+        # every edge on it, its incoming PARENT_CHILD edge included. Neo4j commits each
+        # statement on its own, so deleting the edge in a statement of its own could
+        # leave the record live and searchable but in no folder. Capture VRID before
+        # the vertex is gone so indexing can strip/delete embeddings.
         event_payload = None
         async with self.data_store_provider.transaction() as tx_store:
             # The stored document, not a Record: reading Record attributes off it
             # found no virtualRecordId, so no delete ever published its cleanup.
             existing = await tx_store.get_record_by_key(record_id) or {}
-            await tx_store.delete_parent_child_edge_to_record(record_id)
             await tx_store.delete_record_by_key(record_id)
             vrid = existing.get("virtualRecordId")
             if isinstance(vrid, str) and vrid:

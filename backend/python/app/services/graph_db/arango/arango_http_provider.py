@@ -11698,7 +11698,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         txn_id=transaction
                     )
                 except Exception as e:
-                    # Log but continue with other edge collections
+                    # Inside a transaction the node delete below would still commit,
+                    # leaving these edges dangling; let the caller roll back instead.
+                    if transaction:
+                        raise
                     self.logger.warning(f"⚠️ Failed to delete edges from {edge_collection}: {str(e)}")
 
             self.logger.debug(f"🔥 Successfully ran edge cleanup for nodes: {keys}")

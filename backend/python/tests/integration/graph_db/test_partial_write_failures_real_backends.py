@@ -12,6 +12,8 @@ write below is now one statement on Neo4j:
   IS_OF_TYPE edge;
 - a hard delete: the type nodes went first, and the records stayed live
   without them;
+- a connector's delete of one record: its parent edge went in a statement of
+  its own, so a failure left the record live and searchable but in no folder;
 - a record's permission rewrite: the old edges, the new ones and the
   inherit-permissions edge were three writes, so a failure on the last left a
   file its drive should no longer read still readable through the drive;
@@ -444,6 +446,41 @@ async def test_a_failed_hard_delete_keeps_records_and_their_types(world: _World)
     result = await delete()
     assert result["successfully_deleted"] == 1, result
     assert await _typed(w, record.id) == (False, False, False)
+
+
+async def test_a_failed_record_delete_keeps_the_record_in_its_folder(world: _World) -> None:
+    """A connector's per-record delete is one statement: the record goes with its parent edge or stays with it."""
+    w = world
+    folder, note = _file(w, "folder"), _file(w, "note")
+    await _upsert(w, folder)
+    await _upsert(w, note)
+    async with w.processor.data_store_provider.transaction() as tx_store:
+        await tx_store.create_record_relation(folder.id, note.id, "PARENT_CHILD")
+    assert await _parents(w, note.id) == [folder.id]
+
+    async def delete() -> bool:
+        return await w.processor.on_record_deleted(note.id)
+
+    # A sync is writing the record's type node on Neo4j, whose lock the delete of the
+    # record needs (for its IS_OF_TYPE edge) but a delete of just its parent edge does not.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (f:File {id: $id}) SET f.heldByTest = true RETURN count(f) AS n",
+                           {"id": note.id})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(w, CollectionNames.RECORDS.value,
+                            "UPDATE @key WITH {updatedAtTimestamp: @now} IN records RETURN 1",
+                            {"key": note.id, "now": get_epoch_timestamp_in_ms() + 1})
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(delete)
+
+    assert await _typed(w, note.id) == (True, True, True)
+    assert await _parents(w, note.id) == [folder.id], "the record lost its folder but stayed live and searchable"
+
+    assert await delete() is False
+    assert await w.graph.get_document(note.id, CollectionNames.RECORDS.value) is None
+    assert await _parents(w, note.id) == []
 
 
 async def _add_app(w: _World, *users: str) -> None:

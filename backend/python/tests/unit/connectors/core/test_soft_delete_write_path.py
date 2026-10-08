@@ -7,11 +7,11 @@ vectors, never ``deleteRecord``, which is what removes blob and Mongo content.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.config.constants.arangodb import (
     Connectors,
     DeleteSource,
@@ -21,6 +21,7 @@ from app.config.constants.arangodb import (
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.vector_cleanup_events import (
     MAX_VIRTUAL_RECORD_IDS_PER_EVENT,
 )
@@ -74,6 +75,56 @@ def flag(on: bool) -> AbstractContextManager[AsyncMock]:
     return patch(f"{MODULE}.is_soft_delete_enabled", AsyncMock(return_value=on))
 
 
+class _AutoCommitGraph:
+    """One record under a parent, on a graph where each statement lands as it runs
+    (Neo4j's default) and the connection drops after the first write."""
+
+    def __init__(self) -> None:
+        self.logger = MagicMock()
+        self.record: dict | None = {"_key": "r1", "connectorId": "c1", "virtualRecordId": "v1"}
+        self.parent_edge = True
+        self.writes = 0
+
+    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
+        return "txn"
+
+    async def commit_transaction(self, txn: str) -> None:
+        pass
+
+    async def rollback_transaction(self, txn: str) -> None:
+        pass  # Nothing to undo: every statement already committed.
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return False
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
+    async def get_document(self, key: str, collection: str, *, transaction: str | None = None,
+                           raise_on_error: bool = False) -> dict | None:
+        return dict(self.record) if self.record else None
+
+    def _statement(self) -> None:
+        self.writes += 1
+        if self.writes > 1:
+            raise RuntimeError("connection reset after the first statement")
+
+    async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:
+        self._statement()
+        self.parent_edge = False
+        return True
+
+    async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
+        self._statement()
+        self.record, self.parent_edge = None, False  # DETACH DELETE
+        return True
+
+    async def delete_nodes_and_edges(self, keys: list[str], collection: str, graph_name: str = "knowledgeGraph",
+                                     transaction: str | None = None) -> None:
+        self._statement()
+        self.record, self.parent_edge = None, False
+
+
 def _stored(record_id: str = "r1", **overrides) -> Record:
     fields = {
         "id": record_id, "org_id": "org-1", "record_name": "a.pdf", "record_type": RecordType.FILE,
@@ -97,10 +148,21 @@ class TestFlagOff:
         store.get_record_by_key = AsyncMock(return_value={"_key": "r1", "connectorId": "c1", "virtualRecordId": "v1"})
         with flag(False):
             await proc.on_record_deleted("r1")
-        store.delete_parent_child_edge_to_record.assert_awaited_once_with("r1")
         store.delete_record_by_key.assert_awaited_once_with("r1")
+        # The delete takes the parent edge with it; a separate edge delete is a
+        # statement that can commit on its own and leave the record live.
+        store.delete_parent_child_edge_to_record.assert_not_called()
         store.soft_delete_records.assert_not_called()
         assert EventTypes.SOFT_DELETE_RECORDS.value not in _event_types(proc)
+
+    async def test_a_failure_after_the_first_statement_leaves_no_live_record(self) -> None:
+        proc = _processor()
+        graph = _AutoCommitGraph()
+        proc.data_store_provider = GraphDataStore(proc.logger, graph)
+        with flag(False), contextlib.suppress(RuntimeError):
+            await proc.on_record_deleted("r1")
+        assert graph.record is None, "the record stayed live, and searchable, after its parent edge was gone"
+        assert graph.parent_edge is False
 
     async def test_a_cascade_removes_the_subtree(self) -> None:
         proc = _processor()

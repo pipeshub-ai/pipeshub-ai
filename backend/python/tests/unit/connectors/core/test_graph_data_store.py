@@ -404,7 +404,10 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_delete_record_by_key(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_record_by_key("key1")
-        mock_graph_provider.delete_nodes.assert_awaited_once()
+        mock_graph_provider.delete_nodes_and_edges.assert_awaited_once_with(
+            ["key1"], "records", graph_name="knowledgeGraph", transaction="txn-123"
+        )
+        mock_graph_provider.delete_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_edge(self, tx_store, mock_graph_provider) -> None:

@@ -5067,8 +5067,8 @@ class TestOnRecordMetadataUpdateAndDelete:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_parent_child_edge_to_record.assert_awaited_with("rec-1")
         tx_store.delete_record_by_key.assert_awaited_with("rec-1")
+        tx_store.delete_parent_child_edge_to_record.assert_not_called()
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
 
