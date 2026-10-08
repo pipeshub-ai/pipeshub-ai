@@ -15,6 +15,7 @@ for _p in (_ROOT, _RV_HELPER):
 
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from openapi_schema_validator import assert_response_matches_openapi_operation  # noqa: E402
+from strict_openapi import outside_request_contract  # noqa: E402
 
 
 @pytest.mark.integration
@@ -165,12 +166,14 @@ class TestKnowledgeBaseCrud:
             resp.json(), "listKnowledgeBases", status_code="400"
         )
 
-        resp = requests.get(
-            self.url,
-            headers=self.headers,
-            params={"foo": "bar"},
-            timeout=self.client.timeout_seconds,
-        )
+        # OpenAPI cannot forbid undeclared query parameters, so the spec only says this in words.
+        with outside_request_contract("the query validator is strict and OpenAPI cannot express that"):
+            resp = requests.get(
+                self.url,
+                headers=self.headers,
+                params={"foo": "bar"},
+                timeout=self.client.timeout_seconds,
+            )
         assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
             resp.json(), "listKnowledgeBases", status_code="400"

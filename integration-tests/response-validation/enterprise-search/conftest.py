@@ -49,6 +49,7 @@ from ai_models_setup import (
     teardown_test_llm_model,
 )
 from pipeshub_client import PipeshubClient
+from strict_openapi import outside_request_contract
 from xdist_shared import shared_session_resource
 
 logger = logging.getLogger("enterprise-search-conftest")
@@ -270,7 +271,8 @@ def _create_agent(
     agents: AgentsClient,
     payload: dict[str, Any],
 ) -> str:
-    resp = agents.create_agent(**payload)
+    with outside_request_contract("knowledge[].type and displayName are UI fields the gateway drops"):
+        resp = agents.create_agent(**payload)
     if resp.status_code >= 300:
         raise AssertionError(
             f"Agent create failed: HTTP {resp.status_code} {resp.text[:500]}"

@@ -3,11 +3,52 @@
 from __future__ import annotations
 
 import os
+import sys
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Optional
 
 import pytest
 
 from helper.clients.config_client import ConfigClient
+
+_HELPER = Path(__file__).parent / "helper"
+if str(_HELPER) not in sys.path:
+    sys.path.insert(0, str(_HELPER))
+
+from strict_openapi import record_exchanges  # noqa: E402
+
+
+def _gate(item: pytest.Item, phase: str) -> Iterator[None]:
+    """A spec_audit test fails when any call it makes, in any phase, disagrees with the OpenAPI spec.
+
+    STRICT_OPENAPI_GATE=1 holds every test under response-validation/ to the same rule.
+    """
+    if item.get_closest_marker("spec_audit") is None and os.getenv("STRICT_OPENAPI_GATE") != "1":
+        yield
+        return
+    with record_exchanges() as problems:
+        outcome = yield
+    if problems and outcome.excinfo is None:
+        listing = "\n".join(problems)
+        outcome.force_exception(
+            AssertionError(f"{len(problems)} OpenAPI problem(s) in calls made during {phase}:\n{listing}")
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
+    yield from _gate(item, "setup")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
+    yield from _gate(item, "the test")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
+    yield from _gate(item, "cleanup")
 
 
 def _smtp_env() -> Optional[dict]:

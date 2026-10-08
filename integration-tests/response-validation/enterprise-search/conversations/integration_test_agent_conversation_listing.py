@@ -32,14 +32,15 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from helper.agui_sse import (
+from helper.agui_sse import (  # noqa: E402
     is_root_error,
     is_root_finished,
     iter_sse_envelopes,
     run_finished_result,
 )
-from helper.clients.conversations_client import AgentConversationsClient
-from openapi_schema_validator import (
+from helper.clients.conversations_client import AgentConversationsClient  # noqa: E402
+from strict_openapi import outside_request_contract  # noqa: E402
+from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
 )
@@ -699,12 +700,13 @@ class TestAgentConversationListing:
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
 
-        resp = self._list_grouped_archived_agent_conversations(
-            params={
-                "agentPage": "0",
-                "agentLimit": "999",
-            },
-        )
+        with outside_request_contract("out-of-range paging is sent to show the validator clamps it"):
+            resp = self._list_grouped_archived_agent_conversations(
+                params={
+                    "agentPage": "0",
+                    "agentLimit": "999",
+                },
+            )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -744,9 +746,10 @@ class TestAgentConversationListing:
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
 
-        resp = self._list_grouped_archived_agent_conversations(
-            params={"agentPage": "abc", "agentLimit": "xyz"},
-        )
+        with outside_request_contract("non-numeric paging is sent to show the validator defaults it"):
+            resp = self._list_grouped_archived_agent_conversations(
+                params={"agentPage": "abc", "agentLimit": "xyz"},
+            )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -973,10 +976,11 @@ class TestAgentConversationListing:
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
 
-        resp = self._list_archived_agent_conversations(
-            self.agent_key,
-            params={"page": "0", "limit": "101"},
-        )
+        with outside_request_contract("the validator resets paging values the spec bounds"):
+            resp = self._list_archived_agent_conversations(
+                self.agent_key,
+                params={"page": "0", "limit": "101"},
+            )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -1006,10 +1010,11 @@ class TestAgentConversationListing:
             f"{archive_resp.status_code}: {archive_resp.text}"
         )
 
-        resp = self._list_archived_agent_conversations(
-            self.agent_key,
-            params={"page": "abc", "limit": "xyz"},
-        )
+        with outside_request_contract("the validator defaults non-numeric paging values"):
+            resp = self._list_archived_agent_conversations(
+                self.agent_key,
+                params={"page": "abc", "limit": "xyz"},
+            )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
@@ -1044,7 +1049,12 @@ class TestAgentConversationListing:
         label: str,
         params: dict[str, str],
     ) -> None:
-        resp = self._list_archived_agent_conversations(self.agent_key, params=params)
+        if "shared" in params:
+            # OpenAPI cannot forbid an undeclared query parameter; the strict query refuses it.
+            with outside_request_contract("unknown query parameter on a strict query"):
+                resp = self._list_archived_agent_conversations(self.agent_key, params=params)
+        else:
+            resp = self._list_archived_agent_conversations(self.agent_key, params=params)
         body = self._assert_validation_error(resp)
         assert body["error"]["metadata"]["errors"], (
             f"[{label}] Expected validation details"

@@ -51,6 +51,7 @@ from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
 )
+from strict_openapi import outside_request_contract  # noqa: E402
 from utils.auth_helpers import (  # noqa: E402
     obtain_session_access_token,
     session_headers,
@@ -140,9 +141,12 @@ class TestSetUpAuthConfig(OrgAuthConfigTestBase):
 
     def test_set_up_auth_config_response_schema(self) -> None:
         """Response must match OpenAPI schema for setUpAuthConfig (200)."""
-        resp = self.auth.setup_auth_config(
-            auth=False, headers=self.session_headers, json={}
-        )
+        with outside_request_contract(
+            "an empty body: once the org exists the route answers without reading it"
+        ):
+            resp = self.auth.setup_auth_config(
+                auth=False, headers=self.session_headers, json={}
+            )
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )

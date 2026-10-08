@@ -1,0 +1,292 @@
+"""The strict OpenAPI check fails on what the spec leaves out, not only on what it forbids."""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+_RV_HELPER = Path(__file__).resolve().parents[1] / "response-validation" / "helper"
+if str(_RV_HELPER) not in sys.path:
+    sys.path.insert(0, str(_RV_HELPER))
+
+from openapi_schema_validator import _make_registry  # noqa: E402
+from strict_openapi import adapt_document, strict_request_problems, strict_response_problems  # noqa: E402
+
+pytestmark = pytest.mark.unit
+
+_DOC = adapt_document({
+    "paths": {
+        "/teams/{teamId}": {
+            "get": {
+                "responses": {
+                    "200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Team"}}}},
+                    "204": {"description": "nothing"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                }
+            }
+        }
+    },
+    "components": {
+        "responses": {
+            "NotFound": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        },
+        "schemas": {
+            "Error": {"type": "object", "properties": {"message": {"type": "string"}}},
+            "Named": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}},
+            "Team": {
+                "allOf": [
+                    {"$ref": "#/components/schemas/Named"},
+                    {
+                        "type": "object",
+                        "properties": {
+                            "owner": {"type": "object", "nullable": True, "properties": {"id": {"type": "string"}}},
+                            "members": {"type": "array", "items": {"$ref": "#/components/schemas/Named"}},
+                            "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+                            "meta": {"type": "object"},
+                        },
+                    },
+                ]
+            },
+        },
+    },
+})
+_REGISTRY = _make_registry(_DOC)
+
+
+def _problems(body: object, *, status: int = 200, path: str = "/api/v1/teams/:id", method: str = "GET",
+              content_type: str = "application/json; charset=utf-8") -> list[str]:
+    raw = b"" if body is None else json.dumps(body).encode()
+    return strict_response_problems(_DOC, _REGISTRY, method, path, status, content_type, raw)
+
+
+def test_a_described_response_has_no_problems() -> None:
+    body = {"name": "a", "owner": None, "members": [{"name": "b"}], "labels": {"any": "thing"}, "meta": {}}
+    assert _problems(body) == []
+    assert _problems(body, path="/teams/{teamId}") == []
+    assert _problems(None, status=204) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"name": "a", "extra": 1}, "$.extra: field is returned but is not in the spec"),
+        ({"name": "a", "owner": {"id": "1", "email": "x"}}, "$.owner.email: field is returned"),
+        ({"name": "a", "members": [{"name": "b", "role": "x"}]}, "$.members[].role: field is returned"),
+        ({"name": "a", "meta": {"k": 1}}, "$.meta: object is returned with fields ['k'] but the spec describes none"),
+        ({"owner": None}, "'name' is a required property"),
+        ({"name": "a", "labels": {"k": 1}}, "$.labels.k: 1 is not of type 'string'"),
+    ],
+)
+def test_what_the_spec_leaves_out_is_reported(body: dict, expected: str) -> None:
+    problems = _problems(body)
+    assert len(problems) == 1, problems
+    assert expected in problems[0]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"body": {}, "path": "/api/v1/teams"}, "is not in the OpenAPI spec"),
+        ({"body": {}, "method": "DELETE"}, "is not in the OpenAPI spec"),
+        ({"body": {"message": "no"}, "status": 403}, "status is not documented"),
+        ({"body": {"message": "no", "code": 1}, "status": 404}, "$.code: field is returned"),
+        ({"body": {"name": "a"}, "status": 204}, "the spec documents none"),
+        ({"body": None}, "the response is empty"),
+        ({"body": {"name": "a"}, "content_type": "text/html"}, "content type 'text/html' is not documented"),
+    ],
+)
+def test_undocumented_routes_statuses_and_bodies_are_reported(kwargs: dict, expected: str) -> None:
+    problems = _problems(**kwargs)
+    assert len(problems) == 1, problems
+    assert expected in problems[0]
+
+
+_REQUEST_DOC = adapt_document({
+    "paths": {
+        "/teams": {
+            "post": {
+                "parameters": [
+                    {"name": "notify", "in": "query", "schema": {"type": "boolean"}},
+                    {"name": "kind", "in": "query", "required": True, "schema": {"type": "string", "enum": ["a", "b"]}},
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NewTeam"}}},
+                },
+                "responses": {"201": {"description": "created"}},
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "NewTeam": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}, "size": {"type": "integer"}},
+            }
+        }
+    },
+})
+_REQUEST_REGISTRY = _make_registry(_REQUEST_DOC)
+
+
+def _request_problems(body: object, *, query: str = "kind=a", status: int = 201, rejected: list[str] | None = None) -> list[str]:
+    response = b""
+    if rejected is not None:
+        errors = [{"field": f, "message": "is required."} for f in rejected]
+        response = json.dumps({"error": {"code": "VALIDATION_ERROR", "metadata": {"errors": errors}}}).encode()
+    raw = b"" if body is None else json.dumps(body).encode()
+    return strict_request_problems(
+        _REQUEST_DOC, _REQUEST_REGISTRY, "POST", "/api/v1/teams", query, "application/json", raw, status, response
+    )
+
+
+def test_an_accepted_request_the_spec_allows_has_no_problems() -> None:
+    assert _request_problems({"name": "a", "size": 3}, query="kind=a&notify=true") == []
+
+
+def test_an_accepted_request_must_be_one_the_spec_allows() -> None:
+    assert "'name' is a required property" in _request_problems({"size": 3})[0]
+    assert "query.kind: the spec says it is required" in _request_problems({"name": "a"}, query="")[0]
+    assert "query.kind: 'c' is not one of" in _request_problems({"name": "a"}, query="kind=c")[0]
+    assert "body: the spec says a request body is required" in _request_problems(None)[0]
+
+
+def test_an_accepted_request_may_not_carry_what_the_spec_leaves_out() -> None:
+    assert _request_problems({"name": "a", "colour": "red"}) == [
+        "POST /teams request, accepted with 201: body.colour: field is sent but is not in the spec"
+    ]
+    assert "query.page: parameter is sent but is not in the spec" in _request_problems({"name": "a"}, query="kind=a&page=2")[0]
+
+
+def test_a_request_the_validator_rejects_must_be_one_the_spec_forbids() -> None:
+    assert _request_problems({"size": 3}, status=400, rejected=["body.name"]) == []
+    problems = _request_problems({"name": "a"}, status=400, rejected=["body.size"])
+    assert problems == [
+        "POST /teams request, rejected with 400: body.size: the API rejects it (is required.) but the spec allows this request"
+    ]
+    assert _request_problems({"name": "a"}, status=400, rejected=["params.teamId"]) == []
+
+
+def test_a_rejection_that_is_not_from_the_validator_is_not_judged() -> None:
+    assert _request_problems({"name": "a"}, status=400) == []
+    assert _request_problems({"name": "a"}, status=404) == []
+
+
+def test_fields_described_by_any_composition_branch_are_documented() -> None:
+    doc = adapt_document({
+        "paths": {"/x": {"get": {"responses": {"500": {"content": {"application/json": {"schema": {"oneOf": [
+            {"type": "object", "properties": {"error": {"type": "object", "properties": {"code": {"type": "string"}}}}},
+            {"type": "object", "properties": {"error": {"type": "string"}}},
+        ]}}}}}}}},
+    })
+    body = json.dumps({"error": {"code": "E"}}).encode()
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 500, "application/json", body) == []
+
+
+def test_a_repeated_or_malformed_scalar_parameter_is_one_the_spec_forbids() -> None:
+    assert "sent 2 times" in _request_problems({"name": "a"}, query="kind=a&kind=b")[0]
+    assert _request_problems({"name": "a"}, query="kind=a&kind=b", status=400, rejected=["query.kind"]) == []
+
+
+def test_express_page_for_a_method_no_route_handles_is_not_an_undocumented_operation() -> None:
+    page = b"<!DOCTYPE html>\n<html><body><pre>Cannot POST /api/v1/teams/x</pre></body></html>"
+    assert _problems(None, method="POST", status=404, content_type="text/html; charset=utf-8") != []
+    assert strict_response_problems(_DOC, _REGISTRY, "POST", "/api/v1/teams/x", 404, "text/html; charset=utf-8", page) == []
+    assert strict_response_problems(_DOC, _REGISTRY, "GET", "/api/v1/nowhere", 200, "text/html", page) != []
+
+
+def test_a_field_named_like_an_openapi_keyword_is_still_a_field() -> None:
+    doc = adapt_document({
+        "paths": {"/x": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"examples": {"type": "array"}}, "example": {"examples": []},
+        }}}}}}}},
+    })
+    ok = json.dumps({"examples": []}).encode()
+    bad = json.dumps({"examples": "x"}).encode()
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 200, "application/json", ok) == []
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 200, "application/json", bad) != []
+
+
+def test_a_schema_that_allows_any_value_allows_any_object() -> None:
+    doc = adapt_document({"paths": {"/x": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {
+        "type": "object", "properties": {"example": {"description": "any value"}},
+    }}}}}}}}})
+    body = json.dumps({"example": {"a": 1}}).encode()
+    assert strict_response_problems(doc, _make_registry(doc), "GET", "/x", 200, "application/json", body) == []
+
+
+_FORM = "application/x-www-form-urlencoded"
+_FORM_DOC = adapt_document({
+    "paths": {
+        "/teams": {
+            "post": {
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/NewTeam"}},
+                        _FORM: {"schema": {"$ref": "#/components/schemas/NewTeam"}},
+                    },
+                },
+                "responses": {"201": {"description": "created"}},
+            }
+        },
+        "/settings": {
+            "post": {
+                "requestBody": {
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Settings"}}},
+                },
+                "responses": {"200": {"description": "saved"}},
+            }
+        },
+    },
+    "components": {
+        "schemas": {
+            "NewTeam": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 2},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "Settings": {"type": "object", "properties": {"port": {"type": "number"}}},
+        }
+    },
+})
+_FORM_REGISTRY = _make_registry(_FORM_DOC)
+
+
+def _form_problems(path: str, body: str, *, status: int = 200, rejected: list[str] | None = None) -> list[str]:
+    response = b""
+    if rejected is not None:
+        errors = [{"field": f, "message": "Port must be a number."} for f in rejected]
+        response = json.dumps({"error": {"code": "VALIDATION_ERROR", "metadata": {"errors": errors}}}).encode()
+    return strict_request_problems(
+        _FORM_DOC, _FORM_REGISTRY, "POST", f"/api/v1{path}", "", f"{_FORM}; charset=utf-8", body.encode(), status, response
+    )
+
+
+def test_a_form_body_the_spec_documents_is_checked_against_its_schema() -> None:
+    assert _form_problems("/teams", "name=ab&tags=x&tags=y", status=201) == []
+    assert "body.name: 'a' is too short" in _form_problems("/teams", "name=a", status=201)[0]
+    assert "'name' is a required property" in _form_problems("/teams", "tags=x&tags=y", status=201)[0]
+    assert _form_problems("/teams", "name=ab&colour=red", status=201) == [
+        "POST /teams request, accepted with 201: body.colour: field is sent but is not in the spec"
+    ]
+
+
+def test_an_accepted_form_body_on_an_operation_without_one_is_reported() -> None:
+    assert _form_problems("/settings", "port=587") == [
+        "POST /settings request, accepted with 200: body: a form body is sent but the spec documents only "
+        "['application/json'] (the API accepted the request)"
+    ]
+
+
+def test_a_refused_form_body_on_an_operation_without_one_is_one_the_spec_forbids() -> None:
+    assert _form_problems("/settings", "port=587", status=400, rejected=["body.port"]) == []
+    assert _form_problems("/settings", "f0=1&f1=1", status=500) == []
