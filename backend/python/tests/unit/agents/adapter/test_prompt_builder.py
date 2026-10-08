@@ -870,3 +870,48 @@ class TestCollaborationPrompt:
         stable, vol = _collab_blocks(None)
         assert "Shared Conversation" not in stable and "Current Sender" not in vol
         assert "USER_CTX" in stable
+
+
+class TestDelegateAnswersSection:
+    """Present only when a delegate offers `final` (PIPESHUB_DELEGATE_HANDOFF on)."""
+
+    @staticmethod
+    def _runtime(params_by_tool: dict[str, list[str]]) -> MagicMock:
+        registry = MagicMock()
+        registry.has.side_effect = lambda name: name in params_by_tool
+        registry.resolve_by_name.side_effect = lambda name: MagicMock(
+            parameters=[_named(p) for p in params_by_tool[name]],
+        )
+        runtime = MagicMock()
+        runtime.tool_registry = registry
+        return runtime
+
+    def _section(self, params_by_tool: dict[str, list[str]]) -> str:
+        from app.agents.agent_loop.prompt_builder import _build_delegate_answers_section
+
+        return _build_delegate_answers_section(self._runtime(params_by_tool))
+
+    def test_absent_without_the_final_parameter(self) -> None:
+        assert self._section({"coding_agent": ["goal", "context"]}) == ""
+        assert self._section({}) == ""
+
+    def test_names_the_delegates_that_offer_it(self) -> None:
+        text = self._section({"coding_agent": ["goal", "final"], "web_agent": ["goal", "final"]})
+        assert "`coding_agent` or `web_agent`" in text
+        assert "final=true" in text
+
+    def test_code_guidance_only_with_coding_agent(self) -> None:
+        assert "IS the computation" in self._section({"coding_agent": ["goal", "final"]})
+        assert "IS the computation" not in self._section({"web_agent": ["goal", "final"]})
+
+    def test_does_not_invite_delegating_when_no_tool_is_needed(self) -> None:
+        text = self._section({"web_agent": ["goal", "final"]})
+        assert "answer from your own knowledge when the request needs no tool" in text
+        assert "from the web" not in text
+
+
+def _named(name: str) -> MagicMock:
+    # MagicMock(name=...) names the mock itself, not its `.name` attribute.
+    param = MagicMock()
+    param.name = name
+    return param

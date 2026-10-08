@@ -335,6 +335,9 @@ class RecordingSink:
         """The finalizer re-sends the finished answer; that is not a token."""
         self._frozen = True
 
+    def restart_clock(self, origin: float) -> None:
+        self._t0 = origin
+
     def timing(self) -> AnswerTiming:
         """An empty `accumulated` clears the screen (a turn that went on to call
         a tool), so the answer starts at the first text after the last clear."""
@@ -525,6 +528,8 @@ async def run_once(
     sink = RecordingSink()
     context = _build_context(query, llm, sink, provider_id, model_name)
     started = time.perf_counter()
+    # Chunk times and wall time must share one origin, or the last chunk can outlast the run.
+    sink.restart_clock(started)
     try:
         with delegate_handoff_flag(arm), patch.object(
             factory_module, "TransportRegistry", lambda: MeteredRegistry(ledger, transport),

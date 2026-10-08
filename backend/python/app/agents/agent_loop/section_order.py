@@ -58,6 +58,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # tool_selection_strategy — see `_build_finding_information`).
     ("finding_information",        Volatility.STATIC),
     ("code_execution",             Volatility.STATIC),
+    ("delegate_answers",           Volatility.STATIC),
     # ── Band B — conversation-stable ─────────────────────────────────────────
     # `available_tools` grows when fetch_tools loads new toolsets; everything
     # before it in Band A still caches even if this block invalidates.

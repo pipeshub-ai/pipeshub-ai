@@ -323,6 +323,9 @@ This is the final answer. Nothing rewrites it, and the user will not see \
 any message from the agent that delegated to you.
 - Write the complete user-facing answer in markdown, addressed to the user. \
 Do not write a report for a calling agent and do not refer to one.
+- Size it to the question: lead with the direct answer, then only the \
+supporting detail the user needs to trust or act on it. A one-fact question \
+gets a short reply with its sources, not a research report.
 - Cite web sources as `[source](<Citation ID>)`, copying the Citation ID \
 exactly as the tool printed it, inline right after the claim it supports. \
 A Citation ID is not a link target anywhere else.
