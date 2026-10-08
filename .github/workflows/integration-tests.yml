@@ -184,10 +184,12 @@ jobs:
         # against a real model. Each test costs model calls, so it runs on the
         # nightly and on a full manual run, never on a pull request; core leaves
         # its marker out everywhere, so on a pull request it does not run at all.
+        # "spec-audit" runs only the strict OpenAPI checks (-m spec_audit, not part
+        # of `integration`) on its own stack, so they add no time to core.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","core","demo","spec-audit"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents","spec-audit"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -480,6 +482,10 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
+        env:
+          MAX_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_AUTH_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
         run: docker compose -f docker-compose.integration.neo4j.yml up -d
 
       - name: 'Neo4j: Wait for core services'
@@ -562,7 +568,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'Neo4j: Run integration tests'
-        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
+        if: matrix.shard != 'spec-audit' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -612,32 +618,12 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
-      # The serial audit below sends well over the default limits a minute (the
-      # global per-IP limit as well as the OAuth-client limit on the admin). The limiter is
-      # in-process, so recreating only the app container with a higher limit
-      # starts a fresh window; the main step above still ran at the default,
-      # so its deliberate 429 tests got a real 429.
-      - name: 'Neo4j: Raise auth rate limits for the spec audit'
-        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
-        working-directory: deployment/docker-compose
-        env:
-          MAX_REQUESTS_PER_MINUTE: '100000'
-          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: '100000'
-          MAX_AUTH_REQUESTS_PER_MINUTE: '100000'
-        run: |
-          docker compose -f docker-compose.integration.neo4j.yml up -d --no-deps --force-recreate pipeshub-ai
-          deadline=$((SECONDS + 600))
-          until curl -sf "$PIPESHUB_BASE_URL/api/v1/health" | grep -q '"status":"healthy"' &&
-                curl -sf "$PIPESHUB_BASE_URL/api/v1/health/services" | grep -q '"status":"healthy"'; do
-            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::app not healthy after recreate"; exit 1; fi
-            echo "Not ready, retrying in 5s..."
-            sleep 5
-          done
-
       # Strict OpenAPI checks (-m spec_audit). Serial: they change org-wide
       # settings (SSO, AI models, web search, auth methods) and restore them.
+      # Its stack starts with high rate limits: the audit sends far more than
+      # the defaults a minute, and no deliberate 429 test runs on this shard.
       - name: 'Neo4j: Run strict OpenAPI spec audit'
-        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && matrix.shard == 'spec-audit' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         timeout-minutes: 120
         working-directory: integration-tests
         env:
@@ -698,6 +684,10 @@ jobs:
       - name: 'ArangoDB: Start services'
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
+        env:
+          MAX_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_AUTH_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
         run: docker compose -f docker-compose.integration.arango.yml up -d
 
       - name: 'ArangoDB: Wait for core services'
@@ -780,7 +770,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'ArangoDB: Run integration tests'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && matrix.shard != 'spec-audit' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: arango
@@ -832,26 +822,8 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
-      # Same as the Neo4j pass.
-      - name: 'ArangoDB: Raise auth rate limits for the spec audit'
-        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
-        working-directory: deployment/docker-compose
-        env:
-          MAX_REQUESTS_PER_MINUTE: '100000'
-          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: '100000'
-          MAX_AUTH_REQUESTS_PER_MINUTE: '100000'
-        run: |
-          docker compose -f docker-compose.integration.arango.yml up -d --no-deps --force-recreate pipeshub-ai
-          deadline=$((SECONDS + 600))
-          until curl -sf "$PIPESHUB_BASE_URL/api/v1/health" | grep -q '"status":"healthy"' &&
-                curl -sf "$PIPESHUB_BASE_URL/api/v1/health/services" | grep -q '"status":"healthy"'; do
-            if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::app not healthy after recreate"; exit 1; fi
-            echo "Not ready, retrying in 5s..."
-            sleep 5
-          done
-
       - name: 'ArangoDB: Run strict OpenAPI spec audit'
-        if: ${{ !cancelled() && matrix.shard == 'core' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && matrix.shard == 'spec-audit' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         timeout-minutes: 120
         working-directory: integration-tests
         env:
