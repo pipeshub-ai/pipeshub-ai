@@ -36,9 +36,11 @@ permissions:
   contents: read
 
 concurrency:
-  # Manual runs for one version serialise on that version whatever branch
-  # they come from, so two of them cannot both pass the "tags absent" check.
-  group: release-publish-${{ inputs.version || github.ref }}
+  # One key per version for both triggers (v1.2.3 from a tag push, or
+  # inputs.version with a v prefix on dispatch), so two builds of one version
+  # queue whatever branch they come from and cannot both pass the "tags
+  # absent" check. The publish job adds a single group across all versions.
+  group: release-publish-${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -279,6 +281,12 @@ jobs:
     name: Publish release tags
     needs: [resolve, verify]
     runs-on: ubuntu-latest
+    # Every publisher of the shared tags queues here, across versions and
+    # triggers, so two runs cannot interleave their copies of :latest/:slim
+    # or undo each other's moves.
+    concurrency:
+      group: release-publish-tags
+      cancel-in-progress: false
     steps:
       - name: Log in to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -313,17 +321,20 @@ jobs:
           # absent (the registry said not-found), or unknown (anything else).
           # Unknown is never treated as absent: both the pre-check and the
           # undo snapshot stop before a copy instead of guessing.
+          # crane logs a "HEAD request failed, falling back on GET" line on
+          # stderr before the GET's own error, so only the final error line
+          # decides, and only the registry's not-found codes mean absent.
           tag_state() {
             local digest err
-            if digest="$(crane digest "$1" 2>/dev/null)"; then
+            if digest="$(crane digest "$1" 2>"${RUNNER_TEMP}/digest.err")"; then
               echo "present $digest"
+              return
+            fi
+            err="$(grep -v 'falling back on GET' "${RUNNER_TEMP}/digest.err" | tail -n 1)"
+            if printf '%s' "$err" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN'; then
+              echo "absent"
             else
-              err="$(crane digest "$1" 2>&1 >/dev/null || true)"
-              if printf '%s' "$err" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|404'; then
-                echo "absent"
-              else
-                echo "unknown $err"
-              fi
+              echo "unknown ${err:-no error output}"
             fi
           }
           # Docker Hub removes a tag by name through its own API; the registry
