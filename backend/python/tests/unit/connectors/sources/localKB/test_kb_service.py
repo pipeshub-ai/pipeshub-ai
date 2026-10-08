@@ -224,6 +224,44 @@ class TestCreateKnowledgeBase:
         assert result["code"] == 500
         service.logger.warning.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_a_write_conflict_is_retried_with_the_same_kb(self, service) -> None:
+        """Ten creates by one user at once deadlock on Neo4j (nightly 10/07)."""
+        deadlock = RuntimeError("Neo.TransientError.Transaction.DeadlockDetected")
+        provider = service.graph_provider
+        provider.is_write_conflict = MagicMock(side_effect=lambda e: e is deadlock)
+        provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1", "fullName": "Test"})
+        provider.begin_transaction = AsyncMock(side_effect=["txn1", "txn2"])
+        provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        provider.batch_create_edges = AsyncMock(side_effect=[deadlock, True, True, True])
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+
+        with patch("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", new=AsyncMock()):
+            result = await service.create_knowledge_base("user1", "org1", "My KB")
+
+        assert result["success"] is True
+        provider.rollback_transaction.assert_awaited_once_with("txn1")
+        provider.commit_transaction.assert_awaited_once_with("txn2")
+        written = [call.args[0][0]["id"] for call in provider.batch_upsert_nodes.call_args_list]
+        assert written == [result["id"], result["id"]]
+        assert provider.batch_create_edges.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_is_not_a_write_conflict_is_not_retried(self, service) -> None:
+        provider = service.graph_provider
+        provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1", "fullName": "Test"})
+        provider.begin_transaction = AsyncMock(return_value="txn1")
+        provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        provider.batch_create_edges = AsyncMock(side_effect=RuntimeError("constraint"))
+        provider.rollback_transaction = AsyncMock()
+
+        result = await service.create_knowledge_base("user1", "org1", "My KB")
+
+        assert result == {"success": False, "code": 500, "reason": action_failed("create this knowledge base")}
+        provider.begin_transaction.assert_awaited_once()
+        provider.rollback_transaction.assert_awaited_once_with("txn1")
+
 
 # ===========================================================================
 # get_knowledge_base

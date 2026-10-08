@@ -3,6 +3,7 @@ import asyncio
 import base64
 import re
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
 from typing import (
@@ -109,6 +110,7 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
+from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -121,6 +123,25 @@ PLACEHOLDER_SWEEP_BATCH: int = 50
 PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
 PLACEHOLDER_SWEEP_CONCURRENCY: int = 10
 PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
+# One page failing a sync loop drops the rest of that loop until the next sync, so a
+# timeout, rate limit or 5xx gets a few more tries: waits of 2, 4 and 8 seconds.
+LINEAR_TRANSIENT_RETRIES: int = 3
+LINEAR_RETRY_BASE_DELAY_SEC: float = 2.0
+
+
+def _is_transient_linear_failure(response: GraphQLResponse) -> bool:
+    """A failed Linear response worth asking again: rate limited, a 5xx, or nothing came back."""
+    errors = getattr(response, "errors", None)
+    if isinstance(errors, list) and any(
+        (getattr(error, "extensions", None) or {}).get("code") == "RATELIMITED" for error in errors
+    ):
+        return True
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+    # The data source turns a transport failure, a read timeout among them, into a
+    # response with neither a status nor errors.
+    return status is None and errors is None
 
 
 @ConnectorBuilder("Linear")\
@@ -371,6 +392,26 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Linear client: {e}")
             raise ConnectorInitError(str(e)) from e
+
+    async def _with_transient_retry(
+        self,
+        description: str,
+        request: Callable[..., Awaitable[GraphQLResponse]],
+        **arguments: object,
+    ) -> GraphQLResponse:
+        """Run one Linear request, asking again while it fails transiently."""
+        response = await request(**arguments)
+        for attempt in range(LINEAR_TRANSIENT_RETRIES):
+            if response.success or not _is_transient_linear_failure(response):
+                break
+            delay = LINEAR_RETRY_BASE_DELAY_SEC * (2 ** attempt)
+            self.logger.warning(
+                "Linear %s failed (attempt %d/%d), retrying in %.0fs: %s",
+                description, attempt + 1, LINEAR_TRANSIENT_RETRIES + 1, delay, response.message,
+            )
+            await asyncio.sleep(delay)
+            response = await request(**arguments)
+        return response
 
     async def _get_fresh_datasource(self) -> LinearDataSource:
         """
@@ -701,7 +742,10 @@ class LinearConnector(BaseConnector):
 
         # Fetch all users with cursor-based pagination
         while True:
-            response = await datasource.users(first=page_size, after=cursor)
+            response = await self._with_transient_retry(
+                "users page",
+                datasource.users, first=page_size, after=cursor,
+            )
 
             if not response.success:
                 raise RuntimeError(f"Failed to fetch users: {response.message}")
@@ -820,7 +864,10 @@ class LinearConnector(BaseConnector):
         # Fetch all teams with cursor-based pagination
         # Note: filter_dict is sent on every request - Linear applies filter first, then paginates
         while True:
-            response = await datasource.teams(first=page_size, after=cursor, filter=filter_dict)
+            response = await self._with_transient_retry(
+                "teams page",
+                datasource.teams, first=page_size, after=cursor, filter=filter_dict,
+            )
 
             if not response.success:
                 raise RuntimeError(f"Failed to fetch teams: {response.message}")
@@ -1349,11 +1396,13 @@ class LinearConnector(BaseConnector):
 
         while True:
             # Fetch issues batch ordered by updatedAt ASC
-            response = await datasource.issues(
+            response = await self._with_transient_retry(
+                f"issues page for team {team_key}",
+                datasource.issues,
                 first=batch_size,
                 after=after_cursor,
                 filter=team_filter,
-                orderBy=order_by
+                orderBy=order_by,
             )
 
             if not response.success:
@@ -1500,10 +1549,12 @@ class LinearConnector(BaseConnector):
             self._apply_date_filters_to_linear_filter(attachment_filter, last_sync_time)
 
             while True:
-                response = await datasource.attachments(
+                response = await self._with_transient_retry(
+                    "attachments page",
+                    datasource.attachments,
                     first=50,
                     after=after_cursor,
-                    filter=attachment_filter if attachment_filter else None
+                    filter=attachment_filter if attachment_filter else None,
                 )
 
                 if not response.success:
@@ -1657,10 +1708,12 @@ class LinearConnector(BaseConnector):
             self._apply_date_filters_to_linear_filter(document_filter, last_sync_time)
 
             while True:
-                response = await datasource.documents(
+                response = await self._with_transient_retry(
+                    "documents page",
+                    datasource.documents,
                     first=50,
                     after=after_cursor,
-                    filter=document_filter if document_filter else None
+                    filter=document_filter if document_filter else None,
                 )
 
                 if not response.success:
@@ -1927,11 +1980,13 @@ class LinearConnector(BaseConnector):
 
         while True:
             # Fetch projects batch
-            response = await datasource.projects(
+            response = await self._with_transient_retry(
+                f"projects page for team {team_key}",
+                datasource.projects,
                 first=batch_size,
                 after=after_cursor,
                 filter=team_filter,
-                orderBy=None
+                orderBy=None,
             )
 
             if not response.success:
@@ -3543,11 +3598,13 @@ class LinearConnector(BaseConnector):
 
             while True:
                 # Use regular issues query with includeArchived=true, then filter for trashed in code
-                response = await datasource.issues(
+                response = await self._with_transient_retry(
+                    "issues page for deletion sync",
+                    datasource.issues,
                     first=50,
                     after=after_cursor,
                     filter=issue_filter,
-                    includeArchived=True
+                    includeArchived=True,
                 )
 
                 if not response.success:
@@ -3665,11 +3722,13 @@ class LinearConnector(BaseConnector):
 
             while True:
                 # Use regular projects query with includeArchived=true, then filter for trashed in code
-                response = await datasource.projects(
+                response = await self._with_transient_retry(
+                    "projects page for deletion sync",
+                    datasource.projects,
                     first=50,
                     after=after_cursor,
                     filter=project_filter,
-                    includeArchived=True
+                    includeArchived=True,
                 )
 
                 if not response.success:
