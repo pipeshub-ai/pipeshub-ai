@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -85,6 +86,7 @@ def mock_tx_store():
     tx.get_edges_from_node = AsyncMock(return_value=[])
     tx.get_edges_to_node = AsyncMock(return_value=[])
     tx.get_records_by_status = AsyncMock(return_value=[])
+    tx.get_records_by_record_type = AsyncMock(return_value=[])
     tx.delete_edge = AsyncMock()
     tx.__aenter__ = AsyncMock(return_value=tx)
     tx.__aexit__ = AsyncMock(return_value=None)
@@ -471,30 +473,22 @@ class TestTicketToRecord:
         group_ids = {p.external_id for p in permissions if p.entity_type == EntityType.GROUP}
         assert group_ids == {"group_7", "org_21", "role_all_tickets"}
 
-    async def test_org_grant_withheld_when_tickets_are_not_shared(self, zendesk_connector):
-        """Regression: granted unconditionally, every end user saw the whole org."""
-        zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": False}}
+    @pytest.mark.parametrize("org", [{"id": 21, "shared_tickets": False}, {"id": 21}])
+    async def test_org_grant_kept_when_tickets_are_not_shared(self, zendesk_connector, org):
+        """Regression: withheld here, turning sharing on never reached existing
+        tickets. The org group is emptied while sharing is off, so the edge is inert."""
+        zendesk_connector._org_id_to_data = {"21": org}
 
         _, permissions = await zendesk_connector._ticket_to_record({
             "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
         })
 
         group_ids = {p.external_id for p in permissions if p.entity_type == EntityType.GROUP}
-        assert group_ids == {"group_7", "role_all_tickets"}
+        assert group_ids == {"group_7", "org_21", "role_all_tickets"}
 
     async def test_org_grant_withheld_when_org_is_absent_from_the_export(self, zendesk_connector):
         """An org we never fetched is one we cannot justify sharing — fail closed."""
         zendesk_connector._org_id_to_data = {}
-
-        _, permissions = await zendesk_connector._ticket_to_record({
-            "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
-        })
-
-        assert {p.external_id for p in permissions if p.entity_type == EntityType.GROUP} == {"group_7", "role_all_tickets"}
-
-    async def test_org_grant_withheld_when_flag_missing(self, zendesk_connector):
-        """Zendesk omits shared_tickets on some payloads; absent must read as false."""
-        zendesk_connector._org_id_to_data = {"21": {"id": 21}}
 
         _, permissions = await zendesk_connector._ticket_to_record({
             "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
@@ -1305,6 +1299,49 @@ class TestAllTicketsAccess:
         mock_data_entities_processor.on_new_user_groups.assert_awaited()
         zendesk_connector._sync_tickets.assert_awaited_once()
 
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_failed_role_export_keeps_existing_members(
+        self, _f, zendesk_connector, mock_data_entities_processor
+    ):
+        """Regression: rebuilt from a failed role export, the all-tickets group lost
+        every agent on an all-access custom role until the next good sync."""
+        datasource = _ready(zendesk_connector)
+        datasource.list_custom_roles = AsyncMock(
+            return_value=_make_response(success=False, status_code=400, error="bad")
+        )
+        datasource.list_groups = AsyncMock(return_value=_make_response(data={
+            "groups": [{"id": 7, "name": "Support"}], "meta": {"has_more": False},
+        }))
+        datasource.list_group_memberships = AsyncMock(return_value=_make_response(data={
+            "group_memberships": [{"group_id": 7, "user_id": 1}, {"group_id": 7, "user_id": 2}],
+            "meta": {"has_more": False},
+        }))
+        users = {"1": _app_user("1", "plain@acme.com"), "2": _app_user("2", "custom@acme.com")}
+
+        async def _users():
+            zendesk_connector._user_id_to_data = {
+                "1": {"id": 1, "role": "agent", "custom_role_id": None},
+                "2": {"id": 2, "role": "agent", "custom_role_id": 10},
+            }
+            zendesk_connector._user_id_to_app_user = dict(users)
+            return list(users.values()), users, True
+
+        zendesk_connector._fetch_users = AsyncMock(side_effect=_users)
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], True))
+        zendesk_connector._sync_tickets = AsyncMock(return_value=0)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+
+        await zendesk_connector.run_sync()
+
+        calls = mock_data_entities_processor.on_new_user_groups.await_args_list
+        assert calls and all(c.kwargs.get("replace_members") is False for c in calls)
+        support = next(
+            members for c in calls for group, members in c.args[0]
+            if group.source_user_group_id == "group_7"
+        )
+        assert [m.source_user_id for m in support] == ["1"]
+
     async def test_record_groups_grant_all_tickets_group(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
         datasource.list_groups = AsyncMock(return_value=_make_response(
@@ -1680,6 +1717,20 @@ class TestHelpers:
     def test_parse_iso_datetime_to_ms(self, zendesk_connector):
         assert zendesk_connector._parse_datetime("2026-01-02T00:00:00Z") == 1767312000000
 
+    @pytest.mark.parametrize("value", [
+        "2026-01-02T00:00:00",
+        "2026-01-02T05:30:00+05:30",
+        "2026-01-01T19:00:00-05:00",
+    ])
+    def test_parse_datetime_is_utc_whatever_the_host_zone(self, zendesk_connector, value, monkeypatch):
+        monkeypatch.setenv("TZ", "Asia/Kolkata")
+        time.tzset()
+        try:
+            assert zendesk_connector._parse_datetime(value) == 1767312000000
+        finally:
+            monkeypatch.delenv("TZ")
+            time.tzset()
+
     def test_parse_datetime_none(self, zendesk_connector):
         assert zendesk_connector._parse_datetime(None) is None
 
@@ -1853,6 +1904,21 @@ class TestRunSync:
 
         assert order[0] == "users"
         assert order.index("user_groups") < order.index("record_groups")
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_ticket_stage_crash_fails_the_run_after_help_center(
+        self, _filters, zendesk_connector
+    ):
+        """Regression: swallowed, the run reported "completed" with no tickets."""
+        _ready(zendesk_connector)
+        self._stub_stages(zendesk_connector, _app_user())
+        zendesk_connector._sync_tickets = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError, match="graph down"):
+            await zendesk_connector.run_sync()
+
+        zendesk_connector._sync_help_center_articles.assert_awaited_once()
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
@@ -3412,6 +3478,18 @@ class TestArticleSyncPoint:
         assert key == ARTICLES_SYNC_POINT_KEY
         assert payload["lastEndTime"] == 1700000500
 
+    async def test_failed_article_holds_the_checkpoint(self, zendesk_connector):
+        self._one_article(zendesk_connector, end_time=1700000500)
+        _stateful_sync_points(zendesk_connector)
+        zendesk_connector._article_to_record = AsyncMock(side_effect=ValueError("bad"))
+
+        await zendesk_connector._sync_help_center_articles()
+
+        assert not any(
+            call.args[1].get("lastEndTime")
+            for call in zendesk_connector.records_sync_point.update_sync_point.await_args_list
+        )
+
     async def test_truncated_export_leaves_the_checkpoint_alone(self, zendesk_connector):
         """Advancing past a failed window would skip those articles permanently, and a
         short list would read as deletions to the removal pass."""
@@ -4148,6 +4226,37 @@ class TestEndUsersComeFromTheTicketPages:
             == {"replace_members": False}
         )
 
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_org_that_stops_sharing_is_emptied(
+        self, _f, zendesk_connector, mock_data_entities_processor
+    ):
+        """Tickets keep their org grant either way; this emptying is what revokes it."""
+        _ready(zendesk_connector)
+        zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+
+        async def _orgs():
+            zendesk_connector._org_id_to_data["21"] = {"id": 21, "shared_tickets": False}
+            return [(_user_group("org_21"), [])], True
+
+        zendesk_connector._fetch_organizations = AsyncMock(side_effect=_orgs)
+        zendesk_connector._append_empty_removed_user_groups = AsyncMock(
+            side_effect=lambda groups, **_: groups
+        )
+        zendesk_connector._sync_tickets = AsyncMock(return_value=0)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+
+        await zendesk_connector.run_sync()
+
+        emptied = [
+            c for c in mock_data_entities_processor.on_new_user_groups.await_args_list
+            if [g.source_user_group_id for g, _ in c.args[0]] == ["org_21"]
+        ]
+        assert len(emptied) == 1
+        assert emptied[0].args[0][0][1] == []
+        assert emptied[0].kwargs == {"replace_members": True}
+
     async def test_unshared_org_gets_no_members(
         self, zendesk_connector, mock_data_entities_processor
     ):
@@ -4364,6 +4473,57 @@ class TestSetAsideTickets:
         )
         assert states[SYNC_POINT_KEY]["pendingTicketIds"] == []
 
+    async def test_ticket_that_fails_to_convert_is_set_aside(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        """Regression: one bad ticket raised out of the page and pinned the cursor."""
+        datasource = self._page(zendesk_connector, [1, 2])
+        datasource.list_comments = AsyncMock(return_value=_make_response(data={"comments": []}))
+        original = zendesk_connector._ticket_to_record
+
+        async def _convert(ticket, **kwargs):
+            if ticket["id"] == 1:
+                raise ValueError("malformed")
+            return await original(ticket, **kwargs)
+
+        zendesk_connector._ticket_to_record = _convert
+        states = _stateful_sync_points(zendesk_connector)
+
+        await zendesk_connector._sync_tickets()
+
+        published = [
+            record.external_record_id
+            for call in mock_data_entities_processor.on_new_records.await_args_list
+            for record, _ in call.args[0]
+        ]
+        assert published == ["2"]
+        assert states[SYNC_POINT_KEY]["pendingTicketIds"] == ["1"]
+        assert zendesk_connector._ticket_sync_complete is True
+
+    async def test_rejected_cursor_restarts_from_the_last_end_time(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        """Regression: Zendesk 400s a cursor it no longer accepts, and keeping it
+        failed every later run."""
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_tickets = AsyncMock(side_effect=[
+            _make_response(success=False, status_code=400, error='{"errors":[{"error":"InvalidCursor"}]}'),
+            _make_response(data={"tickets": [], "end_of_stream": True}),
+        ])
+        zendesk_connector.notify = AsyncMock()
+        states = _stateful_sync_points(
+            zendesk_connector,
+            {SYNC_POINT_KEY: {"lastEndTime": 1700000000, "lastCursor": "stale"}},
+        )
+
+        await zendesk_connector._sync_tickets()
+
+        retry = datasource.incremental_tickets.await_args_list[1].kwargs
+        assert retry["cursor"] is None and retry["start_time"] == 1700000000
+        zendesk_connector.notify.assert_awaited_once()
+        assert states[SYNC_POINT_KEY]["lastCursor"] is None
+        assert zendesk_connector._ticket_sync_complete is True
+
 
 class TestRedactedAttachment:
     async def test_redaction_placeholder_is_not_stored(
@@ -4445,6 +4605,50 @@ class TestDeletedTicketGroupFolder:
         assert deleted == ["group_8", UNASSIGNED_GROUP_ID]
         assert states["zendesk_ticket_groups"]["groupIds"] == ["group_7"]
 
+    async def test_deleted_groups_are_marked_and_not_synced(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.list_groups = AsyncMock(return_value=_make_response(data={
+            "groups": [{"id": 7, "name": "Billing"}, {"id": 8, "name": "Old", "deleted": True}],
+        }))
+        datasource.list_group_memberships = AsyncMock(
+            return_value=_make_response(data={"group_memberships": []})
+        )
+
+        record_groups, _, _ = await zendesk_connector._fetch_groups({})
+
+        assert datasource.list_groups.await_args.kwargs.get("exclude_deleted") is False
+        assert zendesk_connector._deleted_ticket_group_ids == {"group_8"}
+        assert "8" not in zendesk_connector._group_id_to_data
+        assert all(rg.external_group_id != "group_8" for rg, _ in record_groups)
+
+    async def test_deleted_group_tickets_are_refiled_before_folder_removal(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        states = _stateful_sync_points(zendesk_connector, {})
+        zendesk_connector._deleted_ticket_group_ids = {"group_8"}
+        zendesk_connector._current_ticket_group_ids = []
+        group = MagicMock()
+        group.id = "rg-8"
+        mock_tx_store.get_record_group_by_external_id = AsyncMock(return_value=group)
+        ticket = MagicMock(id="rec-55", external_record_id="55", record_type=RecordType.TICKET)
+        refiled = []
+        mock_tx_store.get_records_by_status = AsyncMock(
+            side_effect=lambda **kw: [] if refiled else [ticket]
+        )
+
+        async def retry(ids):
+            refiled.extend(ids)
+
+        zendesk_connector._retry_pending_tickets = AsyncMock(side_effect=retry)
+
+        await zendesk_connector._delete_removed_ticket_group_folders()
+
+        assert refiled == ["55"]
+        mock_data_entities_processor.on_record_group_deleted.assert_awaited_once_with(
+            "group_8", "zd-conn-1"
+        )
+        assert states["zendesk_ticket_groups"]["groupIds"] == []
+
 
 class TestVanishedArticles:
     async def test_article_zendesk_confirms_deleted_is_removed(
@@ -4463,6 +4667,26 @@ class TestVanishedArticles:
 
         await zendesk_connector._remove_vanished_articles()
 
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-55"], "zd-conn-1"
+        )
+        assert states["zendesk_article_ids"]["articleIds"] == []
+
+    async def test_article_archived_before_full_sync_is_still_removed(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        datasource = _ready(zendesk_connector)
+        datasource.show_article = AsyncMock(
+            return_value=_make_response(success=False, status_code=404, error="Not Found")
+        )
+        held = MagicMock(id="rec-55", external_record_id="article_55")
+        mock_tx_store.get_records_by_record_type = AsyncMock(return_value=[held])
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=held)
+        states = _stateful_sync_points(zendesk_connector, {})
+
+        await zendesk_connector._remove_vanished_articles()
+
+        datasource.show_article.assert_awaited_once()
         mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
             ["rec-55"], "zd-conn-1"
         )
