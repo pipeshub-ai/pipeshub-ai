@@ -193,7 +193,7 @@ similarity scores cannot tell "needs approval" from "needs no approval".
 
 ```yaml
 answer_must_state:
-  - "A purchase of up to and including $250 needs no approval."
+  - "A purchase of up to and including $250 needs no manager approval."
 answer_must_not_state:        # optional
   - "Every purchase needs manager approval."
 ```

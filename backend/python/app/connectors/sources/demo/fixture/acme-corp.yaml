@@ -1702,11 +1702,13 @@ pack_questions:
       ask: "How much can I spend on a purchase without my manager's approval?"
       must_cite: [drive-fin-expense-policy]
       # The band includes $250 itself ("under $250" is wrong at the edge), and it
-      # needs no approval ("up to $250 needs your manager" names the amount but is wrong).
+      # needs no manager approval ("up to $250 needs your manager" names the amount
+      # but is wrong). "No approval at all" would be wrong too: a software
+      # subscription needs finance's approval whatever it costs.
       answer_must_state:
-        - "A purchase of up to and including $250 needs no approval."
+        - "A purchase of up to and including $250 needs no manager approval."
       answer_must_not_state:
-        - "Purchases above $250 need no approval."
+        - "Purchases above $250 need no manager approval."
       personas: { alice: cites, bob: cites }
     - id: f3
       ask: "What rate do we pay for card processing?"
