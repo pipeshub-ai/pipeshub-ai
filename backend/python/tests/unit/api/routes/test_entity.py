@@ -279,6 +279,19 @@ class TestCreateTeam:
         assert content["data"] == {"team": "data"}
 
     @pytest.mark.asyncio
+    async def test_a_failed_user_read_is_not_a_404(self) -> None:
+        """The provider answers None to a failed read unless told to raise; "User not
+        found" for a person who is there would send them away for good."""
+        req = _make_request({"name": "Team"})
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.side_effect = RuntimeError("LockAcquisitionTimeout")
+
+        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await create_team(req)
+        gp.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        gp.batch_upsert_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_user_not_found_raises_404(self):
         body = {"name": "Team"}
         req = _make_request(body)
@@ -522,7 +535,7 @@ class _TeamGraph:
         self.writes = 0
         self.conflicts_on = conflicts_on
 
-    async def get_user_by_user_id(self, user_id: str) -> dict:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict:
         return {"_key": "user-key-1"}
 
     async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:

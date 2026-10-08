@@ -151,7 +151,9 @@ async def create_team(request: Request) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    # raise_on_error: the provider answers None to a failed read too, and a 404
+    # would tell a person who is there that they are not.
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"), raise_on_error=True)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     # Generate a unique key for the team
