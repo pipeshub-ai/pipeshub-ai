@@ -103,6 +103,8 @@ def test_search_parameter_is_validated_but_does_not_filter(
 def test_total_count_counts_every_stored_search(
     search_audit_client: SearchAuditClient, seed_search: SeedSearch, second_user: SecondUser
 ) -> None:
+    # Two, so a page of one has a next page on a stack that stores no other search.
+    seed_search()
     seed_search()
 
     resp = request_as(second_user, "GET", params={"limit": 1})
@@ -111,7 +113,7 @@ def test_total_count_counts_every_stored_search(
     assert_strict_openapi_exchange(resp, ROUTE)
     body = resp.json()
     assert body["searchHistory"] == []
-    assert body["pagination"]["totalCount"] >= 1
+    assert body["pagination"]["totalCount"] >= 2
     assert body["pagination"]["hasNextPage"] is True
 
 
