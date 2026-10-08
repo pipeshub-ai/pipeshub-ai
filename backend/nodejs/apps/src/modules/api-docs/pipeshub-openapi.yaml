@@ -5448,7 +5448,8 @@ components:
       description: |
         The outcome for one id of POST /knowledgeBase/records/restore. A restored item
         carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
-        and, when the refusal names other records, the snake_case details below.
+        and, when the refusal names other records, `blockedRecordId` plus the snake_case
+        fields below (`external_id`, `conflicting_record_id`, `conflicting_record_name`).
       required:
         - recordId
         - success
