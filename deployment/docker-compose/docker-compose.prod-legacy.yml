@@ -456,8 +456,8 @@ services:
       start_period: 30s
 
   # Pull-only helper: ensures the sandbox image exists before pipeshub-ai starts.
-  # Release: docker build -f deployment/sandbox/Dockerfile -t pipeshubai/pipeshub-sandbox:$TAG deployment/sandbox
-  #          && docker push pipeshubai/pipeshub-sandbox:$TAG
+  # Release: the release workflow (.github/workflows/release-publish.yml) builds
+  #          and pushes pipeshubai/pipeshub-sandbox:$TAG with the app image.
   # Override with SANDBOX_DOCKER_IMAGE if you host the image under another name.
   sandbox-image:
     image: ${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}

@@ -39,6 +39,10 @@ concurrency:
 env:
   IMAGE: pipeshubai/pipeshub-ai
   BASE_IMAGE: pipeshubai/pipeshub-ai-base
+  # The code-execution sandbox the app pulls at install time, tagged in step
+  # with the app image (docker-compose.yml, sandbox-image). It was pushed by
+  # hand for every release before this workflow built it.
+  SANDBOX_IMAGE: pipeshubai/pipeshub-sandbox
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -130,11 +134,48 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.variant }},mode=max
 
   # ---------------------------------------------------------------------------
+  # install.sh pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}, so the candidate
+  # needs a sandbox image under both its tags (slim installs use the -slim
+  # tag). Without it compose tries to build the sandbox from source, which a
+  # standalone install does not have, and every verify job fails.
+  build-sandbox:
+    name: Build sandbox
+    needs: resolve
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push the sandbox candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: deployment/sandbox
+          file: deployment/sandbox/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ env.SANDBOX_IMAGE }}:${{ needs.resolve.outputs.candidate }}
+            ${{ env.SANDBOX_IMAGE }}:${{ needs.resolve.outputs.candidate }}-slim
+          cache-from: type=gha,scope=sandbox
+          cache-to: type=gha,scope=sandbox,mode=max
+
+  # ---------------------------------------------------------------------------
   # The gate. These images are on Docker Hub but no published tag points at them
   # yet, so this runs against exactly what a user would install.
   verify:
     name: Verify ${{ matrix.deploy }} candidate (${{ matrix.arch }}${{ matrix.graph && format(', {0}', matrix.graph) || '' }})
-    needs: [resolve, build]
+    needs: [resolve, build, build-sandbox]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -222,10 +263,11 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  # The version tags are written whenever the gate passes. Only :latest and
+  # :slim wait for "promote", and a prerelease version never moves them.
   promote:
-    name: Promote to release tags
+    name: Publish release tags
     needs: [resolve, verify]
-    if: needs.resolve.outputs.promote == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Log in to Docker Hub
@@ -241,27 +283,37 @@ jobs:
 
       # Copy by digest rather than rebuilding, so the tag a user pulls is
       # byte-identical to the image the smoke and upgrade tests just passed.
-      # A prerelease version never moves :latest or :slim.
-      - name: Point release tags at the verified image
+      # The sandbox moves with the app: install.sh pulls both under one tag.
+      - name: Point release tags at the verified images
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          PROMOTE: ${{ needs.resolve.outputs.promote }}
         run: |
           set -euo pipefail
-          crane copy "${IMAGE}:${CANDIDATE}"       "${IMAGE}:${VERSION}"
-          crane copy "${IMAGE}:${CANDIDATE}-slim"  "${IMAGE}:${VERSION}-slim"
+          for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+            crane copy "${repo}:${CANDIDATE}"       "${repo}:${VERSION}"
+            crane copy "${repo}:${CANDIDATE}-slim"  "${repo}:${VERSION}-slim"
+          done
+          echo "published ${IMAGE}:${VERSION} (+slim) and ${SANDBOX_IMAGE}:${VERSION} (+slim)"
           if printf '%s' "$VERSION" | grep -q -- '-'; then
             echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
+          elif [ "$PROMOTE" != "true" ]; then
+            echo "promote is off: leaving :latest and :slim untouched"
           else
-            crane copy "${IMAGE}:${CANDIDATE}"      "${IMAGE}:latest"
-            crane copy "${IMAGE}:${CANDIDATE}-slim" "${IMAGE}:slim"
+            for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+              crane copy "${repo}:${CANDIDATE}"      "${repo}:latest"
+              crane copy "${repo}:${CANDIDATE}-slim" "${repo}:slim"
+            done
+            echo "moved :latest and :slim to ${VERSION}"
           fi
-          echo "published ${IMAGE}:${VERSION} (+slim)"
 
       - name: Remove candidate tags
         continue-on-error: true
         env:
           CANDIDATE: ${{ needs.resolve.outputs.candidate }}
         run: |
-          crane delete "${IMAGE}:${CANDIDATE}"      || true
-          crane delete "${IMAGE}:${CANDIDATE}-slim" || true
+          for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+            crane delete "${repo}:${CANDIDATE}"      || true
+            crane delete "${repo}:${CANDIDATE}-slim" || true
+          done
