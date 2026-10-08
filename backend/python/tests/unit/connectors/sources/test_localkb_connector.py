@@ -382,6 +382,38 @@ class TestKnowledgeBaseService:
         }
 
     @pytest.mark.asyncio
+    async def test_a_create_retried_after_a_write_conflict_gives_the_kb_one_lane_after_the_commit(self) -> None:
+        """The writes run under a retry (one user's creates collide on the user
+        node); the lane assignment runs once, after the commit that stuck."""
+        deadlock = RuntimeError("Neo.TransientError.Transaction.DeadlockDetected")
+        svc = _make_kb_service()
+        provider = svc.graph_provider
+        provider.is_write_conflict = MagicMock(side_effect=lambda e: e is deadlock)
+        provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key-1", "fullName": "Test User"})
+        provider.begin_transaction = AsyncMock(side_effect=["txn1", "txn2"])
+        provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        provider.batch_create_edges = AsyncMock(side_effect=[deadlock, True, True, True])
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+        commits_when_assigned: list[int] = []
+
+        async def note_commits(*_args: object, **_kwargs: object) -> None:
+            commits_when_assigned.append(provider.commit_transaction.await_count)
+
+        with patch("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", new=AsyncMock()), patch(
+            "app.connectors.sources.localKB.handlers.kb_service.assign_lane_to_new_connector",
+            side_effect=note_commits,
+        ) as assign:
+            result = await svc.create_knowledge_base("user-1", "org-1", "My KB")
+
+        assert result["success"] is True
+        provider.rollback_transaction.assert_awaited_once_with("txn1")
+        provider.commit_transaction.assert_awaited_once_with("txn2")
+        assign.assert_awaited_once()
+        assert assign.await_args.args[1] == result["id"]
+        assert commits_when_assigned == [1], "assigned once, after the commit"
+
+    @pytest.mark.asyncio
     async def test_a_kb_that_failed_to_commit_is_given_no_lane(self) -> None:
         svc = _make_kb_service()
         svc.graph_provider.get_user_by_user_id = AsyncMock(
