@@ -243,16 +243,35 @@ async def create_team(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail=action_failed("create this team")) from e
     logger.info(f"Team created successfully: {team_body}")
 
-    # The team is committed by now, so a failed read-back must not send the person
-    # back to "try again": that would create the team a second time.
+    # The team is committed by now. The providers answer None to a failed read, and
+    # any error response makes the dashboard say "try again", which would create
+    # the team a second time; so a failed read-back answers with the team as written.
     try:
         team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
     except Exception as e:
         logger.error(f"Team {team_key} was created but could not be read back: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="The team was created, but its details couldn't be loaded. Refresh the page to see it.",
-        ) from e
+        team_with_users = None
+    if not team_with_users:
+        logger.warning(f"Team {team_key} was created but could not be read back; answering with what was written")
+        members = [
+            {"id": edge["from_id"], "role": edge["role"], "joinedAt": edge["createdAtTimestamp"],
+             "isOwner": edge["role"] == "OWNER"}
+            for edge in user_team_edges
+        ]
+        team_with_users = {
+            "id": team_key,
+            "name": team_body["name"],
+            "description": team_body["description"],
+            "createdBy": team_body["createdBy"],
+            "orgId": team_body["orgId"],
+            "createdAtTimestamp": team_body["createdAtTimestamp"],
+            "updatedAtTimestamp": team_body["updatedAtTimestamp"],
+            "members": members,
+            "memberCount": len(members),
+            "canEdit": True,
+            "canDelete": True,
+            "canManageMembers": True,
+        }
 
     return JSONResponse(
         status_code=200,

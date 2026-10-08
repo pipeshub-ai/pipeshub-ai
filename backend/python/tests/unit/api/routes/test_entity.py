@@ -455,20 +455,37 @@ class TestCreateTeam:
         gp.rollback_transaction.assert_called_once_with("tx-1")
 
     @pytest.mark.asyncio
-    async def test_a_failed_read_back_after_the_commit_is_not_rolled_back(self) -> None:
-        """The team is committed by then; a rollback of a committed id raises and hides that."""
-        req = _make_request({"name": "Team"})
+    @pytest.mark.parametrize("read_back", [None, RuntimeError("read timed out")], ids=["none", "raises"])
+    async def test_a_failed_read_back_after_the_commit_answers_with_the_team_as_written(
+        self, read_back: object
+    ) -> None:
+        """The team is committed by then. The providers answer None to a failed read, and
+        any error response makes the dashboard say "try again", which creates a second
+        team; so the response carries the team that was written."""
+        req = _make_request({
+            "name": "Team", "description": "Desc",
+            "userRoles": [{"userId": MEMBER_MONGO_ID_2, "role": "EDITOR"}],
+        })
         gp = _graph_provider(req)
         gp.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        gp.get_graph_user_keys_by_mongo_user_ids.side_effect = _mock_get_graph_user_keys_by_mongo_user_ids
         gp.begin_transaction.return_value = "tx-1"
         gp.batch_upsert_nodes.return_value = True
         gp.batch_create_edges.return_value = True
-        gp.get_team_with_users.side_effect = RuntimeError("read timed out")
+        if isinstance(read_back, Exception):
+            gp.get_team_with_users.side_effect = read_back
+        else:
+            gp.get_team_with_users.return_value = read_back
 
-        with pytest.raises(HTTPException) as exc:
-            await create_team(req)
-        assert exc.value.status_code == 500
-        assert "was created" in exc.value.detail
+        with patch("app.api.routes.entity.uuid.uuid4", return_value="fake-uuid"):
+            resp = await create_team(req)
+
+        assert resp.status_code == 200
+        data = json.loads(resp.body.decode())["data"]
+        assert data["id"] == "fake-uuid"
+        assert (data["name"], data["description"]) == ("Team", "Desc")
+        assert {(m["id"], m["role"]) for m in data["members"]} == {("user-key-1", "OWNER"), ("graph-key-2", "EDITOR")}
+        assert data["memberCount"] == 2
         gp.commit_transaction.assert_awaited_once_with("tx-1")
         gp.rollback_transaction.assert_not_called()
 
