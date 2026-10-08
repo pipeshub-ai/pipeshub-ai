@@ -9,6 +9,7 @@ from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import OAuthConfigKeys
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
@@ -482,11 +483,31 @@ class ZendeskClient(IClient):
                     raise ZendeskConfigError(
                         "Zendesk is not authorized yet. Click Authorize to connect your Zendesk account."
                     )
+                subdomain = auth_config.get("subdomain", "")
+                client_id = auth_config.get("clientId", "")
+                client_secret = auth_config.get("clientSecret", "")
+                redirect_uri = auth_config.get("redirectUri", "")
+                oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                # A connector created from an existing OAuth app keeps these on the app.
+                if oauth_config_id and not (subdomain and client_id and client_secret):
+                    from app.edition_config import fetch_oauth_config_by_id
+                    shared = await fetch_oauth_config_by_id(
+                        oauth_config_id=oauth_config_id,
+                        connector_type="zendesk",
+                        config_service=config_service,
+                        logger=logger,
+                        org_id=auth_config.get("inheritedFromOrgId"),
+                    )
+                    shared_config = (shared or {}).get(OAuthConfigKeys.CONFIG) or {}
+                    subdomain = subdomain or shared_config.get("subdomain", "")
+                    client_id = client_id or shared_config.get("clientId", "")
+                    client_secret = client_secret or shared_config.get("clientSecret", "")
+                    redirect_uri = redirect_uri or shared_config.get("redirectUri", "")
                 client = ZendeskRESTClientViaOAuth(
-                    subdomain=auth_config.get("subdomain", ""),
-                    client_id=auth_config.get("clientId", ""),
-                    client_secret=auth_config.get("clientSecret", ""),
-                    redirect_uri=auth_config.get("redirectUri", ""),
+                    subdomain=subdomain,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    redirect_uri=redirect_uri,
                     access_token=access_token
                 )
 

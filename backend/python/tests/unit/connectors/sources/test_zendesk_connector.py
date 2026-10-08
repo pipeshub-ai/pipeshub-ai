@@ -29,6 +29,7 @@ from app.connectors.sources.zendesk.connector import (
 from app.models.blocks import BlockGroup, DataFormat, GroupSubType, GroupType
 from app.models.entities import (
     AppUser,
+    AppUserGroup,
     OriginTypes,
     RecordGroupType,
     RecordType,
@@ -56,8 +57,13 @@ def mock_data_entities_processor(mock_tx_store):
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
+    proc.on_external_app_users = AsyncMock()
+    proc.reap_external_app_users = AsyncMock()
+    proc.on_records_deleted_cascade = AsyncMock()
+    proc.on_record_group_deleted = AsyncMock(return_value=True)
     proc.on_updated_record_permissions = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
+    proc.get_records_by_parent = AsyncMock(return_value=[])
 
     async def _get_record_by_external_id(connector_id, external_record_id):
         return await mock_tx_store.get_record_by_external_id(
@@ -73,6 +79,12 @@ def mock_data_entities_processor(mock_tx_store):
 def mock_tx_store():
     tx = MagicMock()
     tx.get_record_by_external_id = AsyncMock(return_value=None)
+    tx.get_user_groups = AsyncMock(return_value=[])
+    tx.get_record_group_by_external_id = AsyncMock(return_value=None)
+    tx.get_edges_from_node = AsyncMock(return_value=[])
+    tx.get_edges_to_node = AsyncMock(return_value=[])
+    tx.get_records_by_status = AsyncMock(return_value=[])
+    tx.delete_edge = AsyncMock()
     tx.__aenter__ = AsyncMock(return_value=tx)
     tx.__aexit__ = AsyncMock(return_value=None)
     return tx
@@ -118,8 +130,7 @@ def zendesk_connector(mock_logger, mock_data_entities_processor,
     connector._group_id_to_data = {"7": {"id": 7, "name": "Technical Support"}}
     # Tickets and articles each keep their own checkpoint; tests that assert on one
     # override these.
-    connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
-    connector.records_sync_point.update_sync_point = AsyncMock()
+    _stateful_sync_points(connector)
     return connector
 
 
@@ -183,7 +194,10 @@ class TestZendeskConnectorInit:
 class TestFetchPaginatedList:
     async def test_asks_for_a_cursor_page_first(self, zendesk_connector):
         """Offset pagination 400s past 10,000 records; cursor has no ceiling."""
-        api = AsyncMock(return_value=_make_response(data={"groups": [{"id": 1}]}))
+        api = AsyncMock(return_value=_make_response(data={
+            "groups": [{"id": 1}],
+            "meta": {"has_more": False, "after_cursor": None},
+        }))
         result = await zendesk_connector._fetch_paginated_list(api, "groups")
         assert len(result) == 1
         api.assert_awaited_once_with(page_size=PAGE_SIZE, page_after=None)
@@ -231,6 +245,7 @@ class TestFetchPaginatedList:
         api = AsyncMock(side_effect=[
             _make_response(data={"groups": [{"id": i} for i in range(PAGE_SIZE)]}),
             _make_response(data={"groups": [{"id": 999}]}),
+            _make_response(data={"groups": []}),
         ])
 
         result = await zendesk_connector._fetch_paginated_list(api, "groups")
@@ -240,14 +255,51 @@ class TestFetchPaginatedList:
         assert api.await_args_list[1].kwargs == {"page": 2, "per_page": PAGE_SIZE}
 
     async def test_follows_multiple_pages(self, zendesk_connector):
-        full = {"groups": [{"id": i} for i in range(PAGE_SIZE)]}
+        full = {"groups": [{"id": i} for i in range(PAGE_SIZE)], "next_page": "p2"}
         api = AsyncMock(side_effect=[
             _make_response(data=full),
-            _make_response(data={"groups": [{"id": 999}]}),
+            _make_response(data={"groups": [{"id": 999}], "next_page": "p3"}),
+            _make_response(data={"groups": [], "next_page": None}),
         ])
         result = await zendesk_connector._fetch_paginated_list(api, "groups")
         assert len(result) == PAGE_SIZE + 1
-        assert api.await_count == 2
+        assert api.await_count == 3
+
+    async def test_offset_fallback_handles_endpoints_with_a_smaller_page_size(
+        self, zendesk_connector
+    ):
+        api = AsyncMock(side_effect=[
+            _make_response(data={"groups": [{"id": i} for i in range(30)], "next_page": "p2"}),
+            _make_response(data={"groups": [{"id": i} for i in range(30, 40)], "next_page": None}),
+        ])
+
+        result = await zendesk_connector._fetch_paginated_list(api, "groups")
+
+        assert [group["id"] for group in result] == list(range(40))
+        assert api.await_args_list[1].kwargs["page"] == 2
+
+    async def test_offset_walk_without_next_page_stops_on_a_short_page(
+        self, zendesk_connector
+    ):
+        """Items with no id cannot be de-duplicated, so an endpoint that repeats them
+        must not be walked until memory runs out."""
+        api = AsyncMock(return_value=_make_response(data={"groups": [{"name": "x"}] * 5}))
+
+        items, complete = await zendesk_connector._fetch_paginated_list_checked(api, "groups")
+
+        assert (len(items), complete, api.await_count) == (5, True, 1)
+
+    async def test_offset_only_never_sends_cursor_params(self, zendesk_connector):
+        api = AsyncMock(return_value=_make_response(
+            data={"articles": [{"id": 1}], "next_page": None}
+        ))
+
+        items, complete = await zendesk_connector._fetch_paginated_list_checked(
+            api, "articles", offset_only=True
+        )
+
+        assert (len(items), complete) == (1, True)
+        api.assert_awaited_once_with(page=1, per_page=PAGE_SIZE)
 
     async def test_stops_on_failed_response(self, zendesk_connector):
         api = AsyncMock(return_value=_make_response(success=False))
@@ -263,6 +315,18 @@ class TestFetchPaginatedList:
         )
 
         assert (items, complete) == ([], False)
+
+    async def test_missing_list_is_not_treated_as_an_empty_complete_export(
+        self, zendesk_connector
+    ):
+        api = AsyncMock(return_value=_make_response(data={"meta": {"has_more": False}}))
+
+        items, complete = await zendesk_connector._fetch_paginated_list_checked(
+            api, "groups"
+        )
+
+        assert items == []
+        assert complete is False
 
     async def test_caches_sideloaded_users(self, zendesk_connector):
         """include= sideloads ride in the same payload; dropping them makes comment
@@ -284,7 +348,7 @@ class TestFetchPaginatedList:
         have to be re-raised for the shared retry helper to see them."""
         api = AsyncMock(side_effect=[
             _make_response(success=False, error="Too Many Requests", status_code=429),
-            _make_response(data={"groups": [{"id": 1}]}),
+            _make_response(data={"groups": [{"id": 1}], "meta": {"has_more": False}}),
         ])
         api.__name__ = "list_groups"
 
@@ -303,7 +367,7 @@ class TestFetchPaginatedList:
                 success=False, error="Too Many Requests", status_code=429,
                 headers={"Retry-After": "42"},
             ),
-            _make_response(data={"groups": [{"id": 1}]}),
+            _make_response(data={"groups": [{"id": 1}], "meta": {"has_more": False}}),
         ])
         api.__name__ = "list_groups"
         slept: list[float] = []
@@ -339,7 +403,7 @@ class TestFetchPaginatedList:
         refresh_service.refresh_now = AsyncMock(return_value=MagicMock(access_token="new"))
         api = AsyncMock(side_effect=[
             _make_response(success=False, error="Unauthorized", status_code=401),
-            _make_response(data={"groups": [{"id": 1}]}),
+            _make_response(data={"groups": [{"id": 1}], "meta": {"has_more": False}}),
         ])
         api.__name__ = "list_groups"
 
@@ -451,6 +515,38 @@ class TestTicketToRecord:
         })
         assert result is None
 
+    async def test_unchanged_ticket_is_rebuilt_typed_when_included(self, zendesk_connector, mock_tx_store):
+        """The stored node comes back as a base Record, which the Neo4j upsert rejects."""
+        existing = MagicMock()
+        existing.id = "rec-1"
+        existing.version = 3
+        existing.source_updated_at = 1767312000000
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        record, _ = await zendesk_connector._ticket_to_record(
+            {"id": 555, "subject": "Unchanged", "updated_at": "2026-01-02T00:00:00Z"},
+            include_unchanged=True,
+        )
+        assert isinstance(record, TicketRecord)
+        assert record.version == 3
+        assert record.indexing_status == ProgressStatus.COMPLETED.value
+
+    async def test_unchanged_article_is_rebuilt_typed_when_included(self, zendesk_connector, mock_tx_store):
+        existing = MagicMock()
+        existing.id = "rec-2"
+        existing.version = 2
+        existing.source_updated_at = 1767312000000
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        record, _ = await zendesk_connector._article_to_record(
+            {"id": 9, "title": "Unchanged", "updated_at": "2026-01-02T00:00:00Z"},
+            include_unchanged=True,
+        )
+        assert isinstance(record, WebpageRecord)
+        assert record.version == 2
+
     async def test_bumps_version_on_changed_ticket(self, zendesk_connector, mock_tx_store):
         existing = MagicMock()
         existing.id = "rec-1"
@@ -522,8 +618,7 @@ class TestDeletedTickets:
         datasource.incremental_tickets = AsyncMock(
             return_value=_make_response(data={"tickets": tickets, "end_of_stream": True})
         )
-        connector.records_sync_point.update_sync_point = AsyncMock()
-        connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        _stateful_sync_points(connector)
         return datasource
 
     async def test_deleted_ticket_is_not_rebuilt_as_a_record(self, zendesk_connector):
@@ -692,8 +787,7 @@ class TestFullSyncEdgeRebuild:
                 "content_url": "https://acme.zendesk.com/attachments/88",
             }]}],
         }))
-        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        _stateful_sync_points(zendesk_connector)
         zendesk_connector._rebuild_ticket_edges = rebuild_edges
         return datasource
 
@@ -739,7 +833,7 @@ class TestFullSyncEdgeRebuild:
         """Without it the processor writes PARENT_CHILD, so anything filtering on
         relationshipType == ATTACHMENT misses Zendesk files."""
         parent = TestAttachmentChildRecords._parent()
-        comment = {"id": 5, "attachments": [{
+        comment = {"id": 5, "public": True, "attachments": [{
             "id": 88, "file_name": "trace.log",
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
@@ -830,7 +924,7 @@ class TestTruncatedExportGating:
             return_value=([user], {"1": user}, users_complete)
         )
         connector._fetch_groups = AsyncMock(
-            return_value=([("g_rg", [])], [("g_ug", [])], memberships_complete)
+            return_value=([("g_rg", [])], [(_user_group("group_1"), [])], memberships_complete)
         )
         connector._fetch_organizations = AsyncMock(return_value=([], True))
         connector._sync_tickets = AsyncMock(return_value=3)
@@ -1081,6 +1175,32 @@ class TestAllTicketsAccess:
         assert group.source_user_group_id == "role_all_tickets"
         assert sorted(m.source_user_id for m in members) == ["1", "3"]
 
+    async def test_group_membership_respects_ticket_access_level(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.list_groups = AsyncMock(return_value=_make_response(data={
+            "groups": [{"id": 7, "name": "Support"}], "meta": {"has_more": False},
+        }))
+        datasource.list_group_memberships = AsyncMock(return_value=_make_response(data={
+            "group_memberships": [
+                {"group_id": 7, "user_id": 1},
+                {"group_id": 7, "user_id": 2},
+                {"group_id": 7, "user_id": 3},
+            ],
+            "meta": {"has_more": False},
+        }))
+        zendesk_connector._role_ticket_access = {"10": "within-groups", "11": "assigned-only"}
+        zendesk_connector._user_id_to_data = {
+            "1": {"id": 1, "role": "agent", "custom_role_id": 10},
+            "2": {"id": 2, "role": "agent", "custom_role_id": 11},
+            "3": {"id": 3, "role": "agent", "custom_role_id": 10, "suspended": True},
+        }
+        users = {str(i): _app_user(str(i), f"agent{i}@acme.com") for i in (1, 2, 3)}
+
+        _, groups, complete = await zendesk_connector._fetch_groups(users)
+
+        assert complete is True
+        assert [member.source_user_id for member in groups[0][1]] == ["1"]
+
     async def test_plan_without_custom_roles_is_complete(self, zendesk_connector):
         _ready(zendesk_connector)  # list_custom_roles answers 403
 
@@ -1100,11 +1220,10 @@ class TestAllTicketsAccess:
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
-    async def test_failed_role_export_skips_group_write_and_tickets(
+    async def test_failed_role_export_keeps_group_access_but_never_grants_all(
         self, _f, zendesk_connector, mock_data_entities_processor
     ):
-        """The group is rebuilt from scratch, and tickets synced without its grant
-        would never be repaired once the checkpoint moved on."""
+        """An unreadable role defaults to its explicit Zendesk groups only."""
         _ready(zendesk_connector)
         zendesk_connector.data_source.list_custom_roles = AsyncMock(
             return_value=_make_response(success=False, status_code=400, error="bad")
@@ -1118,8 +1237,8 @@ class TestAllTicketsAccess:
 
         await zendesk_connector.run_sync()
 
-        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
-        zendesk_connector._sync_tickets.assert_not_awaited()
+        mock_data_entities_processor.on_new_user_groups.assert_awaited()
+        zendesk_connector._sync_tickets.assert_awaited_once()
 
     async def test_record_groups_grant_all_tickets_group(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1186,7 +1305,7 @@ class TestStaleGrantReplacement:
         stored.external_record_group_id = "group_OLD"
         mock_tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
         zendesk_connector._rebuild_ticket_edges = False
-        comment = {"id": 5, "attachments": [{
+        comment = {"id": 5, "public": True, "attachments": [{
             "id": 88, "file_name": "a.txt",
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
@@ -1207,7 +1326,7 @@ class TestStaleGrantReplacement:
         stored.external_record_group_id = "group_7"
         mock_tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
         zendesk_connector._rebuild_ticket_edges = False
-        comment = {"id": 5, "attachments": [{
+        comment = {"id": 5, "public": True, "attachments": [{
             "id": 88, "file_name": "a.txt",
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
@@ -1267,6 +1386,7 @@ class TestAttachmentHostGuard:
     async def test_download_refuses_untrusted_host(self, zendesk_connector):
         """Regression: credentials must never be sent to an API-supplied foreign host."""
         datasource = _ready(zendesk_connector)
+        _make_ticket_attachment_public(datasource, attachment_id=3)
         datasource.http = MagicMock()
         datasource.http.execute = AsyncMock()
 
@@ -1280,6 +1400,7 @@ class TestAttachmentHostGuard:
 
     async def test_download_raises_without_url(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
+        _make_ticket_attachment_public(datasource, attachment_id=3)
         _attachment_lookup(datasource, None)
         record = MagicMock()
         record.external_record_id = "ticket_1_comment_2_attachment_3"
@@ -1310,7 +1431,8 @@ class TestIncrementalCursor:
         users, _, complete = await zendesk_connector._fetch_users()
         # Second page repeats the first cursor, so the walk stops there.
         assert datasource.list_users.await_count == 2
-        assert len(users) == 2
+        # The repeated page carries the same user, kept once.
+        assert len(users) == 1
         # The last page was never reached, so group membership must not be rebuilt.
         assert complete is False
 
@@ -1428,12 +1550,17 @@ class TestIncrementalCursor:
             }),
             _make_response(success=False, error="500 Internal Server Error"),
         ])
-        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        states = _stateful_sync_points(zendesk_connector)
 
         await zendesk_connector._sync_tickets()
 
-        zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
+        # Resumes from the finished page; the window end never moves past the failure.
+        assert states[SYNC_POINT_KEY]["lastCursor"] == "page2"
+        assert all(
+            call.args[1].get("lastCursor") is not None or "lastEndTime" not in call.args[1]
+            for call in zendesk_connector.records_sync_point.update_sync_point.await_args_list
+            if call.args[0] == SYNC_POINT_KEY
+        )
 
     async def test_non_advancing_ticket_cursor_leaves_sync_point_alone(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1441,12 +1568,14 @@ class TestIncrementalCursor:
             "tickets": [{"id": 1, "subject": "a", "updated_at": "2026-01-01T00:00:00Z"}],
             "end_of_stream": False,
         }))
-        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        _stateful_sync_points(zendesk_connector)
 
         await zendesk_connector._sync_tickets()
 
-        zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
+        assert not any(
+            call.args[1].get("lastCursor") or call.args[1].get("lastEndTime")
+            for call in zendesk_connector.records_sync_point.update_sync_point.await_args_list
+        )
 
     async def test_sync_tickets_persists_end_time(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1457,8 +1586,7 @@ class TestIncrementalCursor:
             ],
             "end_of_stream": True,
         }))
-        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        _stateful_sync_points(zendesk_connector)
 
         await zendesk_connector._sync_tickets()
 
@@ -1536,6 +1664,16 @@ def _app_user(source_user_id="1", email="a@acme.com", name="A"):
     )
 
 
+def _user_group(source_user_group_id, name="G"):
+    return AppUserGroup(
+        app_name=Connectors.ZENDESK,
+        connector_id="zd-conn-1",
+        source_user_group_id=source_user_group_id,
+        name=name,
+        org_id="org-zd-1",
+    )
+
+
 def _ready(connector):
     """Mark the connector initialised so `_get_fresh_datasource` succeeds.
 
@@ -1571,7 +1709,38 @@ def _ready(connector):
     connector.data_source.list_article_comments = AsyncMock(
         return_value=_make_response(data={"comments": []})
     )
+    connector.data_source.list_articles = AsyncMock(
+        return_value=_make_response(data={"articles": [], "next_page": None})
+    )
+    connector.data_source.list_organization_users = AsyncMock(
+        return_value=_make_response(data={"users": [], "next_page": None})
+    )
     return connector.data_source
+
+
+def _stateful_sync_points(connector, initial=None):
+    states = dict(initial or {})
+
+    async def _read(key):
+        return dict(states.get(key, {}))
+
+    async def _update(key, value):
+        states[key] = dict(value)
+        return states[key]
+
+    connector.records_sync_point.read_sync_point = AsyncMock(side_effect=_read)
+    connector.records_sync_point.update_sync_point = AsyncMock(side_effect=_update)
+    return states
+
+
+def _make_ticket_attachment_public(datasource, attachment_id=9, comment_id=2):
+    datasource.list_comments = AsyncMock(return_value=_make_response(data={
+        "comments": [{
+            "id": comment_id,
+            "public": True,
+            "attachments": [{"id": attachment_id}],
+        }],
+    }))
 
 
 # ===========================================================================
@@ -1587,9 +1756,11 @@ class TestRunSync:
         )
         connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, True))
         connector._fetch_groups = AsyncMock(
-            return_value=([("g_rg", [])], [("g_ug", [])], True)
+            return_value=([("g_rg", [])], [(_user_group("group_1"), [])], True)
         )
-        connector._fetch_organizations = AsyncMock(return_value=([("o_ug", [])], True))
+        connector._fetch_organizations = AsyncMock(
+            return_value=([(_user_group("org_9"), [])], True)
+        )
         connector._sync_tickets = AsyncMock(return_value=3)
         connector._sync_help_center_articles = AsyncMock(return_value=4)
 
@@ -1632,13 +1803,14 @@ class TestRunSync:
 
         await zendesk_connector.run_sync()
 
-        # Only the additive org write may run: both rebuilds (group membership and the
-        # all-tickets group) are destructive and need the whole staff list.
-        written = [
-            call for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+        # Only the organization write may run: organizations hold customers, while
+        # group membership and the all-tickets group need the whole staff list.
+        written_ids = [
+            group.source_user_group_id
+            for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+            for group, _ in call.args[0]
         ]
-        assert all(call.kwargs.get("replace_members") is False for call in written)
-        assert [call.args[0] for call in written] == [[("o_ug", [])]]
+        assert written_ids == ["org_9"]
         # Record groups are unaffected — only membership rebuilds are destructive.
         mock_data_entities_processor.on_new_record_groups.assert_awaited()
 
@@ -1652,14 +1824,15 @@ class TestRunSync:
         _ready(zendesk_connector)
         self._stub_stages(zendesk_connector, _app_user())
         zendesk_connector._fetch_groups = AsyncMock(
-            return_value=([("g_rg", [])], [("g_ug", [])], False)
+            return_value=([("g_rg", [])], [(_user_group("group_1"), [])], False)
         )
 
         await zendesk_connector.run_sync()
 
         assert all(
-            call.args[0] != [("g_ug", [])]
+            group.source_user_group_id != "group_1"
             for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+            for group, _ in call.args[0]
         )
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
@@ -1829,25 +2002,54 @@ class TestFetchOrganizations:
         assert user_groups[0][0].source_user_group_id == "org_21"
         assert user_groups[0][0].name == "Acme Corp"
 
-    async def test_membership_derived_from_cached_users_not_extra_calls(
-        self, zendesk_connector
+    async def test_sharing_org_members_are_read_in_the_same_sync(
+        self, zendesk_connector, mock_data_entities_processor
     ):
-        """Zendesk has no bulk org-membership endpoint; a per-org call would be N+1."""
+        """A colleague who never raised a ticket is never sideloaded by a ticket page."""
         datasource = _ready(zendesk_connector)
-        datasource.incremental_organizations = AsyncMock(
-            return_value=_make_response(data={
-                "organizations": [{"id": 21, "name": "Acme Corp"}],
-                "end_of_stream": True,
-            })
+        datasource.list_organization_users = AsyncMock(return_value=_make_response(data={
+            "users": [
+                {"id": 5, "email": "colleague@cust.com", "name": "C", "role": "end-user"},
+                {"id": 6, "email": "gone@cust.com", "role": "end-user", "suspended": True},
+            ],
+            "next_page": None,
+        }))
+
+        await zendesk_connector._sync_shared_org_members([_user_group("org_21")])
+
+        groups = mock_data_entities_processor.on_new_user_groups.await_args
+        assert groups.kwargs["replace_members"] is True
+        (group, members), = groups.args[0]
+        assert [m.email for m in members] == ["colleague@cust.com"]
+        assert datasource.list_organization_users.await_args.kwargs["organization_id"] == 21
+        mock_data_entities_processor.on_external_app_users.assert_awaited_once_with(
+            ["colleague@cust.com"], "zd-conn-1"
         )
-        user = _app_user()
-        zendesk_connector._user_id_to_data = {"1": {"organization_id": 21}}
-        zendesk_connector._user_id_to_app_user = {"1": user}
 
-        user_groups, _ = await zendesk_connector._fetch_organizations()
+    async def test_truncated_member_list_only_adds(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        datasource = _ready(zendesk_connector)
+        datasource.list_organization_users = AsyncMock(
+            return_value=_make_response(success=False, error="500")
+        )
 
-        assert user_groups[0][1] == [user]
-        assert datasource.incremental_organizations.await_count == 1
+        await zendesk_connector._sync_shared_org_members([_user_group("org_21")])
+
+        assert (
+            mock_data_entities_processor.on_new_user_groups.await_args.kwargs["replace_members"]
+            is False
+        )
+
+    def test_deleted_org_does_not_share_tickets(self, zendesk_connector):
+        """The incremental export keeps deleted organizations with shared_tickets set."""
+        zendesk_connector._org_id_to_data = {
+            "21": {"id": 21, "shared_tickets": True, "deleted_at": "2026-10-01T00:00:00Z"},
+            "22": {"id": 22, "shared_tickets": True, "deleted_at": None},
+        }
+
+        assert zendesk_connector._org_shares_tickets(21) is False
+        assert zendesk_connector._org_shares_tickets(22) is True
 
     async def test_pages_on_end_time(self, zendesk_connector):
         """The time-based export has no cursor — the next window starts at end_time."""
@@ -1912,9 +2114,12 @@ class TestFetchOrganizations:
         _ready(zendesk_connector)
         zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
         zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
-        zendesk_connector._fetch_organizations = AsyncMock(
-            return_value=([("o_ug", [])], False)
-        )
+
+        async def _orgs():
+            zendesk_connector._org_id_to_data["9"] = {"id": 9, "shared_tickets": True}
+            return [(_user_group("org_9"), [])], False
+
+        zendesk_connector._fetch_organizations = AsyncMock(side_effect=_orgs)
         zendesk_connector._sync_tickets = AsyncMock(return_value=0)
         zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
@@ -1926,9 +2131,12 @@ class TestFetchOrganizations:
                 caplog.at_level(logging.ERROR):
             await zendesk_connector.run_sync()
 
-        mock_data_entities_processor.on_new_user_groups.assert_any_await(
-            [("o_ug", [])], replace_members=False
-        )
+        written_ids = [
+            group.source_user_group_id
+            for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+            for group, _ in call.args[0]
+        ]
+        assert "org_9" in written_ids
         assert "organization export was truncated" in caplog.text
 
     async def test_logs_and_stops_on_failure(self, zendesk_connector):
@@ -2043,8 +2251,8 @@ class TestStreamRecord:
         datasource = _ready(zendesk_connector)
         datasource.list_comments = AsyncMock(return_value=_make_response(data={
             "comments": [
-                {"id": 1, "author_id": 9, "html_body": "<p>First</p>"},
-                {"id": 2, "author_id": 9, "body": "Second"},
+                {"id": 1, "author_id": 9, "html_body": "<p>First</p>", "public": True},
+                {"id": 2, "author_id": 9, "body": "Second", "public": True},
             ],
         }))
         zendesk_connector._user_id_to_data = {"9": {"name": "Sarah"}}
@@ -2060,10 +2268,10 @@ class TestStreamRecord:
         assert '"name": "Description"' in body
         assert "Comment by Sarah" in body
 
-    async def test_streamed_attachment_gets_the_tickets_grants(
+    async def test_streaming_does_not_create_a_second_attachment_record(
         self, zendesk_connector, mock_data_entities_processor
     ):
-        """A record created at stream time must not be born with no grants."""
+        """The sync path owns attachment records; streaming only links existing ones."""
         datasource = _ready(zendesk_connector)
         datasource.list_comments = AsyncMock(return_value=_make_response(data={
             "comments": [{"id": 1, "author_id": 9, "body": "see file", "public": True,
@@ -2080,9 +2288,7 @@ class TestStreamRecord:
 
         await zendesk_connector._process_ticket_blockgroups_for_streaming(record)
 
-        _, permissions = mock_data_entities_processor.on_new_records.await_args.args[0][0]
-        assert {p.email for p in permissions if p.email} == {"req@acme.com"}
-        assert any(p.external_id == "role_all_tickets" for p in permissions)
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
 
     async def test_internal_notes_are_not_indexed(self, zendesk_connector):
         """The record carries a requester grant, so an internal note here leaks
@@ -2106,6 +2312,27 @@ class TestStreamRecord:
 
         assert "Customer visible" in body
         assert "Refund risk, escalate" not in body
+
+    async def test_comment_without_public_flag_is_not_indexed(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.list_comments = AsyncMock(return_value=_make_response(data={
+            "comments": [
+                {"id": 1, "body": "No visibility flag"},
+                {"id": 2, "body": "Private note", "public": False},
+                {"id": 3, "body": "Public reply", "public": True},
+            ],
+        }))
+        record = MagicMock()
+        record.record_type = RecordType.TICKET
+        record.external_record_id = "23"
+        record.record_name = "Latency"
+        record.weburl = None
+
+        body = (await zendesk_connector._process_ticket_blockgroups_for_streaming(record)).decode()
+
+        assert "Public reply" in body
+        assert "No visibility flag" not in body
+        assert "Private note" not in body
 
     async def test_ticket_without_comments_gets_placeholder_block(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -2134,6 +2361,7 @@ class TestStreamRecord:
 
     async def test_tenant_download_goes_through_the_authenticated_client(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
+        _make_ticket_attachment_public(datasource)
         datasource.http = MagicMock()
         datasource.http.headers = {"Authorization": "Basic secret"}
         response = MagicMock()
@@ -2152,6 +2380,7 @@ class TestStreamRecord:
         """Regression: headers={} did not withhold the credential — HTTPClient merges
         its own — so the token reached the shared CDN."""
         datasource = _ready(zendesk_connector)
+        _make_ticket_attachment_public(datasource)
         datasource.http = MagicMock()
         datasource.http.headers = {"Authorization": "Basic secret"}
         datasource.http.execute = AsyncMock()
@@ -2179,6 +2408,7 @@ class TestStreamRecord:
 
     async def test_file_download_raises_on_error_status(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
+        _make_ticket_attachment_public(datasource)
         datasource.http = MagicMock()
         datasource.http.headers = {}
         response = MagicMock()
@@ -2224,7 +2454,7 @@ class TestAttachmentChildRecords:
     async def test_builds_child_record_and_publishes_file(
         self, zendesk_connector, mock_data_entities_processor
     ):
-        comment = {"id": 5, "attachments": [{
+        comment = {"id": 5, "public": True, "attachments": [{
             "id": 88, "file_name": "trace.LOG", "content_type": "text/plain",
             "size": 120, "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
@@ -2328,7 +2558,7 @@ class TestAttachmentChildRecords:
 
     @staticmethod
     def _comment():
-        return {"id": 5, "attachments": [{
+        return {"id": 5, "public": True, "attachments": [{
             "id": 88, "file_name": "a.txt",
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
@@ -2414,7 +2644,7 @@ class TestAttachmentChildRecords:
         zendesk_connector.indexing_filters = _disabled_filters(
             IndexingFilterKey.ATTACHMENTS
         )
-        comment = {"id": 5, "attachments": [{
+        comment = {"id": 5, "public": True, "attachments": [{
             "id": 88, "file_name": "a.txt",
             "content_url": "https://acme.zendesk.com/attachments/88",
         }]}
@@ -2709,7 +2939,7 @@ class TestArticleStreaming:
         datasource = _ready(zendesk_connector)
         self._no_attachments(datasource)
         datasource.show_article = AsyncMock(return_value=_make_response(data={
-            "article": {"title": "How to reset", "body": "<h1>Steps</h1><p>Click it</p>"},
+            "article": {"id": 55, "title": "How to reset", "body": "<h1>Steps</h1><p>Click it</p>"},
         }))
 
         body = (
@@ -2723,7 +2953,7 @@ class TestArticleStreaming:
         datasource = _ready(zendesk_connector)
         self._no_attachments(datasource)
         datasource.show_article = AsyncMock(
-            return_value=_make_response(data={"article": {"title": "T", "body": ""}})
+            return_value=_make_response(data={"article": {"id": 55, "title": "T", "body": ""}})
         )
 
         await zendesk_connector._process_article_blockgroups_for_streaming(self._record())
@@ -2859,7 +3089,7 @@ class TestArticleAttachments:
     async def test_attachments_reach_the_block_group(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
         datasource.show_article = AsyncMock(return_value=_make_response(data={
-            "article": {"title": "How to reset", "body": "<p>hi</p>"},
+            "article": {"id": 55, "title": "How to reset", "body": "<p>hi</p>"},
         }))
         self._attachments(datasource, [{
             "id": 77, "file_name": "spec.pdf", "inline": False,
@@ -2944,8 +3174,7 @@ class TestAttachmentsCreatedAtSyncTime:
                 "content_url": "https://acme.zendesk.com/attachments/88",
             }]}],
         }))
-        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        _stateful_sync_points(zendesk_connector)
 
         await zendesk_connector._sync_tickets()
 
@@ -2972,8 +3201,7 @@ class TestAttachmentsCreatedAtSyncTime:
                 "content_url": "https://acme.zendesk.com/attachments/88",
             }]}],
         }))
-        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        _stateful_sync_points(zendesk_connector)
 
         await zendesk_connector._sync_tickets()
 
@@ -3064,8 +3292,9 @@ class TestArticleSyncPoint:
 
     async def test_resumes_from_the_article_checkpoint(self, zendesk_connector):
         datasource = self._one_article(zendesk_connector)
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
-            return_value={"lastEndTime": 1700000000}
+        _stateful_sync_points(
+            zendesk_connector,
+            {ARTICLES_SYNC_POINT_KEY: {"lastEndTime": 1700000000}},
         )
 
         await zendesk_connector._sync_help_center_articles()
@@ -3074,11 +3303,15 @@ class TestArticleSyncPoint:
 
     async def test_articles_use_their_own_key_not_the_ticket_one(self, zendesk_connector):
         self._one_article(zendesk_connector, end_time=1700000500)
+        _stateful_sync_points(zendesk_connector)
 
         await zendesk_connector._sync_help_center_articles()
 
-        key, payload = (
-            zendesk_connector.records_sync_point.update_sync_point.await_args.args
+        key, payload = next(
+            call.args
+            for call in zendesk_connector.records_sync_point.update_sync_point.await_args_list
+            if call.args[0] == ARTICLES_SYNC_POINT_KEY
+            and call.args[1].get("lastEndTime") is not None
         )
         assert key == ARTICLES_SYNC_POINT_KEY
         assert payload["lastEndTime"] == 1700000500
@@ -3087,11 +3320,15 @@ class TestArticleSyncPoint:
         """Advancing past a failed window would skip those articles permanently, and a
         short list would read as deletions to the removal pass."""
         self._one_article(zendesk_connector, success=False)
+        _stateful_sync_points(zendesk_connector)
 
         count = await zendesk_connector._sync_help_center_articles()
 
         assert count == 0
-        zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
+        assert not any(
+            call.args[1].get("lastEndTime")
+            for call in zendesk_connector.records_sync_point.update_sync_point.await_args_list
+        )
 
     async def test_non_advancing_article_window_leaves_checkpoint_alone(self, zendesk_connector):
         datasource = self._one_article(zendesk_connector)
@@ -3100,11 +3337,15 @@ class TestArticleSyncPoint:
             "end_time": DEFAULT_INCREMENTAL_START_TIME,
             "end_of_stream": False,
         }))
+        _stateful_sync_points(zendesk_connector)
 
         count = await zendesk_connector._sync_help_center_articles()
 
         assert count == 0
-        zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
+        assert not any(
+            call.args[1].get("lastEndTime")
+            for call in zendesk_connector.records_sync_point.update_sync_point.await_args_list
+        )
 
     async def test_ticket_checkpoint_does_not_gate_article_reemission(
         self, zendesk_connector
@@ -3113,10 +3354,9 @@ class TestArticleSyncPoint:
         would re-emit every article on every run, forever."""
         _ready(zendesk_connector)
         TestRunSync._stub_stages(zendesk_connector, _app_user())
-        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
-            side_effect=lambda key: (
-                {} if key == SYNC_POINT_KEY else {"lastEndTime": 1700000000}
-            )
+        _stateful_sync_points(
+            zendesk_connector,
+            {ARTICLES_SYNC_POINT_KEY: {"lastEndTime": 1700000000}},
         )
 
         with patch(
@@ -3291,7 +3531,7 @@ class TestArticleComments:
     def _article(zendesk_connector, comments):
         datasource = _ready(zendesk_connector)
         datasource.show_article = AsyncMock(return_value=_make_response(data={
-            "article": {"title": "How to reset", "body": "<p>Turn it off</p>"},
+            "article": {"id": 55, "title": "How to reset", "body": "<p>Turn it off</p>"},
         }))
         datasource.list_article_comments = AsyncMock(
             return_value=_make_response(data={"comments": comments})
@@ -3542,18 +3782,22 @@ class TestOAuthTokenRotation:
         connector.data_source = MagicMock()
         return connector
 
-    async def test_rebuilds_client_when_stored_token_changed(self, zendesk_connector):
+    async def test_swaps_the_token_in_place_when_stored_token_changed(self, zendesk_connector):
         """Regression: the refresh service rotates the token in config every ~20 min but
-        cannot reach this object, so the cached client kept 401ing."""
+        cannot reach this object, so the cached client kept 401ing. Rebuilding the
+        client instead leaked its connection pool on every rotation."""
         self._oauth_ready(zendesk_connector, in_use="old-token")
         zendesk_connector.config_service.get_config = AsyncMock(
             return_value={"credentials": {"access_token": "new-token"}}
         )
         zendesk_connector.init = AsyncMock(return_value=True)
+        datasource = zendesk_connector.data_source
 
-        await zendesk_connector._get_fresh_datasource()
+        assert await zendesk_connector._get_fresh_datasource() is datasource
 
-        zendesk_connector.init.assert_awaited_once()
+        inner = zendesk_connector.external_client.get_client.return_value
+        inner.set_access_token.assert_called_once_with("new-token")
+        zendesk_connector.init.assert_not_awaited()
 
     async def test_does_not_rebuild_when_token_unchanged(self, zendesk_connector):
         self._oauth_ready(zendesk_connector, in_use="same-token")
@@ -3615,20 +3859,6 @@ class TestOAuthTokenRotation:
             await zendesk_connector._fetch_organizations()
 
         assert resolve.await_count == 2
-
-    async def test_failed_rebuild_raises_instead_of_serving_stale_token(
-        self, zendesk_connector
-    ):
-        """init() reports failure by returning False; serving the cached client then
-        401s on every call while the log blames the export."""
-        self._oauth_ready(zendesk_connector, in_use="old-token")
-        zendesk_connector.config_service.get_config = AsyncMock(
-            return_value={"credentials": {"access_token": "new-token"}}
-        )
-        zendesk_connector.init = AsyncMock(return_value=False)
-
-        with pytest.raises(RuntimeError, match="could not be rebuilt"):
-            await zendesk_connector._get_fresh_datasource()
 
 
 # ===========================================================================
@@ -3730,29 +3960,16 @@ class TestFreshDatasource:
         assert await zendesk_connector._get_fresh_datasource() is datasource
         zendesk_connector.init.assert_not_awaited()
 
-    async def test_rotated_token_rebuilds_the_client(self, zendesk_connector, mock_config_service):
-        _ready(zendesk_connector)
+    async def test_rotated_token_keeps_the_same_client(self, zendesk_connector, mock_config_service):
+        datasource = _ready(zendesk_connector)
         mock_config_service.get_config.return_value = {"credentials": {"access_token": "new"}}
-        rebuilt = MagicMock()
+        zendesk_connector.init = AsyncMock()
 
-        async def _init():
-            zendesk_connector.data_source = rebuilt
-            return True
-
-        zendesk_connector.init = AsyncMock(side_effect=_init)
-
-        assert await zendesk_connector._get_fresh_datasource() is rebuilt
-        zendesk_connector.init.assert_awaited_once()
-
-    async def test_failed_rebuild_raises_instead_of_serving_stale_token(
-        self, zendesk_connector, mock_config_service
-    ):
-        _ready(zendesk_connector)
-        mock_config_service.get_config.return_value = {"credentials": {"access_token": "new"}}
-        zendesk_connector.init = AsyncMock(return_value=False)
-
-        with pytest.raises(RuntimeError, match="could not be rebuilt"):
-            await zendesk_connector._get_fresh_datasource()
+        assert await zendesk_connector._get_fresh_datasource() is datasource
+        zendesk_connector.external_client.get_client.return_value.set_access_token.assert_called_once_with(
+            "new"
+        )
+        zendesk_connector.init.assert_not_awaited()
 
     async def test_unreadable_config_keeps_the_client(self, zendesk_connector, mock_config_service):
         datasource = _ready(zendesk_connector)
@@ -3778,8 +3995,7 @@ class TestEndUsersComeFromTheTicketPages:
         datasource.incremental_tickets = AsyncMock(return_value=_make_response(data={
             "tickets": tickets, "users": list(users), "end_of_stream": True,
         }))
-        connector.records_sync_point.update_sync_point = AsyncMock()
-        connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        _stateful_sync_points(connector)
         return datasource
 
     @staticmethod
@@ -3792,12 +4008,16 @@ class TestEndUsersComeFromTheTicketPages:
     async def test_requester_grant_comes_from_the_sideload(
         self, zendesk_connector, mock_data_entities_processor
     ):
-        self._page(
+        datasource = self._page(
             zendesk_connector,
             [self._ticket()],
             users=[{"id": 900, "email": "end@customer.com", "name": "End",
                     "role": "end-user"}],
         )
+        # The requester is granted only once the ticket has a public comment.
+        datasource.list_comments = AsyncMock(return_value=_make_response(data={
+            "comments": [{"id": 1, "public": True, "body": "hi"}],
+        }))
 
         await zendesk_connector._sync_tickets()
 
@@ -3932,3 +4152,264 @@ class TestEndUsersComeFromTheTicketPages:
     def test_unknown_user_is_an_empty_record(self, zendesk_connector):
         assert zendesk_connector._user_data(None) == {}
         assert zendesk_connector._user_data(404) == {}
+
+
+# ===========================================================================
+# Live-audit regressions
+# ===========================================================================
+
+
+class TestAgentTicketRestriction:
+    """Zendesk reports an agent's own limit as ticket_restriction, not ticket_access."""
+
+    def test_assigned_only_agent_without_custom_role_is_not_all_access(
+        self, zendesk_connector
+    ):
+        agent = {"id": 1, "role": "agent", "custom_role_id": None,
+                 "ticket_restriction": "assigned", "restricted_agent": True}
+
+        assert zendesk_connector._effective_ticket_access(agent, {}) == "assigned"
+        assert zendesk_connector._has_all_tickets_access(agent, {}) is False
+        assert zendesk_connector._has_group_ticket_access(agent, {}) is False
+
+    def test_assigned_only_agent_gets_a_staff_group(self, zendesk_connector):
+        zendesk_connector._user_id_to_data = {"1": {
+            "id": 1, "role": "agent", "name": "Ann", "ticket_restriction": "assigned",
+        }}
+        zendesk_connector._user_id_to_app_user = {"1": _app_user()}
+
+        groups = zendesk_connector._build_staff_access_groups()
+
+        assert [group.source_user_group_id for group, _ in groups] == ["staff_1"]
+
+    def test_unrestricted_agent_keeps_all_access(self, zendesk_connector):
+        agent = {"id": 1, "role": "agent", "custom_role_id": None, "ticket_restriction": None}
+
+        assert zendesk_connector._has_all_tickets_access(agent, {}) is True
+
+
+class TestSetAsideTickets:
+    @staticmethod
+    def _page(connector, ticket_ids):
+        datasource = _ready(connector)
+        datasource.incremental_tickets = AsyncMock(return_value=_make_response(data={
+            "tickets": [
+                {"id": tid, "subject": "s", "group_id": 7, "status": "open",
+                 "updated_at": "2026-01-01T00:00:00Z"}
+                for tid in ticket_ids
+            ],
+            "end_of_stream": True,
+        }))
+        return datasource
+
+    async def test_failed_comments_set_one_ticket_aside_and_the_sync_continues(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        datasource = self._page(zendesk_connector, [1, 2])
+
+        async def _comments(ticket_id, **_):
+            if ticket_id == 1:
+                return _make_response(success=False, error="500")
+            return _make_response(data={"comments": []})
+
+        datasource.list_comments = AsyncMock(side_effect=_comments)
+        states = _stateful_sync_points(zendesk_connector)
+
+        await zendesk_connector._sync_tickets()
+
+        published = [
+            record.external_record_id
+            for call in mock_data_entities_processor.on_new_records.await_args_list
+            for record, _ in call.args[0]
+        ]
+        assert published == ["2"]
+        assert states[SYNC_POINT_KEY]["pendingTicketIds"] == ["1"]
+        assert zendesk_connector._ticket_sync_complete is True
+
+    async def test_set_aside_ticket_is_retried_next_sync(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        datasource = self._page(zendesk_connector, [])
+        datasource.show_ticket = AsyncMock(return_value=_make_response(data={
+            "ticket": {"id": 1, "subject": "s", "group_id": 7, "status": "open"},
+        }))
+        states = _stateful_sync_points(
+            zendesk_connector, {SYNC_POINT_KEY: {"pendingTicketIds": ["1"]}}
+        )
+
+        await zendesk_connector._sync_tickets()
+
+        published = [
+            record.external_record_id
+            for call in mock_data_entities_processor.on_new_records.await_args_list
+            for record, _ in call.args[0]
+        ]
+        assert published == ["1"]
+        assert states[SYNC_POINT_KEY]["pendingTicketIds"] == []
+
+    async def test_set_aside_ticket_deleted_at_source_is_removed(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        datasource = self._page(zendesk_connector, [])
+        datasource.show_ticket = AsyncMock(
+            return_value=_make_response(success=False, status_code=404, error="Not Found")
+        )
+        existing = MagicMock()
+        existing.id = "rec-1"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        states = _stateful_sync_points(
+            zendesk_connector, {SYNC_POINT_KEY: {"pendingTicketIds": ["1"]}}
+        )
+
+        await zendesk_connector._sync_tickets()
+
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-1"], "zd-conn-1"
+        )
+        assert states[SYNC_POINT_KEY]["pendingTicketIds"] == []
+
+
+class TestRedactedAttachment:
+    async def test_redaction_placeholder_is_not_stored(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        comment = {"id": 5, "public": True, "attachments": [{
+            "id": 88, "file_name": "redacted.txt",
+            "content_url": "https://acme.zendesk.com/attachments/88",
+        }]}
+
+        children = await zendesk_connector._build_attachment_child_records(
+            comment, TestAttachmentChildRecords._parent(), []
+        )
+
+        assert children == []
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+
+class TestDeletedTicketGroupFolder:
+    async def test_empty_folder_of_a_deleted_group_is_removed(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        states = _stateful_sync_points(zendesk_connector, {
+            "zendesk_ticket_groups": {"groupIds": ["group_7", "group_8"]},
+        })
+        zendesk_connector._current_ticket_group_ids = ["group_7"]
+        group = MagicMock()
+        group.id = "rg-8"
+
+        async def lookup(connector_id, external_id):
+            return group
+
+        mock_tx_store.get_record_group_by_external_id = AsyncMock(side_effect=lookup)
+
+        await zendesk_connector._delete_removed_ticket_group_folders()
+
+        mock_data_entities_processor.on_record_group_deleted.assert_awaited_once_with(
+            "group_8", "zd-conn-1"
+        )
+        assert states["zendesk_ticket_groups"]["groupIds"] == ["group_7"]
+
+    async def test_folder_still_holding_tickets_is_kept_for_next_sync(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        states = _stateful_sync_points(zendesk_connector, {
+            "zendesk_ticket_groups": {"groupIds": ["group_8"]},
+        })
+        zendesk_connector._current_ticket_group_ids = []
+        group = MagicMock()
+        group.id = "rg-8"
+        mock_tx_store.get_record_group_by_external_id = AsyncMock(return_value=group)
+        mock_tx_store.get_records_by_status = AsyncMock(return_value=[MagicMock()])
+
+        await zendesk_connector._delete_removed_ticket_group_folders()
+
+        mock_data_entities_processor.on_record_group_deleted.assert_not_awaited()
+        assert states["zendesk_ticket_groups"]["groupIds"] == ["group_8"]
+
+
+class TestVanishedArticles:
+    async def test_article_zendesk_confirms_deleted_is_removed(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        datasource = _ready(zendesk_connector)
+        datasource.show_article = AsyncMock(
+            return_value=_make_response(success=False, status_code=404, error="Not Found")
+        )
+        existing = MagicMock()
+        existing.id = "rec-55"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        states = _stateful_sync_points(zendesk_connector, {
+            "zendesk_article_ids": {"articleIds": ["55"]},
+        })
+
+        await zendesk_connector._remove_vanished_articles()
+
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-55"], "zd-conn-1"
+        )
+        assert states["zendesk_article_ids"]["articleIds"] == []
+
+    async def test_unconfirmed_article_is_kept(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        datasource = _ready(zendesk_connector)
+        datasource.show_article = AsyncMock(
+            return_value=_make_response(success=False, status_code=500, error="boom")
+        )
+        states = _stateful_sync_points(zendesk_connector, {
+            "zendesk_article_ids": {"articleIds": ["55"]},
+        })
+
+        await zendesk_connector._remove_vanished_articles()
+
+        mock_data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+        assert states["zendesk_article_ids"]["articleIds"] == ["55"]
+
+    async def test_truncated_list_changes_nothing(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        datasource = _ready(zendesk_connector)
+        datasource.list_articles = AsyncMock(
+            return_value=_make_response(success=False, error="500")
+        )
+        datasource.show_article = AsyncMock()
+        states = _stateful_sync_points(zendesk_connector, {
+            "zendesk_article_ids": {"articleIds": ["55"]},
+        })
+
+        await zendesk_connector._remove_vanished_articles()
+
+        datasource.show_article.assert_not_awaited()
+        assert states["zendesk_article_ids"]["articleIds"] == ["55"]
+
+
+class TestGroupPickerFailure:
+    async def test_failed_group_list_is_reported_not_shown_as_empty(self, zendesk_connector):
+        datasource = _ready(zendesk_connector)
+        datasource.list_groups = AsyncMock(return_value=_make_response(success=False, error="500"))
+
+        response = await zendesk_connector.get_filter_options(SyncFilterKey.GROUP_IDS.value)
+
+        assert response.success is False
+        assert response.message
+
+
+class TestStreamingFilters:
+    async def test_first_download_after_restart_loads_the_filters(self, zendesk_connector):
+        zendesk_connector.indexing_filters = None
+        zendesk_connector._process_file_for_streaming = AsyncMock(return_value=b"x")
+        record = MagicMock()
+        record.record_type = RecordType.FILE
+        record.record_name = "a.txt"
+        record.mime_type = "text/plain"
+        record.external_record_id = "ticket_1_comment_2_attachment_3"
+        loaded = _disabled_filters(IndexingFilterKey.ATTACHMENTS)
+
+        with patch(
+            "app.connectors.sources.zendesk.connector.load_connector_filters",
+            new_callable=AsyncMock, return_value=({}, loaded),
+        ) as load:
+            await zendesk_connector.stream_record(record)
+
+        load.assert_awaited_once()
+        assert zendesk_connector.indexing_filters is loaded

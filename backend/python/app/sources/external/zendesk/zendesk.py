@@ -3477,6 +3477,62 @@ class ZendeskDataSource:
                 error=str(e)
             )
 
+    async def list_organization_users(
+        self,
+        organization_id: int,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
+        page_size: Optional[int] = None,
+        page_after: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> ZendeskResponse:
+        """List the users of one organization
+
+        Args:
+            organization_id (int): Organization ID
+            page (Optional[int], optional): Page number for offset pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
+            page_size (Optional[int], optional): Page size for cursor pagination
+            page_after (Optional[str], optional): Cursor to resume cursor pagination from
+
+        Returns:
+            ZendeskResponse: Standardized response object
+        """
+        try:
+            _params = {}
+            url = f"{self.base_url}/organizations/{organization_id}/users.json"
+
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
+            if page_size is not None:
+                _params["page[size]"] = page_size
+            if page_after is not None:
+                _params["page[after]"] = page_after
+
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers=dict(headers or {}),
+                query=_to_query(_params)
+            )
+            response = await self.http.execute(request=request)
+
+            return ZendeskResponse(
+                success=response.status < SUCCESS_CODE_IS_LESS_THAN,
+                data=response.json() if response.is_json else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                status_code=response.status,
+                headers=response.headers
+            )
+
+        except Exception as e:
+            return ZendeskResponse(
+                success=False,
+                error=str(e)
+            )
+
 
     async def list_group_memberships_by_group(
         self,
