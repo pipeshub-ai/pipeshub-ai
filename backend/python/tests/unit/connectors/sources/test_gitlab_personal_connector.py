@@ -371,6 +371,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         args, _ = connector.data_entities_processor.on_new_record_groups.call_args
         rg, perms = args[0][0]
         assert rg.external_group_id == "org/eng"
+        assert rg.parent_external_group_id == "org"
         assert rg.inherit_permissions is True
         assert perms == []
 
@@ -397,6 +398,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         rg, perms = args[0][0]
         assert rg.name == "Engineering"
         assert rg.external_group_id == "org/eng"
+        assert rg.parent_external_group_id == "org"
         assert rg.group_type == RecordGroupType.PROJECT.value
         assert rg.web_url == "https://gitlab.example.com/org/eng"
         assert rg.inherit_permissions is True
@@ -423,6 +425,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         # downstream syncs (issues/MRs/code) have a parent RG to attach to.
         assert rg.name == "missing/grp"
         assert rg.external_group_id == "missing/grp"
+        assert rg.parent_external_group_id == "missing"
         assert rg.web_url is None
         assert rg.inherit_permissions is True
         assert perms == []
@@ -569,7 +572,7 @@ class TestPersonalRunSync:
             connector.creator_email = "creator@example.com"
 
         connector._resolve_creator_identity = AsyncMock(side_effect=fake_resolve)
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -581,7 +584,7 @@ class TestPersonalRunSync:
         # email does not get masked by the previous run's stale GROUP perm.
         # The freshly resolved email then drives a new ensure_* call.
         connector._resolve_creator_identity.assert_awaited_once()
-        connector.ensure_connector_group_permission.assert_awaited_once()
+        connector.ensure_creator_user_app_relation.assert_awaited_once()
         connector.projects.sync_all_projects.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -591,7 +594,7 @@ class TestPersonalRunSync:
         connector.runtime.refresh_token_if_needed = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock()
         connector._resolve_creator_identity = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -602,7 +605,7 @@ class TestPersonalRunSync:
         # No creator → no useful group member → skip the upsert entirely.
         # The sync still proceeds so callers see records (without ACLs)
         # and can decide what to do at the indexing layer.
-        connector.ensure_connector_group_permission.assert_not_called()
+        connector.ensure_creator_user_app_relation.assert_not_called()
         connector.projects.sync_all_projects.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -612,7 +615,7 @@ class TestPersonalRunSync:
         connector.runtime.refresh_token_if_needed = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock()
         connector._resolve_creator_identity = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -621,7 +624,7 @@ class TestPersonalRunSync:
             await connector.run_sync()
 
         connector._resolve_creator_identity.assert_not_called()
-        connector.ensure_connector_group_permission.assert_awaited_once()
+        connector.ensure_creator_user_app_relation.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_loads_filters_with_gitlabpersonal_key(self) -> None:
@@ -629,7 +632,7 @@ class TestPersonalRunSync:
         connector.runtime = MagicMock()
         connector.runtime.refresh_token_if_needed = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -649,7 +652,7 @@ class TestPersonalRunSync:
         connector = _make_connector()
         connector.runtime = MagicMock()
         connector.runtime.refresh_token_if_needed = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock(
             side_effect=RuntimeError("api down")
         )

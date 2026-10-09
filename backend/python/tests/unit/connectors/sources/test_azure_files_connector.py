@@ -21,18 +21,12 @@ from urllib.parse import urlparse
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
-    MultiselectOperator,
     SyncFilterKey,
 )
 from app.models.entities import User
-from app.models.permission import EntityType, Permission, PermissionType
 import base64
-from datetime import timedelta
 from unittest.mock import PropertyMock
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
-from app.connectors.core.registry.filters import (
-    IndexingFilterKey,
-)
 from app.models.entities import RecordGroupType
 
 
@@ -714,7 +708,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
@@ -725,7 +719,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.entity_type == EntityType.ORG for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_empty(self, connector):
@@ -1519,13 +1513,13 @@ class TestProcessAzureFilesItem:
         assert record.is_internal is True
 
     @pytest.mark.asyncio
-    async def test_a_directory_is_text_directory_whatever_its_content_type(self, conn):
+    async def test_a_directory_is_text_directory_whatever_its_content_type(self, conn) -> None:
         item = _file_item("subdir", "docs/subdir", is_directory=True, content_type="application/octet-stream")
         record, _ = await conn._process_azure_files_item(item, "myshare")
         assert record.mime_type == MimeTypes.FOLDER.value
 
     @pytest.mark.asyncio
-    async def test_a_file_keeps_its_content_type(self, conn):
+    async def test_a_file_keeps_its_content_type(self, conn) -> None:
         item = _file_item("a.bin", "docs/a.bin", content_type="application/octet-stream")
         record, _ = await conn._process_azure_files_item(item, "myshare")
         assert record.mime_type == "application/octet-stream"
@@ -1768,8 +1762,7 @@ class TestCreatePermissions:
     async def test_team_scope(self, conn):
         conn.scope = ConnectorScope.TEAM.value
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, conn):
@@ -1777,8 +1770,7 @@ class TestCreatePermissions:
         conn.creator_email = "creator@test.com"
         conn.created_by = "u-1"
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_falls_back_to_org(self, conn):
@@ -1786,8 +1778,7 @@ class TestCreatePermissions:
         conn.creator_email = None
         conn.created_by = None
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_org_permission(self, conn):
