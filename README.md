@@ -172,6 +172,10 @@ the one-command installer above always uses prebuilt images.
 
 > **Advanced options:** CI environment variables, slim vs. full deployment types, manual Compose profile usage, and local source builds are covered in [Advanced Deployment Options](deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
+## ☁️ One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/PipesHub/)
+
 ## Build with PipesHub
 
 The built-in search experience is one way to use PipesHub. The same connected,
