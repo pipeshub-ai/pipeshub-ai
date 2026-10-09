@@ -115,8 +115,10 @@ __all__ = [
     "TaxonomyLink",
     "alias_pairs",
     "is_taxonomy_collection",
+    "edge_spellings",
     "own_record_labels",
     "record_spelling",
+    "record_spellings",
     "subcategory_level",
     "taxonomy_links",
 ]
@@ -152,25 +154,57 @@ def check_edge_move_target(
     raise ValueError(f"{collection}/{to_key} is not a node of org {org_id}")
 
 
+def edge_spellings(extracted_name: object, extracted_names: object) -> list[str]:
+    """The raw spellings an edge records for its record, first one first:
+    ``extractedNames`` when present, else ``extractedName``."""
+    raw = extracted_names if isinstance(extracted_names, list) else [extracted_name]
+    spellings: list[str] = []
+    for value in raw:
+        if isinstance(value, str) and value.strip() and value not in spellings:
+            spellings.append(value)
+    if not spellings and isinstance(extracted_name, str) and extracted_name.strip():
+        spellings.append(extracted_name)
+    return spellings
+
+
+def record_spellings(
+    name: str | None,
+    extracted_name: object,
+    extracted_names: object = None,
+    *,
+    canonical: bool,
+    migrated: bool,
+) -> list[str]:
+    """How a record's own content spells the node one of its edges reaches,
+    every spelling it used, or ``[]`` when the edge does not say.
+
+    The edge's ``extractedNames`` (or ``extractedName``) are those spellings.
+    Without them, a legacy node's name is one, since a legacy node was created
+    from the exact name each of its records extracted, and so is a canonical
+    node's on an edge migrated off a legacy node of the same name. Any other
+    canonical node is named by whichever record created it.
+    """
+    from app.modules.entity_resolution.normalizer import display_form, normalize_name
+
+    raw = edge_spellings(extracted_name, extracted_names)
+    if not raw and name and (not canonical or migrated):
+        raw = [name]
+    shown: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        cleaned = display_form(value)
+        if cleaned and normalize_name(cleaned) not in seen:
+            seen.add(normalize_name(cleaned))
+            shown.append(cleaned)
+    return shown
+
+
 def record_spelling(
     name: str | None, extracted_name: object, *, canonical: bool, migrated: bool,
 ) -> str | None:
-    """How a record's own content spells the node one of its edges reaches,
-    or ``None`` when the edge does not say.
-
-    The edge's ``extractedName`` is that spelling. Without it, a legacy node's
-    name is, since a legacy node was created from the exact name each of its
-    records extracted, and so is a canonical node's on an edge migrated off a
-    legacy node of the same name. Any other canonical node is named by
-    whichever record created it.
-    """
-    from app.modules.entity_resolution.normalizer import display_form
-
-    if isinstance(extracted_name, str) and extracted_name.strip():
-        return display_form(extracted_name) or None
-    if name and (not canonical or migrated):
-        return display_form(name) or None
-    return None
+    """The first of :func:`record_spellings`, or ``None``."""
+    spellings = record_spellings(name, extracted_name, canonical=canonical, migrated=migrated)
+    return spellings[0] if spellings else None
 
 
 @dataclass(frozen=True)
@@ -182,7 +216,8 @@ class TaxonomyLink:
     collection: str
     entity_id: str
     name: str
-    extracted_name: str | None
+    # Every raw spelling the edge records for its record, first one first.
+    extracted_names: tuple[str, ...]
     # The node is a per-org canonical node (it has a normalizedName).
     canonical: bool
     # The edge was moved off a legacy node of the same name.
@@ -194,22 +229,30 @@ class TaxonomyLink:
         collection = row.get("collection")
         if not record_id or not entity_id or not is_taxonomy_collection(collection or ""):
             return None
-        extracted = row.get("extractedName")
         return cls(
             record_id=str(record_id),
             collection=str(collection),
             entity_id=str(entity_id),
             name=str(row.get("name") or ""),
-            extracted_name=extracted if isinstance(extracted, str) and extracted.strip() else None,
+            extracted_names=tuple(edge_spellings(row.get("extractedName"), row.get("extractedNames"))),
             canonical=bool(row.get("canonical")),
             migrated=bool(row.get("migrated")),
         )
 
     @property
+    def extracted_name(self) -> str | None:
+        return self.extracted_names[0] if self.extracted_names else None
+
+    @property
+    def spellings(self) -> tuple[str, ...]:
+        return tuple(record_spellings(
+            self.name, self.extracted_name, list(self.extracted_names),
+            canonical=self.canonical, migrated=self.migrated,
+        ))
+
+    @property
     def spelling(self) -> str | None:
-        return record_spelling(
-            self.name, self.extracted_name, canonical=self.canonical, migrated=self.migrated,
-        )
+        return self.spellings[0] if self.spellings else None
 
 
 def taxonomy_links(rows: list[dict[str, Any]] | None) -> list[TaxonomyLink]:
@@ -225,8 +268,9 @@ def own_record_labels(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
     """A record's ``{departments, categories, ..., languages}`` read with each
     taxonomy item named as the record's own extraction spells it.
 
-    Items arrive as ``{id, name, extractedName, canonical, migrated}``; an
-    item whose edge does not record the spelling is left out.
+    Items arrive as ``{id, name, extractedName, extractedNames, canonical,
+    migrated}``. A node the record spells two ways is listed under each
+    spelling; an item whose edge does not record the spelling is left out.
     """
     if not isinstance(metadata, dict):
         return metadata
@@ -236,11 +280,12 @@ def own_record_labels(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
         for item in metadata.get(key) or []:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
-            spelling = record_spelling(
-                item.get("name"), item.get("extractedName"),
-                canonical=bool(item.get("canonical")), migrated=bool(item.get("migrated")),
+            items.extend(
+                {"id": item["id"], "name": spelling}
+                for spelling in record_spellings(
+                    item.get("name"), item.get("extractedName"), item.get("extractedNames"),
+                    canonical=bool(item.get("canonical")), migrated=bool(item.get("migrated")),
+                )
             )
-            if spelling:
-                items.append({"id": item["id"], "name": spelling})
         shown[key] = items
     return shown

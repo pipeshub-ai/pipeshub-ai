@@ -41,6 +41,7 @@ from app.agents.actions.knowledge_graph.ops.entity_discovery import (
 from app.agents.actions.knowledge_graph.ops.search import resolve_entity_filter_groups
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.models.blocks import SemanticMetadata
+from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import ResolutionMode
 from app.modules.entity_resolution.resolver import EntityResolver
 from app.modules.indexing.record_label_repair import (
@@ -297,6 +298,79 @@ class TestTheNewReads:
         assert copied[legacy] is None
 
 
+class TestEdgeSpellings:
+    async def test_every_spelling_on_an_edge_is_read(self, env: _Env) -> None:
+        topic = f"t-nda-{env.suffix}"
+        await _node(env, TOPICS, topic, "Mutual NDA")
+        record = await _add_record(env, "two", shared=True)
+        await _link(env, record, BELONGS_TO_TOPIC, TOPICS, topic,
+                    extractedName="NDA", extractedNames=["NDA", "Non-disclosure agreement"])
+
+        (row,) = await env.graph.get_record_taxonomy_links([record])
+        assert row["extractedNames"] == ["NDA", "Non-disclosure agreement"]
+        details = await env.graph.check_record_access_with_details(env.user_id, env.org_id, record)
+        assert details is not None
+        assert [t["name"] for t in details["metadata"]["topics"]] == ["NDA", "Non-disclosure agreement"]
+
+    async def test_a_copy_keeps_the_targets_own_spelling(self, env: _Env) -> None:
+        topic = f"t-copy-{env.suffix}"
+        await _node(env, TOPICS, topic, "Launch plan")
+        source = await _add_record(env, "source", shared=True)
+        target = await _add_record(env, "target", shared=True)
+        await _link(env, source, BELONGS_TO_TOPIC, TOPICS, topic, extractedName="Source spelling",
+                    extractedNames=["Source spelling"])
+        await _link(env, target, BELONGS_TO_TOPIC, TOPICS, topic, extractedName="Target spelling",
+                    extractedNames=["Target spelling"])
+
+        assert await env.graph.copy_document_relationships(source, target)
+
+        (row,) = await env.graph.get_record_taxonomy_links([target])
+        assert row["extractedName"] == "Target spelling"
+        assert row["extractedNames"] == ["Target spelling"]
+
+    async def test_a_copy_carries_every_spelling_onto_a_new_edge(self, env: _Env) -> None:
+        topic = f"t-copy2-{env.suffix}"
+        await _node(env, TOPICS, topic, "Launch plan")
+        source = await _add_record(env, "source2", shared=True)
+        target = await _add_record(env, "target2", shared=True)
+        await _link(env, source, BELONGS_TO_TOPIC, TOPICS, topic, extractedName="Plan",
+                    extractedNames=["Plan", "Launch planning"])
+
+        assert await env.graph.copy_document_relationships(source, target)
+
+        (row,) = await env.graph.get_record_taxonomy_links([target])
+        assert (row["extractedName"], row["extractedNames"]) == ("Plan", ["Plan", "Launch planning"])
+
+
+class TestAReindexRespellsAnExistingEdge:
+    async def test_an_edge_without_a_spelling_gets_it_and_keeps_its_other_fields(self, env: _Env) -> None:
+        key = taxonomy_node_key(env.org_id, TOPICS, "release checklist")
+        await _node(env, TOPICS, key, "Release checklist")
+        record = await _add_record(env, "reindexed", shared=True)
+        await _link(env, record, BELONGS_TO_TOPIC, TOPICS, key, mergedFrom=f"{TOPICS}/older-{env.suffix}")
+        meta = SemanticMetadata(categories=[], topics=["release checklist"], languages=[], departments=[])
+        ctx = MagicMock(
+            record=MagicMock(id=record, org_id=env.org_id, virtual_record_id=f"vr-{record}",
+                             semantic_metadata=meta, is_vlm_ocr_processed=False),
+            entity_resolution=None, settings={},
+        )
+        resolver = EntityResolver(
+            logger=logger, config_service=MagicMock(), graph_provider=env.graph,
+            entity_vector_store=FakeEntityVectorStore(), mode=ResolutionMode.APPLY,
+        )
+
+        await resolver.resolve(ctx)
+        await GraphDBTransformer(graph_provider=env.graph, logger=logger).apply(ctx)
+
+        (row,) = await env.graph.get_record_taxonomy_links([record])
+        assert (row["entityId"], row["extractedName"], row["extractedNames"]) == (
+            key, "release checklist", ["release checklist"],
+        )
+        (edge,) = await env.graph.get_edges_from_node_with_target_name(f"{RECORDS}/{record}", BELONGS_TO_TOPIC)
+        assert edge["mergedFrom"] == f"{TOPICS}/older-{env.suffix}"
+        assert edge["createdAtTimestamp"]
+
+
 class _SearchableStore(FakeEntityVectorStore):
     async def search_entities_passes(
         self, query, org_id, passes, *, entity_types=None, top_k=10, **_kw,
@@ -324,7 +398,12 @@ SCRIPTS = {
 
 @pytest.mark.parametrize("order", ["unread_first", "open_first"])
 class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
-    async def test_details_and_search_entities(self, env: _Env, order: str) -> None:
+    async def test_details_and_search_entities(
+        self, env: _Env, order: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A freshly started server plans its first queries slowly; this test
+        # is about names, not the search deadline.
+        monkeypatch.setattr("app.modules.retrieval.entity_permissions.SEARCH_DEADLINE_SECONDS", 60.0)
         store = _SearchableStore()
         model = ScriptedModel(SCRIPTS[order])
 

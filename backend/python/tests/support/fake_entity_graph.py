@@ -172,6 +172,7 @@ class FakeGraph:
                 "name": node.get("name"),
                 "canonical": node.get("normalizedName") is not None,
                 "extractedName": edge.get("extractedName"),
+                "extractedNames": edge.get("extractedNames"),
                 "migrated": edge.get("migratedFrom") is not None,
             })
         return rows

@@ -5395,13 +5395,15 @@ class Neo4jProvider(IGraphDBProvider):
                 # Find all relationships from source document
                 query = f"""
                 MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
+                // An edge the target already has keeps its own spelling.
+                WHERE NOT EXISTS {{ MATCH (:Record {{id: $target_key}})-[:{rel_type}]->(target) }}
                 RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
-                       r.extractedName as extracted_name
+                       r.extractedName as extracted_name, r.extractedNames as extracted_names
                 """
 
                 results = await self.client.execute_query(
                     query,
-                    parameters={"source_key": source_key},
+                    parameters={"source_key": source_key, "target_key": target_key},
                     txn_id=transaction
                 )
 
@@ -5438,9 +5440,11 @@ class Neo4jProvider(IGraphDBProvider):
                                 "to_collection": target_collection,
                                 "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
                             }
-                            # A copy has the same content, so it carries the same spelling.
+                            # A copy has the same content, so it carries the same spellings.
                             if rel.get("extracted_name"):
                                 new_edge["extractedName"] = rel["extracted_name"]
+                            if rel.get("extracted_names"):
+                                new_edge["extractedNames"] = list(rel["extracted_names"])
                             new_edges.append(new_edge)
 
                     # Batch create the new edges
@@ -10201,22 +10205,22 @@ class Neo4jProvider(IGraphDBProvider):
             WITH rec, COLLECT(DISTINCT {id: dept.id, name: dept.departmentName}) AS departments
 
             OPTIONAL MATCH (rec)-[catLink:BELONGS_TO_CATEGORY]->(cat:Categories)
-            WITH rec, departments, COLLECT(DISTINCT {id: cat.id, name: cat.name, extractedName: catLink.extractedName, canonical: cat.normalizedName IS NOT NULL, migrated: catLink.migratedFrom IS NOT NULL}) AS categories
+            WITH rec, departments, COLLECT(DISTINCT {id: cat.id, name: cat.name, extractedName: catLink.extractedName, extractedNames: catLink.extractedNames, canonical: cat.normalizedName IS NOT NULL, migrated: catLink.migratedFrom IS NOT NULL}) AS categories
 
             OPTIONAL MATCH (rec)-[sub1Link:BELONGS_TO_CATEGORY]->(subcat1:Subcategories1)
-            WITH rec, departments, categories, COLLECT(DISTINCT {id: subcat1.id, name: subcat1.name, extractedName: sub1Link.extractedName, canonical: subcat1.normalizedName IS NOT NULL, migrated: sub1Link.migratedFrom IS NOT NULL}) AS subcategories1
+            WITH rec, departments, categories, COLLECT(DISTINCT {id: subcat1.id, name: subcat1.name, extractedName: sub1Link.extractedName, extractedNames: sub1Link.extractedNames, canonical: subcat1.normalizedName IS NOT NULL, migrated: sub1Link.migratedFrom IS NOT NULL}) AS subcategories1
 
             OPTIONAL MATCH (rec)-[sub2Link:BELONGS_TO_CATEGORY]->(subcat2:Subcategories2)
-            WITH rec, departments, categories, subcategories1, COLLECT(DISTINCT {id: subcat2.id, name: subcat2.name, extractedName: sub2Link.extractedName, canonical: subcat2.normalizedName IS NOT NULL, migrated: sub2Link.migratedFrom IS NOT NULL}) AS subcategories2
+            WITH rec, departments, categories, subcategories1, COLLECT(DISTINCT {id: subcat2.id, name: subcat2.name, extractedName: sub2Link.extractedName, extractedNames: sub2Link.extractedNames, canonical: subcat2.normalizedName IS NOT NULL, migrated: sub2Link.migratedFrom IS NOT NULL}) AS subcategories2
 
             OPTIONAL MATCH (rec)-[sub3Link:BELONGS_TO_CATEGORY]->(subcat3:Subcategories3)
-            WITH rec, departments, categories, subcategories1, subcategories2, COLLECT(DISTINCT {id: subcat3.id, name: subcat3.name, extractedName: sub3Link.extractedName, canonical: subcat3.normalizedName IS NOT NULL, migrated: sub3Link.migratedFrom IS NOT NULL}) AS subcategories3
+            WITH rec, departments, categories, subcategories1, subcategories2, COLLECT(DISTINCT {id: subcat3.id, name: subcat3.name, extractedName: sub3Link.extractedName, extractedNames: sub3Link.extractedNames, canonical: subcat3.normalizedName IS NOT NULL, migrated: sub3Link.migratedFrom IS NOT NULL}) AS subcategories3
 
             OPTIONAL MATCH (rec)-[topicLink:BELONGS_TO_TOPIC]->(topic:Topics)
-            WITH rec, departments, categories, subcategories1, subcategories2, subcategories3, COLLECT(DISTINCT {id: topic.id, name: topic.name, extractedName: topicLink.extractedName, canonical: topic.normalizedName IS NOT NULL, migrated: topicLink.migratedFrom IS NOT NULL}) AS topics
+            WITH rec, departments, categories, subcategories1, subcategories2, subcategories3, COLLECT(DISTINCT {id: topic.id, name: topic.name, extractedName: topicLink.extractedName, extractedNames: topicLink.extractedNames, canonical: topic.normalizedName IS NOT NULL, migrated: topicLink.migratedFrom IS NOT NULL}) AS topics
 
             OPTIONAL MATCH (rec)-[langLink:BELONGS_TO_LANGUAGE]->(lang:Languages)
-            WITH departments, categories, subcategories1, subcategories2, subcategories3, topics, COLLECT(DISTINCT {id: lang.id, name: lang.name, extractedName: langLink.extractedName, canonical: lang.normalizedName IS NOT NULL, migrated: langLink.migratedFrom IS NOT NULL}) AS languages
+            WITH departments, categories, subcategories1, subcategories2, subcategories3, topics, COLLECT(DISTINCT {id: lang.id, name: lang.name, extractedName: langLink.extractedName, extractedNames: langLink.extractedNames, canonical: lang.normalizedName IS NOT NULL, migrated: langLink.migratedFrom IS NOT NULL}) AS languages
 
             RETURN {
                 departments: [d IN departments WHERE d.id IS NOT NULL],
@@ -17893,6 +17897,7 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN rec.id AS recordId, n.id AS entityId, labels(n) AS nodeLabels,
                    n.name AS name, n.normalizedName IS NOT NULL AS canonical,
                    link.extractedName AS extractedName,
+                   link.extractedNames AS extractedNames,
                    link.migratedFrom IS NOT NULL AS migrated
         """
         rows = await self.client.execute_query(
@@ -17915,6 +17920,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "name": row.get("name"),
                 "canonical": bool(row.get("canonical")),
                 "extractedName": row.get("extractedName"),
+                "extractedNames": row.get("extractedNames"),
                 "migrated": bool(row.get("migrated")),
             })
         return results

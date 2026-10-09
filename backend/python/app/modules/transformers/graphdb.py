@@ -24,7 +24,11 @@ from app.modules.entity_resolution.models import (
 from app.modules.entity_resolution.normalizer import display_form, normalize_name
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.taxonomy import edge_spellings
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Fields an edge read returns that are not edge properties to write back.
+_EDGE_READ_ONLY_FIELDS = frozenset({"_from", "_to", "_key", "_id", "_rev", "name"})
 
 
 @dataclass
@@ -38,6 +42,8 @@ class _TaxonomyNode:
     extracted_name: Optional[str] = None
     level: Optional[str] = None
     aliases: List[str] = field(default_factory=list)
+    # Every spelling of this record that resolved to the node, first one first.
+    extracted_names: list[str] = field(default_factory=list)
 
 
 class GraphDBTransformer(Transformer):
@@ -184,7 +190,10 @@ class GraphDBTransformer(Transformer):
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-            return _TaxonomyNode(key=key, name=display_form(name), extracted_name=name, level=kind.level)
+            return _TaxonomyNode(
+                key=key, name=display_form(name), extracted_name=name, level=kind.level,
+                extracted_names=[name],
+            )
 
         return _TaxonomyNode(
             key=entry.key,
@@ -192,6 +201,7 @@ class GraphDBTransformer(Transformer):
             extracted_name=entry.extracted_name,
             level=kind.level,
             aliases=list(entry.aliases),
+            extracted_names=list(dict.fromkeys(entry.extracted_names)) or [entry.extracted_name],
         )
 
     async def _write_canonical_nodes(self, resolution: EntityResolution) -> None:
@@ -298,6 +308,33 @@ class GraphDBTransformer(Transformer):
             record_group_ids=record_group_ids,
         )
 
+    @staticmethod
+    def _spelling_fields(spellings: list[str] | None) -> dict[str, object]:
+        if not spellings:
+            return {}
+        return {"extractedName": spellings[0], "extractedNames": list(spellings)}
+
+    @classmethod
+    def _respelled_edge(
+        cls, existing: dict, record_id: str, to_full: str, spellings: list[str] | None,
+    ) -> dict | None:
+        """The existing edge with this record's spellings when it records
+        none (edges copied by earlier releases), else ``None``: an edge keeps
+        the spelling it was first written with."""
+        wanted = cls._spelling_fields(spellings)
+        if not wanted or edge_spellings(existing.get("extractedName"), existing.get("extractedNames")):
+            return None
+        to_collection, to_id = to_full.split("/", 1)
+        kept = {k: v for k, v in existing.items() if k not in _EDGE_READ_ONLY_FIELDS}
+        return {
+            **kept,
+            "from_id": record_id,
+            "from_collection": CollectionNames.RECORDS.value,
+            "to_id": to_id,
+            "to_collection": to_collection,
+            **wanted,
+        }
+
     async def _reconcile_edges(
         self,
         tx_store,
@@ -306,7 +343,7 @@ class GraphDBTransformer(Transformer):
         edge_collection: str,
         new_tos: Dict[str, str],
         label: str,
-        extracted_names: Optional[Dict[str, str]] = None,
+        extracted_names: dict[str, list[str]] | None = None,
     ) -> None:
         """
         Generic reconciliation: create new edges, delete stale ones.
@@ -318,9 +355,12 @@ class GraphDBTransformer(Transformer):
             edge_collection: the edge collection name
             new_tos: mapping of full-to-id -> human-readable name
             label: label for log messages (e.g. "department")
-            extracted_names: optional full-to-id -> the raw extracted string,
-                stored as ``extractedName`` on the edge so a merge can be
-                undone per record later
+            extracted_names: optional full-to-id -> the raw extracted strings,
+                stored as ``extractedNames`` (and the first as
+                ``extractedName``) on the edge so a merge can be undone per
+                record later and the record's own spellings can be read back.
+                An existing edge that records no spelling gets them, keeping
+                its other properties; one that does keeps its own.
         """
         # 1. Fetch existing edges for this record
         # A failed read must not look like "no edges": every new link would be
@@ -347,11 +387,15 @@ class GraphDBTransformer(Transformer):
                     "to_collection": to_collection,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
-                extracted = (extracted_names or {}).get(to_full)
-                if extracted:
-                    edge["extractedName"] = extracted
+                edge.update(self._spelling_fields((extracted_names or {}).get(to_full)))
                 edges_to_create.append(edge)
                 self.logger.debug("Creating %s edge: %s -> %s", label, record_id, to_full)
+            else:
+                respelled = self._respelled_edge(
+                    existing_by_to[to_full], record_id, to_full, (extracted_names or {}).get(to_full),
+                )
+                if respelled is not None:
+                    edges_to_create.append(respelled)
         if edges_to_create:
             await tx_store.batch_create_edges(
                 edges_to_create, edge_collection
@@ -491,7 +535,7 @@ class GraphDBTransformer(Transformer):
 
             # --- Reconcile category edges ---
             new_cat_tos: Dict[str, str] = {}
-            cat_extracted: Dict[str, str] = {}
+            cat_extracted: dict[str, list[str]] = {}
 
             primary_category = self._primary_category(metadata)
             category_key: Optional[str] = None
@@ -502,8 +546,8 @@ class GraphDBTransformer(Transformer):
                 category_key = category_node.key
                 cat_to = f"{CollectionNames.CATEGORIES.value}/{category_node.key}"
                 new_cat_tos[cat_to] = category_node.name
-                if category_node.extracted_name:
-                    cat_extracted[cat_to] = category_node.extracted_name
+                if category_node.extracted_names:
+                    cat_extracted[cat_to] = category_node.extracted_names
                 touched_entities.append(self._taxonomy_entity_record(
                     category_node, EntityType.CATEGORY, org_id_placeholder,
                     connector_ids_placeholder, record_group_ids_placeholder,
@@ -521,8 +565,8 @@ class GraphDBTransformer(Transformer):
 
                 sub_to = f"{collection_name}/{key}"
                 new_cat_tos[sub_to] = node.name
-                if node.extracted_name:
-                    cat_extracted[sub_to] = node.extracted_name
+                if node.extracted_names:
+                    cat_extracted[sub_to] = node.extracted_names
                 touched_entities.append(self._taxonomy_entity_record(
                     node, EntityType.SUBCATEGORY, org_id_placeholder,
                     connector_ids_placeholder, record_group_ids_placeholder,
@@ -581,7 +625,7 @@ class GraphDBTransformer(Transformer):
 
             # --- Reconcile language edges ---
             new_lang_tos: Dict[str, str] = {}
-            lang_extracted: Dict[str, str] = {}
+            lang_extracted: dict[str, list[str]] = {}
             for language in metadata.languages or []:
                 if not isinstance(language, str) or not language.strip():
                     continue
@@ -590,8 +634,8 @@ class GraphDBTransformer(Transformer):
                 )
                 lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_node.key}"
                 new_lang_tos[lang_to] = lang_node.name
-                if lang_node.extracted_name:
-                    lang_extracted[lang_to] = lang_node.extracted_name
+                if lang_node.extracted_names:
+                    lang_extracted[lang_to] = lang_node.extracted_names
                 touched_entities.append(self._taxonomy_entity_record(
                     lang_node, EntityType.LANGUAGE, org_id_placeholder,
                     connector_ids_placeholder, record_group_ids_placeholder,
@@ -605,7 +649,7 @@ class GraphDBTransformer(Transformer):
 
             # --- Reconcile topic edges ---
             new_topic_tos: Dict[str, str] = {}
-            topic_extracted: Dict[str, str] = {}
+            topic_extracted: dict[str, list[str]] = {}
             for topic in metadata.topics or []:
                 if not isinstance(topic, str) or not topic.strip():
                     continue
@@ -614,8 +658,8 @@ class GraphDBTransformer(Transformer):
                 )
                 topic_to = f"{CollectionNames.TOPICS.value}/{topic_node.key}"
                 new_topic_tos[topic_to] = topic_node.name
-                if topic_node.extracted_name:
-                    topic_extracted[topic_to] = topic_node.extracted_name
+                if topic_node.extracted_names:
+                    topic_extracted[topic_to] = topic_node.extracted_names
                 touched_entities.append(self._taxonomy_entity_record(
                     topic_node, EntityType.TOPIC, org_id_placeholder,
                     connector_ids_placeholder, record_group_ids_placeholder,

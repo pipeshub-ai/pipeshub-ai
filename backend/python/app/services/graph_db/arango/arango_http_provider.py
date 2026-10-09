@@ -18631,6 +18631,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         name: v.name,
                         canonical: v.normalizedName != null,
                         extractedName: link.extractedName,
+                        extractedNames: link.extractedNames,
                         migrated: link.migratedFrom != null,
                     }}
         """
@@ -20324,6 +20325,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: cat._key,
                     name: cat.name,
                     extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
                     canonical: cat.normalizedName != null,
                     migrated: link.migratedFrom != null
                 }}
@@ -20336,6 +20338,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: subcat._key,
                     name: subcat.name,
                     extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
                     canonical: subcat.normalizedName != null,
                     migrated: link.migratedFrom != null
                 }}
@@ -20348,6 +20351,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: subcat._key,
                     name: subcat.name,
                     extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
                     canonical: subcat.normalizedName != null,
                     migrated: link.migratedFrom != null
                 }}
@@ -20360,6 +20364,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: subcat._key,
                     name: subcat.name,
                     extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
                     canonical: subcat.normalizedName != null,
                     migrated: link.migratedFrom != null
                 }}
@@ -20371,6 +20376,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: topic._key,
                     name: topic.name,
                     extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
                     canonical: topic.normalizedName != null,
                     migrated: link.migratedFrom != null
                 }}
@@ -20382,6 +20388,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     id: lang._key,
                     name: lang.name,
                     extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
                     canonical: lang.normalizedName != null,
                     migrated: link.migratedFrom != null
                 }}
@@ -22925,32 +22932,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
             for collection in edge_collections:
                 # Find all edges from source document
                 query = f"""
+                // An edge the target already has keeps its own spelling.
+                LET present = (
+                    FOR existing IN {collection}
+                        FILTER existing._from == @target_doc
+                        RETURN existing._to
+                )
                 FOR edge IN {collection}
                     FILTER edge._from == @source_doc
+                    FILTER edge._to NOT IN present
                     RETURN {{
                         from: edge._from,
                         to: edge._to,
                         timestamp: edge.createdAtTimestamp,
-                        extractedName: edge.extractedName
+                        extractedName: edge.extractedName,
+                        extractedNames: edge.extractedNames
                     }}
                 """
 
-                bind_vars = {"source_doc": source_doc}
+                bind_vars = {"source_doc": source_doc, "target_doc": target_doc}
                 edges = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
 
                 if edges:
-                    # batch_create_edges UPSERTs on {_from, _to}, so re-running
-                    # dedup for the same record (e.g. a redelivered event)
-                    # updates the existing edge instead of duplicating it —
-                    # the previous per-edge create_document loop had no such
-                    # guard and accumulated duplicate taxonomy edges on retry.
-                    # A copy has the same content, so it carries the same spelling.
+                    # batch_create_edges UPSERTs on {_from, _to}, so an edge
+                    # written concurrently since the read above is not
+                    # duplicated — the previous per-edge create_document loop
+                    # had no such guard and accumulated duplicate taxonomy
+                    # edges on retry. A copy has the same content, so it
+                    # carries the same spellings.
                     new_edges = [
                         {
                             "_from": target_doc,
                             "_to": edge["to"],
                             "createdAtTimestamp": edge.get("timestamp") or get_epoch_timestamp_in_ms(),
                             **({"extractedName": edge["extractedName"]} if edge.get("extractedName") else {}),
+                            **({"extractedNames": edge["extractedNames"]} if edge.get("extractedNames") else {}),
                         }
                         for edge in edges
                     ]

@@ -47,3 +47,23 @@ class TestOwnRecordLabels:
 
     def test_a_missing_read_stays_missing(self) -> None:
         assert own_record_labels(None) is None
+
+
+class TestEverySpelling:
+    def test_a_link_with_two_spellings_yields_both(self) -> None:
+        link = TaxonomyLink.from_row({
+            "recordId": "r", "collection": "topics", "entityId": "t", "name": "NDA",
+            "canonical": True, "extractedName": "NDA",
+            "extractedNames": ["NDA", "Non-disclosure agreement"], "migrated": False,
+        })
+        assert link.spellings == ("NDA", "Non-disclosure agreement")
+        assert link.spelling == "NDA"
+
+    def test_record_details_list_every_spelling(self) -> None:
+        shown = own_record_labels({"topics": [{
+            "id": "t", "name": "NDA", "extractedName": "NDA",
+            "extractedNames": ["NDA", "Non-disclosure agreement"], "canonical": True,
+        }]})
+        assert shown["topics"] == [
+            {"id": "t", "name": "NDA"}, {"id": "t", "name": "Non-disclosure agreement"},
+        ]

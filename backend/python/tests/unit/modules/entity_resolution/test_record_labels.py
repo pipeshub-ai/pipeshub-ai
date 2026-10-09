@@ -97,3 +97,48 @@ class TestARecordKeepsItsOwnExtractedLabels:
         cat_edges = fake_graph.edges_from("r4", BELONGS_TO_CATEGORY)
         assert [(e["to_id"], e.get("extractedName")) for e in cat_edges] == [(key, "QUALITY ASSURANCE")]
         assert [n["name"] for n in fake_graph.nodes_in(CATEGORIES)] == ["Quality assurance"]
+
+
+class TestEverySpellingOfOneNodeIsKept:
+    async def test_two_spellings_of_one_node_are_both_on_the_edge(
+        self, make_resolver, make_transformer, fake_graph, metadata_factory, ctx_factory, scripted_model,
+    ) -> None:
+        scripted_model({"bug bash testing": ("same_as", "Bug bash")})
+        fake_graph.add_record("r5", "acme")
+        meta = metadata_factory(topics=["Bug bash", "Bug bash testing"])
+        ctx = ctx_factory("r5", "acme", meta)
+
+        await make_resolver("apply").resolve(ctx)
+        await make_transformer().apply(ctx)
+
+        (edge,) = fake_graph.edges_from("r5", BELONGS_TO_TOPIC)
+        assert edge["extractedName"] == "Bug bash"
+        assert edge["extractedNames"] == ["Bug bash", "Bug bash testing"]
+        (row,) = await fake_graph.get_record_taxonomy_links(["r5"])
+        assert row["extractedNames"] == ["Bug bash", "Bug bash testing"]
+
+
+class TestAReindexWritesTheSpellingOntoAnExistingEdge:
+    async def test_an_edge_without_a_spelling_gets_the_records_spelling(
+        self, make_resolver, make_transformer, fake_graph, metadata_factory, ctx_factory, scripted_model,
+    ) -> None:
+        scripted_model()
+        key = taxonomy_node_key("acme", TOPICS, "release checklist")
+        fake_graph.nodes[(TOPICS, key)] = {
+            "name": "Release checklist", "normalizedName": "release checklist", "orgId": "acme",
+        }
+        fake_graph.add_record("r6", "acme")
+        target = (BELONGS_TO_TOPIC, "records/r6", f"{TOPICS}/{key}")
+        fake_graph.edges[target] = {
+            "from_id": "r6", "from_collection": "records", "to_id": key, "to_collection": TOPICS,
+            "createdAtTimestamp": 7, "mergedFrom": "topics/older",
+        }
+        ctx = ctx_factory("r6", "acme", metadata_factory(topics=["release checklist"]))
+
+        await make_resolver("apply").resolve(ctx)
+        await make_transformer().apply(ctx)
+
+        edge = fake_graph.edges[target]
+        assert edge["extractedName"] == "release checklist"
+        assert edge["extractedNames"] == ["release checklist"]
+        assert (edge["createdAtTimestamp"], edge["mergedFrom"]) == (7, "topics/older")
