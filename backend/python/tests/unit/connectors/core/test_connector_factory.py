@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.factory.connector_factory import (
+    ConnectorFactory,
+    SnowflakeConnector,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +93,7 @@ class TestListConnectors:
         assert "jiracloudpersonal" in result
         assert "jiradatacenter" in result
         assert "jiradatacenterpersonal" in result
+        assert result["snowflake"] is SnowflakeConnector
 
 
 # ===========================================================================
@@ -304,6 +308,29 @@ class TestCreateConnector:
 
         assert result is expected_connector
         mock_cls.create_connector.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_snowflake_creation_preserves_scope_and_creator(self):
+        """Snowflake receives the metadata required for permission scoping."""
+        mock_processor = MagicMock()
+        mock_processor.initialize = AsyncMock()
+        mock_processor_cls = MagicMock(return_value=mock_processor)
+
+        connector = await ConnectorFactory.create_connector(
+            name="snowflake",
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=MagicMock(),
+            connector_id="snowflake-1",
+            scope="team",
+            created_by="user-123",
+            org_id="org-1",
+            data_entities_processor_cls=mock_processor_cls,
+        )
+
+        assert isinstance(connector, SnowflakeConnector)
+        assert connector.scope == "team"
+        assert connector.created_by == "user-123"
 
     @pytest.mark.asyncio
     async def test_creation_exception_returns_none(self):
