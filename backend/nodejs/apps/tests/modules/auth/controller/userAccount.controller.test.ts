@@ -4541,6 +4541,90 @@ describe('UserAccountController', () => {
       expect(res.status.called).to.be.false
     })
 
+    it('does not publish the user event when the graph refuses the address', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 409,
+        data: { detail: 'Email already belongs to another login user in the graph' },
+      } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(mockEventService.publishEvent.called).to.be.false
+      expect(res.status.called).to.be.false
+    })
+
+    for (const response of [{ statusCode: 500, data: { detail: 'graph down' } }, undefined]) {
+      it(`publishes the user event and still fails the request when the graph answers ${response ? response.statusCode : 'nothing'}`, async () => {
+        sinon.stub(Users, 'findOne').resolves(null)
+        sinon.stub(Users, 'findByIdAndUpdate').resolves({
+          _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+        } as any)
+        sinon.stub(UserActivities, 'create').resolves({} as any)
+        sinon.stub(connectorUtils, 'executeConnectorCommand').resolves(response as any)
+
+        const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+        await controller.validateEmailChange(req, res, next)
+
+        expect(mockEventService.publishEvent.calledOnce).to.be.true
+        expect(mockEventService.publishEvent.firstCall.args[0].payload).to.include({ userId: 'u1', email: 'new@email.com' })
+        expect(next.calledOnce).to.be.true
+        expect(res.status.called).to.be.false
+      })
+    }
+
+    it('fails with the event error, not the graph one, when both fail', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 500 } as any)
+      mockEventService.publishEvent.rejects(new Error('outbox write failed'))
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('outbox write failed')
+    })
+
+    it('still publishes the user event when the graph has no login node (404)', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 404 } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(mockEventService.publishEvent.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('records the activity before the graph call so a refused sync still ends old sessions', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      const activity = sinon.stub(UserActivities, 'create').resolves({} as any)
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 500 } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(activity.calledOnce).to.be.true
+      expect(activity.calledBefore(execute)).to.be.true
+    })
+
     it('verify skips the graph call when the token has no orgId', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
       sinon.stub(Users, 'findByIdAndUpdate').resolves({

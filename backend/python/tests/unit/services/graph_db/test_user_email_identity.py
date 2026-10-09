@@ -282,164 +282,86 @@ class TestStubEdgesMoveOntoTheLogin:
             permission_rel = neo4j_module.EDGE_COLLECTION_TO_RELATIONSHIP[
                 CollectionNames.PERMISSION.value
             ]
-            record_label = neo4j_module.COLLECTION_TO_LABEL[CollectionNames.RECORDS.value]
             provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
             provider.client = MagicMock()
             provider.client.execute_query = AsyncMock(
-                side_effect=[
-                    [
-                        {
-                            "rel_type": permission_rel,
-                            "from_id": "stub-key",
-                            "to_id": "rec-1",
-                            "from_labels": ["User"],
-                            "to_labels": [record_label],
-                            "props": {"role": "READER"},
-                        },
-                        {
-                            "rel_type": permission_rel,
-                            "from_id": "stub-key",
-                            "to_id": "rec-1",
-                            "from_labels": ["User"],
-                            "to_labels": [record_label],
-                            "props": {"role": "READER"},
-                        },
-                        {
-                            "rel_type": "SOME_CONNECTOR_ONLY_REL",
-                            "from_id": "stub-key",
-                            "to_id": "rec-2",
-                            "from_labels": ["User"],
-                            "to_labels": [record_label],
-                            "props": {},
-                        },
-                    ],
-                    None,
-                ]
+                side_effect=[[{"rel_type": "SOME_CONNECTOR_ONLY_REL"}], *[None] * 12]
             )
             provider.delete_nodes = AsyncMock(return_value=True)
 
             await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
 
-            assert provider.client.execute_query.await_count == 2
-            merge_call = provider.client.execute_query.await_args_list[1]
-            assert merge_call.kwargs["parameters"] == {
-                "from_id": "keep-key",
-                "to_id": "rec-1",
-                "props": {"role": "READER"},
-            }
-            assert merge_call.kwargs["txn_id"] == "txn"
+            calls = provider.client.execute_query.await_args_list
+            # One lookup for types that are not moved, then one statement per
+            # edge type and direction, however many edges the stub has.
+            assert len(calls) == 1 + 2 * len(STUB_EDGE_COLLECTIONS)
+            assert permission_rel in calls[0].kwargs["parameters"]["allowed_rels"]
+            assert "SOME_CONNECTOR_ONLY_REL" not in calls[0].kwargs["parameters"]["allowed_rels"]
+            assert all("SOME_CONNECTOR_ONLY_REL" not in c.args[0] for c in calls[1:])
+            provider.logger.warning.assert_called_once()
+            for call in calls[1:]:
+                assert call.kwargs["parameters"]["stub_key"] == "stub-key"
+                assert call.kwargs["parameters"]["keep_key"] == "keep-key"
+                assert call.kwargs["txn_id"] == "txn"
             provider.delete_nodes.assert_awaited_once_with(
                 ["stub-key"], CollectionNames.USERS.value, transaction="txn"
             )
 
         asyncio.run(_run())
 
-    def test_neo4j_moves_authenticated_as_per_connector_and_drive_edges(self):
+    def test_neo4j_statement_identity_follows_the_edge_type(self):
+        move = Neo4jProvider._move_stub_edges_query
+
+        auth = move("AUTHENTICATED_AS", ("connectorId",), outgoing=False, keeps_stronger_role=False)
+        assert "MERGE (n)-[nr:AUTHENTICATED_AS {connectorId: identity_connectorId}]->(keep)" in auth
+        assert "coalesce(r.connectorId, '') AS identity_connectorId" in auth
+
+        entity = move("ENTITYRELATIONS", ("edgeType",), outgoing=True, keeps_stronger_role=False)
+        assert "MERGE (keep)-[nr:ENTITYRELATIONS {edgeType: identity_edgeType}]->(n)" in entity
+
+        drive = move("USER_DRIVE_RELATION", (), outgoing=True, keeps_stronger_role=False)
+        assert "MERGE (keep)-[nr:USER_DRIVE_RELATION]->(n)" in drive
+        assert "identity_" not in drive
+
+    def test_neo4j_statement_reads_the_stub_on_the_correct_side(self):
+        move = Neo4jProvider._move_stub_edges_query
+        outgoing = move("BELONGS_TO", (), outgoing=True, keeps_stronger_role=False)
+        incoming = move("BELONGS_TO", (), outgoing=False, keeps_stronger_role=False)
+        assert "MATCH (old:User {id: $stub_key})-[r:BELONGS_TO]->(n)" in outgoing
+        assert "MATCH (n)-[r:BELONGS_TO]->(old:User {id: $stub_key})" in incoming
+        for query in (outgoing, incoming):
+            assert "n <> old" in query
+            assert "coalesce(n.id, '') <> $keep_key" in query
+            assert "ON CREATE SET nr = props" in query
+
+    def test_neo4j_only_permission_edges_keep_the_stronger_role(self):
+        move = Neo4jProvider._move_stub_edges_query
+        permission = move("PERMISSION", (), outgoing=True, keeps_stronger_role=True)
+        assert "ORDER BY coalesce($role_rank[toUpper(toString(r.role))], 0) DESC" in permission
+        assert "ON MATCH SET nr += CASE WHEN" in permission
+
+        other = move("BELONGS_TO", (), outgoing=True, keeps_stronger_role=False)
+        assert "ON MATCH" not in other
+        assert "ORDER BY" not in other
+
+    def test_neo4j_absorb_asks_only_the_permission_statements_to_rank_roles(self):
         async def _run() -> None:
-            auth_rel = neo4j_module.EDGE_COLLECTION_TO_RELATIONSHIP[
-                CollectionNames.AUTHENTICATED_AS.value
+            permission_rel = neo4j_module.EDGE_COLLECTION_TO_RELATIONSHIP[
+                CollectionNames.PERMISSION.value
             ]
-            drive_rel = neo4j_module.EDGE_COLLECTION_TO_RELATIONSHIP[
-                CollectionNames.USER_DRIVE_RELATION.value
-            ]
-            drive_label = neo4j_module.COLLECTION_TO_LABEL[CollectionNames.DRIVES.value]
-
-            def auth(creator, to, connector_id):
-                return {
-                    "rel_type": auth_rel,
-                    "from_id": creator,
-                    "to_id": to,
-                    "from_labels": ["User"],
-                    "to_labels": ["User"],
-                    "props": {"connectorId": connector_id},
-                }
-
             provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
             provider.client = MagicMock()
-            provider.client.execute_query = AsyncMock(
-                side_effect=[
-                    [
-                        auth("admin", "stub-key", "conn-1"),
-                        auth("admin", "stub-key", "conn-2"),
-                        auth("admin", "stub-key", "conn-2"),
-                        auth("keep-key", "stub-key", "conn-3"),
-                        auth("stub-key", "someone", "conn-4"),
-                        {
-                            "rel_type": drive_rel,
-                            "from_id": "stub-key",
-                            "to_id": "drive-1",
-                            "from_labels": ["User"],
-                            "to_labels": [drive_label],
-                            "props": {"access_level": "reader"},
-                        },
-                    ],
-                    *[None] * 4,
-                ]
-            )
+            provider.client.execute_query = AsyncMock(return_value=[])
             provider.delete_nodes = AsyncMock(return_value=True)
 
-            await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
+            await provider._absorb_graph_user_stub("keep-key", "stub-key", None)
 
-            merges = [c for c in provider.client.execute_query.await_args_list[1:]]
-            assert len(merges) == 4
-            params = [m.kwargs["parameters"] for m in merges]
-            assert [(p["from_id"], p["to_id"], p.get("identity_connectorId")) for p in params] == [
-                ("admin", "keep-key", "conn-1"),
-                ("admin", "keep-key", "conn-2"),
-                ("keep-key", "someone", "conn-4"),
-                ("keep-key", "drive-1", None),
-            ]
-            assert "connectorId: $identity_connectorId" in merges[0].args[0]
-            assert "identity_" not in merges[3].args[0]
-
-        asyncio.run(_run())
-
-    def test_neo4j_keeps_every_entity_relation_type_between_a_record_and_the_stub(self):
-        async def _run() -> None:
-            entity_rel = neo4j_module.EDGE_COLLECTION_TO_RELATIONSHIP[
-                CollectionNames.ENTITY_RELATIONS.value
-            ]
-            record_label = neo4j_module.COLLECTION_TO_LABEL[CollectionNames.RECORDS.value]
-
-            def relation(edge_type, record="rec-1", stub_is_start=False):
-                return {
-                    "rel_type": entity_rel,
-                    "from_id": "stub-key" if stub_is_start else record,
-                    "to_id": record if stub_is_start else "stub-key",
-                    "from_labels": ["User"] if stub_is_start else [record_label],
-                    "to_labels": [record_label] if stub_is_start else ["User"],
-                    "props": {"edgeType": edge_type},
-                }
-
-            provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
-            provider.client = MagicMock()
-            provider.client.execute_query = AsyncMock(
-                side_effect=[
-                    [
-                        relation("CREATED_BY"),
-                        relation("ASSIGNED_TO"),
-                        relation("ASSIGNED_TO"),
-                        relation("REPORTED_BY", stub_is_start=True),
-                    ],
-                    *[None] * 3,
-                ]
-            )
-            provider.delete_nodes = AsyncMock(return_value=True)
-
-            await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
-
-            merges = provider.client.execute_query.await_args_list[1:]
-            assert len(merges) == 3
-            params = [m.kwargs["parameters"] for m in merges]
-            assert [
-                (p["from_id"], p["to_id"], p["identity_edgeType"]) for p in params
-            ] == [
-                ("rec-1", "keep-key", "CREATED_BY"),
-                ("rec-1", "keep-key", "ASSIGNED_TO"),
-                ("keep-key", "rec-1", "REPORTED_BY"),
-            ]
-            assert "edgeType: $identity_edgeType" in merges[0].args[0]
-            assert all(p["props"]["edgeType"] == p["identity_edgeType"] for p in params)
+            statements = [c.args[0] for c in provider.client.execute_query.await_args_list[1:]]
+            ranked = [s for s in statements if "ON MATCH SET" in s]
+            assert len(ranked) == 2
+            assert all(f"[r:{permission_rel}]" in s for s in ranked)
+            params = provider.client.execute_query.await_args_list[1].kwargs["parameters"]
+            assert params["role_rank"]["OWNER"] > params["role_rank"]["WRITER"] > params["role_rank"]["READER"]
 
         asyncio.run(_run())
 
@@ -490,19 +412,42 @@ class TestStubEdgesMoveOntoTheLogin:
             await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
 
             queries = [c.args[0] for c in provider.http_client.execute_aql.await_args_list]
-            assert len(queries) == 2 * len(STUB_EDGE_COLLECTIONS)
+            # Insert + cleanup per collection, plus the PERMISSION role upgrade.
+            assert len(queries) == 2 * len(STUB_EDGE_COLLECTIONS) + 1
             for collection in STUB_EDGE_COLLECTIONS:
-                assert sum(f"IN {collection}" in q for q in queries) == 2
+                expected = 3 if collection == CollectionNames.PERMISSION.value else 2
+                assert sum(f"IN {collection}" in q for q in queries) == expected
             assert CollectionNames.USER_DRIVE_RELATION.value in STUB_EDGE_COLLECTIONS
             assert CollectionNames.AUTHENTICATED_AS.value in STUB_EDGE_COLLECTIONS
             assert CollectionNames.ENTITY_RELATIONS.value in STUB_EDGE_COLLECTIONS
-            first = provider.http_client.execute_aql.await_args_list[0]
-            assert first.kwargs["bind_vars"] == {
+            move_call = next(
+                c for c in provider.http_client.execute_aql.await_args_list if "INSERT" in c.args[0]
+            )
+            assert move_call.kwargs["bind_vars"] == {
                 "stub_id": "users/stub-key",
                 "keep_id": "users/keep-key",
             }
             provider.delete_nodes.assert_awaited_once_with(
                 ["stub-key"], CollectionNames.USERS.value, transaction="txn"
             )
+
+        asyncio.run(_run())
+
+    def test_arango_only_permission_upgrades_an_existing_edge_to_the_stronger_role(self):
+        async def _run() -> None:
+            provider = ArangoHTTPProvider(logger=MagicMock(), config_service=MagicMock())
+            provider.http_client = MagicMock()
+            provider.http_client.execute_aql = AsyncMock(return_value=[])
+            provider.delete_nodes = AsyncMock(return_value=True)
+
+            await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
+
+            calls = provider.http_client.execute_aql.await_args_list
+            upgrades = [c for c in calls if "UPDATE other" in c.args[0]]
+            assert len(upgrades) == 1
+            assert f"IN {CollectionNames.PERMISSION.value}" in upgrades[0].args[0]
+            assert upgrades[0].kwargs["bind_vars"]["role_rank"]["OWNER"] == 6
+            assert upgrades[0].kwargs["bind_vars"]["stub_id"] == "users/stub-key"
+            assert calls[0] is upgrades[0]
 
         asyncio.run(_run())

@@ -26,6 +26,19 @@ STUB_EDGE_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     CollectionNames.ENTITY_RELATIONS.value: ("edgeType",),
 }
 
+# When the stub and the login already hold a PERMISSION to the same node, the
+# stronger role is kept; roles not listed rank lowest.
+PERMISSION_ROLE_RANK: dict[str, int] = {
+    "OWNER": 6,
+    "ADMIN": 5,
+    "ORGANIZER": 5,
+    "EDITOR": 4,
+    "FILEORGANIZER": 4,
+    "WRITER": 3,
+    "COMMENTER": 2,
+    "READER": 1,
+}
+
 VERIFIED_EMAIL_WRITE_COLLECTIONS = (
     CollectionNames.USERS.value,
     *STUB_EDGE_COLLECTIONS,

@@ -171,6 +171,7 @@ from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
 from app.services.graph_db.user_email_identity import (
     GraphUserEmailConflictError,
+    PERMISSION_ROLE_RANK,
     STUB_EDGE_COLLECTIONS,
     STUB_EDGE_IDENTITY_FIELDS,
     VERIFIED_EMAIL_WRITE_COLLECTIONS,
@@ -4357,96 +4358,113 @@ class Neo4jProvider(IGraphDBProvider):
         stub_key: str,
         transaction: str | None,
     ) -> None:
-        allowed_rels = {
-            EDGE_COLLECTION_TO_RELATIONSHIP[collection]
-            for collection in STUB_EDGE_COLLECTIONS
-            if collection in EDGE_COLLECTION_TO_RELATIONSHIP
-        }
+        permission_rel = EDGE_COLLECTION_TO_RELATIONSHIP[CollectionNames.PERMISSION.value]
+        allowed_rels = sorted(
+            {
+                EDGE_COLLECTION_TO_RELATIONSHIP[collection]
+                for collection in STUB_EDGE_COLLECTIONS
+                if collection in EDGE_COLLECTION_TO_RELATIONSHIP
+            }
+        )
         identity_fields = {
             EDGE_COLLECTION_TO_RELATIONSHIP[collection]: fields
             for collection, fields in STUB_EDGE_IDENTITY_FIELDS.items()
             if collection in EDGE_COLLECTION_TO_RELATIONSHIP
         }
-        label_to_collection = {label: coll for coll, label in COLLECTION_TO_LABEL.items()}
-        query = """
-        MATCH (old:User {id: $stub_key})-[r]-(n)
-        WHERE n.id <> $keep_key
-        RETURN type(r) AS rel_type,
-               startNode(r).id AS from_id,
-               endNode(r).id AS to_id,
-               labels(startNode(r)) AS from_labels,
-               labels(endNode(r)) AS to_labels,
-               properties(r) AS props
-        """
-        results = await self.client.execute_query(
-            query,
-            parameters={"stub_key": stub_key, "keep_key": keep_key},
+
+        unmoved = await self.client.execute_query(
+            """
+            MATCH (old:User {id: $stub_key})-[r]-()
+            WHERE NOT type(r) IN $allowed_rels
+            RETURN DISTINCT type(r) AS rel_type
+            """,
+            parameters={"stub_key": stub_key, "allowed_rels": allowed_rels},
             txn_id=transaction,
         )
-        seen: set[tuple[str, str, str]] = set()
-        for record in results or []:
-            rel_type = record.get("rel_type")
-            if rel_type not in allowed_rels or not re.fullmatch(r"[A-Z][A-Z0-9_]*", rel_type or ""):
-                self.logger.warning(
-                    "Skipping stub relationship type %s while merging user %s",
-                    rel_type,
-                    stub_key,
+        for record in unmoved or []:
+            self.logger.warning(
+                "Not moving stub relationship type %s while merging user %s",
+                record.get("rel_type"),
+                stub_key,
+            )
+
+        params = {
+            "stub_key": stub_key,
+            "keep_key": keep_key,
+            "role_rank": PERMISSION_ROLE_RANK,
+        }
+        for rel_type in allowed_rels:
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", rel_type):
+                continue
+            for outgoing in (True, False):
+                await self.client.execute_query(
+                    self._move_stub_edges_query(
+                        rel_type,
+                        identity_fields.get(rel_type, ()),
+                        outgoing=outgoing,
+                        keeps_stronger_role=rel_type == permission_rel,
+                    ),
+                    parameters=params,
+                    txn_id=transaction,
                 )
-                continue
-            from_id = record.get("from_id")
-            to_id = record.get("to_id")
-            if from_id == stub_key:
-                from_id = keep_key
-            if to_id == stub_key:
-                to_id = keep_key
-            if from_id == to_id:
-                continue
-            props = dict(record.get("props") or {})
-            fields = identity_fields.get(rel_type, ())
-            dedupe_key = (rel_type, from_id, to_id, *(props.get(f) for f in fields))
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            from_labels = record.get("from_labels") or []
-            to_labels = record.get("to_labels") or []
-            from_collection = next(
-                (label_to_collection[label] for label in from_labels if label in label_to_collection),
-                CollectionNames.USERS.value if from_id == keep_key else None,
-            )
-            to_collection = next(
-                (label_to_collection[label] for label in to_labels if label in label_to_collection),
-                CollectionNames.USERS.value if to_id == keep_key else None,
-            )
-            if not from_collection or not to_collection:
-                continue
-            from_label = collection_to_label(from_collection)
-            to_label = collection_to_label(to_collection)
-            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", from_label):
-                continue
-            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", to_label):
-                continue
-            identity = ", ".join(f"{f}: $identity_{f}" for f in fields)
-            merge_query = f"""
-            MATCH (from:{from_label} {{id: $from_id}})
-            MATCH (to:{to_label} {{id: $to_id}})
-            MERGE (from)-[r:{rel_type} {{{identity}}}]->(to)
-            ON CREATE SET r = $props
-            """
-            await self.client.execute_query(
-                merge_query,
-                parameters={
-                    "from_id": from_id,
-                    "to_id": to_id,
-                    "props": props,
-                    **{f"identity_{f}": props.get(f) for f in fields},
-                },
-                txn_id=transaction,
-            )
         await self.delete_nodes(
             [stub_key],
             CollectionNames.USERS.value,
             transaction=transaction,
         )
+
+    @staticmethod
+    def _move_stub_edges_query(
+        rel_type: str,
+        identity_fields: tuple[str, ...],
+        *,
+        outgoing: bool,
+        keeps_stronger_role: bool,
+    ) -> str:
+        """One set-based statement moving every stub edge of one type and direction.
+
+        Edges between the stub and the login are dropped with the stub. Stub
+        edges that share an identity collapse into one, and an edge the login
+        already has is kept; for PERMISSION the stronger role wins.
+        """
+        # An unset identity value is stored as '' because MERGE rejects null.
+        identity_columns = "".join(
+            f", coalesce(r.{field}, '') AS identity_{field}" for field in identity_fields
+        )
+        identity_names = "".join(f", identity_{field}" for field in identity_fields)
+        identity_map = (
+            " {" + ", ".join(f"{field}: identity_{field}" for field in identity_fields) + "}"
+            if identity_fields
+            else ""
+        )
+        old_edge = f"-[r:{rel_type}]->"
+        new_edge = f"-[nr:{rel_type}{identity_map}]->"
+        if outgoing:
+            match_pattern = f"(old:User {{id: $stub_key}}){old_edge}(n)"
+            merge_pattern = f"(keep){new_edge}(n)"
+        else:
+            match_pattern = f"(n){old_edge}(old:User {{id: $stub_key}})"
+            merge_pattern = f"(n){new_edge}(keep)"
+
+        rank = "coalesce($role_rank[toUpper(toString({}.role))], 0)"
+        order_by = f"ORDER BY {rank.format('r')} DESC" if keeps_stronger_role else ""
+        on_match = (
+            f"ON MATCH SET nr += CASE WHEN {rank.format('props')} > {rank.format('nr')} "
+            "THEN props ELSE {} END"
+            if keeps_stronger_role
+            else ""
+        )
+        return f"""
+        MATCH {match_pattern}
+        WHERE n <> old AND coalesce(n.id, '') <> $keep_key
+        WITH n, r{identity_columns}
+        {order_by}
+        WITH n{identity_names}, head(collect(properties(r))) AS props
+        MATCH (keep:User {{id: $keep_key}})
+        MERGE {merge_pattern}
+        ON CREATE SET nr = props
+        {on_match}
+        """
 
     async def get_graph_user_keys_by_mongo_user_ids(
         self,

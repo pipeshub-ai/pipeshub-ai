@@ -53,6 +53,7 @@ import { MailService } from '../services/mail.service';
 
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   HttpError,
   InternalServerError,
@@ -2224,7 +2225,6 @@ export class UserAccountController {
       if (!user) {
         throw new NotFoundError('User not found');
       }
-      await this.publishEmailChanged(user);
 
       await UserActivities.create({
         orgId: orgId,
@@ -2233,12 +2233,30 @@ export class UserAccountController {
         ipAddress: req.ip || '',
       });
 
+      // A conflict means another login owns the address in the graph, so the
+      // event must not write it onto this one. Any other graph failure still
+      // publishes, so the event can carry the address, and then fails the
+      // request so the link can be opened again.
+      let graphFailure: Error | undefined;
       if (userId && orgId) {
-        await this.syncVerifiedEmailToGraph(
-          String(userId),
-          String(orgId),
-          email,
-        );
+        try {
+          await this.syncVerifiedEmailToGraph(
+            String(userId),
+            String(orgId),
+            email,
+          );
+        } catch (syncError) {
+          if (syncError instanceof ConflictError) {
+            throw syncError;
+          }
+          graphFailure =
+            syncError instanceof Error ? syncError : new Error(String(syncError));
+        }
+      }
+
+      await this.publishEmailChanged(user);
+      if (graphFailure) {
+        throw graphFailure;
       }
 
       res.status(200).json({ message: 'Email updated successfully' });

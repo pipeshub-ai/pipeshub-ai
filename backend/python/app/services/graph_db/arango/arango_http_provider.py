@@ -218,6 +218,7 @@ from app.services.graph_db.taxonomy import (
 )
 from app.services.graph_db.user_email_identity import (
     GraphUserEmailConflictError,
+    PERMISSION_ROLE_RANK,
     STUB_EDGE_COLLECTIONS,
     STUB_EDGE_IDENTITY_FIELDS,
     VERIFIED_EMAIL_WRITE_COLLECTIONS,
@@ -5721,7 +5722,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> None:
         stub_id = f"{CollectionNames.USERS.value}/{stub_key}"
         keep_id = f"{CollectionNames.USERS.value}/{keep_key}"
+        permission_collection = CollectionNames.PERMISSION.value
         for collection in STUB_EDGE_COLLECTIONS:
+            if collection == permission_collection:
+                # The login keeps an edge it already has, so a stronger stub
+                # role has to be written onto it before the stub's edges go.
+                upgrade = f"""
+                FOR e IN {collection}
+                    FILTER e._from == @stub_id OR e._to == @stub_id
+                    LET newFrom = e._from == @stub_id ? @keep_id : e._from
+                    LET newTo = e._to == @stub_id ? @keep_id : e._to
+                    FILTER newFrom != newTo
+                    FOR other IN {collection}
+                        FILTER other._from == newFrom AND other._to == newTo
+                        FILTER NOT_NULL(@role_rank[UPPER(e.role)], 0) > NOT_NULL(@role_rank[UPPER(other.role)], 0)
+                        UPDATE other WITH UNSET(e, "_id", "_key", "_rev", "_from", "_to") IN {collection}
+                """
+                await self.http_client.execute_aql(
+                    upgrade,
+                    bind_vars={
+                        "stub_id": stub_id,
+                        "keep_id": keep_id,
+                        "role_rank": PERMISSION_ROLE_RANK,
+                    },
+                    txn_id=transaction,
+                )
             identity_filter = "".join(
                 f" AND other.{field} == e.{field}"
                 for field in STUB_EDGE_IDENTITY_FIELDS.get(collection, ())
