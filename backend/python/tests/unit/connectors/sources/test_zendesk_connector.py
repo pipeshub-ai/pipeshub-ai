@@ -1507,6 +1507,100 @@ class TestStaleGrantReplacement:
         mock_data_entities_processor.on_new_records.assert_not_awaited()
 
 
+class TestDeletedUserGrants:
+    """Deleting a user drops their CCs without moving the ticket's updated_at."""
+
+    async def test_a_deleted_user_triggers_a_grant_refresh(self, zendesk_connector):
+        ds = _ready(zendesk_connector)
+        _stateful_sync_points(zendesk_connector, {"zendesk_users_incremental": {"lastEndTime": 100}})
+        ds.incremental_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 5, "email": None, "active": False}], "end_of_stream": True,
+        }))
+
+        refresh, checkpoint = await zendesk_connector._users_deleted_since_last_sync()
+
+        assert refresh is True
+        assert checkpoint is not None
+        assert ds.incremental_users.await_args.kwargs["start_time"] == 100
+
+    async def test_no_deletion_means_no_refresh(self, zendesk_connector):
+        ds = _ready(zendesk_connector)
+        _stateful_sync_points(zendesk_connector, {"zendesk_users_incremental": {"lastEndTime": 100}})
+        ds.incremental_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 5, "email": "a@acme.com", "active": True}], "end_of_stream": True,
+        }))
+
+        assert (await zendesk_connector._users_deleted_since_last_sync())[0] is False
+
+    async def test_failed_check_keeps_the_checkpoint(self, zendesk_connector):
+        _ready(zendesk_connector)
+        _stateful_sync_points(zendesk_connector, {"zendesk_users_incremental": {"lastEndTime": 100}})
+        zendesk_connector._call_incremental = AsyncMock(return_value=None)
+
+        assert await zendesk_connector._users_deleted_since_last_sync() == (False, None)
+
+    async def test_first_run_only_sets_the_checkpoint(self, zendesk_connector):
+        ds = _ready(zendesk_connector)
+        _stateful_sync_points(zendesk_connector)
+
+        refresh, checkpoint = await zendesk_connector._users_deleted_since_last_sync()
+
+        assert refresh is False and checkpoint is not None
+        ds.incremental_users.assert_not_awaited()
+
+    async def test_refresh_rereads_every_ticket_and_replaces_unchanged_grants(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        ds = _ready(zendesk_connector)
+        _stateful_sync_points(zendesk_connector, {
+            "zendesk_incremental": {"lastEndTime": 1767312000, "lastCursor": "stale"},
+        })
+        zendesk_connector._rebuild_ticket_edges = False
+        zendesk_connector._refresh_ticket_grants = True
+        ds.incremental_tickets = AsyncMock(return_value=_make_response(data={
+            "tickets": [], "end_of_stream": True,
+        }))
+
+        await zendesk_connector._sync_tickets()
+
+        kwargs = ds.incremental_tickets.await_args.kwargs
+        assert kwargs["start_time"] == 1 and kwargs["cursor"] is None
+
+        await zendesk_connector._replace_changed_record_permissions(
+            [(TestStaleGrantReplacement._record(version=0), [])]
+        )
+        mock_data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_checkpoint_waits_for_the_ticket_stage(self, _filters, zendesk_connector):
+        _ready(zendesk_connector)
+        states = _stateful_sync_points(zendesk_connector, {
+            "zendesk_incremental": {"lastEndTime": 1767312000},
+            "zendesk_articles_incremental": {"lastEndTime": 1767312000},
+            "zendesk_users_incremental": {"lastEndTime": 100},
+        })
+        TestRunSync._stub_stages(zendesk_connector, _app_user())
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
+            side_effect=lambda key: dict(states.get(key, {}))
+        )
+        zendesk_connector._users_deleted_since_last_sync = AsyncMock(return_value=(True, 500))
+
+        async def _incomplete():
+            zendesk_connector._ticket_sync_complete = False
+            return 0
+        zendesk_connector._sync_tickets = AsyncMock(side_effect=_incomplete)
+        await zendesk_connector.run_sync()
+        assert states["zendesk_users_incremental"]["lastEndTime"] == 100
+
+        async def _complete():
+            zendesk_connector._ticket_sync_complete = True
+            return 0
+        zendesk_connector._sync_tickets = AsyncMock(side_effect=_complete)
+        await zendesk_connector.run_sync()
+        assert states["zendesk_users_incremental"]["lastEndTime"] == 500
+
+
 class TestReindexRecords:
     async def test_republishes_without_touching_permissions(
         self, zendesk_connector, mock_data_entities_processor
@@ -1897,6 +1991,9 @@ def _ready(connector):
     )
     connector.data_source.list_organization_users = AsyncMock(
         return_value=_make_response(data={"users": [], "next_page": None})
+    )
+    connector.data_source.incremental_users = AsyncMock(
+        return_value=_make_response(data={"users": [], "end_of_stream": True})
     )
     return connector.data_source
 
