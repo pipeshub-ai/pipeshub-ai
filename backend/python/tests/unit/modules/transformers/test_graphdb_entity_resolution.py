@@ -18,6 +18,7 @@ from app.modules.entity_resolution.models import (
     ResolutionMode,
     ResolvedEntity,
 )
+from app.modules.entity_resolution.normalizer import normalize_name
 from app.modules.transformers.graphdb import GraphDBTransformer
 
 TOPICS = CollectionNames.TOPICS.value
@@ -65,6 +66,14 @@ def _resolution(*entities) -> EntityResolution:
     resolution = EntityResolution(org_id="org-1", mode=ResolutionMode.APPLY)
     for entity in entities:
         resolution.add(entity)
+    return resolution
+
+
+def _resolution_with_spellings(entity: ResolvedEntity) -> EntityResolution:
+    """As the resolver leaves it: each of the record's spellings maps to the node."""
+    resolution = _resolution(entity)
+    for spelling in entity.extracted_names:
+        resolution.by_extracted[(entity.kind.collection, normalize_name(spelling))] = entity
     return resolution
 
 
@@ -207,6 +216,47 @@ class TestWithResolution:
         )
         assert _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value) == []
         store.batch_delete_edges.assert_not_awaited()
+
+    async def test_a_single_spelling_edge_gains_the_records_other_spellings(self) -> None:
+        """An edge written before edges carried every spelling keeps its first
+        one and gains the record's others, so details list them all."""
+        store = _tx_store()
+        existing = [{"_to": f"{TOPICS}/k-bug", "name": "Bug bash testing", "extractedName": "Bug bash testing",
+                     "createdAtTimestamp": 7}]
+        store.get_edges_from_node_with_target_name = AsyncMock(
+            side_effect=lambda record_from, edge_collection, **_kwargs: (
+                existing if edge_collection == CollectionNames.BELONGS_TO_TOPIC.value else []
+            )
+        )
+        entity = ResolvedEntity(kind=TOPIC, key="k-bug", name="Bug bash testing", normalized="bug bash testing",
+                                is_new=False, decision="exact",
+                                extracted_names=["Bug bash testing", "Bug bash session"])
+        await _transformer(store).save_metadata_to_db(
+            "rec-1", _metadata(topics=["Bug bash testing", "Bug bash session"]), "vr-1",
+            resolution=_resolution_with_spellings(entity),
+        )
+        (edge,) = _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value)
+        assert edge["extractedName"] == "Bug bash testing"
+        assert edge["extractedNames"] == ["Bug bash testing", "Bug bash session"]
+        assert edge["createdAtTimestamp"] == 7
+
+    async def test_an_edge_with_every_spelling_is_left_as_it_is(self) -> None:
+        store = _tx_store()
+        existing = [{"_to": f"{TOPICS}/k-bug", "name": "Bug bash testing", "extractedName": "Bug bash testing",
+                     "extractedNames": ["Bug bash testing"]}]
+        store.get_edges_from_node_with_target_name = AsyncMock(
+            side_effect=lambda record_from, edge_collection, **_kwargs: (
+                existing if edge_collection == CollectionNames.BELONGS_TO_TOPIC.value else []
+            )
+        )
+        entity = ResolvedEntity(kind=TOPIC, key="k-bug", name="Bug bash testing", normalized="bug bash testing",
+                                is_new=False, decision="exact",
+                                extracted_names=["Bug bash testing", "Bug bash session"])
+        await _transformer(store).save_metadata_to_db(
+            "rec-1", _metadata(topics=["Bug bash testing", "Bug bash session"]), "vr-1",
+            resolution=_resolution_with_spellings(entity),
+        )
+        assert _created_edges(store, CollectionNames.BELONGS_TO_TOPIC.value) == []
 
 
 class TestWithoutResolution:

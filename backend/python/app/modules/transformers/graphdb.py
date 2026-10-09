@@ -319,11 +319,22 @@ class GraphDBTransformer(Transformer):
         cls, existing: dict, record_id: str, to_full: str, spellings: list[str] | None,
     ) -> dict | None:
         """The existing edge with this record's spellings when it records
-        none (edges copied by earlier releases), else ``None``: an edge keeps
-        the spelling it was first written with."""
+        none (edges copied by earlier releases), or, when it records a single
+        spelling without the ``extractedNames`` list (edges written before the
+        list), that spelling first followed by the record's other ones. Else
+        ``None``: an edge keeps the spelling it was first written with."""
         wanted = cls._spelling_fields(spellings)
-        if not wanted or edge_spellings(existing.get("extractedName"), existing.get("extractedNames")):
+        if not wanted:
             return None
+        recorded = edge_spellings(existing.get("extractedName"), existing.get("extractedNames"))
+        if recorded:
+            if existing.get("extractedNames") or len(spellings or []) < 2:
+                return None
+            known = {normalize_name(name) for name in recorded}
+            merged = recorded + [name for name in spellings if normalize_name(name) not in known]
+            if len(merged) == len(recorded):
+                return None
+            wanted = cls._spelling_fields(merged)
         to_collection, to_id = to_full.split("/", 1)
         kept = {k: v for k, v in existing.items() if k not in _EDGE_READ_ONLY_FIELDS}
         return {
