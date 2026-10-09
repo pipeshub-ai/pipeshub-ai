@@ -157,9 +157,15 @@ def own_label_fields(
 
 
 def _patched(semantic_metadata: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
-    # Stored as model_dump(exclude_none=True): an absent level is no key.
-    patched = {**semantic_metadata, **fields}
-    return {k: v for k, v in patched.items() if v is not None}
+    # Stored as model_dump(exclude_none=True): an absent level is no key, and
+    # an empty slot the stored copy did not have is not added.
+    patched = dict(semantic_metadata)
+    for slot, value in fields.items():
+        if value is None or (value == [] and slot not in semantic_metadata):
+            patched.pop(slot, None)
+        else:
+            patched[slot] = value
+    return patched
 
 
 class RecordLabelRepair:
