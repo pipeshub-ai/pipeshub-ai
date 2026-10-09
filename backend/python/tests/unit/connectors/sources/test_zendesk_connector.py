@@ -39,6 +39,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 
 # ---------------------------------------------------------------------------
@@ -1048,14 +1049,16 @@ class TestUnassignedTickets:
 
         assert record.external_record_group_id == UNASSIGNED_GROUP_ID
         assert record.record_group_type == RecordGroupType.PROJECT
-        assert [p.external_id for p in permissions if p.external_id] == [ALL_TICKETS_GROUP_ID]
+        assert [p.external_id for p in permissions if p.external_id] == [
+            ALL_TICKETS_GROUP_ID, "role_public_groups",
+        ]
 
-    def test_unassigned_record_group_is_granted_to_all_tickets_users_only(self, zendesk_connector):
+    def test_unassigned_record_group_is_granted_to_all_and_public_groups_agents_only(self, zendesk_connector):
         record_group, permissions = zendesk_connector._build_unassigned_record_group()
 
         assert record_group.external_group_id == UNASSIGNED_GROUP_ID
         assert record_group.group_type == RecordGroupType.PROJECT
-        assert [p.external_id for p in permissions] == [ALL_TICKETS_GROUP_ID]
+        assert [p.external_id for p in permissions] == [ALL_TICKETS_GROUP_ID, "role_public_groups"]
 
 
 # ===========================================================================
@@ -1180,9 +1183,73 @@ class TestRecordPermissions:
         )
 
     def test_never_falls_back_to_org_when_nothing_known(self, zendesk_connector):
-        # Fail closed: nobody but all-tickets users sees a record with no group or requester.
+        # Fail closed: only agents Zendesk lets read unassigned tickets see one with no requester.
         perms = zendesk_connector._record_permissions(None, {})
-        assert [p.external_id for p in perms] == ["role_all_tickets"]
+        assert [p.external_id for p in perms] == ["role_all_tickets", "role_public_groups"]
+
+    def test_a_grouped_ticket_is_not_opened_to_public_groups_agents_directly(self, zendesk_connector):
+        perms = zendesk_connector._record_permissions(7, {})
+        assert "role_public_groups" not in {p.external_id for p in perms}
+
+
+class TestGroupVisibility:
+    """Private groups are Enterprise: members and "all" agents read them, nobody else."""
+
+    @staticmethod
+    def _groups(zendesk_connector, groups, memberships):
+        datasource = _ready(zendesk_connector)
+        datasource.list_groups = AsyncMock(return_value=_make_response(
+            data={"groups": groups, "meta": {"has_more": False}}
+        ))
+        datasource.list_group_memberships = AsyncMock(return_value=_make_response(
+            data={"group_memberships": memberships, "meta": {"has_more": False}}
+        ))
+
+    async def test_private_group_members_keep_access(self, zendesk_connector):
+        self._groups(zendesk_connector, [{"id": 7, "name": "VIP", "is_public": False}],
+                     [{"group_id": 7, "user_id": 1}])
+        zendesk_connector._role_ticket_access = {"10": "within-groups"}
+        zendesk_connector._user_id_to_data = {"1": {"id": 1, "role": "agent", "custom_role_id": 10}}
+
+        _, user_groups, _ = await zendesk_connector._fetch_groups({"1": _app_user("1")})
+
+        assert [m.source_user_id for m in user_groups[0][1]] == ["1"]
+
+    async def test_public_groups_agents_join_public_groups_only(self, zendesk_connector):
+        self._groups(
+            zendesk_connector,
+            [{"id": 7, "name": "Support", "is_public": True}, {"id": 8, "name": "VIP", "is_public": False}],
+            [],
+        )
+        zendesk_connector._role_ticket_access = {"10": "within-groups-and-public-groups"}
+        zendesk_connector._user_id_to_data = {"1": {"id": 1, "role": "agent", "custom_role_id": 10}}
+
+        _, user_groups, _ = await zendesk_connector._fetch_groups({"1": _app_user("1")})
+
+        members = {g.source_user_group_id: [m.source_user_id for m in ms] for g, ms in user_groups}
+        assert members == {"group_7": ["1"], "group_8": []}
+
+    def test_public_groups_agents_read_unassigned_tickets(self, zendesk_connector):
+        zendesk_connector._role_ticket_access = {"10": "within-groups-and-public-groups", "11": "within-groups"}
+        zendesk_connector._user_id_to_data = {
+            "1": {"id": 1, "role": "agent", "custom_role_id": 10},
+            "2": {"id": 2, "role": "agent", "custom_role_id": 11},
+            "3": {"id": 3, "role": "agent", "custom_role_id": 10, "suspended": True},
+        }
+        zendesk_connector._user_id_to_app_user = {uid: _app_user(uid) for uid in ("1", "2", "3")}
+
+        group, members = zendesk_connector._build_public_groups_group()
+
+        assert group.source_user_group_id == "role_public_groups"
+        assert [m.source_user_id for m in members] == ["1"]
+        _, grants = zendesk_connector._build_unassigned_record_group()
+        assert "role_public_groups" in {p.external_id for p in grants}
+
+    def test_within_organization_role_gets_org_access(self, zendesk_connector):
+        zendesk_connector._role_ticket_access = {"10": "within-organization"}
+        user = {"id": 1, "role": "agent", "custom_role_id": 10}
+
+        assert zendesk_connector._effective_ticket_access(user, zendesk_connector._role_ticket_access) == "organization"
 
 
 # ===========================================================================
@@ -1922,6 +1989,28 @@ class TestRunSync:
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
+    async def test_failed_or_partial_runs_notify_the_admin(self, _filters, zendesk_connector):
+        _ready(zendesk_connector)
+        self._stub_stages(zendesk_connector, _app_user())
+        zendesk_connector.notify = AsyncMock()
+
+        zendesk_connector._fetch_users = AsyncMock(side_effect=ZendeskAuthError("re-auth"))
+        with pytest.raises(ZendeskAuthError):
+            await zendesk_connector.run_sync()
+        assert zendesk_connector.notify.await_args.kwargs["type"] == (
+            NotificationType.CONNECTOR_AUTH_ERROR
+        )
+
+        self._stub_stages(zendesk_connector, _app_user())
+        user = _app_user()
+        zendesk_connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, False))
+        await zendesk_connector.run_sync()
+        kwargs = zendesk_connector.notify.await_args.kwargs
+        assert kwargs["severity"] == NotificationSeverity.WARNING
+        assert "tickets" in kwargs["message"]
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
     async def test_truncated_user_export_skips_membership_sync(
         self, _filters, zendesk_connector, mock_data_entities_processor
     ):
@@ -1982,13 +2071,13 @@ class TestRunSync:
         await zendesk_connector.run_sync()
 
         mock_data_entities_processor.on_new_app_users.assert_not_awaited()
-        # Only the all-tickets group: always written so ticket grants never dangle.
+        # Only the role groups: always written so ticket grants never dangle.
         written = [
             ug.source_user_group_id
             for call in mock_data_entities_processor.on_new_user_groups.await_args_list
             for ug, _ in call.args[0]
         ]
-        assert written == ["role_all_tickets"]
+        assert written == ["role_all_tickets", "role_public_groups"]
         mock_data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     async def test_incremental_sync_delegates_to_full_sync(self, zendesk_connector):
@@ -4648,6 +4737,44 @@ class TestDeletedTicketGroupFolder:
             "group_8", "zd-conn-1"
         )
         assert states["zendesk_ticket_groups"]["groupIds"] == []
+
+
+class TestNarrowedDateFilter:
+    @staticmethod
+    def _modified_after(connector, start_ms):
+        modified = MagicMock()
+        modified.get_value.return_value = (start_ms, None)
+        connector.sync_filters = {SyncFilterKey.MODIFIED: modified}
+
+    async def test_records_last_changed_before_the_filter_are_removed(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        self._modified_after(zendesk_connector, 2_000)
+        old = MagicMock(id="rec-old", external_record_id="1",
+                        source_created_at=500, source_updated_at=1_000)
+        recent = MagicMock(id="rec-new", external_record_id="2",
+                           source_created_at=500, source_updated_at=3_000)
+        mock_tx_store.get_records_by_record_type = AsyncMock(return_value=[old, recent])
+        mock_data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
+
+        removed = await zendesk_connector._remove_records_outside_date_filters(
+            RecordType.TICKET
+        )
+
+        assert removed == 1
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-old"], "zd-conn-1"
+        )
+
+    async def test_nothing_is_read_without_a_date_filter(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        zendesk_connector.sync_filters = {}
+
+        assert await zendesk_connector._remove_records_outside_date_filters(
+            RecordType.TICKET
+        ) == 0
+        mock_tx_store.get_records_by_record_type.assert_not_awaited()
 
 
 class TestVanishedArticles:

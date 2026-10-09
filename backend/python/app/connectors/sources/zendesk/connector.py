@@ -148,6 +148,10 @@ DELETED_TICKET_STATUS = "deleted"
 # whatever its group, so they cannot be derived from group membership.
 ALL_TICKETS_GROUP_ID = "role_all_tickets"
 ALL_TICKETS_ACCESS = "all"
+# Custom-role ticket_access "within-groups-and-public-groups": Zendesk treats these
+# agents as members of every public group and lets them read unassigned tickets.
+PUBLIC_GROUPS_ACCESS = "public_groups"
+PUBLIC_GROUPS_GROUP_ID = "role_public_groups"
 UNASSIGNED_GROUP_ID = "unassigned_tickets"
 # Custom roles exist on Enterprise plans only; other plans answer with one of these.
 CUSTOM_ROLES_UNAVAILABLE_STATUSES = frozenset({403, 404})
@@ -320,6 +324,7 @@ class ZendeskConnector(BaseConnector):
         self._current_help_center_group_ids: List[str] = []
         self._current_ticket_group_ids: List[str] = []
         self._deleted_ticket_group_ids: set[str] = set()
+        self._skipped_this_sync: List[str] = []
         self._token_refresh_lock = asyncio.Lock()
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -380,6 +385,43 @@ class ZendeskConnector(BaseConnector):
         return stored if stored and stored != in_use else None
 
     async def run_sync(self) -> None:
+        self._skipped_this_sync = []
+        try:
+            await self._run_sync()
+        except ZendeskAuthError as e:
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name} connector needs to be re-authorized",
+                message=str(e),
+            )
+            raise
+        except Exception as e:
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name} sync failed",
+                message=(
+                    f"The sync stopped due to an error: {str(e)[:200]}. Recent Zendesk "
+                    "changes may not be in search yet. It is retried on the next sync."
+                ),
+            )
+            raise
+        if self._skipped_this_sync:
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.WARNING,
+                title=f"{self.display_name} sync skipped some data",
+                message=(
+                    "Zendesk did not return everything, so this was left for the next "
+                    f"sync: {'; '.join(sorted(set(self._skipped_this_sync)))}."
+                ),
+            )
+
+    def _skip(self, what: str) -> None:
+        self._skipped_this_sync.append(what)
+
+    async def _run_sync(self) -> None:
         self.logger.info(f"Starting Zendesk sync for connector {self.connector_id}")
 
         # Sideloads and visibility caches describe one source snapshot only. Reusing
@@ -442,6 +484,7 @@ class ZendeskConnector(BaseConnector):
                     group_user_groups, replace_members=replace_members
                 )
         elif group_user_groups:
+            self._skip("group memberships")
             self.logger.error(
                 "Zendesk: skipping group membership sync — the %s export was truncated "
                 "and on_new_user_groups would rebuild each group from partial data",
@@ -457,15 +500,17 @@ class ZendeskConnector(BaseConnector):
                 prefixes=("staff_",),
             )
             await self.data_entities_processor.on_new_user_groups(
-                [all_access_group, *staff_access_groups],
+                [all_access_group, self._build_public_groups_group(), *staff_access_groups],
                 replace_members=replace_members,
             )
         else:
+            self._skip("agent access")
             self.logger.error(
                 "Zendesk: skipping all-tickets access group — the user export was "
                 "truncated and the group is rebuilt from scratch on every write"
             )
         if not replace_members:
+            self._skip("custom role access")
             self.logger.error(
                 "Zendesk: custom role export failed — keeping existing group and "
                 "all-tickets members, adding only agents whose access is known"
@@ -496,6 +541,7 @@ class ZendeskConnector(BaseConnector):
                 )
             await self._sync_shared_org_members(shared_org_groups)
         if not orgs_complete:
+            self._skip("organizations")
             self.logger.error(
                 "Zendesk: organization export was truncated — organizations past the "
                 "break have no group, so their org-wide ticket grant is withheld"
@@ -521,6 +567,7 @@ class ZendeskConnector(BaseConnector):
                 )
         else:
             ticket_count = 0
+            self._skip("tickets")
             self.logger.error(
                 "Zendesk: skipping ticket sync — group or all-tickets membership was "
                 "not written, so every ticket would land without that grant and the advanced sync "
@@ -649,6 +696,7 @@ class ZendeskConnector(BaseConnector):
                 user_data, self._role_ticket_access
             ):
                 members_by_group[group_id].append(user)
+        public_groups_agents = self._public_groups_agents(user_email_map)
 
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
@@ -676,11 +724,12 @@ class ZendeskConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
             )
-            group_members = (
-                []
-                if group_data.get("is_public") is False
-                else members_by_group.get(group_id, [])
-            )
+            group_members = list(members_by_group.get(group_id, []))
+            if group_data.get("is_public") is not False:
+                listed = {member.source_user_id for member in group_members}
+                group_members += [
+                    agent for agent in public_groups_agents if agent.source_user_id not in listed
+                ]
             user_groups.append((user_group, group_members))
 
             record_group = RecordGroup(
@@ -724,7 +773,7 @@ class ZendeskConnector(BaseConnector):
             connector_id=self.connector_id,
             group_type=RecordGroupType.PROJECT,
         )
-        return record_group, [self._all_tickets_permission()]
+        return record_group, [self._all_tickets_permission(), self._public_groups_permission()]
 
     async def _fetch_custom_role_ticket_access(self) -> Tuple[Dict[str, str], bool]:
         """Map custom role id -> ticket_access, plus whether the list is trustworthy.
@@ -787,6 +836,8 @@ class ZendeskConnector(BaseConnector):
         aliases = {
             "within-groups": "groups",
             "within_groups": "groups",
+            "within-groups-and-public-groups": PUBLIC_GROUPS_ACCESS,
+            "within-organization": "organization",
             "assigned-only": "assigned",
             "requested-only": "requested",
             "organization-only": "organization",
@@ -816,7 +867,8 @@ class ZendeskConnector(BaseConnector):
             "organization": 1,
             "organization_only": 1,
             "groups": 1,
-            "all": 2,
+            PUBLIC_GROUPS_ACCESS: 2,
+            "all": 3,
         }
         values = [value for value in (role_access, own_access) if value in access_rank]
         if not values:
@@ -829,7 +881,14 @@ class ZendeskConnector(BaseConnector):
         if user_data.get("active") is False or user_data.get("suspended"):
             return False
         access = self._effective_ticket_access(user_data, role_ticket_access)
-        return access in {"all", "groups"}
+        return access in {"all", "groups", PUBLIC_GROUPS_ACCESS}
+
+    def _has_public_groups_access(
+        self, user_data: Dict[str, Any], role_ticket_access: Dict[str, str]
+    ) -> bool:
+        if user_data.get("active") is False or user_data.get("suspended"):
+            return False
+        return self._effective_ticket_access(user_data, role_ticket_access) == PUBLIC_GROUPS_ACCESS
 
     async def _build_all_tickets_group(
         self,
@@ -861,6 +920,33 @@ class ZendeskConnector(BaseConnector):
         )
         self.logger.info(f"Zendesk: {len(members)} users have all-tickets access")
         return (group, members), complete
+
+    def _public_groups_agents(self, users: Dict[str, AppUser]) -> List[AppUser]:
+        return [
+            app_user
+            for user_id, app_user in users.items()
+            if self._has_public_groups_access(
+                self._user_id_to_data.get(user_id, {}), self._role_ticket_access
+            )
+        ]
+
+    def _build_public_groups_group(self) -> Tuple[AppUserGroup, List[AppUser]]:
+        """Agents who may read unassigned tickets; always returned so the grant resolves."""
+        group = AppUserGroup(
+            app_name=Connectors.ZENDESK,
+            connector_id=self.connector_id,
+            source_user_group_id=PUBLIC_GROUPS_GROUP_ID,
+            name="Zendesk: public groups access",
+            org_id=self.data_entities_processor.org_id,
+        )
+        return group, self._public_groups_agents(self._user_id_to_app_user)
+
+    def _public_groups_permission(self) -> Permission:
+        return Permission(
+            external_id=PUBLIC_GROUPS_GROUP_ID,
+            type=PermissionType.READ,
+            entity_type=EntityType.GROUP,
+        )
 
     def _build_staff_access_groups(
         self,
@@ -1119,6 +1205,8 @@ class ZendeskConnector(BaseConnector):
             synced += page_synced
             removed += page_removed
             pending_ticket_ids.update(failed_ids)
+            if failed_ids:
+                self._skip("some tickets")
 
             # Commit the cursor only after every record and attachment on this page
             # has been stored. A crash replays at most the unfinished page.
@@ -1159,6 +1247,7 @@ class ZendeskConnector(BaseConnector):
         # Advancing past a truncated export skips every ticket the failed pages held,
         # permanently — the next run would start after tickets it never saw.
         if not complete:
+            self._skip("tickets")
             self.logger.error(
                 "Zendesk: ticket export truncated — leaving the sync point at %s so the "
                 "next run re-reads the missing window", start_time,
@@ -1178,6 +1267,8 @@ class ZendeskConnector(BaseConnector):
                 "Zendesk: ignoring ticket checkpoint from a superseded sync"
             )
             return synced
+        if self._rebuild_ticket_edges:
+            removed += await self._remove_records_outside_date_filters(RecordType.TICKET)
         await self.records_sync_point.update_sync_point(
             SYNC_POINT_KEY,
             {
@@ -1379,6 +1470,35 @@ class ZendeskConnector(BaseConnector):
                 record_ids.extend(await self._with_attachment_ids(existing))
         return record_ids
 
+    async def _remove_records_outside_date_filters(self, record_type: RecordType) -> int:
+        """Remove stored records a narrowed date filter no longer admits.
+
+        The modified filter moves the export's start forward, so a full sync never
+        re-reads, and so never removes, anything last changed before it.
+        """
+        if not any(
+            self.sync_filters
+            and self.sync_filters.get(key)
+            and isinstance(self.sync_filters.get(key).get_value(default=None), tuple)
+            for key in (SyncFilterKey.CREATED, SyncFilterKey.MODIFIED)
+        ):
+            return 0
+        async with self.data_store_provider.transaction() as tx_store:
+            held = await tx_store.get_records_by_record_type(
+                self.connector_id, record_type.value
+            )
+        removed_ids: List[str] = []
+        for record in held:
+            if not self._is_allowed_by_date_filters(
+                record.source_created_at, record.source_updated_at
+            ):
+                removed_ids.extend(await self._with_attachment_ids(record))
+        if removed_ids:
+            await self.data_entities_processor.on_records_deleted_cascade(
+                removed_ids, self.connector_id
+            )
+        return len(removed_ids)
+
     async def _with_attachment_ids(self, record: Record) -> List[str]:
         """The record's id plus its attachments', for a cascade delete.
 
@@ -1557,6 +1677,7 @@ class ZendeskConnector(BaseConnector):
         if not articles_complete:
             # A short list would read as "deleted" to the removal pass below, and
             # advancing past a truncated window would skip those articles for good.
+            self._skip("Help Center articles")
             self.logger.error(
                 "Zendesk: article export truncated — leaving the sync point at %s so the "
                 "next run re-reads the missing window", start_time,
@@ -1625,6 +1746,7 @@ class ZendeskConnector(BaseConnector):
                 )
 
         if article_failed:
+            self._skip("Help Center articles")
             self.logger.error(
                 "Zendesk: some articles failed — leaving the sync point at %s so the "
                 "next run re-reads them", start_time,
@@ -1637,6 +1759,15 @@ class ZendeskConnector(BaseConnector):
                 "Zendesk: ignoring article checkpoint from a superseded sync"
             )
             return 0
+        if self._rebuild_article_edges:
+            removed_articles = await self._remove_records_outside_date_filters(
+                RecordType.WEBPAGE
+            )
+            if removed_articles:
+                self.logger.info(
+                    f"Zendesk: removed {removed_articles} articles and attachments "
+                    "outside the date filters"
+                )
         remaining_stale_groups = await self._delete_empty_record_groups(
             self._stale_help_center_group_ids
         )
@@ -1713,6 +1844,7 @@ class ZendeskConnector(BaseConnector):
             datasource.list_articles, "articles", offset_only=True
         )
         if not complete:
+            self._skip("deleted Help Center articles")
             self.logger.error(
                 "Zendesk: article list truncated — skipping the deleted-article check"
             )
@@ -1915,6 +2047,7 @@ class ZendeskConnector(BaseConnector):
             datasource.list_categories, "categories"
         )
         if not categories_complete:
+            self._skip("Help Center")
             self.logger.error(
                 "Zendesk: category list truncated - sections would be filed under a "
                 "parent that does not exist yet, so skipping this pass"
@@ -1924,6 +2057,7 @@ class ZendeskConnector(BaseConnector):
             datasource.list_sections, "sections"
         )
         if not sections_complete:
+            self._skip("Help Center")
             self.logger.error(
                 "Zendesk: section list truncated - articles under the missing sections "
                 "would be filed under an invented record group, so skipping this pass"
@@ -3295,6 +3429,8 @@ class ZendeskConnector(BaseConnector):
                 type=PermissionType.READ,
                 entity_type=EntityType.GROUP,
             ))
+        else:
+            permissions.append(self._public_groups_permission())
         for staff_id in {str(value) for value in (assignee_id, requester_id) if value}:
             staff_data = self._user_id_to_data.get(staff_id, {})
             access = self._effective_ticket_access(staff_data, self._role_ticket_access)
