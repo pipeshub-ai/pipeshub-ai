@@ -18,10 +18,19 @@ classify -> resolve_entities -> record summary -> blob -> enrich (graph + entity
 
 Both the service path (`app/events/events.py`) and the legacy pipeline
 (`app/modules/transformers/pipeline.py`) call
-`SinkOrchestrator.resolve_entities(ctx)`. The resolver mutates
-`record.semantic_metadata` to canonical names and attaches an
+`SinkOrchestrator.resolve_entities(ctx)`. The resolver attaches an
 `EntityResolution` to the transform context; `GraphDBTransformer` reads it to
-pick the nodes.
+pick the node each name links to, looking the name up by the record's own
+spelling.
+
+`record.semantic_metadata` keeps the names extracted from the record's own
+content. The resolver only cleans them: blank, invalid and repeated names are
+dropped, the subcategory chain stops at the first missing level, and
+languages take their ISO form. It never writes a canonical node's name into
+a record, because that name is the spelling of whichever record created the
+node. The summary, the stored copy and everything rendered from them (the
+`Topics:` and `Category:` lines of search and agent results) therefore show
+only the record's own words.
 
 ## The three tiers
 
@@ -66,12 +75,15 @@ record-group entities are identities and are never merged.
   inserts of the same key conflict and fail one record's enrichment.
 - Every `belongsTo*` edge the resolver writes carries `extractedName`, the raw
   string the model produced for that record. A wrong merge can be undone per
-  record from it. Edges copied onto a deduplicated record by
-  `copy_document_relationships` carry only `createdAtTimestamp`.
+  record from it, and it is how the record's own spelling of a node is read
+  back (see "What users see"). Edges copied onto a deduplicated record by
+  `copy_document_relationships` carry the source edge's `extractedName`,
+  since the copy has the same content; copies made by earlier releases carry
+  only `createdAtTimestamp`.
 - The entity vector point for a node keeps its id and is embedded from the
   canonical name only, so the vector never drifts as merges accumulate.
-  Aliases are payload only: shown to the merge model and in
-  `search_entities` results, never embedded. A point is rewritten only when
+  Aliases are payload only: shown to the merge model, never embedded and
+  never shown to users. A point is rewritten only when
   its payload or membership changed.
 
 Aliases are written only to a node of the writing org: a legacy node (no
@@ -85,6 +97,74 @@ Subcategories only resolve within their own level, and per-org nodes never
 link across orgs. Legacy global nodes created before the feature are not
 migrated automatically; a reindex moves a record onto canonical nodes, and an
 operator can migrate them (see Consolidation).
+
+## What users see
+
+A canonical node keeps every record's spelling: its `name` is the first and
+its `aliases` are the rest. Users are only shown spellings of records they
+can open.
+
+- A record's labels are its own (see "Where it runs").
+- A record's details (`check_record_access_with_details` on both providers)
+  name each category, subcategory, topic and language by the record's own
+  spelling, read from its edge. Spellings come from
+  `app.services.graph_db.taxonomy.record_spelling`: the edge's
+  `extractedName`; without it, a legacy node's name (legacy nodes were
+  created from the exact name their records extracted) or the name of a node
+  an edge was migrated onto from a legacy node of the same name. An item
+  whose edge records no spelling is left out.
+- `search_entities` names a taxonomy entity by a spelling of a record the
+  user can read, taken from those records' edges with
+  `IGraphDBProvider.get_record_taxonomy_links`: the node's name when one of
+  them spells it that way, otherwise the newest such record's spelling. An
+  entity none of the user's records spell is left out. A failed lookup fails
+  the call, as a failed access check does. `find_records_by_entity` reuses the
+  name `search_entities` showed.
+- The node's stored name is still what the graph's name filters match.
+  `search(entity_ids=[...])` keeps it internally for the filter it builds, so
+  filtering by an entity reaches every record linked to the node; it is not
+  shown.
+- The merge model is shown a candidate's name and aliases. Its output is a
+  decision about ids and never reaches a user.
+
+## Restoring stored labels
+
+Records enriched by releases that wrote canonical names into
+`semantic_metadata` keep those names in their stored copy. The indexing
+service restores them in the background
+(`app/modules/indexing/record_label_repair.py`), with no extraction or model
+call, from the `extractedName` on each record's own edges. The record summary
+vector is embedded from the summary alone and carries no labels, so only the
+stored copy is rewritten.
+
+- One connector (app document) at a time, keyset-paged by record key, one
+  page per tick, under the Redis leader `record_label_repair:leader`. The
+  cursor and counters are on the app document
+  (`recordLabelRepairState`, `...AfterKey`, `...Repaired`, `...Skipped`,
+  `...Failures`, `...Attempts`, `...Exhausted`); a connector is done when
+  `recordLabelRepairState` equals `REPAIR_VERSION`. Connectors being deleted
+  are skipped. The loop ends once every connector is done, and runs again on
+  the next start for connectors added since.
+- Only a record whose edges spell a node differently from the node's name is
+  read from storage, and only a change is written. Labels keep the order the
+  stored copy had; a label no edge backs is dropped. Rewriting the stored
+  copy of a virtual record id that another record wrote is left to that
+  record.
+- A record extracted after the pass started, or being indexed
+  (`processingStartedAt` set), is left alone: indexing writes its own labels.
+  The record is read again just before the write and skipped if it changed.
+  Run it once every indexing replica runs this release; a record indexed by
+  an older replica afterwards keeps its labels until it is indexed again, or
+  until `recordLabelRepairState` is cleared on its connector.
+- A record with an edge to a canonical node that does not carry the spelling
+  (an edge copied onto a deduplicated record by an earlier release) is
+  counted in `recordLabelRepairSkipped`, logged, and left for a reindex. Its
+  stored copy is usually its source record's, which is repaired with the
+  source.
+- A pass with failures is retried from the start twice, then marked done
+  with `recordLabelRepairExhausted: true` and its failure count kept.
+- Progress is logged under `record_label_repair:`.
+- Answers already saved in conversations are not changed.
 
 ## Consolidation
 
