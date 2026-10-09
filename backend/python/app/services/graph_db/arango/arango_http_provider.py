@@ -215,6 +215,7 @@ from app.services.graph_db.taxonomy import (
     hierarchy_edge_key,
     is_taxonomy_collection,
     subcategory_level,
+    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
@@ -491,6 +492,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 ]
             }
         }
+
+        # The per-connector lists predate enrichment edges; a delete through one of
+        # them left the record's taxonomy edges behind.
+        for spec in self.connector_delete_permissions.values():
+            edges = spec["edge_collections"]
+            for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+                if enrichment_edge not in edges:
+                    edges.append(enrichment_edge)
 
     # ==================== Translation Layer ====================
     # Methods to translate between generic format and ArangoDB-specific format
@@ -8951,14 +8960,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 return False
 
-            # Define all edge collections used in the graph
             EDGE_COLLECTIONS = [
                 CollectionNames.RECORD_RELATIONS.value,
                 CollectionNames.BELONGS_TO.value,
-                CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_LANGUAGE.value,
-                CollectionNames.BELONGS_TO_TOPIC.value,
+                *RECORD_ENRICHMENT_EDGE_COLLECTIONS,
                 CollectionNames.IS_OF_TYPE.value,
             ]
 
@@ -10520,6 +10525,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
             },
         }
+        for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+            edge_strategies[enrichment_edge] = {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            }
 
         query_template = """
         FOR edge IN @@edge_collection
@@ -16020,6 +16030,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, transaction)
         await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.IS_OF_TYPE.value, transaction)
         await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.BELONGS_TO.value, transaction)
+        for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+            await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, enrichment_edge, transaction)
 
         # Delete all edges TO this record
         await self.delete_edges_to(record_key, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, transaction)
@@ -16137,6 +16149,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
             },
         }
+        for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+            edge_strategies[enrichment_edge] = {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+            }
 
         query_template = """
         FOR edge IN @@edge_collection

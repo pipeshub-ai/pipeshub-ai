@@ -64,6 +64,16 @@ def hierarchy_edge_key(child_key: str, parent_key: str) -> str:
     return str(uuid.uuid5(_HIERARCHY_EDGE_NAMESPACE, f"{child_key}->{parent_key}"))
 
 
+# Edges indexing enrichment writes from a record. Every record delete removes
+# these, so an edge never points at a record that is gone; a new enrichment edge
+# joins this tuple instead of being added path by path.
+RECORD_ENRICHMENT_EDGE_COLLECTIONS: tuple[str, ...] = (
+    CollectionNames.BELONGS_TO_DEPARTMENT.value,
+    CollectionNames.BELONGS_TO_CATEGORY.value,
+    CollectionNames.BELONGS_TO_LANGUAGE.value,
+    CollectionNames.BELONGS_TO_TOPIC.value,
+)
+
 # The edge collection a record reaches each taxonomy collection over.
 TAXONOMY_EDGE_COLLECTIONS: dict[str, str] = {
     CollectionNames.CATEGORIES.value: CollectionNames.BELONGS_TO_CATEGORY.value,
@@ -107,6 +117,7 @@ __all__ = [
     "MAX_MERGE_REDIRECT_HOPS",
     "MERGED_INTO_FIELD",
     "SUBCATEGORY_LEVELS",
+    "RECORD_ENRICHMENT_EDGE_COLLECTIONS",
     "TAXONOMY_COLLECTIONS",
     "TAXONOMY_EDGE_COLLECTIONS",
     "TAXONOMY_ENTITY_TYPES",
