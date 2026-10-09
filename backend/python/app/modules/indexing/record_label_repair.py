@@ -3,7 +3,8 @@
 Records enriched before each record kept its own extracted labels have, in
 their stored copy, the names of the canonical nodes their categories,
 subcategories, topics and languages resolved to. Their ``belongsTo*`` edges
-kept the record's own spelling (``extractedName``), so the labels are
+kept the record's own spelling (``extractedName``, and every spelling in
+``extractedNames`` once edges carry it), so the labels are
 restored from those, with no extraction or model call. The record summary
 vector is embedded from the summary alone and carries no labels, so the
 stored copy is the only thing rewritten.
@@ -13,11 +14,13 @@ read from storage, and only an actual change is written. A record extracted
 after this process started, or being indexed, is left alone: indexing writes
 its own labels. A record with an edge to a canonical node that does not
 record the spelling (an edge copied onto a deduplicated record before copies
-carried it) is counted and left for a reindex.
+carried it) is counted and left for a reindex, which writes the record's
+spellings onto its existing edges.
 
 Mechanics follow ``vector_membership_backfill``: one Redis leader, one page
 of one connector per tick, a resumable cursor on the app document, bounded
-attempts. The loop ends once every connector is done.
+attempts. The repaired, skipped and failure counters describe the latest
+pass. The loop ends once every connector is done.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
-from app.modules.entity_resolution.normalizer import normalize_name
+from app.modules.entity_resolution.normalizer import normalize_name, spelling_key
 from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
@@ -95,25 +98,40 @@ def _key_of(doc: dict[str, Any]) -> str | None:
 
 
 def _ordered_spellings(current: object, links: list[TaxonomyLink]) -> list[str]:
-    """The spellings of ``links``, in the order the stored labels had them,
-    then any left over by spelling."""
+    """The stored labels with each node name replaced by the record's own
+    spellings of that node, in the stored order, then the spellings of nodes
+    the stored labels did not name.
+
+    A stored label that is a linked node's name (up to case, spacing and
+    punctuation, as merges and migrations move edges only between such
+    names) is what the earlier rewrite wrote; any other stored label is one
+    of the record's own spellings and stays.
+    """
     remaining = sorted(links, key=lambda link: link.spelling or "")
     ordered: list[str] = []
     for value in current if isinstance(current, list) else []:
-        if not isinstance(value, str):
+        if not isinstance(value, str) or not value.strip():
             continue
-        wanted = normalize_name(value)
+        wanted = spelling_key(normalize_name(value))
         match = next(
             (
                 link for link in remaining
-                if wanted in (normalize_name(link.name), normalize_name(link.spelling or ""))
+                if wanted in {
+                    spelling_key(normalize_name(link.name)),
+                    *(spelling_key(normalize_name(s)) for s in link.spellings),
+                }
             ),
             None,
         )
         if match is not None:
             remaining.remove(match)
-            ordered.append(match.spelling or "")
-    ordered.extend(link.spelling or "" for link in remaining)
+            ordered.extend(match.spellings)
+        elif not any(
+            wanted == spelling_key(normalize_name(link.name)) for link in links
+        ):
+            ordered.append(value)
+    for link in remaining:
+        ordered.extend(link.spellings)
     seen: set[str] = set()
     unique: list[str] = []
     for spelling in ordered:
@@ -129,11 +147,12 @@ def own_label_fields(
     """The label fields of a stored ``semantic_metadata`` rebuilt from the
     record's own edges, or ``None`` when an edge does not record its spelling.
 
-    A label no edge backs is dropped, the subcategory chain hangs off the
-    category as on the index path, and an absent subcategory level is
-    ``None``.
+    A stored label that is a linked node's name gives way to the record's
+    spellings of that node; other stored labels are the record's own and
+    stay. The subcategory chain hangs off the category as on the index path,
+    and an absent subcategory level is ``None``.
     """
-    if any(link.spelling is None for link in links):
+    if any(not link.spellings for link in links):
         return None
     by_collection: dict[str, list[TaxonomyLink]] = {}
     for link in links:
@@ -228,10 +247,10 @@ class RecordLabelRepair:
             links = links_by_record.get(key or "")
             if not key or not links:
                 continue
-            if any(link.spelling is None for link in links):
+            if any(not link.spellings for link in links):
                 skipped += 1
                 continue
-            if not any(link.extracted_name and link.spelling != link.name for link in links):
+            if not any(link.extracted_names and link.spellings != (link.name,) for link in links):
                 continue
             try:
                 if await self._repair_record(key, row.get("virtualRecordId"), links):
@@ -253,10 +272,15 @@ class RecordLabelRepair:
         if not await self.lock.refresh():
             return
 
+        # The counters describe one pass: the first page of a pass starts them
+        # again, whether the pass is new or a retry.
+        def _counted(field: str, page_count: int) -> int:
+            return page_count + (_int(app.get(field)) if after_key else 0)
+
         totals = {
-            RecordLabelRepairState.REPAIRED: _int(app.get(RecordLabelRepairState.REPAIRED)) + repaired,
-            RecordLabelRepairState.SKIPPED: _int(app.get(RecordLabelRepairState.SKIPPED)) + skipped,
-            RecordLabelRepairState.FAILURES: _int(app.get(RecordLabelRepairState.FAILURES)) + failed,
+            RecordLabelRepairState.REPAIRED: _counted(RecordLabelRepairState.REPAIRED, repaired),
+            RecordLabelRepairState.SKIPPED: _counted(RecordLabelRepairState.SKIPPED, skipped),
+            RecordLabelRepairState.FAILURES: _counted(RecordLabelRepairState.FAILURES, failed),
         }
         self.logger.info(
             "record_label_repair: page done | connector=%s after=%s records=%d repaired=%d "
@@ -286,9 +310,7 @@ class RecordLabelRepair:
             await self.graph.update_node(app_key, _APPS, {
                 RecordLabelRepairState.AFTER_KEY: None,
                 RecordLabelRepairState.ATTEMPTS: attempts,
-                RecordLabelRepairState.FAILURES: 0,
-                RecordLabelRepairState.REPAIRED: totals[RecordLabelRepairState.REPAIRED],
-                RecordLabelRepairState.SKIPPED: 0,
+                **totals,
             })
             return
         if failures:

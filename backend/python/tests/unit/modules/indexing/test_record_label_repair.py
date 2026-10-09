@@ -246,9 +246,12 @@ class TestARecordGetsItsOwnLabelsBackFromItsEdges:
 class TestOwnLabelFields:
     def _links(self, *rows: tuple[str, str, str, str | None]) -> list[TaxonomyLink]:
         return [
-            TaxonomyLink(record_id="r", collection=c, entity_id=k, name=n, extracted_name=e,
-                         canonical=True, migrated=False)
+            link
             for c, k, n, e in rows
+            if (link := TaxonomyLink.from_row({
+                "recordId": "r", "collection": c, "entityId": k, "name": n, "extractedName": e,
+                "canonical": True, "migrated": False,
+            }))
         ]
 
     def test_the_subcategory_chain_follows_the_category(self) -> None:
@@ -319,3 +322,59 @@ class TestLoop:
 
         assert graph.apps[CONNECTOR][RecordLabelRepairState.STATE] == REPAIR_VERSION
         assert blob.stored["vr-b-open"]["semantic_metadata"]["topics"] == ["Shipping dates", "Product launch window"]
+
+
+class TestEverySpellingAndCounters:
+    async def test_two_spellings_of_one_node_both_come_back(self, world) -> None:
+        graph, blob = world
+        _canonical(graph, TOPICS, "t-nda", "Mutual NDA")
+        _record(graph, blob, "f-two", {"topics": ["Mutual NDA"]})
+        _link(graph, "f-two", BELONGS_TO_TOPIC, TOPICS, "t-nda", "NDA")
+        graph.edges[(BELONGS_TO_TOPIC, f"{RECORDS}/f-two", f"{TOPICS}/t-nda")]["extractedNames"] = [
+            "NDA", "Non-disclosure agreement",
+        ]
+
+        await _run_until_idle(graph, blob)
+
+        assert blob.stored["vr-f-two"]["semantic_metadata"]["topics"] == ["NDA", "Non-disclosure agreement"]
+
+    async def test_the_counters_describe_the_last_pass(self, world) -> None:
+        graph, blob = world
+        _record(graph, blob, "f-flaky", {"topics": ["Falcon launch window"]})
+        _link(graph, "f-flaky", BELONGS_TO_TOPIC, TOPICS, "t-launch", "Product launch window")
+        write = blob.update_record_buffer
+        refused: list[str] = []
+
+        async def _refuse_once(org_id, document_id, record_dict, virtual_record_id) -> tuple[str, int]:
+            if virtual_record_id == "vr-f-flaky" and not refused:
+                refused.append(virtual_record_id)
+                raise RuntimeError("storage busy")
+            return await write(org_id, document_id, record_dict, virtual_record_id)
+
+        blob.update_record_buffer = _refuse_once
+        await _run_until_idle(graph, blob)
+
+        app = graph.apps[CONNECTOR]
+        # Pass 1 restored b-open and failed f-flaky; pass 2 restored f-flaky only.
+        assert app[RecordLabelRepairState.ATTEMPTS] == 1
+        assert app[RecordLabelRepairState.FAILURES] == 0
+        assert app[RecordLabelRepairState.REPAIRED] == 1
+        assert app[RecordLabelRepairState.SKIPPED] == 1
+        assert app[RecordLabelRepairState.EXHAUSTED] is False
+
+    async def test_a_stored_spelling_that_is_no_nodes_name_is_kept(self, world) -> None:
+        """A record whose labels are already its own: two of its spellings
+        share one node, whose name differs in case, and the edge records only
+        the first spelling."""
+        graph, blob = world
+        _canonical(graph, TOPICS, "t-bug", "Bug bash testing")
+        _canonical(graph, TOPICS, "t-rel", "Release checklist")
+        own = ["BUG BASH TESTING", "Bug bash testing session", "Release checklist"]
+        _record(graph, blob, "g-own", {"topics": list(own)})
+        _link(graph, "g-own", BELONGS_TO_TOPIC, TOPICS, "t-bug", "BUG BASH TESTING ")
+        _link(graph, "g-own", BELONGS_TO_TOPIC, TOPICS, "t-rel", "Release checklist")
+
+        await _run_until_idle(graph, blob)
+
+        assert blob.stored["vr-g-own"]["semantic_metadata"]["topics"] == own
+        assert "vr-g-own" not in [w[2] for w in blob.writes]
