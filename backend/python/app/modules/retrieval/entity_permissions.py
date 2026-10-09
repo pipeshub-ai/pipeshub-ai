@@ -425,7 +425,7 @@ async def search_entities_for_user(
 
     rounds, timed_out = await _run_probes(graph_provider, context, probes, deadline) if probes else (0, False)
     kept_probes = [probe for probe in probes if _is_kept(context, probe)]
-    shown_names = await _names_from_permitted_records(graph_provider, kept_probes)
+    shown_names = await _names_from_permitted_records(graph_provider, context, kept_probes, deadline)
     kept = [
         EntityHit(
             entity_id=probe.entity_id,
@@ -457,16 +457,24 @@ def _stored_name(probe: _Probe) -> str:
 
 
 async def _names_from_permitted_records(
-    graph_provider: "IGraphDBProvider", probes: list[_Probe],
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    probes: list[_Probe],
+    deadline: float,
 ) -> dict[tuple[str, str], str]:
     """``{(entity_type, entity_id): name to show}`` for the kept probes.
 
     A category, subcategory, topic or language node is named by whichever
     record created it, and keeps every record's spelling as an alias. It is
     shown under a spelling of a record this user can read: its own name when
-    one of them spells it that way, otherwise the newest such record's. A
-    node none of the user's records spell is left out. Other entity types
-    keep their name.
+    one of them spells it that way, otherwise the newest such record's.
+
+    The readable records the probes found may all have edges that do not
+    record a spelling (copies made by earlier releases), so the walk goes on
+    through the entity's readable records, in widening windows like the
+    probes, until one spells the node or they run out. A node no readable
+    record spells, or one the deadline cut short, is left out. Other entity
+    types keep their name.
     """
     shown = {
         (p.entity_type, p.entity_id): _stored_name(p)
@@ -474,26 +482,65 @@ async def _names_from_permitted_records(
         if p.entity_type not in EXTRACTED_ENTITY_TYPES
     }
     extracted = [p for p in probes if p.entity_type in EXTRACTED_ENTITY_TYPES]
-    record_keys = sorted({r["_key"] for p in extracted for r in p.permitted if r.get("_key")})
-    if not record_keys:
-        return shown
-    try:
-        links = taxonomy_links(await graph_provider.get_record_taxonomy_links(record_keys))
-    except Exception as exc:
-        raise EntityAccessError("Entity name lookup failed") from exc
-    spellings: dict[tuple[str, str], str] = {}
-    for link in links:
-        if link.spelling:
-            spellings.setdefault((link.entity_id, link.record_id), link.spelling)
-    for probe in extracted:
-        stored = _stored_name(probe)
-        own = [
+    spellings: dict[tuple[str, str], tuple[str, ...]] = {}
+    looked_up: set[str] = set()
+
+    async def _look_up(rows: Iterable[dict[str, Any]]) -> None:
+        keys = sorted({r["_key"] for r in rows if r.get("_key")} - looked_up)
+        if not keys:
+            return
+        looked_up.update(keys)
+        try:
+            links = taxonomy_links(await graph_provider.get_record_taxonomy_links(keys))
+        except Exception as exc:
+            raise EntityAccessError("Entity name lookup failed") from exc
+        for link in links:
+            if link.spellings:
+                spellings.setdefault((link.entity_id, link.record_id), link.spellings)
+
+    def _own(probe: _Probe) -> list[str]:
+        return [
             spelling
             for row in probe.permitted
-            if (spelling := spellings.get((probe.entity_id, row.get("_key"))))
+            for spelling in spellings.get((probe.entity_id, row.get("_key")), ())
         ]
+
+    await _look_up(r for p in extracted for r in p.permitted)
+    for planned_window in PROBE_WINDOWS:
+        pending = [p for p in extracted if not _own(p) and not p.exhausted and p.connector_ids]
+        if not pending or time.monotonic() >= deadline:
+            break
+        window = max(1, min(planned_window, PROBE_ROUND_BUDGET // len(pending)))
+        by_offset: dict[int, list[_Probe]] = {}
+        for probe in pending:
+            by_offset.setdefault(probe.walked, []).append(probe)
+        try:
+            for offset, group in sorted(by_offset.items()):
+                by_entity = await _within(deadline, _fetch_permitted(
+                    graph_provider,
+                    context,
+                    [{"id": p.entity_id, "type": p.entity_type, "connectorIds": p.connector_ids} for p in group],
+                    record_types=None,
+                    limit_per_entity=window,
+                    offset=offset,
+                    window=window,
+                    deadline=deadline,
+                ))
+                for probe in group:
+                    rows = _rows_for(by_entity, probe.entity_type, probe.entity_id)
+                    probe.permitted.extend(rows)
+                    probe.walked += rows.examined
+                    probe.exhausted = rows.window_size < window and rows.examined >= rows.window_size
+                    probe.capped = probe.capped or rows.capped
+                await _look_up(r for p in group for r in p.permitted)
+        except TimeoutError:
+            break
+
+    for probe in extracted:
+        own = _own(probe)
         if not own:
             continue
+        stored = _stored_name(probe)
         key = (probe.entity_type, probe.entity_id)
         shown[key] = stored if any(normalize_name(s) == normalize_name(stored) for s in own) else own[0]
     return shown

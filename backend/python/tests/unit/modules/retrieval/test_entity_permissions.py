@@ -789,3 +789,53 @@ class TestNamesShownComeFromReadableRecords:
 
         with pytest.raises(EntityAccessError):
             await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+
+class TestNamesWalkPastRecordsWithoutASpelling:
+    @pytest.mark.asyncio
+    async def test_an_older_readable_record_names_the_entity(self) -> None:
+        """The newest readable records are copies whose edges carry no
+        spelling; an older readable record does spell the node."""
+        copies = [_row(f"copy-{i}", "conf-1", sourceLastModifiedTimestamp=100 - i) for i in range(6)]
+        original = _row("original", "conf-1", sourceLastModifiedTimestamp=1)
+        rows = [*copies, original]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+
+        async def _links(record_keys: list[str], transaction: str | None = None) -> list[dict]:
+            return [
+                {
+                    "recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+                    "canonical": True, "migrated": False,
+                    "extractedName": "Launch plan" if key == "original" else None,
+                }
+                for key in record_keys
+            ]
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_links)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+        assert [r["_key"] for r in hit.records] == ["copy-0", "copy-1", "copy-2"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_left_out_once_every_readable_record_is_walked(self) -> None:
+        rows = [_row(f"copy-{i}", "conf-1") for i in range(6)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=lambda keys, transaction=None: [
+            {"recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+             "canonical": True, "migrated": False, "extractedName": None}
+            for key in keys
+        ])
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        assert await search_entities_for_user(store, graph, _context(), "launch", top_k=5) == []
+        walked = {k for call in graph.get_record_taxonomy_links.await_args_list for k in call.args[0]}
+        assert walked == {r["_key"] for r in rows}
