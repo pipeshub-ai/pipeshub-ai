@@ -73,13 +73,22 @@ record-group entities are identities and are never merged.
   new aliases are written before the record's graph transaction opens: both
   writes are idempotent, and inside two open ArangoDB stream transactions two
   inserts of the same key conflict and fail one record's enrichment.
-- Every `belongsTo*` edge the resolver writes carries `extractedName`, the raw
-  string the model produced for that record. A wrong merge can be undone per
-  record from it, and it is how the record's own spelling of a node is read
-  back (see "What users see"). Edges copied onto a deduplicated record by
-  `copy_document_relationships` carry the source edge's `extractedName`,
-  since the copy has the same content; copies made by earlier releases carry
-  only `createdAtTimestamp`.
+- Every `belongsTo*` edge the resolver writes carries `extractedNames`, every
+  raw string the model produced for that record that resolved to the node
+  (two spellings of one record can share a node), and `extractedName`, the
+  first of them. A wrong merge can be undone per record from them, and they
+  are how the record's own spellings of a node are read back (see "What users
+  see"). An edge keeps the spellings it was first written with. When a
+  record is indexed again and its edge to a node exists without any spelling
+  (copied by an earlier release), the edge gets the record's spellings and
+  keeps its other fields (`createdAtTimestamp`, `mergedFrom`,
+  `migratedFrom`). Edges written before `extractedNames` existed carry only
+  `extractedName`, which readers treat as a one-spelling list.
+- `copy_document_relationships` adds to a deduplicated record only the edges
+  it does not already have, with the source edge's spellings, since the copy
+  has the same content. An edge the record already has keeps its own
+  spellings. Copies made by earlier releases carry only
+  `createdAtTimestamp` until the record is indexed again.
 - The entity vector point for a node keeps its id and is embedded from the
   canonical name only, so the vector never drifts as merges accumulate.
   Aliases are payload only: shown to the merge model, never embedded and
@@ -107,18 +116,23 @@ can open.
 - A record's labels are its own (see "Where it runs").
 - A record's details (`check_record_access_with_details` on both providers)
   name each category, subcategory, topic and language by the record's own
-  spelling, read from its edge. Spellings come from
-  `app.services.graph_db.taxonomy.record_spelling`: the edge's
-  `extractedName`; without it, a legacy node's name (legacy nodes were
-  created from the exact name their records extracted) or the name of a node
-  an edge was migrated onto from a legacy node of the same name. An item
-  whose edge records no spelling is left out.
+  spellings, read from its edge, and list a node the record spelled two ways
+  under both. Spellings come from
+  `app.services.graph_db.taxonomy.record_spellings`: the edge's
+  `extractedNames` (or `extractedName`); without them, a legacy node's name
+  (legacy nodes were created from the exact name their records extracted) or
+  the name of a node an edge was migrated onto from a legacy node of the
+  same name. An item whose edge records no spelling is left out.
 - `search_entities` names a taxonomy entity by a spelling of a record the
   user can read, taken from those records' edges with
   `IGraphDBProvider.get_record_taxonomy_links`: the node's name when one of
-  them spells it that way, otherwise the newest such record's spelling. An
-  entity none of the user's records spell is left out. A failed lookup fails
-  the call, as a failed access check does. `find_records_by_entity` reuses the
+  them spells it that way, otherwise the newest such record's spelling. When
+  none of the readable records the access check found spells the node (they
+  can be copies made by earlier releases), the walk continues through the
+  entity's readable records in widening windows, bounded like the access
+  check and by the same deadline, until one does or they run out. An entity
+  no readable record spells, or one the deadline cut short, is left out. A
+  failed lookup fails the call, as a failed access check does. `find_records_by_entity` reuses the
   name `search_entities` showed.
 - The node's stored name is still what the graph's name filters match.
   `search(entity_ids=[...])` keeps it internally for the filter it builds, so
@@ -133,7 +147,7 @@ Records enriched by releases that wrote canonical names into
 `semantic_metadata` keep those names in their stored copy. The indexing
 service restores them in the background
 (`app/modules/indexing/record_label_repair.py`), with no extraction or model
-call, from the `extractedName` on each record's own edges. The record summary
+call, from the spellings on each record's own edges. The record summary
 vector is embedded from the summary alone and carries no labels, so only the
 stored copy is rewritten.
 
@@ -146,8 +160,10 @@ stored copy is rewritten.
   are skipped. The loop ends once every connector is done, and runs again on
   the next start for connectors added since.
 - Only a record whose edges spell a node differently from the node's name is
-  read from storage, and only a change is written. Labels keep the order the
-  stored copy had; a label no edge backs is dropped. Rewriting the stored
+  read from storage, and only a change is written. A stored label that is
+  the name of a node the record links to (up to case, spacing and
+  punctuation) is replaced, in place, by every spelling the record's edge to
+  that node records; any other stored label is the record's own and stays. Rewriting the stored
   copy of a virtual record id that another record wrote is left to that
   record.
 - A record extracted after the pass started, or being indexed
@@ -158,9 +174,13 @@ stored copy is rewritten.
   until `recordLabelRepairState` is cleared on its connector.
 - A record with an edge to a canonical node that does not carry the spelling
   (an edge copied onto a deduplicated record by an earlier release) is
-  counted in `recordLabelRepairSkipped`, logged, and left for a reindex. Its
-  stored copy is usually its source record's, which is repaired with the
-  source.
+  counted in `recordLabelRepairSkipped`, logged, and left for a reindex,
+  which writes the record's spellings onto that edge. Its stored copy is
+  usually its source record's, which is repaired with the source.
+- `...Repaired`, `...Skipped` and `...Failures` describe the latest pass:
+  each pass, first or retried, starts them at zero. A record restored by an
+  earlier pass is unchanged in a later one and not counted again; each pass
+  is logged. `...Attempts` counts the passes that had failures.
 - A pass with failures is retried from the start twice, then marked done
   with `recordLabelRepairExhausted: true` and its failure count kept.
 - Progress is logged under `record_label_repair:`.
