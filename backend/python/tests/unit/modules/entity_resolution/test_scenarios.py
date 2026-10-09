@@ -158,9 +158,10 @@ class TestR2ExactAndWinnerMerges:
         assert topic_edges[topic_key]["extractedName"] == "BUG BASH TESTING "
         assert len(fake_graph.edges_from("r2", BELONGS_TO_CATEGORY)) == 2
 
-        assert meta.categories == ["Quality Assurance"]
-        assert meta.sub_category_level_1 == "Testing"
-        assert meta.topics == ["Bug bash testing", "Release checklist"]
+        # The record keeps its own spellings; the edges carry the merges.
+        assert meta.categories == ["QA"]
+        assert meta.sub_category_level_1 == "testing"
+        assert meta.topics == ["BUG BASH TESTING", "Bug bash testing session", "Release checklist"]
 
         cat_point = fake_store.point("acme", "category", k("acme", CATEGORIES, "quality assurance"))
         assert cat_point["aliases"] == ["QA"]
@@ -207,7 +208,7 @@ class TestR4Reordering:
         assert fake_graph.node(TOPICS, topic_key)["aliases"] == ["Testing bug bash"]
         (edge,) = fake_graph.edges_from("r4", BELONGS_TO_TOPIC)
         assert edge["to_id"] == topic_key and edge["extractedName"] == "Testing bug bash"
-        assert meta.topics == ["Bug bash testing"]
+        assert meta.topics == ["Testing bug bash"]
 
 
 class TestR5ModelDisplayForm:
@@ -225,7 +226,7 @@ class TestR5ModelDisplayForm:
         node = fake_graph.node(TOPICS, key)
         assert node["name"] == "Release Checklist v2"
         assert node["aliases"] == ["release-checklist v2"]
-        assert meta.topics == ["Release Checklist v2"]
+        assert meta.topics == ["release-checklist v2"]
 
         scripted_model()
         resolution = await run(ctx_factory("r6", "acme", metadata_factory(categories=["Quality Assurance"], topics=["release checklist v2"])))
@@ -289,7 +290,7 @@ class TestR7InRecordCollisionWithExisting:
         assert fake_graph.node(TOPICS, nda_key)["aliases"] == ["Non-disclosure agreement"]
         (edge,) = fake_graph.edges_from("r7b", BELONGS_TO_TOPIC)
         assert edge["to_id"] == nda_key and edge["extractedName"] == "NDA"
-        assert meta.topics == ["NDA"]
+        assert meta.topics == ["NDA", "Non-disclosure agreement"]
 
 
 class TestR8PerOrgIsolation:
@@ -361,7 +362,7 @@ class TestR11InRecordDuplicatesInEmptyOrg:
         assert len(fake_graph.nodes_in(TOPICS)) == 1
         (edge,) = fake_graph.edges_from("f1", BELONGS_TO_TOPIC)
         assert edge["extractedName"] == "Bug bash"
-        assert meta.topics == ["Bug bash"]
+        assert meta.topics == ["Bug bash", "Bug bash testing"]
         assert fake_store.point("fresh", "topic", key)["aliases"] == ["Bug bash testing"]
 
 

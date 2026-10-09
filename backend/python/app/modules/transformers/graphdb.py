@@ -164,8 +164,8 @@ class GraphDBTransformer(Transformer):
 
         entry = resolution.get(kind.collection, name)
         if entry is None:
-            # Every metadata name was rewritten by the resolver, so a miss is
-            # a keying bug; the per-org node is still the right target.
+            # The resolver looked up every metadata name, so a miss is a
+            # keying bug; the per-org node is still the right target.
             self.logger.warning(
                 "entity_resolution: a %s name is missing from the resolution; "
                 "linking its per-org node", kind.collection,

@@ -540,8 +540,8 @@ class EventProcessor:
 
                 record.semantic_metadata = semantic_metadata
                 if semantic_metadata:
-                    # Canonical taxonomy names must be decided before the
-                    # summary, blob and graph writes below all consume them.
+                    # Taxonomy names must be resolved before the summary,
+                    # blob and graph writes below all consume them.
                     await self.sink_orchestrator.resolve_entities(ctx)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     await self.sink_orchestrator.vector_store.index_record_summary(

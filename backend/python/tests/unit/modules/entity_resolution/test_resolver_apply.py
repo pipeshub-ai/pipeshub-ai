@@ -1,4 +1,4 @@
-"""Apply versus shadow versus off, metadata rewriting, and the always-on default."""
+"""Apply versus shadow versus off, the record's own names, and the always-on default."""
 
 from unittest.mock import MagicMock
 
@@ -10,7 +10,7 @@ TOPICS = CollectionNames.TOPICS.value
 
 
 class TestApplyMode:
-    async def test_metadata_rewritten_to_canonical_names_and_context_attached(
+    async def test_metadata_keeps_own_names_and_context_attached(
         self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
     ) -> None:
         from app.modules.entity_resolution.keys import taxonomy_node_key
@@ -32,9 +32,9 @@ class TestApplyMode:
         assert meta.sub_category_level_1 == "testing"
         assert meta.sub_category_level_2 == "Manual testing"
         assert meta.sub_category_level_3 is None
-        assert meta.topics == ["Bug Bash Testing", "Test plan"]
+        assert meta.topics == ["bug bash testing", "Test plan"]
         assert meta.languages == ["English"]
-        assert resolution.get(TOPICS, "Bug Bash Testing").key == key
+        assert resolution.get(TOPICS, "bug bash testing").key == key
 
     async def test_dropped_category_empties_the_chain(
         self, make_resolver, metadata_factory, ctx_factory, scripted_model

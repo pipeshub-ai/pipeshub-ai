@@ -135,7 +135,8 @@ class TestTier0:
         assert resolution.stats.tier0_hits == 1
         assert fake_store.match_calls == []
         assert model.calls == []
-        assert meta.topics == ["Bug bash testing"]
+        assert meta.topics == ["BUG BASH TESTING"]
+        assert resolution.get(TOPICS, "BUG BASH TESTING").key == key
 
     async def test_hit_carries_existing_aliases(
         self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model

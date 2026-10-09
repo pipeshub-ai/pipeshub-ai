@@ -480,10 +480,10 @@ class SinkOrchestrator(Transformer):
     # ------------------------------------------------------------------
 
     async def resolve_entities(self, ctx: TransformContext) -> None:
-        """Canonicalise the record's extracted taxonomy names.
+        """Resolve the record's extracted taxonomy names to canonical nodes.
 
         Must run after classification and before the blob write and
-        ``enrich()``, so every store sees the same canonical names. A no-op
+        ``enrich()``, so every store sees the same cleaned names. A no-op
         without a resolver or without semantic metadata; the resolver itself
         decides between off, shadow and apply.
         """

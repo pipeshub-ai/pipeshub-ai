@@ -212,8 +212,8 @@ class IndexingPipeline:
 
         record = ctx.record
         if record.semantic_metadata:
-            # Canonical taxonomy names must be decided before the blob,
-            # summary and graph writes below all consume them.
+            # Taxonomy names must be resolved before the blob, summary and
+            # graph writes below all consume them.
             await self.sink_orchestrator.resolve_entities(ctx)
             await self.sink_orchestrator.blob_storage.apply(ctx)
             if (record.semantic_metadata.summary or "").strip():
