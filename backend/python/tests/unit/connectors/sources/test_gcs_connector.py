@@ -1366,23 +1366,21 @@ class TestCreateGcsPermissions95:
     async def test_team_scope(self, connector):
         connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_lookup_fails(self, connector):
@@ -1399,7 +1397,7 @@ class TestCreateGcsPermissions95:
         provider.transaction = _tx
         connector.data_store_provider = provider
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector):
@@ -1407,7 +1405,7 @@ class TestCreateGcsPermissions95:
         connector.created_by = "user-1"
         connector.data_store_provider = _make_mock_data_store_provider(user={"email": None})
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
+        assert perms == []
 
 
 class TestTestConnectionAndAccess95:

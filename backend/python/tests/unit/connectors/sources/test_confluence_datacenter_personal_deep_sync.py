@@ -188,12 +188,12 @@ class TestFullSyncIntegration:
         connector.external_client = MagicMock()
         connector.data_source = MagicMock()
         
-        # Mock ensure_connector_group_permission (cache on connector like production)
+        # Mock ensure_creator_user_app_relation (cache on connector like production)
         async def _ensure_group_perm() -> Permission:
             connector._connector_group_permission = mock_group_perm
             return mock_group_perm
 
-        connector.ensure_connector_group_permission = AsyncMock(
+        connector.ensure_creator_user_app_relation = AsyncMock(
             side_effect=_ensure_group_perm
         )
         
@@ -248,7 +248,7 @@ class TestFullSyncIntegration:
                 f"Permission API called: {op_name}"
         
         # Verify ConnectorGroup permission was created
-        connector.ensure_connector_group_permission.assert_called_once()
+        connector.ensure_creator_user_app_relation.assert_called_once()
         
         # Verify spaces were synced with ConnectorGroup permission
         connector.data_entities_processor.on_new_record_groups.assert_called()
@@ -277,7 +277,7 @@ class TestFullSyncIntegration:
         
         connector.external_client = MagicMock()
         connector.data_source = MagicMock()
-        connector.ensure_connector_group_permission = AsyncMock(return_value=mock_group_perm)
+        connector.ensure_creator_user_app_relation = AsyncMock(return_value=mock_group_perm)
         
         mock_datasource = MagicMock()
         mock_datasource.get_spaces_v1 = AsyncMock(return_value=_resp(data={
@@ -332,7 +332,7 @@ class TestPermissionInheritance:
             type=PermissionType.READ
         )
         connector._connector_group_permission = mock_group_perm
-        connector.ensure_connector_group_permission = AsyncMock(return_value=mock_group_perm)
+        connector.ensure_creator_user_app_relation = AsyncMock(return_value=mock_group_perm)
         
         saved_records: list[tuple[Any, list[Permission]]] = []
         

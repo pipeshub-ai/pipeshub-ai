@@ -125,15 +125,18 @@ class ProjectsSync:
             await c.data_entities_processor.ensure_team_app_edge(c.connector_id)
         permissions.extend(visibility_permissions)
         permissions = _dedupe_highest_permissions(permissions)
-        self._accumulate_org_permissions(repo.owner, permissions)
-        # Before the repo group, not after every repo: the org group is the only
-        # one the platform links to the App (a group with a parent never gets
-        # that edge), and connector stats count by walking DOWN from the App.
-        # Flushing at the end left every record of the sync unreachable — and so
-        # counted as zero — until the final write. Flushing here also means the
-        # repo group's parent lookup finds a real group instead of creating a
-        # bare placeholder.
-        await self._flush_org_record_groups()
+        # A personal repo hangs directly off the app. The team connector still
+        # puts an org group above the repo and keeps that group's grants.
+        if getattr(c, "scope", None) != "personal":
+            self._accumulate_org_permissions(repo.owner, permissions)
+            # Before the repo group, not after every repo: the org group is the only
+            # one the platform links to the App (a group with a parent never gets
+            # that edge), and connector stats count by walking DOWN from the App.
+            # Flushing at the end left every record of the sync unreachable — and so
+            # counted as zero — until the final write. Flushing here also means the
+            # repo group's parent lookup finds a real group instead of creating a
+            # bare placeholder.
+            await self._flush_org_record_groups()
         await self._create_record_group_hierarchy(repo, permissions)
 
         for step_name, step in (
@@ -415,7 +418,11 @@ class ProjectsSync:
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=str(repo.id),
-            parent_external_group_id=self._org_parent_external_id(repo.owner.id),
+            parent_external_group_id=(
+                None
+                if getattr(c, "scope", None) == "personal"
+                else self._org_parent_external_id(repo.owner.id)
+            ),
             web_url=getattr(repo, "html_url", None),
             inherit_permissions=getattr(c, "scope", None) == "personal",
         )

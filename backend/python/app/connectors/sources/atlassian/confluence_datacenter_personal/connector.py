@@ -467,12 +467,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 )
 
             # Ensure ConnectorGroup permission
-            group_permission = await self.ensure_connector_group_permission()
-            self.logger.info(
-                "Confluence DC Personal connector %s: connector group permission ready (granted=%s)",
-                self.connector_id,
-                bool(group_permission),
-            )
+            await self.ensure_creator_user_app_relation()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -554,7 +549,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             # The creator's user-app link is the gate. Spaces inherit the app
             # and carry no grant of their own.
             if self._connector_group_permission is None:
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             # Pagination: v1 REST uses start/limit
             batch_size = 25

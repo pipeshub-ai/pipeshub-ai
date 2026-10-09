@@ -229,6 +229,7 @@ class TestMailDelta:
         assert db.record_groups[mailbox_id].inherit_permissions is False
         assert [(p.email, p.type) for p in db.record_group_permissions[mailbox_id]] == [(ANA, PermissionType.OWNER)]
         assert db.record_groups[INBOX].parent_external_group_id == mailbox_id
+        assert db.record_groups[INBOX].permission_model == PermissionModel.RECORD_GROUP_LEVEL
         assert db.record_groups[INBOX].inherit_permissions is True
         assert db.record_group_permissions[INBOX] == []
         assert api.calls("GET", "/v1.0/users/u-bo/mailFolders") == [], "only users active in PipesHub are synced"

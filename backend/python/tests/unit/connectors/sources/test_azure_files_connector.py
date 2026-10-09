@@ -714,7 +714,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
@@ -725,7 +725,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.entity_type == EntityType.ORG for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_empty(self, connector):
@@ -1768,8 +1768,7 @@ class TestCreatePermissions:
     async def test_team_scope(self, conn):
         conn.scope = ConnectorScope.TEAM.value
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, conn):
@@ -1777,8 +1776,7 @@ class TestCreatePermissions:
         conn.creator_email = "creator@test.com"
         conn.created_by = "u-1"
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_falls_back_to_org(self, conn):
@@ -1786,8 +1784,7 @@ class TestCreatePermissions:
         conn.creator_email = None
         conn.created_by = None
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_org_permission(self, conn):

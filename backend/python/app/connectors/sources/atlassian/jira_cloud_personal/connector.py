@@ -283,7 +283,7 @@ class JiraCloudPersonalConnector(JiraConnector):
 
             # The creator's user-app link is the gate. Projects inherit from the
             # app, so this does not stamp a grant on them.
-            await self.ensure_connector_group_permission()
+            await self.ensure_creator_user_app_relation()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,
@@ -404,7 +404,7 @@ class JiraCloudPersonalConnector(JiraConnector):
         # Keeps the creator's user-app link. The returned group permission is
         # not written on the project: an empty list clears one an older sync stored.
         if self.creator_email:
-            await self.ensure_connector_group_permission()
+            await self.ensure_creator_user_app_relation()
 
         record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for project in projects:

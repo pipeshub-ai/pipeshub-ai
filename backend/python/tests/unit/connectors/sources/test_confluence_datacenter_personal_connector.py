@@ -125,13 +125,13 @@ class TestConfluencePersonalConnectorSync:
         connector.external_client = MagicMock()
         connector.data_source = MagicMock()
         
-        # Mock ensure_connector_group_permission
+        # Mock ensure_creator_user_app_relation
         mock_permission = Permission(
             entity_type=EntityType.GROUP,
             external_id="internal-conn-conf-personal-1",
             type=PermissionType.READ
         )
-        connector.ensure_connector_group_permission = AsyncMock(return_value=mock_permission)
+        connector.ensure_creator_user_app_relation = AsyncMock(return_value=mock_permission)
         
         # Mock filters
         connector.sync_filters = FilterCollection()
@@ -145,7 +145,7 @@ class TestConfluencePersonalConnectorSync:
             await connector.run_sync()
             
             # Verify ConnectorGroup permission was created
-            connector.ensure_connector_group_permission.assert_called_once()
+            connector.ensure_creator_user_app_relation.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_run_sync_resolves_creator_email(self):
@@ -154,13 +154,13 @@ class TestConfluencePersonalConnectorSync:
         connector.external_client = MagicMock()
         connector.data_source = MagicMock()
         
-        # Mock ensure_connector_group_permission
+        # Mock ensure_creator_user_app_relation
         mock_permission = Permission(
             entity_type=EntityType.GROUP,
             external_id="internal-conn-conf-personal-1",
             type=PermissionType.READ
         )
-        connector.ensure_connector_group_permission = AsyncMock(return_value=mock_permission)
+        connector.ensure_creator_user_app_relation = AsyncMock(return_value=mock_permission)
         
         connector.sync_filters = FilterCollection()
         connector.indexing_filters = FilterCollection()
@@ -187,7 +187,7 @@ class TestConfluencePersonalConnectorSync:
             external_id="internal-conn-conf-personal-1",
             type=PermissionType.READ
         )
-        connector.ensure_connector_group_permission = AsyncMock(return_value=mock_permission)
+        connector.ensure_creator_user_app_relation = AsyncMock(return_value=mock_permission)
         
         connector.sync_filters = FilterCollection()
         connector.indexing_filters = FilterCollection()
@@ -222,7 +222,7 @@ class TestConfluencePersonalSpaceSync:
             type=PermissionType.READ
         )
         connector._connector_group_permission = mock_permission
-        connector.ensure_connector_group_permission = AsyncMock(return_value=mock_permission)
+        connector.ensure_creator_user_app_relation = AsyncMock(return_value=mock_permission)
         
         # Mock filters
         connector.sync_filters = FilterCollection()

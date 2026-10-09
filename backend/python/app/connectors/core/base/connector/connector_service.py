@@ -319,6 +319,43 @@ class BaseConnector(ABC):
         """
         return f"internal-{self.connector_id}"
 
+    async def ensure_creator_user_app_relation(self) -> None:
+        """Upsert only the creator's user-to-app edge.
+
+        Personal connectors reach every record by inheriting up to the app, so
+        the creator is linked to the app and nowhere else.
+        """
+        if not self.creator_email:
+            self.logger.warning(
+                "Cannot link creator to app for connector %s: no creator email resolved",
+                self.connector_id,
+            )
+            return
+
+        app_name_enum = (
+            self.connector_name
+            if isinstance(self.connector_name, Connectors)
+            else Connectors(self.connector_name)
+        )
+        creator_member = AppUser(
+            app_name=app_name_enum,
+            connector_id=self.connector_id,
+            source_user_id=f"creator_{self.created_by or self.creator_email}",
+            email=self.creator_email,
+            full_name=self.creator_email,
+            org_id=self.data_entities_processor.org_id,
+            is_active=True,
+        )
+        try:
+            await self.data_entities_processor.on_new_app_users([creator_member])
+        except Exception as e:
+            self.logger.warning(
+                "USER_APP_RELATION upsert failed for connector %s creator %s: %s.",
+                self.connector_id,
+                self.creator_email,
+                e,
+            )
+
     async def ensure_connector_group_permission(self) -> Optional[Permission]:
         """Upsert the creator's ``USER_APP_RELATION`` edge and a pseudo
         ``AppUserGroup`` named ``ConnectorGroup`` for this connector, then

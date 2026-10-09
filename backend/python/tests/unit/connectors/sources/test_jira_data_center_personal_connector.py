@@ -275,10 +275,9 @@ class TestPersonalRunSyncOrchestration:
         ):
             await conn.run_sync()
 
-        # Helper invoked exactly once and produces a fresh, non-stale permission.
-        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
-        assert conn._connector_group_permission is not None
-        assert conn._connector_group_permission.external_id != "stale"
+        # The creator is linked to the app. No ConnectorGroup is written.
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        assert conn._connector_group_permission is None
         # Downstream steps still run.
         conn._fetch_projects.assert_awaited_once()
         conn._sync_all_project_issues.assert_awaited_once()

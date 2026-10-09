@@ -492,13 +492,11 @@ def apply_issue_access(
     its own project. Attachments are handled separately and stay empty.
     """
     if not context.enforce:
-        # A personal account has no issue security. A story still lists under its
-        # epic, but access follows the project, which inherits the app.
+        # A personal account has no issue security. A nested issue inherits its
+        # parent issue. One with no parent inherits the project, which inherits the app.
         record.inherit_permissions = True
         record.rewrite_permissions = True
-        record.inherit_permissions_from_group = bool(
-            record.parent_external_record_id
-        ) or is_subtask
+        record.inherit_permissions_from_group = False
         return [], []
     record.inherit_permissions = True
     record.inherit_permissions_from_group = False

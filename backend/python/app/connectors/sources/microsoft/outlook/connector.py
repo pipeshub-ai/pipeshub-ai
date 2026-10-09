@@ -1920,6 +1920,7 @@ class OutlookConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 inherit_permissions=True,
                 web_url=None,
                 source_created_at=None,

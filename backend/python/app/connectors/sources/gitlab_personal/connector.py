@@ -71,7 +71,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
         self.logger.info(
             "Ensuring GitLab personal group record groups for %s", group_paths
         )
-        for group_path in group_paths:
+        for group_path in sorted(group_paths, key=lambda path: str(path).count("/")):
             group_res = await c.runtime.ds_call(c.data_source.get_group, group_path)
             if group_res.success is True and group_res.data:
                 group = group_res.data
@@ -82,6 +82,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 full_path = group_path
                 name = group_path
                 web_url = None
+            parent_path = full_path.rsplit("/", 1)[0] if "/" in str(full_path) else None
             group_rg = RecordGroup(
                 org_id=c.data_entities_processor.org_id,
                 name=name,
@@ -89,6 +90,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=full_path,
+                parent_external_group_id=parent_path,
                 web_url=web_url,
                 inherit_permissions=True,
             )
@@ -327,7 +329,7 @@ class GitLabPersonalConnector(GitLabConnector):
                 # write rather than dropping the permission for the first
                 # project / group. creator_user_permission (overridden
                 # above) reads the cached permission populated here.
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             self.logger.info("Starting sync of projects")
             await self.projects.sync_all_projects()

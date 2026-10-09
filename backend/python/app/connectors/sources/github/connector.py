@@ -302,7 +302,7 @@ class GithubConnector(GitHubTeamsConnector):
                     self.connector_id,
                 )
             else:
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             self.logger.info("Starting sync of GitHub repositories")
             await self.projects.sync_all_repos()

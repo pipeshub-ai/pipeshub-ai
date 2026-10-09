@@ -262,7 +262,7 @@ class NotionPersonalConnector(NotionConnector):
                 # record-group write, so the GROUP-permission lookup in
                 # on_new_record_groups resolves on the first write instead of
                 # silently dropping the permission.
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             await self._sync_users()
             await self._sync_objects_by_type("data_source")

@@ -111,7 +111,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.microsoft.microsoft import (
     GraphMode,
     MSGraphClientWithDelegatedAuth,
@@ -847,7 +847,7 @@ class OutlookIndividualConnector(BaseConnector):
         return f"mailbox:{user.source_user_id}"
 
     def _transform_to_mailbox_record_group(self, user: AppUser) -> RecordGroup:
-        """One mailbox root. It inherits the app and holds the owner grant thread lookup walks to."""
+        """One mailbox root. It inherits the app."""
         label = user.email or user.full_name or "Mailbox"
         return RecordGroup(
             org_id=self.data_entities_processor.org_id,
@@ -858,6 +858,7 @@ class OutlookIndividualConnector(BaseConnector):
             connector_name=Connectors.OUTLOOK_INDIVIDUAL,
             connector_id=self.connector_id,
             group_type=RecordGroupType.MAILBOX,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             inherit_permissions=True,
         )
 
@@ -903,6 +904,7 @@ class OutlookIndividualConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK_INDIVIDUAL,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 # App-level: the creator is the only user through the gate, so a
                 # folder inherits that instead of carrying its own grant.
                 inherit_permissions=True,
@@ -960,15 +962,9 @@ class OutlookIndividualConnector(BaseConnector):
 
             self.logger.info(f"Syncing {len(record_groups)} folders for user {user.email}")
 
-            owner_permission = Permission(
-                email=user.email,
-                external_id=user.source_user_id,
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER,
-            )
             if record_groups:
                 await self.data_entities_processor.on_new_record_groups(
-                    [(self._transform_to_mailbox_record_group(user), [owner_permission])]
+                    [(self._transform_to_mailbox_record_group(user), [])]
                     + [(rg, []) for rg in record_groups]
                 )
 
