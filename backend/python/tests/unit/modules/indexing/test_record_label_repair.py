@@ -259,3 +259,61 @@ class TestOwnLabelFields:
 
     def test_unknown_spelling_on_a_canonical_node_means_no_change(self) -> None:
         assert own_label_fields({"topics": ["X"]}, self._links((TOPICS, "t", "X", None))) is None
+
+
+class TestFailures:
+    async def test_a_failing_write_is_retried_then_given_up_with_the_count_kept(self, world) -> None:
+        from app.modules.indexing.record_label_repair import MAX_ATTEMPTS
+
+        graph, blob = world
+
+        async def _refuse(*_args, **_kwargs):
+            raise RuntimeError("storage down")
+
+        blob.update_record_buffer = _refuse
+        await _run_until_idle(graph, blob)
+
+        app = graph.apps[CONNECTOR]
+        assert app[RecordLabelRepairState.STATE] == REPAIR_VERSION
+        assert app[RecordLabelRepairState.EXHAUSTED] is True
+        assert app[RecordLabelRepairState.ATTEMPTS] == MAX_ATTEMPTS
+        assert app[RecordLabelRepairState.FAILURES] == 1
+
+    async def test_a_deleting_connector_is_not_repaired(self, world) -> None:
+        graph, blob = world
+        graph.apps[CONNECTOR]["status"] = "DELETING"
+        assert await _run_until_idle(graph, blob) == ["idle"]
+        assert blob.reads == []
+
+
+class TestLoop:
+    def test_indexing_starts_and_stops_the_repair_loop(self) -> None:
+        import inspect
+
+        from app import indexing_main
+
+        source = inspect.getsource(indexing_main)
+        assert source.count("run_record_label_repair_loop(app_container, graph_provider)") == 2
+        assert 'getattr(app.state, "label_repair_task", None)' in source
+        assert 'getattr(app.state, "label_repair_future", None)' in source
+
+    async def test_the_loop_ends_once_every_connector_is_done(self, world, monkeypatch) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.modules.indexing import record_label_repair as mod
+
+        graph, blob = world
+        monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(mod.MessagingUtils, "_get_redis_config", AsyncMock(return_value=MagicMock()))
+        monkeypatch.setattr(mod, "VectorMembershipBackfillLeaderLock", lambda *a, **k: AlwaysLeader())
+        monkeypatch.setattr(
+            "app.modules.transformers.blob_storage.BlobStorage", lambda *a, **k: blob,
+        )
+        monkeypatch.setattr(mod, "get_epoch_timestamp_in_ms", lambda: CUTOFF)
+        container = MagicMock()
+        container.logger.return_value = logging.getLogger("label-repair-test")
+
+        await mod.run_record_label_repair_loop(container, graph)
+
+        assert graph.apps[CONNECTOR][RecordLabelRepairState.STATE] == REPAIR_VERSION
+        assert blob.stored["vr-b-open"]["semantic_metadata"]["topics"] == ["Shipping dates", "Product launch window"]

@@ -26,6 +26,7 @@ from app.modules.indexing.duplicate_reconcile import (
     retry_pending_duplicate_reconciles,
 )
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
+from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.vector_membership_backfill import (
@@ -1629,6 +1630,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_entity_index_rebuild_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.label_repair_future = asyncio.run_coroutine_threadsafe(
+            run_record_label_repair_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -1638,6 +1643,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.entity_index_task = asyncio.create_task(
             run_entity_index_rebuild_loop(app_container, graph_provider)
+        )
+        app.state.label_repair_task = asyncio.create_task(
+            run_record_label_repair_loop(app_container, graph_provider)
         )
 
     yield
@@ -1721,6 +1729,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during entity index rebuild future shutdown: {str(e)}")
+
+    label_repair_task = getattr(app.state, "label_repair_task", None)
+    if label_repair_task:
+        if not label_repair_task.done():
+            label_repair_task.cancel()
+        try:
+            await label_repair_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during record label repair shutdown: {str(e)}")
+
+    label_repair_future = getattr(app.state, "label_repair_future", None)
+    if label_repair_future:
+        if not label_repair_future.done():
+            label_repair_future.cancel()
+        try:
+            await asyncio.wrap_future(label_repair_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during record label repair future shutdown: {str(e)}")
 
     # Stop message consumers
     try:
