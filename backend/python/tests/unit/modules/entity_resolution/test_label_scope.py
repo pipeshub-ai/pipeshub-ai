@@ -10,12 +10,16 @@ knowledge-graph tools' output.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from app.agents.actions.knowledge_graph.ops.entity_discovery import execute_search_entities
-from app.agents.actions.knowledge_graph.ops.entity_records import execute_find_records_by_entity
+from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    execute_search_entities,
+)
+from app.agents.actions.knowledge_graph.ops.entity_records import (
+    execute_find_records_by_entity,
+)
 from app.agents.actions.knowledge_graph.ops.search import resolve_entity_filter_groups
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityType
@@ -25,6 +29,11 @@ from app.services.graph_db.common.utils import PermittedEntityRows
 from tests.support.fake_entity_graph import RECORDS, FakeGraph
 from tests.unit.modules.entity_resolution.conftest import FakeEntityVectorStore, _tokens
 
+if TYPE_CHECKING:
+    from types import SimpleNamespace
+
+    from app.models.blocks import SemanticMetadata
+
 ORG = "acme"
 CONNECTOR = "conn-1"
 USER_ID = "user-b"
@@ -32,9 +41,9 @@ USER_KEY = "user-b-key"
 TOPICS = CollectionNames.TOPICS.value
 CATEGORIES = CollectionNames.CATEGORIES.value
 
-RESTRICTED = "restricted-brief"
+UNREAD = "unread-brief"
 OPEN = "open-plan"
-RESTRICTED_ONLY_WORDS = ("falcon", "codename")
+OTHER_RECORD_WORDS = ("falcon", "codename")
 
 _ENTITY_COLLECTIONS = {
     "category": (CATEGORIES,),
@@ -126,15 +135,15 @@ def fake_store(fake_graph) -> SearchableStore:
     return SearchableStore(fake_graph)
 
 
-def _restricted_metadata(metadata_factory) -> Any:
+def _unread_metadata(metadata_factory) -> SemanticMetadata:
     return metadata_factory(
         categories=["Codename Falcon programme"],
         topics=["Falcon launch window"],
-        summary="Restricted planning brief.",
+        summary="Planning brief.",
     )
 
 
-def _open_metadata(metadata_factory) -> Any:
+def _open_metadata(metadata_factory) -> SemanticMetadata:
     return metadata_factory(
         categories=["Product programme"],
         topics=["Product launch window"],
@@ -144,7 +153,7 @@ def _open_metadata(metadata_factory) -> Any:
 
 SCRIPTS = {
     # The second record's names are judged the same concept as the first's.
-    "restricted_first": {
+    "unread_first": {
         "product programme": ("same", "Codename Falcon programme"),
         "product launch window": ("same", "Falcon launch window"),
     },
@@ -155,10 +164,12 @@ SCRIPTS = {
 }
 
 
-async def _index(record_id, meta, *, make_resolver, make_transformer, fake_graph, fake_store, ctx_factory) -> Any:
+async def _index(
+    record_id, meta, *, make_resolver, make_transformer, fake_graph, fake_store, ctx_factory,
+) -> SimpleNamespace:
     fake_graph.add_record(record_id, ORG, CONNECTOR)
     fake_graph.records[record_id]["recordName"] = (
-        "Restricted brief" if record_id == RESTRICTED else "Shared launch plan"
+        "Planning brief" if record_id == UNREAD else "Shared launch plan"
     )
     ctx = ctx_factory(record_id, ORG, meta, connector_id=CONNECTOR)
     await make_resolver("apply").resolve(ctx)
@@ -167,13 +178,13 @@ async def _index(record_id, meta, *, make_resolver, make_transformer, fake_graph
     return ctx
 
 
-def _assert_no_restricted_words(text: str, where: str) -> None:
+def _assert_only_own_words(text: str, where: str) -> None:
     lowered = text.casefold()
-    leaked = [w for w in RESTRICTED_ONLY_WORDS if w in lowered]
-    assert not leaked, f"{where} shows {leaked}: {text}"
+    found = [w for w in OTHER_RECORD_WORDS if w in lowered]
+    assert not found, f"{where} shows {found}: {text}"
 
 
-@pytest.mark.parametrize("order", ["restricted_first", "open_first"])
+@pytest.mark.parametrize("order", ["unread_first", "open_first"])
 class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
     @pytest.fixture
     async def indexed(
@@ -181,12 +192,12 @@ class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
         metadata_factory, ctx_factory, scripted_model,
     ) -> dict[str, Any]:
         scripted_model(SCRIPTS[order])
-        kwargs = dict(
-            make_resolver=make_resolver, make_transformer=make_transformer,
-            fake_graph=fake_graph, fake_store=fake_store, ctx_factory=ctx_factory,
-        )
-        first, second = (RESTRICTED, OPEN) if order == "restricted_first" else (OPEN, RESTRICTED)
-        metas = {RESTRICTED: _restricted_metadata(metadata_factory), OPEN: _open_metadata(metadata_factory)}
+        kwargs = {
+            "make_resolver": make_resolver, "make_transformer": make_transformer,
+            "fake_graph": fake_graph, "fake_store": fake_store, "ctx_factory": ctx_factory,
+        }
+        first, second = (UNREAD, OPEN) if order == "unread_first" else (OPEN, UNREAD)
+        metas = {UNREAD: _unread_metadata(metadata_factory), OPEN: _open_metadata(metadata_factory)}
         ctxs = {}
         ctxs[first] = await _index(first, metas[first], **kwargs)
         ctxs[second] = await _index(second, metas[second], **kwargs)
@@ -209,8 +220,8 @@ class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
         meta = indexed[OPEN].record.semantic_metadata
         assert meta.topics == ["Product launch window"]
         assert meta.categories == ["Product programme"]
-        _assert_no_restricted_words(json.dumps(meta.model_dump()), "record metadata")
-        _assert_no_restricted_words("\n".join(meta.to_llm_context()), "record context")
+        _assert_only_own_words(json.dumps(meta.model_dump()), "record metadata")
+        _assert_only_own_words("\n".join(meta.to_llm_context()), "record context")
 
         plan = build_candidates(
             coverage={OPEN: (1, 4)},
@@ -222,7 +233,7 @@ class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
         )
         table = render_candidate_table(plan)
         assert "Topics: Product launch window" in table
-        _assert_no_restricted_words(table, "candidate table")
+        _assert_only_own_words(table, "candidate table")
 
     async def test_search_entities_and_the_records_it_lists(self, indexed, fake_graph, fake_store) -> None:
         state = self._state(fake_graph, fake_store)
@@ -231,13 +242,13 @@ class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
         results = json.loads(text)["results"]
         shown = {r["entityType"]: r["name"] for r in results}
         assert shown == {"topic": "Product launch window", "category": "Product programme"}
-        _assert_no_restricted_words(text, "search_entities")
+        _assert_only_own_words(text, "search_entities")
 
         for result in results:
             ok, listing = await execute_find_records_by_entity(state, result["entityId"])
             assert ok, listing
             assert "Shared launch plan" in listing
-            _assert_no_restricted_words(listing, "find_records_by_entity")
+            _assert_only_own_words(listing, "find_records_by_entity")
 
     async def test_entity_filters_still_reach_the_canonical_node(self, indexed, fake_graph, fake_store) -> None:
         state = self._state(fake_graph, fake_store)

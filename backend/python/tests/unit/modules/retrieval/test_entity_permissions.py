@@ -19,7 +19,10 @@ from app.modules.retrieval.entity_permissions import (
     list_accessible_entity_records,
     search_entities_for_user,
 )
-from tests.unit.modules.retrieval.entity_access_fakes import permitted_records, record_spellings
+from tests.unit.modules.retrieval.entity_access_fakes import (
+    permitted_records,
+    record_spellings,
+)
 
 ORG = "org-1"
 USER = "user-1"

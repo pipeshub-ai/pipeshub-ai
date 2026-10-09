@@ -61,7 +61,9 @@ class RepairGraph(FakeGraph):
         self.link_calls.append(list(record_keys))
         return await super().get_record_taxonomy_links(record_keys, transaction)
 
-    async def get_document(self, document_key, collection, transaction=None, *, raise_on_error=False):
+    async def get_document(
+        self, document_key, collection, transaction=None, *, raise_on_error=False,
+    ) -> dict[str, Any] | None:
         source = self.apps if collection == APPS else self.records
         doc = source.get(document_key)
         return copy.deepcopy(doc) if doc is not None else None
@@ -88,7 +90,7 @@ class FakeBlobStore:
         record = self.stored.get(virtual_record_id)
         return copy.deepcopy(record) if record is not None else None
 
-    async def update_record_buffer(self, org_id, document_id, record_dict, virtual_record_id):
+    async def update_record_buffer(self, org_id, document_id, record_dict, virtual_record_id) -> tuple[str, int]:
         self.writes.append((org_id, document_id, virtual_record_id))
         self.stored[virtual_record_id] = copy.deepcopy(record_dict)
         return document_id, 10
@@ -267,7 +269,7 @@ class TestFailures:
 
         graph, blob = world
 
-        async def _refuse(*_args, **_kwargs):
+        async def _refuse(*_args, **_kwargs) -> None:
             raise RuntimeError("storage down")
 
         blob.update_record_buffer = _refuse

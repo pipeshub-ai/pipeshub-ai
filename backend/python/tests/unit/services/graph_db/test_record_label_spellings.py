@@ -1,6 +1,10 @@
 """How a record's own spelling of a taxonomy node is read from its edge."""
 
-from app.services.graph_db.taxonomy import TaxonomyLink, own_record_labels, record_spelling
+from app.services.graph_db.taxonomy import (
+    TaxonomyLink,
+    own_record_labels,
+    record_spelling,
+)
 
 
 class TestRecordSpelling:

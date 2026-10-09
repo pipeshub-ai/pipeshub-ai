@@ -15,7 +15,10 @@ from app.modules.retrieval.entity_permissions import (
     search_entities_for_user,
 )
 from app.services.graph_db.common.utils import EntityCandidateRows
-from tests.unit.modules.retrieval.entity_access_fakes import permitted_records, record_spellings
+from tests.unit.modules.retrieval.entity_access_fakes import (
+    permitted_records,
+    record_spellings,
+)
 
 ORG = "org-1"
 

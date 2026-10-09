@@ -35,7 +35,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.actions.knowledge_graph.ops.entity_discovery import execute_search_entities
+from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    execute_search_entities,
+)
 from app.agents.actions.knowledge_graph.ops.search import resolve_entity_filter_groups
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.models.blocks import SemanticMetadata
@@ -50,7 +52,11 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from tests.unit.modules.entity_resolution.conftest import FakeEntityVectorStore, ScriptedModel, _tokens
+from tests.unit.modules.entity_resolution.conftest import (
+    FakeEntityVectorStore,
+    ScriptedModel,
+    _tokens,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -70,7 +76,7 @@ TOPICS = CollectionNames.TOPICS.value
 CATEGORIES = CollectionNames.CATEGORIES.value
 BELONGS_TO_TOPIC = CollectionNames.BELONGS_TO_TOPIC.value
 BELONGS_TO_CATEGORY = CollectionNames.BELONGS_TO_CATEGORY.value
-RESTRICTED_ONLY_WORDS = ("falcon", "codename")
+OTHER_RECORD_WORDS = ("falcon", "codename")
 
 logger = logging.getLogger("record-label-scope-it")
 
@@ -236,9 +242,9 @@ async def _link(env: _Env, record: str, edges: str, collection: str, key: str, *
     await env.graph.batch_create_edges([_edge(record, RECORDS, key, collection, **extra)], collection=edges)
 
 
-def _assert_no_restricted_words(text: str, where: str) -> None:
-    leaked = [w for w in RESTRICTED_ONLY_WORDS if w in text.casefold()]
-    assert not leaked, f"{where} shows {leaked}: {text}"
+def _assert_only_own_words(text: str, where: str) -> None:
+    found = [w for w in OTHER_RECORD_WORDS if w in text.casefold()]
+    assert not found, f"{where} shows {found}: {text}"
 
 
 class TestTheNewReads:
@@ -278,7 +284,7 @@ class TestTheNewReads:
         ]
         assert [c["name"] for c in metadata["categories"]] == ["Product programme"]
         assert set(metadata["topics"][0]) == {"id", "name"}
-        _assert_no_restricted_words(json.dumps(metadata), "record details")
+        _assert_only_own_words(json.dumps(metadata), "record details")
 
         copy = await _add_record(env, "copy", shared=True)
         assert await env.graph.copy_document_relationships(open_record, copy)
@@ -292,7 +298,9 @@ class TestTheNewReads:
 
 
 class _SearchableStore(FakeEntityVectorStore):
-    async def search_entities_passes(self, query, org_id, passes, *, entity_types=None, top_k=10, **_kw):
+    async def search_entities_passes(
+        self, query, org_id, passes, *, entity_types=None, top_k=10, **_kw,
+    ) -> list[list[dict[str, Any]]]:
         hits = [
             {**point, "score": 0.9}
             for (point_org, entity_type, _k), point in sorted(self.points.items())
@@ -303,7 +311,7 @@ class _SearchableStore(FakeEntityVectorStore):
 
 
 SCRIPTS = {
-    "restricted_first": {
+    "unread_first": {
         "product programme": ("same", "Codename Falcon programme"),
         "product launch window": ("same", "Falcon launch window"),
     },
@@ -314,21 +322,21 @@ SCRIPTS = {
 }
 
 
-@pytest.mark.parametrize("order", ["restricted_first", "open_first"])
+@pytest.mark.parametrize("order", ["unread_first", "open_first"])
 class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
     async def test_details_and_search_entities(self, env: _Env, order: str) -> None:
         store = _SearchableStore()
         model = ScriptedModel(SCRIPTS[order])
 
-        async def _invoke(llm, messages, schema, max_retries=2, **kwargs):
+        async def _invoke(llm, messages, schema, max_retries=2, **kwargs) -> Any:  # noqa: ANN401
             return await model(llm, messages, schema, max_retries, **kwargs)
 
         open_record = await _add_record(env, "open", shared=True)
-        restricted = await _add_record(env, "restricted", shared=False)
+        unread = await _add_record(env, "unread", shared=False)
         metadata = {
-            restricted: lambda: SemanticMetadata(
+            unread: lambda: SemanticMetadata(
                 categories=["Codename Falcon programme"], topics=["Falcon launch window"],
-                languages=[], departments=[], summary="Restricted planning brief.",
+                languages=[], departments=[], summary="Planning brief.",
             ),
             open_record: lambda: SemanticMetadata(
                 categories=["Product programme"], topics=["Product launch window"],
@@ -340,7 +348,7 @@ class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
             entity_vector_store=store, mode=ResolutionMode.APPLY,
         )
         transformer = GraphDBTransformer(graph_provider=env.graph, logger=logger)
-        first, second = (restricted, open_record) if order == "restricted_first" else (open_record, restricted)
+        first, second = (unread, open_record) if order == "unread_first" else (open_record, unread)
         shown_meta = {}
         with patch(
             "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",
@@ -362,12 +370,12 @@ class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
                 shown_meta[record_id] = meta
 
         assert shown_meta[open_record].topics == ["Product launch window"]
-        _assert_no_restricted_words(json.dumps(shown_meta[open_record].model_dump()), "record metadata")
+        _assert_only_own_words(json.dumps(shown_meta[open_record].model_dump()), "record metadata")
 
         details = await env.graph.check_record_access_with_details(env.user_id, env.org_id, open_record)
         assert details is not None
         assert [t["name"] for t in details["metadata"]["topics"]] == ["Product launch window"]
-        _assert_no_restricted_words(json.dumps(details["metadata"]), "record details")
+        _assert_only_own_words(json.dumps(details["metadata"]), "record details")
 
         state = {
             "org_id": env.org_id, "user_id": env.user_id, "graph_provider": env.graph,
@@ -377,7 +385,7 @@ class TestLabelsShownToAUserComeOnlyFromRecordsTheyCanOpen:
         assert ok, text
         shown = {r["entityType"]: r["name"] for r in json.loads(text)["results"]}
         assert shown == {"topic": "Product launch window", "category": "Product programme"}
-        _assert_no_restricted_words(text, "search_entities")
+        _assert_only_own_words(text, "search_entities")
 
         topic_id = next(r["entityId"] for r in json.loads(text)["results"] if r["entityType"] == "topic")
         filters = resolve_entity_filter_groups(state, [topic_id])
@@ -392,13 +400,13 @@ class _Blob:
         self.stored: dict[str, dict[str, Any]] = {}
         self.writes: list[str] = []
 
-    async def get_document_id_by_virtual_record_id(self, vrid):
+    async def get_document_id_by_virtual_record_id(self, vrid) -> dict[str, str] | None:
         return {"record_doc_id": f"doc-{vrid}"} if vrid in self.stored else None
 
-    async def get_record_from_storage(self, vrid, org_id, lookup_result=None):
+    async def get_record_from_storage(self, vrid, org_id, lookup_result=None) -> dict[str, Any] | None:
         return json.loads(json.dumps(self.stored[vrid])) if vrid in self.stored else None
 
-    async def update_record_buffer(self, org_id, document_id, record_dict, vrid):
+    async def update_record_buffer(self, org_id, document_id, record_dict, vrid) -> tuple[str, int]:
         self.writes.append(vrid)
         self.stored[vrid] = record_dict
         return document_id, 1
