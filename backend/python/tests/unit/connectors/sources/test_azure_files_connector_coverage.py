@@ -1,10 +1,8 @@
 """Extended coverage tests for Azure Files connector."""
 
 import logging
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from urllib.parse import quote
 
 import pytest
 
@@ -13,7 +11,6 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
-    MultiselectOperator,
     SyncFilterKey,
 )
 from app.connectors.sources.azure_files.connector import (
@@ -24,8 +21,7 @@ from app.connectors.sources.azure_files.connector import (
     get_mimetype_for_azure_files,
     get_parent_path,
 )
-from app.models.entities import FileRecord, RecordType, User
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.entities import User
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +469,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
@@ -484,7 +480,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.entity_type == EntityType.ORG for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_empty(self, connector):

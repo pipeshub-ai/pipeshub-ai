@@ -233,7 +233,7 @@ class TestNotionPersonalPermissions:
         calls = []
 
         connector.creator_email = "creator@example.com"
-        connector.ensure_connector_group_permission = AsyncMock(
+        connector.ensure_creator_user_app_relation = AsyncMock(
             side_effect=lambda: calls.append("ensure_group")
         )
         connector._sync_users = AsyncMock(side_effect=lambda: calls.append("sync_users"))
@@ -265,12 +265,12 @@ class TestNotionPersonalPermissions:
         connector._load_creator_email = AsyncMock()
         connector._get_fresh_datasource = AsyncMock()
         connector._assert_required_capabilities = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
         connector._sync_users = AsyncMock()
         connector._sync_objects_by_type = AsyncMock()
 
         with patch(_FILTERS, new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
             await connector.run_sync()
 
-        connector.ensure_connector_group_permission.assert_not_awaited()
+        connector.ensure_creator_user_app_relation.assert_not_awaited()
         connector.logger.warning.assert_called()

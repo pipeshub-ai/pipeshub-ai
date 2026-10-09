@@ -71,7 +71,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
@@ -531,40 +531,6 @@ class S3CompatibleBaseConnector(BaseConnector):
         for bucket_name in bucket_names:
             if not bucket_name:
                 continue
-            permissions = []
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.created_by:
-                    try:
-                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                        if user and getattr(user, "email", None):
-                            permissions.append(
-                                Permission(
-                                    type=PermissionType.OWNER,
-                                    entity_type=EntityType.USER,
-                                    email=user.email,
-                                    external_id=self.created_by
-                                )
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
             creation_ms = creation_map.get(bucket_name)
             record_group = RecordGroup(
                 name=bucket_name,
@@ -576,8 +542,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                 web_url=self._generate_parent_web_url(bucket_name),
                 source_created_at=creation_ms,
                 source_updated_at=creation_ms,
+                inherit_permissions=True,
             )
-            record_groups.append((record_group, permissions))
+            record_groups.append((record_group, []))
 
         if record_groups:
             await self.data_entities_processor.on_new_record_groups(record_groups)
@@ -1227,53 +1194,8 @@ class S3CompatibleBaseConnector(BaseConnector):
     async def _create_s3_permissions(
         self, bucket_name: str, key: str
     ) -> list[Permission]:
-        """Create permissions for an S3 object based on connector scope."""
-        try:
-            permissions = []
-
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.created_by:
-                    try:
-                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                        if user and getattr(user, "email", None):
-                            permissions.append(
-                                Permission(
-                                    type=PermissionType.OWNER,
-                                    entity_type=EntityType.USER,
-                                    email=user.email,
-                                    external_id=self.created_by
-                                )
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating permissions for {key}: {e}")
-            return [
-                Permission(
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                    external_id=self.data_entities_processor.org_id
-                )
-            ]
+        """Objects inherit their parent folder or the bucket. No permission edges."""
+        return []
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access."""
