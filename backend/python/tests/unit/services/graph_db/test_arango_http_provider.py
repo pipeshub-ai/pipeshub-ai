@@ -38,6 +38,7 @@ from app.services.graph_db.arango.arango_http_provider import (
     MAX_REINDEX_DEPTH,
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
 
 
 # ---------------------------------------------------------------------------
@@ -13996,7 +13997,11 @@ class TestDeleteRecordWithType:
         await connected_provider._delete_record_with_type(
             "r1", ["files", "mails"]
         )
-        assert connected_provider.delete_edges_from.call_count == 3
+        swept = [c.args[2] for c in connected_provider.delete_edges_from.await_args_list]
+        assert sorted(swept) == sorted([
+            "recordRelations", "isOfType", "belongsTo",
+            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic",
+        ])
         assert connected_provider.delete_edges_to.call_count == 2
         assert connected_provider.delete_nodes.call_count == 3  # 2 type collections + 1 main record
 
@@ -15412,6 +15417,22 @@ class TestDeleteDriveSpecificEdges:
     async def test_no_transaction(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         await connected_provider._delete_drive_specific_edges("r1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "delete", ["_delete_drive_specific_edges", "_delete_outlook_edges", "_delete_local_fs_edges"],
+    )
+    async def test_enrichment_edges_are_deleted_by_their_record_end_only(self, connected_provider, delete) -> None:
+        """They only leave a record; an OR on ``_to`` would add a lookup that never matches."""
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        await getattr(connected_provider, delete)("r1")
+        by_collection = {
+            c.args[1]["@edge_collection"]: c for c in connected_provider.http_client.execute_aql.await_args_list
+        }
+        for edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+            query, binds = by_collection[edge].args[:2]
+            assert "edge._from == @record_from" in query and "_to" not in query
+            assert binds == {"@edge_collection": edge, "record_from": "records/r1"}
 
 
 # ---------------------------------------------------------------------------
@@ -21275,17 +21296,11 @@ class TestDeleteLocalFsEdges:
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         
         await connected_provider._delete_local_fs_edges("record123")
-        
-        assert connected_provider.http_client.execute_aql.call_count == 3
-        
-        all_collections = []
-        for call in connected_provider.http_client.execute_aql.call_args_list:
-            bind_vars = call[0][1]
-            all_collections.append(bind_vars["@edge_collection"])
-        
-        assert "isOfType" in all_collections
-        assert "permission" in all_collections
-        assert "belongsTo" in all_collections
+
+        all_collections = [
+            call[0][1]["@edge_collection"] for call in connected_provider.http_client.execute_aql.call_args_list
+        ]
+        assert sorted(all_collections) == sorted(["isOfType", "permission", "belongsTo", *RECORD_ENRICHMENT_EDGE_COLLECTIONS])
 
     @pytest.mark.asyncio
     async def test_transaction_propagation(self, connected_provider):

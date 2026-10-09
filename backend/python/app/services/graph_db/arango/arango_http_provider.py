@@ -205,6 +205,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
+    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
@@ -215,7 +216,6 @@ from app.services.graph_db.taxonomy import (
     hierarchy_edge_key,
     is_taxonomy_collection,
     subcategory_level,
-    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
 )
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
@@ -10525,11 +10525,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
             },
         }
-        for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
-            edge_strategies[enrichment_edge] = {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-            }
+        edge_strategies.update(self._enrichment_edge_strategies(record_id))
 
         query_template = """
         FOR edge IN @@edge_collection
@@ -16149,11 +16145,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
             },
         }
-        for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
-            edge_strategies[enrichment_edge] = {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-            }
+        edge_strategies.update(self._enrichment_edge_strategies(record_id))
 
         query_template = """
         FOR edge IN @@edge_collection
@@ -16242,6 +16234,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             txn_id=transaction
         )
 
+    @staticmethod
+    def _enrichment_edge_strategies(record_id: str) -> dict[str, dict[str, Any]]:
+        """Enrichment edges only leave a record, so ``_from`` alone finds them."""
+        return {
+            edge_collection: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": f"{edge_collection} edges",
+            }
+            for edge_collection in RECORD_ENRICHMENT_EDGE_COLLECTIONS
+        }
+
     async def _delete_drive_specific_edges(
         self,
         record_id: str,
@@ -16272,6 +16276,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
                 "description": "Belongs to edges"
             },
+            **self._enrichment_edge_strategies(record_id),
             # Default strategy for bidirectional edges
             "default": {
                 "filter": "edge._from == @record_from OR edge._to == @record_to",

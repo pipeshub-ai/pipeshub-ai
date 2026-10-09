@@ -78,9 +78,13 @@ async def _record_with_taxonomy_edges(provider, org_id: str) -> str:
     return record
 
 
+def test_every_seeded_edge_collection_is_an_enrichment_edge() -> None:
+    assert set(RECORD_ENRICHMENT_EDGE_COLLECTIONS) == set(TARGETS)
+
+
 async def _edges_from(provider, record: str) -> dict[str, int]:
     counts = {}
-    for edge_collection in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+    for edge_collection in TARGETS:
         rows = await provider.http_client.execute_aql(
             f"FOR e IN {edge_collection} FILTER e._from == @from COLLECT WITH COUNT INTO n RETURN n",
             {"from": f"{RECORDS}/{record}"},
