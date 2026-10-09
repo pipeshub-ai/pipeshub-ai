@@ -471,10 +471,11 @@ async def _names_from_permitted_records(
 
     The readable records the probes found may all have edges that do not
     record a spelling (copies made by earlier releases), so the walk goes on
-    through the entity's readable records, in widening windows like the
-    probes, until one spells the node or they run out. A node no readable
-    record spells, or one the deadline cut short, is left out. Other entity
-    types keep their name.
+    through the entity's readable records, in windows that widen like the
+    probes' and then stay at the widest, until one spells the node, they run
+    out, or the search deadline passes. A node no readable record spells is
+    left out, and so is one the deadline stopped; the latter is logged.
+    Other entity types keep their name.
     """
     shown = {
         (p.entity_type, p.entity_id): _stored_name(p)
@@ -506,10 +507,13 @@ async def _names_from_permitted_records(
         ]
 
     await _look_up(r for p in extracted for r in p.permitted)
-    for planned_window in PROBE_WINDOWS:
+    round_index = 0
+    while True:
         pending = [p for p in extracted if not _own(p) and not p.exhausted and p.connector_ids]
         if not pending or time.monotonic() >= deadline:
             break
+        planned_window = PROBE_WINDOWS[min(round_index, len(PROBE_WINDOWS) - 1)]
+        round_index += 1
         window = max(1, min(planned_window, PROBE_ROUND_BUDGET // len(pending)))
         by_offset: dict[int, list[_Probe]] = {}
         for probe in pending:
@@ -526,15 +530,24 @@ async def _names_from_permitted_records(
                     window=window,
                     deadline=deadline,
                 ))
+                found: list[dict[str, Any]] = []
                 for probe in group:
                     rows = _rows_for(by_entity, probe.entity_type, probe.entity_id)
                     probe.permitted.extend(rows)
+                    found.extend(rows)
                     probe.walked += rows.examined
                     probe.exhausted = rows.window_size < window and rows.examined >= rows.window_size
                     probe.capped = probe.capped or rows.capped
-                await _look_up(r for p in group for r in p.permitted)
+                await _look_up(found)
         except TimeoutError:
             break
+
+    unnamed = [p for p in extracted if not _own(p) and not p.exhausted and p.connector_ids]
+    if unnamed:
+        logger.info(
+            "entity search org=%s left %d entities unnamed at the deadline after %d naming rounds",
+            context.org_id, len(unnamed), round_index,
+        )
 
     for probe in extracted:
         own = _own(probe)
