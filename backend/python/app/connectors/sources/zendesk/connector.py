@@ -115,6 +115,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 SYNC_POINT_KEY = "zendesk_incremental"
 ARTICLES_SYNC_POINT_KEY = "zendesk_articles_incremental"
+USERS_SYNC_POINT_KEY = "zendesk_users_incremental"
 HELP_CENTER_GROUPS_STATE_KEY = "zendesk_help_center_groups"
 TICKET_GROUPS_STATE_KEY = "zendesk_ticket_groups"
 ARTICLE_IDS_STATE_KEY = "zendesk_article_ids"
@@ -317,6 +318,7 @@ class ZendeskConnector(BaseConnector):
         self._user_id_to_app_user: Dict[str, AppUser] = {}
         self._rebuild_ticket_edges = False
         self._rebuild_article_edges = False
+        self._refresh_ticket_grants = False
         self._role_ticket_access: Dict[str, str] = {}
         self._roles_complete = False
         self._ticket_sync_complete = False
@@ -553,12 +555,19 @@ class ZendeskConnector(BaseConnector):
         ticket_error: Optional[Exception] = None
         if users_complete and memberships_complete:
             try:
+                self._refresh_ticket_grants, users_checkpoint = (
+                    await self._users_deleted_since_last_sync()
+                )
                 ticket_count = await self._sync_tickets()
                 if self._ticket_sync_complete:
                     await self.data_entities_processor.reap_external_app_users(
                         self.connector_id
                     )
                     await self._delete_removed_ticket_group_folders()
+                    if users_checkpoint is not None:
+                        await self.records_sync_point.update_sync_point(
+                            USERS_SYNC_POINT_KEY, {"lastEndTime": users_checkpoint}
+                        )
             except Exception as e:
                 ticket_count = 0
                 ticket_error = e
@@ -1123,11 +1132,49 @@ class ZendeskConnector(BaseConnector):
                 replace_members=False,
             )
 
+    async def _users_deleted_since_last_sync(self) -> Tuple[bool, Optional[int]]:
+        """Whether anyone was deleted since the last completed ticket sync.
+
+        Deleting a user drops them from every ticket's CCs without moving the ticket's
+        updated_at, and Zendesk scrubs their email, so their email grants can only be
+        withdrawn by re-reading the tickets. Second value is the checkpoint to save once
+        that has happened; None leaves the saved one so the next run asks again.
+        """
+        checkpoint = get_epoch_timestamp_in_ms() // 1000 - INCREMENTAL_SAFETY_LAG_SECONDS
+        if self._rebuild_ticket_edges:
+            return False, checkpoint
+        start_time = (await self.records_sync_point.read_sync_point(USERS_SYNC_POINT_KEY)).get(
+            "lastEndTime"
+        )
+        if not start_time:
+            return False, checkpoint
+        deleted = False
+        cursor: Optional[str] = None
+        while True:
+            response = await self._call_incremental(
+                "incremental_users", start_time=int(start_time), cursor=cursor
+            )
+            payload = response.data if response is not None and response.success else None
+            if not isinstance(payload, dict) or not isinstance(payload.get("users"), list):
+                self.logger.warning(
+                    "Zendesk: could not check for deleted users (%s) — will retry next sync",
+                    response.error if response is not None else "retries exhausted",
+                )
+                return False, None
+            if any(user.get("active") is False for user in payload["users"]):
+                deleted = True
+            if payload.get("end_of_stream", True):
+                return deleted, checkpoint
+            next_cursor = payload.get("after_cursor")
+            if not next_cursor or next_cursor == cursor:
+                return deleted, None
+            cursor = next_cursor
+
     async def _sync_tickets(self) -> int:
         self._ticket_sync_complete = False
         synced = 0
         removed = 0
-        start_time = await self._get_start_time()
+        start_time = await self._get_start_time(ignore_checkpoint=self._refresh_ticket_grants)
         saved_state = await self.records_sync_point.read_sync_point(SYNC_POINT_KEY)
         reset_id = str(saved_state.get("resetId") or uuid4())
         if saved_state.get("resetId") != reset_id:
@@ -1135,7 +1182,14 @@ class ZendeskConnector(BaseConnector):
                 SYNC_POINT_KEY,
                 {**saved_state, "resetId": reset_id},
             )
-        cursor: Optional[str] = saved_state.get("lastCursor")
+        cursor: Optional[str] = (
+            None if self._refresh_ticket_grants else saved_state.get("lastCursor")
+        )
+        if self._refresh_ticket_grants:
+            self.logger.info(
+                "Zendesk: users were deleted since the last sync — re-reading every "
+                "ticket to withdraw their grants"
+            )
         max_end_time = start_time
         complete = True
         seen_ticket_updated: Dict[str, int] = {}
@@ -1429,7 +1483,7 @@ class ZendeskConnector(BaseConnector):
         if self._rebuild_ticket_edges:
             return
         for record, permissions in records_with_permissions:
-            if record.version > 0:
+            if record.version > 0 or self._refresh_ticket_grants:
                 await self.data_entities_processor.on_updated_record_permissions(
                     record, permissions
                 )
@@ -3377,8 +3431,13 @@ class ZendeskConnector(BaseConnector):
             if group.get("id") is not None and not group.get("deleted"):
                 self._group_id_to_data[str(group["id"])] = group
 
-    async def _get_start_time(self, sync_point_key: str = SYNC_POINT_KEY) -> int:
-        sync_point = await self.records_sync_point.read_sync_point(sync_point_key)
+    async def _get_start_time(
+        self, sync_point_key: str = SYNC_POINT_KEY, *, ignore_checkpoint: bool = False
+    ) -> int:
+        sync_point = (
+            {} if ignore_checkpoint
+            else await self.records_sync_point.read_sync_point(sync_point_key)
+        )
         start_time = sync_point.get("lastEndTime") or DEFAULT_INCREMENTAL_START_TIME
         modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
         if modified_filter:
