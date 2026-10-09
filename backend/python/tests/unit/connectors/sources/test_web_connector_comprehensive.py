@@ -1,5 +1,6 @@
 """Comprehensive tests for Web connector - extended coverage for uncovered methods."""
 
+import asyncio
 import base64
 import hashlib
 from contextlib import asynccontextmanager
@@ -1342,7 +1343,7 @@ class TestFetchAndProcessUrlOrchestration:
             "app.connectors.sources.web.connector.fetch_url_with_fallback",
             new_callable=AsyncMock,
             return_value=None,
-        ):
+        ), patch.object(c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             result = await c._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
         assert "https://example.com/page" in c.retry_urls
@@ -1433,7 +1434,7 @@ class TestFetchAndProcessUrlOrchestration:
         with patch(
             "app.connectors.sources.web.connector.fetch_url_with_fallback",
             new_callable=AsyncMock,
-        ) as mock_fetch:
+        ) as mock_fetch, patch.object(c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             mock_fetch.return_value = FetchResponse(
                 status_code=code,
                 content_bytes=b"",
@@ -1444,6 +1445,29 @@ class TestFetchAndProcessUrlOrchestration:
             result = await c._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
         assert c.retry_urls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [asyncio.TimeoutError(), RuntimeError("browser crashed")])
+    async def test_a_failed_headless_fallback_still_queues_the_retry(self, failure) -> None:
+        c = _make_connector()
+        c.url = "https://example.com"
+        c.base_domain = "https://example.com"
+        c.session = MagicMock()
+        c.max_size_mb = 10
+        c.retry_urls = {}
+        c._normalize_url = MagicMock(return_value="https://example.com/page")
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=FetchResponse(
+                status_code=429, content_bytes=b"", headers={},
+                final_url="https://example.com/page", strategy="aiohttp",
+            ),
+        ), patch.object(c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=MagicMock()), \
+                patch.object(c, "_headless_fetch", new_callable=AsyncMock, side_effect=failure):
+            result = await c._fetch_and_process_url("https://example.com/page", 0)
+        assert result is None
+        assert "https://example.com/page" in c.retry_urls
 
     @pytest.mark.asyncio
     async def test_success_clears_pending_retry(self):
