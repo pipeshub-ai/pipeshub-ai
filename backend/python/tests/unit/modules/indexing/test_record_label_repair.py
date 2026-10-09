@@ -1,0 +1,261 @@
+"""The record label repair: a record's stored labels are restored from the
+spellings on its own taxonomy edges, one page of one connector per tick.
+
+The graph is the in-memory entity graph plus the reads the repair pages
+with; the blob store keeps one stored record per virtual record id.
+"""
+from __future__ import annotations
+
+import copy
+import logging
+from typing import Any
+
+import pytest
+
+from app.config.constants.arangodb import CollectionNames
+from app.modules.indexing.record_label_repair import (
+    REPAIR_VERSION,
+    RecordLabelRepair,
+    RecordLabelRepairState,
+    own_label_fields,
+)
+from app.services.graph_db.taxonomy import TaxonomyLink
+from tests.support.fake_entity_graph import FakeGraph
+
+APPS = CollectionNames.APPS.value
+RECORDS = CollectionNames.RECORDS.value
+TOPICS = CollectionNames.TOPICS.value
+CATEGORIES = CollectionNames.CATEGORIES.value
+SUB1 = CollectionNames.SUBCATEGORIES1.value
+LANGUAGES = CollectionNames.LANGUAGES.value
+BELONGS_TO_TOPIC = CollectionNames.BELONGS_TO_TOPIC.value
+BELONGS_TO_CATEGORY = CollectionNames.BELONGS_TO_CATEGORY.value
+BELONGS_TO_LANGUAGE = CollectionNames.BELONGS_TO_LANGUAGE.value
+
+ORG = "acme"
+CONNECTOR = "conn-1"
+CUTOFF = 2_000
+BEFORE = 1_000
+
+
+class RepairGraph(FakeGraph):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apps: dict[str, dict[str, Any]] = {}
+        self.link_calls: list[list[str]] = []
+
+    async def get_all_documents(self, collection, transaction=None) -> list[dict[str, Any]]:
+        assert collection == APPS
+        return [copy.deepcopy(doc) for doc in self.apps.values()]
+
+    async def page_records_for_vector_membership_backfill(
+        self, connector_id, after_key, limit, transaction=None,
+    ) -> list[dict[str, Any]]:
+        keys = sorted(
+            k for k, r in self.records.items()
+            if r["connectorId"] == connector_id and (after_key is None or k > after_key)
+        )
+        return [{"_key": k, "virtualRecordId": self.records[k]["virtualRecordId"]} for k in keys[:limit]]
+
+    async def get_record_taxonomy_links(self, record_keys, transaction=None) -> list[dict[str, Any]]:
+        self.link_calls.append(list(record_keys))
+        return await super().get_record_taxonomy_links(record_keys, transaction)
+
+    async def get_document(self, document_key, collection, transaction=None, *, raise_on_error=False):
+        source = self.apps if collection == APPS else self.records
+        doc = source.get(document_key)
+        return copy.deepcopy(doc) if doc is not None else None
+
+    async def update_node(self, key, collection, node_updates, transaction=None) -> bool:
+        target = self.apps if collection == APPS else self.records
+        target[key].update(node_updates)
+        return True
+
+
+class FakeBlobStore:
+    def __init__(self) -> None:
+        self.stored: dict[str, dict[str, Any]] = {}
+        self.reads: list[str] = []
+        self.writes: list[tuple[str, str, str]] = []
+
+    async def get_document_id_by_virtual_record_id(self, virtual_record_id) -> dict | None:
+        if virtual_record_id not in self.stored:
+            return None
+        return {"record_doc_id": f"doc-{virtual_record_id}", "fileSizeBytes": 10}
+
+    async def get_record_from_storage(self, virtual_record_id, org_id, lookup_result=None) -> dict | None:
+        self.reads.append(virtual_record_id)
+        record = self.stored.get(virtual_record_id)
+        return copy.deepcopy(record) if record is not None else None
+
+    async def update_record_buffer(self, org_id, document_id, record_dict, virtual_record_id):
+        self.writes.append((org_id, document_id, virtual_record_id))
+        self.stored[virtual_record_id] = copy.deepcopy(record_dict)
+        return document_id, 10
+
+
+class AlwaysLeader:
+    async def try_acquire(self) -> bool:
+        return True
+
+    async def refresh(self) -> bool:
+        return True
+
+    async def release(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+
+def _canonical(graph: RepairGraph, collection: str, key: str, name: str) -> None:
+    graph.nodes[(collection, key)] = {"name": name, "normalizedName": name.casefold(), "orgId": ORG}
+
+
+def _record(graph: RepairGraph, blob: FakeBlobStore, key: str, semantic: dict[str, Any], *,
+            extracted_at: int = BEFORE) -> None:
+    graph.add_record(key, ORG, CONNECTOR)
+    graph.records[key].update({
+        "virtualRecordId": f"vr-{key}", "lastExtractionTimestamp": extracted_at,
+        "processingStartedAt": None, "indexingStatus": "COMPLETED",
+    })
+    blob.stored[f"vr-{key}"] = {
+        "id": key, "record_name": key, "org_id": ORG,
+        "block_containers": {"blocks": [{"text": f"content of {key}"}]},
+        "semantic_metadata": {"summary": f"summary of {key}", **semantic},
+    }
+
+
+def _link(graph: RepairGraph, record: str, edge_collection: str, collection: str, key: str,
+          extracted: str | None) -> None:
+    edge = {"from_id": record, "to_id": key, "createdAtTimestamp": 1}
+    if extracted is not None:
+        edge["extractedName"] = extracted
+    graph.edges[(edge_collection, f"{RECORDS}/{record}", f"{collection}/{key}")] = edge
+
+
+@pytest.fixture
+def world() -> tuple[RepairGraph, FakeBlobStore]:
+    graph, blob = RepairGraph(), FakeBlobStore()
+    graph.apps[CONNECTOR] = {"_key": CONNECTOR, "orgId": ORG}
+    _canonical(graph, TOPICS, "t-launch", "Falcon launch window")
+    _canonical(graph, TOPICS, "t-dates", "Shipping dates")
+    _canonical(graph, CATEGORIES, "c-prog", "Codename Falcon programme")
+    _canonical(graph, LANGUAGES, "l-en", "English")
+    graph.nodes[(TOPICS, "t-legacy")] = {"name": "Legacy topic"}
+
+    # Indexed second: its labels were rewritten to the first record's names.
+    _record(graph, blob, "b-open", {
+        "categories": ["Codename Falcon programme"],
+        "topics": ["Shipping dates", "Falcon launch window"],
+        "languages": ["English"],
+    })
+    _link(graph, "b-open", BELONGS_TO_CATEGORY, CATEGORIES, "c-prog", "Product programme")
+    _link(graph, "b-open", BELONGS_TO_TOPIC, TOPICS, "t-dates", "Shipping dates")
+    _link(graph, "b-open", BELONGS_TO_TOPIC, TOPICS, "t-launch", "Product launch window")
+    _link(graph, "b-open", BELONGS_TO_LANGUAGE, LANGUAGES, "l-en", "English")
+
+    # A deduplicated copy: its edges were copied without the spelling.
+    _record(graph, blob, "c-copy", {"topics": ["Falcon launch window"]})
+    _link(graph, "c-copy", BELONGS_TO_TOPIC, TOPICS, "t-launch", None)
+
+    # Indexed before resolution existed: a legacy node, never rewritten.
+    _record(graph, blob, "d-legacy", {"topics": ["Legacy topic"]})
+    _link(graph, "d-legacy", BELONGS_TO_TOPIC, TOPICS, "t-legacy", None)
+
+    # Extracted after the repair started: already carries its own labels.
+    _record(graph, blob, "e-recent", {"topics": ["Product launch window"]}, extracted_at=CUTOFF + 5)
+    _link(graph, "e-recent", BELONGS_TO_TOPIC, TOPICS, "t-launch", "Product launch window")
+    return graph, blob
+
+
+async def _run_until_idle(graph, blob, *, page_size=2, logger=None) -> list[str]:
+    repair = RecordLabelRepair(
+        logger=logger or logging.getLogger("label-repair-test"), graph_provider=graph,
+        blob_store=blob, lock=AlwaysLeader(), cutoff_ms=CUTOFF, page_size=page_size,
+    )
+    outcomes = []
+    for _ in range(50):
+        outcome = await repair.tick()
+        outcomes.append(outcome)
+        if outcome == "idle":
+            return outcomes
+    raise AssertionError(f"repair never went idle: {outcomes}")
+
+
+class TestARecordGetsItsOwnLabelsBackFromItsEdges:
+    async def test_rewritten_labels_are_restored_and_the_rest_is_kept(self, world) -> None:
+        graph, blob = world
+        before = copy.deepcopy(blob.stored["vr-b-open"])
+
+        await _run_until_idle(graph, blob)
+
+        after = blob.stored["vr-b-open"]
+        assert after["semantic_metadata"]["categories"] == ["Product programme"]
+        assert after["semantic_metadata"]["topics"] == ["Shipping dates", "Product launch window"]
+        assert after["semantic_metadata"]["languages"] == ["English"]
+        assert after["semantic_metadata"]["summary"] == before["semantic_metadata"]["summary"]
+        assert after["block_containers"] == before["block_containers"]
+        assert [w[2] for w in blob.writes] == ["vr-b-open"]
+
+    async def test_a_second_run_changes_nothing(self, world) -> None:
+        graph, blob = world
+        await _run_until_idle(graph, blob)
+        restored = copy.deepcopy(blob.stored)
+        writes = len(blob.writes)
+
+        graph.apps[CONNECTOR][RecordLabelRepairState.STATE] = None
+        await _run_until_idle(graph, blob)
+
+        assert blob.stored == restored
+        assert len(blob.writes) == writes
+
+    async def test_a_record_without_its_spelling_is_skipped_and_counted(self, world, caplog) -> None:
+        graph, blob = world
+        with caplog.at_level(logging.INFO, logger="label-repair-test"):
+            await _run_until_idle(graph, blob)
+
+        assert blob.stored["vr-c-copy"]["semantic_metadata"]["topics"] == ["Falcon launch window"]
+        app = graph.apps[CONNECTOR]
+        assert app[RecordLabelRepairState.STATE] == REPAIR_VERSION
+        assert app[RecordLabelRepairState.REPAIRED] == 1
+        assert app[RecordLabelRepairState.SKIPPED] == 1
+        assert any("left for a reindex" in r.getMessage() for r in caplog.records)
+
+    async def test_records_that_need_nothing_are_not_read_from_storage(self, world) -> None:
+        graph, blob = world
+        await _run_until_idle(graph, blob)
+        assert "vr-d-legacy" not in blob.reads
+        assert "vr-e-recent" not in blob.reads
+
+    async def test_a_record_being_indexed_is_left_alone(self, world) -> None:
+        graph, blob = world
+        graph.records["b-open"]["processingStartedAt"] = CUTOFF - 1
+        await _run_until_idle(graph, blob)
+        assert blob.writes == []
+
+    async def test_progress_is_kept_on_the_connector_between_pages(self, world) -> None:
+        graph, blob = world
+        outcomes = await _run_until_idle(graph, blob, page_size=1)
+        assert outcomes.count("page") >= 4
+        assert graph.apps[CONNECTOR][RecordLabelRepairState.AFTER_KEY] is None
+
+
+class TestOwnLabelFields:
+    def _links(self, *rows: tuple[str, str, str, str | None]) -> list[TaxonomyLink]:
+        return [
+            TaxonomyLink(record_id="r", collection=c, entity_id=k, name=n, extracted_name=e,
+                         canonical=True, migrated=False)
+            for c, k, n, e in rows
+        ]
+
+    def test_the_subcategory_chain_follows_the_category(self) -> None:
+        fields = own_label_fields(
+            {"categories": ["X"], "sub_category_level_1": "Y"},
+            self._links((CATEGORIES, "c", "X", "Own category"), (SUB1, "s", "Y", "Own sub")),
+        )
+        assert fields["categories"] == ["Own category"]
+        assert fields["sub_category_level_1"] == "Own sub"
+
+    def test_unknown_spelling_on_a_canonical_node_means_no_change(self) -> None:
+        assert own_label_fields({"topics": ["X"]}, self._links((TOPICS, "t", "X", None))) is None
