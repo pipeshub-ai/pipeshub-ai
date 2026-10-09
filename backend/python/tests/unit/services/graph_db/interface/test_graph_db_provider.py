@@ -258,6 +258,7 @@ class TestAbstractMethodInventory:
         "get_file_record_by_id",
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
+        "get_record_taxonomy_links",
         "get_entity_candidate_records",
         "get_permitted_entity_records",
         "get_taxonomy_entity_membership",

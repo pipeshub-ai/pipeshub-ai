@@ -214,6 +214,7 @@ from app.services.graph_db.taxonomy import (
     global_department_key,
     hierarchy_edge_key,
     is_taxonomy_collection,
+    own_record_labels,
     subcategory_level,
 )
 from app.services.graph_db.vector_membership_queries import (
@@ -18607,6 +18608,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
         return [row for rows in grouped for row in rows]
 
+    async def get_record_taxonomy_links(
+        self,
+        record_keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_taxonomy_links`."""
+        keys = sorted({str(k) for k in record_keys or [] if k})
+        if not keys:
+            return []
+        edge_collections = ", ".join(sorted(set(TAXONOMY_EDGE_COLLECTIONS.values())))
+        query = f"""
+            FOR key IN @keys
+                FOR v, link IN 1..1 OUTBOUND CONCAT("{CollectionNames.RECORDS.value}/", key)
+                    {edge_collections}
+                    LET collection = PARSE_IDENTIFIER(v._id).collection
+                    FILTER collection IN @collections
+                    RETURN {{
+                        recordId: key,
+                        collection: collection,
+                        entityId: v._key,
+                        name: v.name,
+                        canonical: v.normalizedName != null,
+                        extractedName: link.extractedName,
+                        migrated: link.migratedFrom != null,
+                    }}
+        """
+        rows = await self.execute_query(
+            query,
+            bind_vars={"keys": keys, "collections": sorted(TAXONOMY_COLLECTIONS)},
+            transaction=transaction,
+        )
+        return [dict(row) for row in rows or [] if row.get("entityId")]
+
     @classmethod
     def _entity_candidate_record_projection(cls, var: str) -> str:
         # Explicit attributes (not KEEP) so absent fields come back as null,
@@ -20284,54 +20318,72 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET categories = (
-                FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR cat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(cat._id).collection == '{CollectionNames.CATEGORIES.value}'
                 RETURN {{
                     id: cat._key,
-                    name: cat.name
+                    name: cat.name,
+                    extractedName: link.extractedName,
+                    canonical: cat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET subcategories1 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR subcat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES1.value}'
                 RETURN {{
                     id: subcat._key,
-                    name: subcat.name
+                    name: subcat.name,
+                    extractedName: link.extractedName,
+                    canonical: subcat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET subcategories2 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR subcat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES2.value}'
                 RETURN {{
                     id: subcat._key,
-                    name: subcat.name
+                    name: subcat.name,
+                    extractedName: link.extractedName,
+                    canonical: subcat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET subcategories3 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR subcat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES3.value}'
                 RETURN {{
                     id: subcat._key,
-                    name: subcat.name
+                    name: subcat.name,
+                    extractedName: link.extractedName,
+                    canonical: subcat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET topics = (
-                FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                FOR topic, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
                 RETURN {{
                     id: topic._key,
-                    name: topic.name
+                    name: topic.name,
+                    extractedName: link.extractedName,
+                    canonical: topic.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET languages = (
-                FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                FOR lang, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
                 RETURN {{
                     id: lang._key,
-                    name: lang.name
+                    name: lang.name,
+                    extractedName: link.extractedName,
+                    canonical: lang.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
@@ -20350,7 +20402,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={"recordId": record_id},
                 txn_id=transaction
             )
-            metadata_result = next(iter(metadata_results), None) if metadata_results else None
+            metadata_result = own_record_labels(
+                next(iter(metadata_results), None) if metadata_results else None
+            )
 
             # Get knowledge base info if record is in a KB
             kb_info = None
@@ -22876,7 +22930,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{
                         from: edge._from,
                         to: edge._to,
-                        timestamp: edge.createdAtTimestamp
+                        timestamp: edge.createdAtTimestamp,
+                        extractedName: edge.extractedName
                     }}
                 """
 
@@ -22889,11 +22944,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     # updates the existing edge instead of duplicating it —
                     # the previous per-edge create_document loop had no such
                     # guard and accumulated duplicate taxonomy edges on retry.
+                    # A copy has the same content, so it carries the same spelling.
                     new_edges = [
                         {
                             "_from": target_doc,
                             "_to": edge["to"],
                             "createdAtTimestamp": edge.get("timestamp") or get_epoch_timestamp_in_ms(),
+                            **({"extractedName": edge["extractedName"]} if edge.get("extractedName") else {}),
                         }
                         for edge in edges
                     ]

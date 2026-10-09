@@ -19,7 +19,7 @@ from app.modules.retrieval.entity_permissions import (
     list_accessible_entity_records,
     search_entities_for_user,
 )
-from tests.unit.modules.retrieval.entity_access_fakes import permitted_records
+from tests.unit.modules.retrieval.entity_access_fakes import permitted_records, record_spellings
 
 ORG = "org-1"
 USER = "user-1"
@@ -57,9 +57,9 @@ def _graph(candidates=None, permitted=None) -> MagicMock:
     """``candidates`` builds the candidate fixture (keyed by entity id); the
     in-query permission check is applied to it by ``permitted_records``."""
     graph = MagicMock()
-    graph.get_permitted_entity_records = AsyncMock(side_effect=permitted_records(
-        candidates or (lambda *a, **k: {}), permitted=permitted or (),
-    ))
+    fake = permitted_records(candidates or (lambda *a, **k: {}), permitted=permitted or ())
+    graph.get_permitted_entity_records = AsyncMock(side_effect=fake)
+    graph.get_record_taxonomy_links = AsyncMock(side_effect=record_spellings(fake))
     return graph
 
 
@@ -720,3 +720,69 @@ async def test_a_hits_aliases_are_not_carried_to_the_tools() -> None:
     graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "kb-1")]})
     (hit,) = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
     assert not hasattr(hit, "aliases")
+
+
+class TestNamesShownComeFromReadableRecords:
+    """A category, subcategory, topic or language node is named by the record
+    that created it; the user sees a spelling from a record they can read."""
+
+    def _graph(self, links: list[dict]) -> MagicMock:
+        graph = _graph(
+            candidates=lambda refs, org, **k: {
+                "t1": [_row("r-open", "conf-1")], "t2": [_row("r-open", "conf-1")],
+            },
+            permitted={"r-open"},
+        )
+        graph.get_record_taxonomy_links = AsyncMock(return_value=links)
+        return graph
+
+    @staticmethod
+    def _link(entity_id: str, name: str, extracted: str | None, *, canonical: bool = True) -> dict:
+        return {
+            "recordId": "r-open", "collection": "topics", "entityId": entity_id, "name": name,
+            "canonical": canonical, "extractedName": extracted, "migrated": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_readable_records_spelling_is_shown_and_the_stored_name_filters(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+        graph = self._graph([self._link("t1", "Project Falcon", "Launch plan")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+        assert hit.graph_filter_name == "Project Falcon"
+        assert graph.get_record_taxonomy_links.await_args.args[0] == ["r-open"]
+
+    @pytest.mark.asyncio
+    async def test_the_stored_name_is_shown_when_a_readable_record_spells_it(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9, name="Launch plan")])
+        graph = self._graph([self._link("t1", "Launch plan", "launch plan.")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+
+    @pytest.mark.asyncio
+    async def test_a_node_no_readable_record_spells_is_left_out(self) -> None:
+        store = _store([
+            _hit("t1", "topic", 0.9, name="Project Falcon"),
+            _hit("t2", "topic", 0.8, name="Legacy name"),
+        ])
+        graph = self._graph([
+            self._link("t1", "Project Falcon", None),
+            self._link("t2", "Legacy name", None, canonical=False),
+        ])
+
+        hits = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert [(h.entity_id, h.name) for h in hits] == [("t2", "Legacy name")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_name_lookup_is_an_access_error(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+        graph = self._graph([])
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with pytest.raises(EntityAccessError):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)

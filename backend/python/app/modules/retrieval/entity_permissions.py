@@ -23,8 +23,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.modules.entity_resolution.normalizer import normalize_name
 from app.modules.transformers.entity_vectorstore import EntitySearchPass
 from app.services.graph_db.common.utils import PermittedEntityRows
+from app.services.graph_db.taxonomy import taxonomy_links
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterable, Mapping
@@ -43,6 +45,8 @@ SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
 }
+# Named by the records extracted into them; departments are the org's list.
+EXTRACTED_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES - {"department"}
 
 # Redis TAG queries get too long past this; the connector pass still covers
 # these users, just with lower precision.
@@ -107,12 +111,20 @@ class EntityAccessContext:
 
 @dataclass(frozen=True)
 class EntityHit:
+    """``name`` is what the user is shown. ``filter_name`` is the node's
+    stored name, which the name-based graph filters match; it is not shown."""
+
     entity_id: str
     entity_type: str
     name: str
     score: float
     records: list[dict[str, Any]]
     more_records: bool
+    filter_name: str = ""
+
+    @property
+    def graph_filter_name(self) -> str:
+        return self.filter_name or self.name
 
 
 @dataclass(frozen=True)
@@ -412,11 +424,13 @@ async def search_entities_for_user(
         stats.append(f"{pass_name}=hits:{len(hits)},new:{added}")
 
     rounds, timed_out = await _run_probes(graph_provider, context, probes, deadline) if probes else (0, False)
+    kept_probes = [probe for probe in probes if _is_kept(context, probe)]
+    shown_names = await _names_from_permitted_records(graph_provider, kept_probes)
     kept = [
         EntityHit(
             entity_id=probe.entity_id,
             entity_type=probe.entity_type,
-            name=probe.hit.get("name") or probe.hit.get("canonicalName") or probe.entity_id,
+            name=shown_names[(probe.entity_type, probe.entity_id)],
             score=float(probe.hit.get("score") or 0.0),
             records=probe.permitted[:PREVIEW_RECORD_COUNT],
             more_records=(
@@ -424,9 +438,10 @@ async def search_entities_for_user(
                 or not probe.exhausted
                 or probe.capped
             ),
+            filter_name=_stored_name(probe),
         )
-        for probe in probes
-        if _is_kept(context, probe)
+        for probe in kept_probes
+        if (probe.entity_type, probe.entity_id) in shown_names
     ]
     kept.sort(key=lambda h: h.score, reverse=True)
     logger.info(
@@ -435,6 +450,53 @@ async def search_entities_for_user(
         int((time.monotonic() - started) * 1000),
     )
     return kept[:top_k]
+
+
+def _stored_name(probe: _Probe) -> str:
+    return str(probe.hit.get("name") or probe.hit.get("canonicalName") or probe.entity_id)
+
+
+async def _names_from_permitted_records(
+    graph_provider: "IGraphDBProvider", probes: list[_Probe],
+) -> dict[tuple[str, str], str]:
+    """``{(entity_type, entity_id): name to show}`` for the kept probes.
+
+    A category, subcategory, topic or language node is named by whichever
+    record created it, and keeps every record's spelling as an alias. It is
+    shown under a spelling of a record this user can read: its own name when
+    one of them spells it that way, otherwise the newest such record's. A
+    node none of the user's records spell is left out. Other entity types
+    keep their name.
+    """
+    shown = {
+        (p.entity_type, p.entity_id): _stored_name(p)
+        for p in probes
+        if p.entity_type not in EXTRACTED_ENTITY_TYPES
+    }
+    extracted = [p for p in probes if p.entity_type in EXTRACTED_ENTITY_TYPES]
+    record_keys = sorted({r["_key"] for p in extracted for r in p.permitted if r.get("_key")})
+    if not record_keys:
+        return shown
+    try:
+        links = taxonomy_links(await graph_provider.get_record_taxonomy_links(record_keys))
+    except Exception as exc:
+        raise EntityAccessError("Entity name lookup failed") from exc
+    spellings: dict[tuple[str, str], str] = {}
+    for link in links:
+        if link.spelling:
+            spellings.setdefault((link.entity_id, link.record_id), link.spelling)
+    for probe in extracted:
+        stored = _stored_name(probe)
+        own = [
+            spelling
+            for row in probe.permitted
+            if (spelling := spellings.get((probe.entity_id, row.get("_key"))))
+        ]
+        if not own:
+            continue
+        key = (probe.entity_type, probe.entity_id)
+        shown[key] = stored if any(normalize_name(s) == normalize_name(stored) for s in own) else own[0]
+    return shown
 
 
 def _decode_cursor_json(raw: str) -> int | None:

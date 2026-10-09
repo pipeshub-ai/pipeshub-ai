@@ -6419,6 +6419,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_taxonomy_links(
+        self,
+        record_keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every ``belongsTo*`` edge from the given records to a category,
+        subcategory, topic or language node, with the spelling the record's
+        own extraction gave that node.
+
+        Rows are ``{recordId, collection, entityId, name, canonical,
+        extractedName, migrated}``: ``name`` is the node's stored name,
+        ``canonical`` whether the node is a per-org canonical node (it has a
+        ``normalizedName``), ``extractedName`` the edge's own spelling or
+        None, and ``migrated`` whether the edge was moved off a legacy node.
+        ``app.services.graph_db.taxonomy.TaxonomyLink`` reads them.
+        Departments are not included.
+
+        Raises:
+            Exception: on query failure; a partial answer would read as the
+            records having fewer labels.
+        """
+        pass
+
+    @abstractmethod
     async def get_entity_candidate_records(
         self,
         refs: list[dict[str, Any]],

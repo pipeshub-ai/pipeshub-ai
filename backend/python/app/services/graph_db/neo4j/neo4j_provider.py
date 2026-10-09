@@ -159,6 +159,7 @@ from app.services.graph_db.taxonomy import (
     check_edge_move_target,
     global_department_key,
     is_taxonomy_collection,
+    own_record_labels,
     subcategory_level,
 )
 from app.services.graph_db.vector_membership_queries import (
@@ -5394,7 +5395,8 @@ class Neo4jProvider(IGraphDBProvider):
                 # Find all relationships from source document
                 query = f"""
                 MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
-                RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp
+                RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
+                       r.extractedName as extracted_name
                 """
 
                 results = await self.client.execute_query(
@@ -5436,6 +5438,9 @@ class Neo4jProvider(IGraphDBProvider):
                                 "to_collection": target_collection,
                                 "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
                             }
+                            # A copy has the same content, so it carries the same spelling.
+                            if rel.get("extracted_name"):
+                                new_edge["extractedName"] = rel["extracted_name"]
                             new_edges.append(new_edge)
 
                     # Batch create the new edges
@@ -10195,23 +10200,23 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (rec)-[:BELONGS_TO_DEPARTMENT]->(dept:Departments)
             WITH rec, COLLECT(DISTINCT {id: dept.id, name: dept.departmentName}) AS departments
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(cat:Categories)
-            WITH rec, departments, COLLECT(DISTINCT {id: cat.id, name: cat.name}) AS categories
+            OPTIONAL MATCH (rec)-[catLink:BELONGS_TO_CATEGORY]->(cat:Categories)
+            WITH rec, departments, COLLECT(DISTINCT {id: cat.id, name: cat.name, extractedName: catLink.extractedName, canonical: cat.normalizedName IS NOT NULL, migrated: catLink.migratedFrom IS NOT NULL}) AS categories
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat1:Subcategories1)
-            WITH rec, departments, categories, COLLECT(DISTINCT {id: subcat1.id, name: subcat1.name}) AS subcategories1
+            OPTIONAL MATCH (rec)-[sub1Link:BELONGS_TO_CATEGORY]->(subcat1:Subcategories1)
+            WITH rec, departments, categories, COLLECT(DISTINCT {id: subcat1.id, name: subcat1.name, extractedName: sub1Link.extractedName, canonical: subcat1.normalizedName IS NOT NULL, migrated: sub1Link.migratedFrom IS NOT NULL}) AS subcategories1
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat2:Subcategories2)
-            WITH rec, departments, categories, subcategories1, COLLECT(DISTINCT {id: subcat2.id, name: subcat2.name}) AS subcategories2
+            OPTIONAL MATCH (rec)-[sub2Link:BELONGS_TO_CATEGORY]->(subcat2:Subcategories2)
+            WITH rec, departments, categories, subcategories1, COLLECT(DISTINCT {id: subcat2.id, name: subcat2.name, extractedName: sub2Link.extractedName, canonical: subcat2.normalizedName IS NOT NULL, migrated: sub2Link.migratedFrom IS NOT NULL}) AS subcategories2
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat3:Subcategories3)
-            WITH rec, departments, categories, subcategories1, subcategories2, COLLECT(DISTINCT {id: subcat3.id, name: subcat3.name}) AS subcategories3
+            OPTIONAL MATCH (rec)-[sub3Link:BELONGS_TO_CATEGORY]->(subcat3:Subcategories3)
+            WITH rec, departments, categories, subcategories1, subcategories2, COLLECT(DISTINCT {id: subcat3.id, name: subcat3.name, extractedName: sub3Link.extractedName, canonical: subcat3.normalizedName IS NOT NULL, migrated: sub3Link.migratedFrom IS NOT NULL}) AS subcategories3
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_TOPIC]->(topic:Topics)
-            WITH rec, departments, categories, subcategories1, subcategories2, subcategories3, COLLECT(DISTINCT {id: topic.id, name: topic.name}) AS topics
+            OPTIONAL MATCH (rec)-[topicLink:BELONGS_TO_TOPIC]->(topic:Topics)
+            WITH rec, departments, categories, subcategories1, subcategories2, subcategories3, COLLECT(DISTINCT {id: topic.id, name: topic.name, extractedName: topicLink.extractedName, canonical: topic.normalizedName IS NOT NULL, migrated: topicLink.migratedFrom IS NOT NULL}) AS topics
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_LANGUAGE]->(lang:Languages)
-            WITH departments, categories, subcategories1, subcategories2, subcategories3, topics, COLLECT(DISTINCT {id: lang.id, name: lang.name}) AS languages
+            OPTIONAL MATCH (rec)-[langLink:BELONGS_TO_LANGUAGE]->(lang:Languages)
+            WITH departments, categories, subcategories1, subcategories2, subcategories3, topics, COLLECT(DISTINCT {id: lang.id, name: lang.name, extractedName: langLink.extractedName, canonical: lang.normalizedName IS NOT NULL, migrated: langLink.migratedFrom IS NOT NULL}) AS languages
 
             RETURN {
                 departments: [d IN departments WHERE d.id IS NOT NULL],
@@ -10229,7 +10234,9 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={"record_id": record_id},
                 txn_id=transaction
             )
-            metadata_result = metadata_results[0].get("metadata") if metadata_results else None
+            metadata_result = own_record_labels(
+                metadata_results[0].get("metadata") if metadata_results else None
+            )
 
             # Get knowledge base info if record is in a KB
             kb_info = None
@@ -17862,6 +17869,55 @@ class Neo4jProvider(IGraphDBProvider):
             )
         )
         return [row for rows in grouped for row in rows]
+
+    async def get_record_taxonomy_links(
+        self,
+        record_keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_taxonomy_links`."""
+        keys = sorted({str(k) for k in record_keys or [] if k})
+        if not keys:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label_to_collection = {collection_to_label(c): c for c in TAXONOMY_COLLECTIONS}
+        relationships = "|".join(sorted({
+            edge_collection_to_relationship(e) for e in TAXONOMY_EDGE_COLLECTIONS.values()
+        }))
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        query = f"""
+            UNWIND $keys AS key
+            MATCH (rec:{record_label} {{id: key}})-[link:{relationships}]->(n)
+            WHERE any(l IN labels(n) WHERE l IN $labels)
+            RETURN rec.id AS recordId, n.id AS entityId, labels(n) AS nodeLabels,
+                   n.name AS name, n.normalizedName IS NOT NULL AS canonical,
+                   link.extractedName AS extractedName,
+                   link.migratedFrom IS NOT NULL AS migrated
+        """
+        rows = await self.client.execute_query(
+            query,
+            parameters={"keys": keys, "labels": sorted(label_to_collection)},
+            txn_id=transaction,
+        )
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            collection = next(
+                (label_to_collection[lb] for lb in row.get("nodeLabels") or [] if lb in label_to_collection),
+                None,
+            )
+            if not collection or not row.get("entityId"):
+                continue
+            results.append({
+                "recordId": row.get("recordId"),
+                "collection": collection,
+                "entityId": row["entityId"],
+                "name": row.get("name"),
+                "canonical": bool(row.get("canonical")),
+                "extractedName": row.get("extractedName"),
+                "migrated": bool(row.get("migrated")),
+            })
+        return results
 
     _ENTITY_CANDIDATE_RECORD_PROJECTION = (
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "

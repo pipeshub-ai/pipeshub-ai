@@ -97,7 +97,13 @@ async def execute_search_entities(
 
     remember_entities(
         state,
-        [{"entityId": h.entity_id, "entityType": h.entity_type, "name": h.name} for h in hits],
+        [
+            {
+                "entityId": h.entity_id, "entityType": h.entity_type, "name": h.name,
+                "filterName": h.graph_filter_name,
+            }
+            for h in hits
+        ],
     )
     shortener = get_record_id_shortener_if_enabled(state)
     results, shown_record_ids = _render_hits(hits, context, shortener)
