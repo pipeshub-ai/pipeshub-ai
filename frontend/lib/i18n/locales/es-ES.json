@@ -1177,8 +1177,13 @@
         "changeRoleSuccess": "Rol actualizado",
         "changeRoleSuccessDescription": "{{name}} ahora es {{role}}",
         "changeRoleError": "Error al cambiar el rol",
+        "transferAdmin": "Transferir rol de administrador",
+        "transferAdminConfirmTitle": "¿Transferir el rol de administrador?",
+        "transferAdminConfirmMessage": "{{name}} pasará a ser administrador y tú pasarás a ser miembro. Se cerrará la sesión de ambos para aplicar el cambio.",
+        "transferAdminConfirmButton": "Transferir",
+        "transferAdminError": "No se pudo transferir el rol de administrador",
         "maxAdminsReachedTitle": "No se puede añadir otro administrador",
-        "maxAdminsReached": "Una organización puede tener como máximo 5 administradores.",
+        "maxAdminsReached": "Una organización puede tener como máximo 1 administrador.",
         "removeFromWorkspace": "Eliminar del espacio de trabajo",
         "demoteAdminBeforeRemoveTitle": "No se puede quitar al administrador",
         "demoteAdminBeforeRemove": "Cambie el administrador a miembro y después quítelo.",
@@ -1304,7 +1309,14 @@
         "cancelPartialError_many": "No se han podido cancelar {{count}} invitaciones"
       },
       "inviteDisabledSmtp": "SMTP no está configurado. Configure el correo electrónico antes de invitar usuarios.",
-      "bulkLabel": "Usuarios"
+      "bulkLabel": "Usuarios",
+      "adminLimitNotice": {
+        "oneAdmin": "un administrador",
+        "upcomingTitle": "PipesHub Community Edition admitirá un solo administrador a partir del {{date}}",
+        "upcomingDescription": "Tu organización tiene {{count}} administradores. El {{date}}, {{retainedAdmin}} seguirá como administrador y los demás pasarán a ser miembros.",
+        "dueTitle": "PipesHub Community Edition admite un solo administrador",
+        "dueDescription": "Tu organización todavía tiene {{count}} administradores. {{retainedAdmin}} sigue como administrador; los demás pasarán a ser miembros la próxima vez que se reinicie PipesHub."
+      }
     },
     "groups": {
       "title": "Grupos",

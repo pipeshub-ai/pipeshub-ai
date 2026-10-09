@@ -1178,8 +1178,13 @@
         "changeRoleSuccess": "역할이 업데이트되었습니다",
         "changeRoleSuccessDescription": "{{name}}은(는) 이제 {{role}}입니다",
         "changeRoleError": "역할을 변경하지 못했습니다",
+        "transferAdmin": "관리자 역할 넘기기",
+        "transferAdminConfirmTitle": "관리자 역할을 넘기시겠습니까?",
+        "transferAdminConfirmMessage": "{{name}}님이 관리자가 되고 회원님은 멤버가 됩니다. 변경 사항을 적용하기 위해 두 분 모두 로그아웃됩니다.",
+        "transferAdminConfirmButton": "넘기기",
+        "transferAdminError": "관리자 역할을 넘기지 못했습니다",
         "maxAdminsReachedTitle": "관리자를 더 추가할 수 없습니다",
-        "maxAdminsReached": "조직에는 관리자를 최대 5명까지 둘 수 있습니다.",
+        "maxAdminsReached": "조직에는 관리자를 최대 1명까지 둘 수 있습니다.",
         "removeFromWorkspace": "워크스페이스에서 제거",
         "demoteAdminBeforeRemoveTitle": "관리자를 제거할 수 없습니다",
         "demoteAdminBeforeRemove": "관리자를 멤버로 강등한 후 제거하세요.",
@@ -1293,7 +1298,14 @@
         "cancelPartialError_other": "초대 {{count}}건을 취소하지 못했습니다"
       },
       "inviteDisabledSmtp": "SMTP가 구성되지 않았습니다. 사용자를 초대하기 전에 이메일 설정을 완료하세요.",
-      "bulkLabel": "사용자"
+      "bulkLabel": "사용자",
+      "adminLimitNotice": {
+        "oneAdmin": "관리자 1명",
+        "upcomingTitle": "PipesHub Community Edition은 {{date}}부터 관리자를 1명만 지원합니다",
+        "upcomingDescription": "조직에 관리자가 {{count}}명 있습니다. {{date}}에 {{retainedAdmin}}만 관리자로 유지되고 나머지 관리자는 모두 멤버로 변경됩니다.",
+        "dueTitle": "PipesHub Community Edition은 관리자를 1명만 지원합니다",
+        "dueDescription": "조직에 아직 관리자가 {{count}}명 있습니다. {{retainedAdmin}}만 관리자로 유지되며, 나머지 관리자는 PipesHub가 다음에 재시작될 때 멤버로 변경됩니다."
+      }
     },
     "groups": {
       "title": "그룹",

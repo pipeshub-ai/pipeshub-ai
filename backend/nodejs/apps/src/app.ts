@@ -20,6 +20,7 @@ import {
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
+import { setOrgAdminLimit } from './modules/user_management/services/user-admin.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
@@ -61,6 +62,8 @@ import {
   createRequestRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
+  editionMigrations,
+  orgAdminLimit,
 } from './config';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
@@ -167,6 +170,7 @@ export class Application {
     try {
       // Initialize Logger
       this.logger = new Logger(loggerConfig);
+      setOrgAdminLimit(orgAdminLimit);
 
       // Import REDIS_PROVIDER_MODULE (R10) before any container -- and
       // therefore any RedisService/RedisDistributedKeyValueStore/streams
@@ -908,7 +912,7 @@ export class Application {
         const appConfig = await loadAppConfig();
         await this.configurationManagerContainer
           .get(MigrationService)
-          .runMigration({ scheduler, appConfig });
+          .runMigration({ scheduler, appConfig, editionMigrations });
         this.logger.info('Migration completed successfully');
       } catch (error) {
         this.logger.error('Failed to run migration', {

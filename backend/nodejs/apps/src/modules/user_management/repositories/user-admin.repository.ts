@@ -1,6 +1,7 @@
 import type { ClientSession } from 'mongoose';
 import { Users, type UserRole } from '../schema/users.schema';
 import { Org } from '../schema/org.schema';
+import { UserCredentials } from '../../auth/schema/userCredentials.schema';
 
 /**
  * Data-access helpers for org-admin role checks.
@@ -44,6 +45,26 @@ export const UserAdminRepository = {
     })
       .select('_id')
       .lean();
+  },
+
+  async findActiveAdmins(
+    orgId: string,
+  ): Promise<Array<{ _id: unknown; email?: string; createdAt?: Date }>> {
+    return Users.find({
+      orgId,
+      role: 'admin',
+      isDeleted: { $ne: true },
+      ...NOT_A_SERVICE_ACCOUNT,
+    })
+      .select('_id email createdAt')
+      .lean();
+  },
+
+  async findOrgContactEmail(orgId: string): Promise<string | null> {
+    const org = await Org.findOne({ _id: orgId, isDeleted: { $ne: true } })
+      .select('contactEmail')
+      .lean();
+    return org?.contactEmail ?? null;
   },
 
   async countActiveAdmins(
@@ -100,5 +121,52 @@ export const UserAdminRepository = {
       return;
     }
     await Users.updateOne(filter, update);
+  },
+
+  async isLoginBlocked(userId: string, orgId: string): Promise<boolean> {
+    const blocked = await UserCredentials.exists({
+      userId,
+      orgId,
+      isBlocked: true,
+      isDeleted: { $ne: true },
+    });
+    return blocked !== null;
+  },
+
+  /**
+   * Admin handover: makes a signed-in, enabled member an admin. Returns null
+   * when the user is not such a member, so the caller can abort the handover.
+   */
+  async promoteSignedInMember(
+    userId: string,
+    orgId: string,
+    session?: ClientSession | null,
+  ): Promise<{ _id: unknown; email?: string } | null> {
+    return Users.findOneAndUpdate(
+      {
+        _id: userId,
+        orgId,
+        role: { $ne: 'admin' },
+        hasLoggedIn: true,
+        isDisabled: { $ne: true },
+        isDeleted: { $ne: true },
+        ...NOT_A_SERVICE_ACCOUNT,
+      },
+      { $set: { role: 'admin' as const } },
+      { session: session ?? undefined, projection: { _id: 1, email: 1 } },
+    ).lean();
+  },
+
+  /** Admin handover: makes the outgoing admin a member, or returns null if they are not one. */
+  async demoteAdmin(
+    userId: string,
+    orgId: string,
+    session?: ClientSession | null,
+  ): Promise<{ _id: unknown; email?: string } | null> {
+    return Users.findOneAndUpdate(
+      { _id: userId, orgId, role: 'admin', isDeleted: { $ne: true } },
+      { $set: { role: 'member' as const } },
+      { session: session ?? undefined, projection: { _id: 1, email: 1 } },
+    ).lean();
   },
 };

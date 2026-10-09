@@ -17,12 +17,14 @@ import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_back
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
 import { Org } from '../../user_management/schema/org.schema';
+import type { EditionMigration } from './migrations/edition.migrations';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
 export interface MigrationDependencies {
   scheduler: CrawlingSchedulerService;
   appConfig: AppConfig;
+  editionMigrations?: EditionMigration[];
 }
 
 @injectable()
@@ -49,7 +51,20 @@ export class MigrationService {
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
     await this.documentOrgIdMigration();
+    await this.editionMigrations(deps.editionMigrations ?? []);
     this.logger.info('✅ Migration completed');
+  }
+
+  async editionMigrations(migrations: EditionMigration[]): Promise<void> {
+    for (const migration of migrations) {
+      try {
+        await migration(this.logger, this.keyValueStoreService);
+      } catch (error) {
+        this.logger.error('Edition migration failed', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
   }
 
   async adminRoleMigration(): Promise<void> {
