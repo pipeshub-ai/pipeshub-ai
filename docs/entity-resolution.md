@@ -78,12 +78,19 @@ record-group entities are identities and are never merged.
   (two spellings of one record can share a node), and `extractedName`, the
   first of them. A wrong merge can be undone per record from them, and they
   are how the record's own spellings of a node are read back (see "What users
-  see"). An edge keeps the spellings it was first written with. When a
-  record is indexed again and its edge to a node exists without any spelling
-  (copied by an earlier release), the edge gets the record's spellings and
-  keeps its other fields (`createdAtTimestamp`, `mergedFrom`,
-  `migratedFrom`). Edges written before `extractedNames` existed carry only
-  `extractedName`, which readers treat as a one-spelling list.
+  see"). An edge keeps the spellings it was first written with, in order.
+  When a record is indexed again and its edge to a node already exists, the
+  edge keeps its other fields (`createdAtTimestamp`, `mergedFrom`,
+  `migratedFrom`) and:
+  - records no spelling (copied by an earlier release): gets the record's
+    spellings;
+  - has an `extractedNames` list: gains the record's spellings it lacks
+    (compared ignoring case, spacing and surrounding punctuation), after the
+    stored ones;
+  - has only `extractedName` (written before the list existed): gains the
+    record's other spellings when the record has more than one, and is left
+    as it is otherwise.
+  Readers treat a lone `extractedName` as a one-spelling list.
 - `copy_document_relationships` adds to a deduplicated record only the edges
   it does not already have, with the source edge's spellings, since the copy
   has the same content. An edge the record already has keeps its own
@@ -129,9 +136,11 @@ can open.
   them spells it that way, otherwise the newest such record's spelling. When
   none of the readable records the access check found spells the node (they
   can be copies made by earlier releases), the walk continues through the
-  entity's readable records in widening windows, bounded like the access
-  check and by the same deadline, until one does or they run out. An entity
-  no readable record spells, or one the deadline cut short, is left out. A
+  entity's readable records, in windows that widen like the access check's
+  and then stay at the widest, until one spells it, they run out, or the
+  search deadline passes. An entity no readable record spells is left out,
+  and so is one the deadline stopped, which is logged as
+  `left ... entities unnamed at the deadline`. A
   failed lookup fails the call, as a failed access check does. `find_records_by_entity` reuses the
   name `search_entities` showed.
 - The node's stored name is still what the graph's name filters match.
@@ -163,7 +172,9 @@ stored copy is rewritten.
   read from storage, and only a change is written. A stored label that is
   the name of a node the record links to (up to case, spacing and
   punctuation) is replaced, in place, by every spelling the record's edge to
-  that node records; any other stored label is the record's own and stays. Rewriting the stored
+  that node records. Each node is replaced once, where its name first
+  appears; any other stored label, including a later one equal to that
+  node's name, is the record's own and stays. Rewriting the stored
   copy of a virtual record id that another record wrote is left to that
   record.
 - A record extracted after the pass started, or being indexed

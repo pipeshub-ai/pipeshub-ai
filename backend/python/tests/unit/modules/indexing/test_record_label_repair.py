@@ -378,3 +378,17 @@ class TestEverySpellingAndCounters:
 
         assert blob.stored["vr-g-own"]["semantic_metadata"]["topics"] == own
         assert "vr-g-own" not in [w[2] for w in blob.writes]
+
+    async def test_a_node_name_after_its_link_was_used_is_kept(self, world) -> None:
+        """The record spells the node two ways, one of which is the node's
+        name, and its edge lists only the other."""
+        graph, blob = world
+        _canonical(graph, TOPICS, "t-plan", "Project Falcon")
+        _record(graph, blob, "h-both", {"topics": ["Launch plan", "Project Falcon"]})
+        _link(graph, "h-both", BELONGS_TO_TOPIC, TOPICS, "t-plan", "Launch plan")
+        graph.edges[(BELONGS_TO_TOPIC, f"{RECORDS}/h-both", f"{TOPICS}/t-plan")]["extractedNames"] = ["Launch plan"]
+
+        await _run_until_idle(graph, blob)
+
+        assert blob.stored["vr-h-both"]["semantic_metadata"]["topics"] == ["Launch plan", "Project Falcon"]
+        assert "vr-h-both" not in [w[2] for w in blob.writes]

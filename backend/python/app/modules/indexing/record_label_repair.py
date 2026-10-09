@@ -104,8 +104,9 @@ def _ordered_spellings(current: object, links: list[TaxonomyLink]) -> list[str]:
 
     A stored label that is a linked node's name (up to case, spacing and
     punctuation, as merges and migrations move edges only between such
-    names) is what the earlier rewrite wrote; any other stored label is one
-    of the record's own spellings and stays.
+    names) is what the earlier rewrite wrote, once per node; the first such
+    label of a node is replaced, and any other stored label is one of the
+    record's own spellings and stays.
     """
     remaining = sorted(links, key=lambda link: link.spelling or "")
     ordered: list[str] = []
@@ -126,9 +127,9 @@ def _ordered_spellings(current: object, links: list[TaxonomyLink]) -> list[str]:
         if match is not None:
             remaining.remove(match)
             ordered.extend(match.spellings)
-        elif not any(
-            wanted == spelling_key(normalize_name(link.name)) for link in links
-        ):
+        else:
+            # Its node's name was already replaced where it first appeared,
+            # so a repeat of that name is one of the record's own spellings.
             ordered.append(value)
     for link in remaining:
         ordered.extend(link.spellings)
