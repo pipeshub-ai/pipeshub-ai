@@ -1,0 +1,234 @@
+"""Tests for ``app.modules.agents.enumeration.answer``.
+
+Two properties carry the whole design and are easy to regress:
+
+* every listed record is cited, and the citation is minted against the record
+  landing URL — the only form the resolver can match for a whole record;
+* the total is the size of the permission-filtered set, so a corpus larger than
+  the listing cap is still counted correctly.
+"""
+from __future__ import annotations
+
+import pytest
+
+from app.modules.agents.enumeration.answer import (
+    MAX_LISTED,
+    SUMMARY_LIMIT,
+    build_enumeration_answer,
+    compose_text,
+    record_landing_url,
+)
+
+
+class FakeMapper:
+    """Mirrors CitationRefMapper: idempotent, same URL always the same ref."""
+
+    def __init__(self) -> None:
+        self._seen: dict[str, str] = {}
+
+    def get_or_create_ref(self, url: str) -> str:
+        if url not in self._seen:
+            self._seen[url] = f"ref{len(self._seen) + 1}"
+        return self._seen[url]
+
+
+def _record(rid: str, name: str, **extra) -> dict:
+    return {"id": rid, "record_name": name, **extra}
+
+
+def _lookup_from(records: dict[str, dict]):
+    async def lookup(vrid: str, record_id: str):
+        return records.get(vrid)
+    return lookup
+
+
+class TestComposeText:
+    def test_empty_corpus_cites_nothing(self) -> None:
+        text = compose_text([], 0)
+        assert "no documents I can search" in text
+        assert "[source]" not in text
+
+    def test_singular_noun(self) -> None:
+        assert compose_text([("a", "ref1", None)], 1).startswith("There are 1 document I can search:")
+
+    def test_remainder_is_reported_when_listing_is_capped(self) -> None:
+        text = compose_text([("a", "ref1", None)], 500, beyond_cap=499)
+        assert "There are 500 documents I can search:" in text
+        assert "499 more not listed above" in text
+        assert "could not be read" not in text
+
+    def test_unreadable_records_are_worded_differently(self) -> None:
+        text = compose_text([("a", "ref1", None)], 3, unreadable=2)
+        assert "could not be read" in text
+        assert "more not listed above" not in text
+
+    def test_both_causes_can_be_reported_together(self) -> None:
+        text = compose_text([("a", "ref1", None)], 500, beyond_cap=298, unreadable=201)
+        assert "298 more not listed above" in text
+        assert "201 records could not be read" in text
+
+
+class TestLargeCorpora:
+    """A census over a large corpus is a number and a way to narrow it, not a
+    wall of rows. At 200 rows with summaries the answer ran past 50,000
+    characters, which nobody reads and which rides along in the conversation
+    history on every following turn."""
+
+    async def test_short_lists_keep_their_summaries(self) -> None:
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}", summary="A summary.")
+                for i in range(SUMMARY_LIMIT)}
+        result = await build_enumeration_answer(
+            accessible={f"v{i}": f"r{i}" for i in range(SUMMARY_LIMIT)},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert "A summary." in result.text
+
+    async def test_long_lists_drop_summaries_but_keep_names_and_citations(self) -> None:
+        n = SUMMARY_LIMIT + 5
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}", summary="A summary.")
+                for i in range(n)}
+        result = await build_enumeration_answer(
+            accessible={f"v{i}": f"r{i}" for i in range(n)},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert "A summary." not in result.text
+        assert "doc 0" in result.text
+        assert result.text.count("[source](ref") == n
+
+    async def test_a_large_corpus_stays_readable_and_exact(self) -> None:
+        n = 5000
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}", summary="A fairly long summary. " * 8)
+                for i in range(n)}
+        result = await build_enumeration_answer(
+            accessible={f"v{i}": f"r{i}" for i in range(n)},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert result.total == n, "the count must stay exact however large the corpus"
+        assert result.listed == MAX_LISTED
+        assert len(result.text) < 10_000, "an answer this long is not read, it is scrolled past"
+        assert "narrow this down" in result.text
+
+
+class TestScopedCounts:
+    """A count over a filtered set must not read as a statement about the whole
+    corpus. Someone who scoped to one knowledge base and is told "there are 3
+    documents" has no way to know that is not the total."""
+
+    def test_unscoped_count_makes_no_claim_about_scope(self) -> None:
+        text = compose_text([("a", "ref1", None)], 3)
+        assert "There are 3 documents I can search:" in text
+        assert "you selected" not in text
+
+    def test_scoped_count_says_so(self) -> None:
+        text = compose_text([("a", "ref1", None)], 3, scoped=True)
+        assert "in the sources you selected" in text
+
+    def test_scoped_empty_result_says_so(self) -> None:
+        text = compose_text([], 0, scoped=True)
+        assert "in the sources you selected" in text
+        assert "[source]" not in text
+
+    def test_unscoped_empty_result_says_what_was_searched(self) -> None:
+        """The empty answer must not claim the knowledge base is empty. It can
+        only speak for what is indexed and permitted, which during a sync is a
+        fraction of what exists."""
+        text = compose_text([], 0)
+        assert text == "There are no documents I can search."
+        assert "in the sources you selected" not in text
+
+
+class TestBuildEnumerationAnswer:
+    async def test_every_listed_record_is_cited(self) -> None:
+        recs = {"v1": _record("r1", "alpha", summary="First."), "v2": _record("r2", "beta")}
+        result = await build_enumeration_answer(
+            accessible={"v1": "r1", "v2": "r2"}, record_lookup=_lookup_from(recs),
+            ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert result.total == 2
+        assert result.text.count("[source](ref") == 2
+
+    async def test_citation_uses_the_record_landing_url(self) -> None:
+        """A connector's external webUrl matches neither resolver path, so the
+        ref must be minted against /record/{id} even when one is present."""
+        recs = {"v1": _record("r1", "drive doc", webUrl="https://drive.google.com/file/d/xyz")}
+        mapper = FakeMapper()
+        result = await build_enumeration_answer(
+            accessible={"v1": "r1"}, record_lookup=_lookup_from(recs),
+            ref_mapper=mapper, org_id="o1",
+        )
+        assert record_landing_url("r1") in mapper._seen
+        assert "https://drive.google.com" not in mapper._seen
+        # The resolver indexes on block_web_url; the external link stays in
+        # metadata for the chip target.
+        doc = result.final_results[0]
+        assert doc["block_web_url"] == "/record/r1"
+        assert doc["metadata"]["webUrl"] == "https://drive.google.com/file/d/xyz"
+
+    async def test_citation_metadata_carries_every_required_field(self) -> None:
+        """A citation missing any of these fails schema validation on save and
+        takes the whole conversation with it."""
+        recs = {"v1": _record("r1", "alpha")}
+        result = await build_enumeration_answer(
+            accessible={"v1": "r1"}, record_lookup=_lookup_from(recs),
+            ref_mapper=FakeMapper(), org_id="o1",
+        )
+        meta = result.final_results[0]["metadata"]
+        for field in ("orgId", "mimeType", "recordId", "recordName", "origin"):
+            assert meta.get(field), f"{field} is required by the citation schema"
+
+    async def test_unresolvable_records_are_not_listed_but_are_still_counted(self) -> None:
+        """The total is what the permission filter returned. Dropping a record
+        that failed to hydrate would silently under-count the corpus."""
+        recs = {"v1": _record("r1", "alpha")}
+        result = await build_enumeration_answer(
+            accessible={"v1": "r1", "v2": "r2"}, record_lookup=_lookup_from(recs),
+            ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert result.total == 2
+        assert result.listed == 1
+        assert result.text.count("[source](ref") == 1
+
+    async def test_unreadable_records_are_described_separately_from_the_cap(self) -> None:
+        """Being past the listing cap and failing to load mean different things
+        to the reader, so the answer must not describe one as the other."""
+        recs = {"v0": _record("r0", "alpha")}
+        result = await build_enumeration_answer(
+            accessible={"v0": "r0", "v1": "r1", "v2": "r2"},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert result.total == 3
+        assert "could not be read" in result.text
+        assert "more not listed above" not in result.text
+
+    async def test_listing_is_capped_but_the_total_is_exact(self) -> None:
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}") for i in range(10)}
+        result = await build_enumeration_answer(
+            accessible={f"v{i}": f"r{i}" for i in range(10)},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(),
+            org_id="o1", limit=3,
+        )
+        assert result.total == 10
+        assert result.listed == 3
+        assert "7 more not listed above" in result.text
+        assert "could not be read" not in result.text
+
+    async def test_order_is_stable_across_calls(self) -> None:
+        """A map's iteration order is not a promise, and an answer that changes
+        between identical asks is indistinguishable from a wrong one."""
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}") for i in range(5)}
+        accessible = {f"v{i}": f"r{i}" for i in range(5)}
+        first = await build_enumeration_answer(
+            accessible=accessible, record_lookup=_lookup_from(recs),
+            ref_mapper=FakeMapper(), org_id="o1")
+        second = await build_enumeration_answer(
+            accessible=dict(reversed(list(accessible.items()))),
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1")
+        assert first.text == second.text
+
+    async def test_no_access_produces_no_citations(self) -> None:
+        result = await build_enumeration_answer(
+            accessible={}, record_lookup=_lookup_from({}),
+            ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert result.is_empty and result.total == 0
+        assert "[source]" not in result.text
