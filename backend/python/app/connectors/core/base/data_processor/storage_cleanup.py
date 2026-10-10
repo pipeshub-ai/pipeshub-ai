@@ -6,12 +6,14 @@ The helper calls the Node.js storage service using the same scoped-JWT auth
 pattern as BlobStorage.
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
 
+from app.config.constants.arangodb import CollectionNames, EventTypes, RecordTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     DefaultEndpoints,
@@ -19,13 +21,17 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.services.messaging.config import Topic
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_path import (
     build_hierarchical_storage_path,
-    build_record_group_path as _build_record_group_path,
     build_record_group_prefix_from_chain,
 )
+from app.utils.storage_path import (
+    build_record_group_path as _build_record_group_path,
+)
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Virtual records listed per page, and handovers per relocate call (Node's cap).
 VIRTUAL_RECORD_PAGE_SIZE = 500
@@ -51,6 +57,18 @@ def choose_storage_owner(holders: list[dict]) -> dict:
     """Live holders before trashed ones, then the smallest key, so every run
     picks the same owner."""
     return min(holders, key=lambda h: (bool(h.get("isDeleted")), str(h.get("id"))))
+
+
+# Node's cap on one missing-documents lookup (MAX_MISSING_DOCUMENT_IDS).
+MISSING_DOCUMENTS_BATCH = 500
+
+
+class MissingDocumentsRouteUnavailable(Exception):
+    """Node predates the missing-documents route (404/405), e.g. mid-upgrade."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"storage has no missing-documents route (HTTP {status})")
+        self.status = status
 
 
 class StorageCleanupHelper:
@@ -356,6 +374,80 @@ class StorageCleanupHelper:
         asked = {m["virtualRecordId"] for m in moves}
         settled = asked & {*(body.get("moved") or []), *(body.get("missing") or [])}
         return len(settled)
+
+    async def reindex_one_holder(
+        self,
+        vrid: str,
+        publish: Callable[[str, dict], Awaitable[Any]],
+    ) -> int:
+        """Force re-index one live record holding ``vrid``; its storage write
+        re-points the VRID's mapping at a new document, healing every holder.
+
+        Returns 1 when published, 0 when no live record holds the VRID (its
+        mapping row is then the orphan sweeper's to drop). Raises when the
+        event could not be published.
+        """
+        holders = await self.graph_provider.get_records_by_virtual_record_id(
+            vrid, raise_on_error=True
+        )
+        record = None
+        for key in holders:
+            record = await self.graph_provider.get_document(key, CollectionNames.RECORDS.value)
+            if record:
+                break
+        if not record:
+            self.logger.warning(
+                "No live record found for shared VRID %s; nothing re-indexed", vrid
+            )
+            return 0
+        file_record = None
+        if record.get("recordType") == RecordTypes.FILE.value:
+            file_record = await self.graph_provider.get_document(
+                record.get("_key") or record.get("id"), CollectionNames.FILES.value
+            )
+        payload = await self.graph_provider._create_reindex_event_payload(record, file_record)
+        payload["forceReindex"] = True
+        sent = await publish(
+            Topic.RECORD_EVENTS.value,
+            {
+                "eventType": EventTypes.NEW_RECORD.value,
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "payload": payload,
+            },
+        )
+        # Publishers report failure by returning False rather than raising.
+        if sent is False:
+            raise RuntimeError("re-index event was not published")
+        return 1
+
+    async def find_missing_documents(self, org_id: str, document_ids: list[str]) -> list[str]:
+        """The ids storage cannot serve for the org: absent or deleted, as download sees it.
+
+        Raises ``MissingDocumentsRouteUnavailable`` when Node has no such route,
+        and any other failure as an exception: never an empty answer that would
+        read as "nothing is missing".
+        """
+        ids = list(dict.fromkeys(d for d in document_ids if d))
+        missing: list[str] = []
+        for start in range(0, len(ids), MISSING_DOCUMENTS_BATCH):
+            batch = ids[start:start + MISSING_DOCUMENTS_BATCH]
+            headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(org_id)
+            url = f"{nodejs_endpoint}{Routes.STORAGE_MISSING_DOCUMENTS.value}"
+            session = await self._get_session()
+            async with session.post(url, json={"documentIds": batch}, headers=headers) as resp:
+                if resp.status in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.METHOD_NOT_ALLOWED.value):
+                    raise MissingDocumentsRouteUnavailable(resp.status)
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    raise Exception(
+                        f"missing-documents lookup failed: {resp.status} {error_text[:200]}"
+                    )
+                body = await resp.json()
+            answer = body.get("missing") if isinstance(body, dict) else None
+            if not isinstance(answer, list):
+                raise ValueError("storage answered a malformed missing-documents reply")
+            missing.extend(str(d) for d in answer)
+        return missing
 
     async def delete_connector_storage(
         self, org_id: str, connector_id: str

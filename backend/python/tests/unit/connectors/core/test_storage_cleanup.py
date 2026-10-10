@@ -1027,3 +1027,121 @@ class TestBuildRecordGroupHierarchicalPrefix:
             "grp-1", "conn-1", override_leaf_name="ForcedName"
         )
         assert result == "records/conn-1/ForcedName"
+
+
+class TestReindexOneHolder:
+
+    def _graph(self, holders_by_vrid, docs):
+        gp = _make_graph_provider()
+        gp.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=lambda vrid, **_kw: holders_by_vrid.get(vrid, [])
+        )
+        gp.get_document = AsyncMock(side_effect=lambda key, _collection: docs.get(key))
+        gp._create_reindex_event_payload = AsyncMock(
+            side_effect=lambda record, file_record: {"recordId": record["_key"], "file": file_record}
+        )
+        return gp
+
+    @pytest.mark.asyncio
+    async def test_force_reindexes_the_first_live_holder(self):
+        gp = self._graph(
+            holders_by_vrid={"v1": ["r-gone", "r-team", "r-other"]},
+            docs={
+                "r-team": {"_key": "r-team", "recordType": "FILE"},
+                "r-other": {"_key": "r-other", "recordType": "FILE"},
+            },
+        )
+        publish = AsyncMock()
+
+        assert await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish) == 1
+
+        topic, event = publish.await_args.args
+        assert topic == "record-events"
+        assert event["eventType"] == "newRecord"
+        assert event["payload"]["recordId"] == "r-team"
+        assert event["payload"]["forceReindex"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_vrid_with_no_live_holder_publishes_nothing(self):
+        gp = self._graph(holders_by_vrid={"v1": ["r-gone"]}, docs={})
+        publish = AsyncMock()
+
+        assert await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish) == 0
+        publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_publish_reporting_failure_raises(self):
+        gp = self._graph(holders_by_vrid={"v1": ["r1"]}, docs={"r1": {"_key": "r1"}})
+
+        with pytest.raises(RuntimeError, match="not published"):
+            await _make_cleanup(graph_provider=gp).reindex_one_holder(
+                "v1", AsyncMock(return_value=False),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Asking storage which documents are gone
+# ---------------------------------------------------------------------------
+
+
+class TestFindMissingDocuments:
+    def _session(self, status, body=None, text=""):
+        resp_ctx = AsyncMock()
+        resp_ctx.status = status
+        resp_ctx.json = AsyncMock(return_value=body)
+        resp_ctx.text = AsyncMock(return_value=text)
+        resp_ctx.__aenter__ = AsyncMock(return_value=resp_ctx)
+        resp_ctx.__aexit__ = AsyncMock(return_value=False)
+        session = AsyncMock()
+        session.closed = False
+        session.post = MagicMock(return_value=resp_ctx)
+        return session
+
+    async def _ask(self, session, ids):
+        with patch(
+            "app.connectors.core.base.data_processor.storage_cleanup.aiohttp.ClientSession",
+            return_value=session,
+        ):
+            return await _make_cleanup().find_missing_documents("org-1", ids)
+
+    @pytest.mark.asyncio
+    async def test_answers_the_ids_storage_reports_missing(self):
+        session = self._session(200, {"missing": ["d2"]})
+
+        assert await self._ask(session, ["d1", "d2"]) == ["d2"]
+
+        url = session.post.call_args.args[0]
+        assert url == f"http://localhost:3001{Routes.STORAGE_MISSING_DOCUMENTS.value}"
+        assert session.post.call_args.kwargs["json"] == {"documentIds": ["d1", "d2"]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [404, 405])
+    async def test_a_node_without_the_route_is_reported_as_such(self, status):
+        from app.connectors.core.base.data_processor.storage_cleanup import (
+            MissingDocumentsRouteUnavailable,
+        )
+
+        with pytest.raises(MissingDocumentsRouteUnavailable):
+            await self._ask(self._session(status, text="Not found"), ["d1"])
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_raises_without_answering(self):
+        from app.connectors.core.base.data_processor.storage_cleanup import (
+            MissingDocumentsRouteUnavailable,
+        )
+
+        with pytest.raises(Exception, match="500") as raised:
+            await self._ask(self._session(500, text="boom"), ["d1"])
+        assert not isinstance(raised.value, MissingDocumentsRouteUnavailable)
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_answer_raises(self):
+        with pytest.raises(ValueError, match="malformed"):
+            await self._ask(self._session(200, {"nope": 1}), ["d1"])
+
+    @pytest.mark.asyncio
+    async def test_no_ids_means_no_call(self):
+        session = self._session(200, {"missing": []})
+
+        assert await self._ask(session, []) == []
+        session.post.assert_not_called()
