@@ -37,6 +37,7 @@ import { useTranslation } from 'react-i18next';
 export function AuthenticateTab() {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isAdmin = useUserStore(selectIsAdmin);
+  const revealedOAuthAppId = useConnectorsStore((s) => s.revealedOAuthAppId);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
   const {
@@ -427,6 +428,7 @@ export function AuthenticateTab() {
               onChange={setAuthFormValue}
               error={formErrors[field.name]}
               disabled={authFieldsDisabled}
+              revealed={Boolean(linkedOAuthAppId) && revealedOAuthAppId === linkedOAuthAppId}
             />
           ))}
         </Flex>

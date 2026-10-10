@@ -28,6 +28,7 @@ from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
+from app.config.redaction import OAUTH_CLIENT_SECRET_FIELDS
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
@@ -39,6 +40,7 @@ from app.edition_containers import ConnectorAppContainer
 from app.edition_config import (
     REDACTED_PLACEHOLDER,
     can_reveal_secrets,
+    hide_secrets_by_default,
     check_user_is_admin,
     get_oauth_credentials_for_toolset,
     get_toolset_by_id,
@@ -235,28 +237,52 @@ def _holds_object(value: object) -> bool:
     return isinstance(value, dict) or (isinstance(value, list) and any(_holds_object(v) for v in value))
 
 
-def _mask_inline_auth(auth: dict[str, Any]) -> dict[str, Any]:
-    """Edition masking, with any nested object hidden whole: the masker reads top-level keys only."""
+def _mask_inline_auth(auth: dict[str, Any], secret_fields: frozenset[str]) -> dict[str, Any]:
+    """Nested objects (stored tokens) are always hidden whole; declared secrets follow HIDE_SECRET_CONFIG."""
+    hide_secrets = hide_secrets_by_default()
     return {
-        key: REDACTED_PLACEHOLDER if _holds_object(value) else value
+        key: REDACTED_PLACEHOLDER
+        if _holds_object(value) or (hide_secrets and key in secret_fields and value)
+        else value
         for key, value in mask_oauth_secrets(auth).items()
     }
 
 
+def _secret_auth_fields(request: Request, instance: dict[str, Any]) -> frozenset[str]:
+    """Credential fields the toolset marks secret (or types as a password) for the instance's auth type."""
+    try:
+        meta = _get_toolset_metadata(_get_registry(request), instance.get("toolsetType", ""))
+    except Exception:  # noqa: BLE001 - an unknown toolset still gets its OAuth secret masked
+        return OAUTH_CLIENT_SECRET_FIELDS
+    auth_meta = (meta.get("config") or {}).get("auth") or {}
+    schema = (auth_meta.get("schemas") or {}).get((instance.get("authType") or "").upper()) or auth_meta.get("schema") or {}
+    declared = {
+        field["name"]
+        for field in schema.get("fields", [])
+        if isinstance(field, dict) and field.get("name")
+        and (field.get("isSecret") or field.get("is_secret") or field.get("fieldType") == "PASSWORD")
+    }
+    return frozenset(declared) | OAUTH_CLIENT_SECRET_FIELDS
+
+
 def _instance_for_response(
-    instance: dict[str, Any], *, is_admin: bool, reveal: bool = False
+    instance: dict[str, Any],
+    *,
+    is_admin: bool,
+    reveal: bool = False,
+    secret_fields: frozenset[str] = OAUTH_CLIENT_SECRET_FIELDS,
 ) -> dict[str, Any]:
     """Copy of *instance* that is safe to return.
 
     Its inline ``auth`` holds credentials: non-admins never get it, admins get it
-    masked the way the edition masks OAuth secrets unless they asked to see it.
+    masked as above unless they asked to see it.
     """
     if "auth" not in instance:
         return instance
     safe = {k: v for k, v in instance.items() if k != "auth"}
     auth = instance["auth"]
     if is_admin and isinstance(auth, dict) and auth:
-        safe["auth"] = dict(auth) if reveal else _mask_inline_auth(auth)
+        safe["auth"] = dict(auth) if reveal else _mask_inline_auth(auth, secret_fields)
     return safe
 
 
@@ -1341,7 +1367,9 @@ async def create_toolset_instance(
 
     return {
         "status": "success",
-        "instance": _instance_for_response(new_instance, is_admin=True),
+        "instance": _instance_for_response(
+            new_instance, is_admin=True, secret_fields=_secret_auth_fields(request, new_instance)
+        ),
         "message": "Toolset instance created successfully."
     }
 
@@ -1385,7 +1413,9 @@ async def get_toolset_instances(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         enriched.append({
-            **_instance_for_response(inst, is_admin=is_admin),
+            **_instance_for_response(
+                inst, is_admin=is_admin, secret_fields=_secret_auth_fields(request, inst)
+            ),
             "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
             "description": meta.get("description", "") if meta else "",
             "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1439,7 +1469,10 @@ async def get_toolset_instance(
 
     reveal = is_admin and can_reveal_secrets(request)
     result: dict[str, Any] = {
-        **_instance_for_response(instance, is_admin=is_admin, reveal=reveal),
+        **_instance_for_response(
+            instance, is_admin=is_admin, reveal=reveal,
+            secret_fields=_secret_auth_fields(request, instance),
+        ),
         "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
         "description": meta.get("description", "") if meta else "",
         "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1709,7 +1742,9 @@ async def update_toolset_instance(
 
     return {
         "status": "success",
-        "instance": _instance_for_response(instance, is_admin=True),
+        "instance": _instance_for_response(
+            instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance)
+        ),
         "message": msg,
         "deauthenticatedUserCount": deauthed_count,
     }

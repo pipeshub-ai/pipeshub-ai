@@ -158,6 +158,7 @@ export function SmtpConfigurePanel({
           }
           return next;
         });
+        setShowPassword(true);
       }
     } catch {
       // The fields keep their placeholders, which still save correctly.

@@ -101,6 +101,7 @@ export function ConfigurePanel({
       const stored = await WebSearchApi.revealProviderApiKey(existingProvider.providerKey);
       if (stored && stillCurrent()) {
         setApiKey((prev) => (prev === CONFIG_SECRET_PLACEHOLDER ? stored : prev));
+        setShowKey(true);
       }
     } catch {
       // The field keeps its placeholder, which still saves correctly.

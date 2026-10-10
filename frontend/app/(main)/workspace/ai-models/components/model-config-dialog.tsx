@@ -608,6 +608,7 @@ export function ModelConfigDialog({
         onFieldChange={handleFieldChange}
         onReveal={canReveal ? () => void handleReveal() : undefined}
         revealing={revealState === 'loading'}
+        revealed={revealState === 'shown'}
       />
       {downloadTarget && (
         <EmbeddingDownloadProgress
@@ -655,6 +656,7 @@ function ModelConfigFormBody({
   onFieldChange,
   onReveal,
   revealing,
+  revealed,
 }: {
   provider: AIModelProvider | null;
   capability: string | null;
@@ -668,6 +670,7 @@ function ModelConfigFormBody({
   /** Absent when the deployment does not allow reading stored secrets back. */
   onReveal?: () => void;
   revealing: boolean;
+  revealed: boolean;
 }) {
   const { t } = useTranslation();
   const leaveBlankPlaceholder = t('form.leaveBlankToKeep');
@@ -821,6 +824,7 @@ function ModelConfigFormBody({
               onChange={onFieldChange}
               disabled={saving}
               startAdornment={fieldStartAdornment(field.name)}
+              revealed={revealed && hiddenCredentials.has(field.name)}
             />
           ))}
         </Flex>

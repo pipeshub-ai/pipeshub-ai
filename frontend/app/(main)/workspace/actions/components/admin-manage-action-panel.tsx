@@ -19,6 +19,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { SERVICE_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
 import {
   ToolsetsApi,
   type BuilderSidebarToolset,
@@ -355,7 +356,7 @@ export function AdminManageActionPanel({
     [selectedOauthRow, t]
   );
 
-  const revealAvailable = useSecretRevealAvailable(oauth);
+  const revealAvailable = useSecretRevealAvailable();
   const [revealing, setRevealing] = useState(false);
   const [revealedConfigId, setRevealedConfigId] = useState('');
   // The instance GET only carries the OAuth app it is linked to, so a different
@@ -380,7 +381,8 @@ export function AdminManageActionPanel({
       for (const field of oauthFields) {
         const current = next[field.name];
         const value = stored[field.name];
-        const isBlank = current === undefined || current === null || current === '';
+        const isBlank =
+          current === undefined || current === null || current === '' || current === SERVICE_SECRET_PLACEHOLDER;
         if (isBlank && typeof value === 'string' && value) next[field.name] = value;
       }
       // Showing what is stored is not an edit: keep an untouched form clean.
@@ -391,6 +393,44 @@ export function AdminManageActionPanel({
       setRevealedConfigId(selectedOauthRow._id);
     } catch {
       // The fields stay blank, which still saves as "keep the stored value".
+    } finally {
+      setRevealing(false);
+    }
+  };
+
+  const [inlineRevealed, setInlineRevealed] = useState(false);
+  const canRevealInline =
+    revealAvailable &&
+    !oauth &&
+    !inlineRevealed &&
+    Object.values(nonOauthValues).some((value) => value === SERVICE_SECRET_PLACEHOLDER);
+  const beginInlineReveal = useRevealScope(instanceId);
+
+  useEffect(() => {
+    setInlineRevealed(false);
+  }, [instanceId]);
+
+  // Swaps the masked inline credentials (API tokens, passwords) for the stored values.
+  const handleRevealInline = async () => {
+    const stillCurrent = beginInlineReveal();
+    setRevealing(true);
+    try {
+      const doc = await ToolsetsApi.getToolsetInstance(instanceId, { reveal: true });
+      const stored = asAuthRecord(doc.auth);
+      if (!stillCurrent() || !stored) return;
+      const next = { ...nonOauthValues };
+      for (const [name, value] of Object.entries(nonOauthValues)) {
+        if (value === SERVICE_SECRET_PLACEHOLDER && typeof stored[name] === 'string') {
+          next[name] = stored[name];
+        }
+      }
+      if (stableStringifyRecord(nonOauthValues) === initialNonOauthSnapshot) {
+        setInitialNonOauthSnapshot(stableStringifyRecord(next));
+      }
+      setNonOauthValues(next);
+      setInlineRevealed(true);
+    } catch {
+      // The fields keep their placeholders, which still save as "keep the stored value".
     } finally {
       setRevealing(false);
     }
@@ -783,6 +823,7 @@ export function AdminManageActionPanel({
                   }}
                   error={fieldErrors[field.name]}
                   selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
+                  revealed={Boolean(selectedOauthRow) && revealedConfigId === selectedOauthRow?._id}
                 />
               ))}
             </Flex>
@@ -798,9 +839,14 @@ export function AdminManageActionPanel({
         </Flex>
       ) : nonOauthConfigureFields.length > 0 ? (
         <Flex direction="column" gap="3" mt="1">
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.actions.configurationHeading')}
-          </Text>
+          <Flex align="center" justify="between" gap="3">
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.actions.configurationHeading')}
+            </Text>
+            {canRevealInline ? (
+              <ShowStoredValuesButton loading={revealing} onClick={() => void handleRevealInline()} />
+            ) : null}
+          </Flex>
           {nonOauthConfigureFields.map((field) => (
             <SchemaFormField
               key={field.name}
@@ -817,6 +863,7 @@ export function AdminManageActionPanel({
               }}
               error={fieldErrors[field.name]}
               selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
+              revealed={inlineRevealed}
             />
           ))}
         </Flex>

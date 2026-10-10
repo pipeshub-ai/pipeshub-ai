@@ -296,6 +296,8 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
         setSigningSecret((prev) =>
           prev === CONFIG_SECRET_PLACEHOLDER ? stored.signingSecret : prev,
         );
+        setShowBotToken(true);
+        setShowSigningSecret(true);
       }
     } catch {
       // The fields keep their placeholders, which still save correctly.

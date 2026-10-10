@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useContext, useMemo } from 'react';
+import React, { useState, useRef, useContext, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -42,6 +42,8 @@ interface SchemaFormFieldProps {
   startAdornment?: React.ReactNode;
   /** Shown on hover/focus when `disabled` is true (e.g. non-editable sync fields). */
   disabledTooltip?: string;
+  /** Set once the form has fetched the stored secret, so a password field shows it instead of dots. */
+  revealed?: boolean;
 }
 
 // ========================================
@@ -99,6 +101,7 @@ export function SchemaFormField({
   selectPortalZIndex,
   startAdornment,
   disabledTooltip,
+  revealed = false,
 }: SchemaFormFieldProps) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
@@ -183,6 +186,7 @@ export function SchemaFormField({
                   disabled={disabled}
                   hasError={invalid}
                   startAdornment={startAdornment}
+                  revealed={revealed}
                 />
               );
             case 'TEXTAREA':
@@ -636,6 +640,7 @@ function PasswordInput({
   disabled,
   startAdornment,
   hasError,
+  revealed,
 }: {
   field: SchemaField;
   value: unknown;
@@ -643,9 +648,15 @@ function PasswordInput({
   disabled: boolean;
   startAdornment?: React.ReactNode;
   hasError?: boolean;
+  revealed?: boolean;
 }) {
   const { t } = useTranslation();
   const [showPassword, setShowPassword] = useState(false);
+  // Follow the reveal: shown when the form fetched the stored value, hidden again when it
+  // moves to another config. The eye still toggles freely in between.
+  useEffect(() => {
+    setShowPassword(Boolean(revealed));
+  }, [revealed]);
   const [isFocused, setIsFocused] = useState(false);
 
   const leftGutter = startAdornment ? ADORNMENT_LEFT_GUTTER : 0;

@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import { publicAuthClient } from '@/lib/api/public-auth-client';
 import type { SignInResponse } from '@/lib/api/auth-public-types';
 import {
@@ -53,6 +54,16 @@ export const AuthMethodsApi = {
 // ============================================================
 
 export const AuthConfigApi = {
+  /** A provider's stored config with real values instead of placeholders. Only where the deployment allows it. */
+  async revealProviderConfig(
+    method: 'google' | 'microsoft' | 'oauth',
+  ): Promise<Record<string, unknown>> {
+    const { data } = await apiClient.get<Record<string, unknown>>(`${CONFIG_BASE}/${method}`, {
+      params: REVEAL_PARAMS,
+    });
+    return data ?? {};
+  },
+
   // ── Google ────────────────────────────────────────────────
 
   /** GET /api/v1/configurationManager/authConfig/google */

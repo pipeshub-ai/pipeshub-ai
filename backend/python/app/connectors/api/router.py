@@ -9407,10 +9407,26 @@ async def list_oauth_configs(
             is_admin=user_context["is_admin"]  # Server-side authorization check
         )
 
+        # Rows can be the stored documents themselves, so build copies rather than edit them.
+        oauth_configs_out = result.get("oauthConfigs", [])
+        if user_context["is_admin"]:
+            reveal = can_reveal_secrets(request)
+            oauth_configs_out = [
+                {
+                    **row,
+                    OAuthConfigKeys.CONFIG: mask_oauth_config_for_response(
+                        row, user_context["org_id"], is_admin=True, reveal=reveal
+                    )["config"],
+                }
+                if isinstance(row.get(OAuthConfigKeys.CONFIG), dict)
+                else row
+                for row in oauth_configs_out
+            ]
+
         # Return camelCase for frontend consistency
         return {
             "success": True,
-            "oauthConfigs": result.get("oauthConfigs", []),
+            "oauthConfigs": oauth_configs_out,
             "pagination": result.get("pagination", {})
         }
 

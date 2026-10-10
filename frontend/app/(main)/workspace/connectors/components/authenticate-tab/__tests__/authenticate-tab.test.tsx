@@ -13,6 +13,13 @@ vi.mock('../../../api', () => ({
   },
 }));
 
+// The reveal hook reaches '@/lib/api', which loads '@/config' while the mock below is still being built.
+vi.mock('@/lib/hooks/use-secret-reveal-available', () => ({
+  REVEAL_PARAMS: { reveal: 'true' },
+  useSecretRevealAvailable: () => false,
+  useRevealScope: () => () => () => true,
+}));
+
 // The app-wide `@/config` barrel pulls in the agent builder; this tab only needs the selector.
 vi.mock('@/config', async () => {
   const { OAuthAppSelector } = await import('../oauth-app-selector');
