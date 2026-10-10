@@ -35,6 +35,7 @@ from app.agents.constants.mcp_server_constants import (
 from app.agents.mcp import dcr as dcr_module
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import service as mcp_service
+from app.agents.mcp import stdio_policy
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.client import MCPConnectionError
 from app.agents.mcp.discovery import discover_tools
@@ -47,6 +48,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.edition_config import (
     build_schedule_refresh_kwargs,
+    can_reveal_secrets,
     forbid_inherited_mcp_mutation,
     get_mcp_instance_resolved,
     load_mcp_instances,
@@ -210,30 +212,55 @@ _load_org_instances = load_mcp_instances
 _get_org_instance = get_mcp_instance_resolved
 
 
+def _bad_request(detail: str) -> HTTPException:
+    return HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=detail)
+
+
 def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPRegistry) -> None:
-    """Cross-field validation the Pydantic model alone can't express."""
+    """Cross-field validation the Pydantic model alone can't express, plus the STDIO
+    launch policy (`app.agents.mcp.stdio_policy`). Shared by create and update."""
     if payload.type_id:
         template = registry.get_template(payload.type_id)
         if not template:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Unknown catalog type_id: {payload.type_id}",
+            raise _bad_request(f"Unknown catalog type_id: {payload.type_id}")
+        if payload.transport != template.transport:
+            raise _bad_request(
+                f"Catalog server '{template.type_id}' uses the {template.transport.value} transport; "
+                "it cannot be changed."
             )
-        return
-
-    # Custom server — validate transport-specific required fields.
-    if payload.transport == MCPTransport.STDIO:
+        if (payload.command and payload.command != template.command) or (
+            payload.args and list(payload.args) != list(template.args)
+        ):
+            raise _bad_request(
+                f"Catalog server '{template.type_id}' always runs its catalog command; "
+                "command and args cannot be overridden. Add a custom server instead."
+            )
+        allowed_env = set(template.required_env + template.optional_env)
+    elif payload.transport == MCPTransport.STDIO:
+        rejected = stdio_policy.rejected_env_names([*payload.required_env, *payload.env.keys()])
+        if rejected:
+            raise _bad_request(
+                f"Env var names not allowed for STDIO MCP servers: {rejected}. Names must be "
+                "upper-case letters, digits and underscores, and cannot change how the process "
+                "is loaded (e.g. PATH, LD_*, NODE_*, PYTHON*)."
+            )
+        if not stdio_policy.custom_stdio_allowed():
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail=stdio_policy.CUSTOM_STDIO_DISABLED_MESSAGE,
+            )
         if not payload.command:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="A custom STDIO MCP server requires a command.",
-            )
+            raise _bad_request("A custom STDIO MCP server requires a command.")
+        allowed_env = set(payload.required_env or payload.env.keys())
     else:
         if not payload.url:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="A custom SSE/streamable_http MCP server requires a url.",
-            )
+            raise _bad_request("A custom SSE/streamable_http MCP server requires a url.")
+        return
+
+    if payload.transport == MCPTransport.STDIO and payload.env:
+        rejected = set(payload.env.keys()) - allowed_env
+        if rejected:
+            raise _bad_request(f"Env vars not allowed for this MCP server type: {sorted(rejected)}")
 
 
 def _build_instance_record(
@@ -254,12 +281,12 @@ def _build_instance_record(
         "createdBy": existing.get("createdBy") if existing else user_id,
         "name": payload.name,
         "typeId": payload.type_id,
-        "transport": payload.transport.value,
+        "transport": (template.transport if template else payload.transport).value,
         "authMode": payload.auth_mode.value,
         "useAdminAuth": payload.use_admin_auth,
         "description": payload.description,
-        "command": payload.command or (template.command if template else None),
-        "args": payload.args or (template.args if template else []),
+        "command": template.command if template else payload.command,
+        "args": list(template.args) if template else list(payload.args),
         "requiredEnv": template.required_env if template else list(payload.required_env or []),
         "optionalEnv": template.optional_env if template else [],
         "url": payload.url or (template.default_url if template else None),
@@ -313,6 +340,7 @@ async def list_catalog(
         "total": total,
         "page": page,
         "limit": limit,
+        "customStdioAllowed": stdio_policy.custom_stdio_allowed(),
     }
 
 
@@ -345,7 +373,9 @@ async def list_instances(request: Request) -> dict[str, Any]:
         instance["hasOAuthClientConfig"] = bool(
             await owner_svc.get_config(get_mcp_oauth_client_config_path(instance["_id"]), default=None)
         )
-    instances = [mask_mcp_instance_for_response(i) for i in instances]
+        instance["disabledReason"] = stdio_policy.instance_disabled_reason(instance)
+    reveal = can_reveal_secrets(request)
+    instances = [mask_mcp_instance_for_response(i, reveal=reveal) for i in instances]
     return {"instances": instances}
 
 
@@ -366,22 +396,6 @@ async def create_instance(
 
     registry = _get_mcp_registry(request)
     _validate_instance_config(payload, registry)
-
-    # STDIO instance creation is admin-only (already enforced above) and env vars are built
-    # from an explicit allowlist — never pass through arbitrary client-supplied env keys.
-    if payload.transport == MCPTransport.STDIO and payload.env:
-        template = registry.get_template(payload.type_id) if payload.type_id else None
-        if template:
-            allowed_keys = set(template.required_env + template.optional_env)
-        else:
-            # Custom STDIO: allowlist is the required_env names the admin declared (or env keys if unset).
-            allowed_keys = set(payload.required_env or payload.env.keys())
-        rejected = set(payload.env.keys()) - allowed_keys
-        if rejected:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Env vars not allowed for this MCP server type: {sorted(rejected)}",
-            )
 
     instance_id = str(uuid.uuid4())
     record = _build_instance_record(payload, instance_id, user_context["org_id"], user_context["user_id"], registry)
@@ -409,6 +423,7 @@ async def get_instance(request: Request, instance_id: str) -> dict[str, Any]:
     instance["hasOAuthClientConfig"] = bool(
         await owner_svc.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
     )
+    instance["disabledReason"] = stdio_policy.instance_disabled_reason(instance)
     return instance
 
 
@@ -1193,12 +1208,20 @@ async def get_oauth_config(request: Request, instance_id: str) -> dict[str, Any]
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can view OAuth client configuration.")
 
     config = await config_service.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
+    is_own = isinstance(config, dict)
     if not isinstance(config, dict):
         owner_svc = await resolve_instance_owner_config_service(instance_id, config_service)
         if owner_svc is not None and owner_svc is not config_service:
             config = await owner_svc.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
     if not isinstance(config, dict):
         return {"configured": False}
+
+    if is_own and can_reveal_secrets(request):
+        return {
+            "configured": True,
+            "clientId": config.get("clientId"),
+            "clientSecret": config.get("clientSecret"),
+        }
 
     return {
         "configured": True,
@@ -1272,6 +1295,7 @@ async def _build_mcp_instance_entry(
     entry["isAuthenticated"] = bool(effective_auth is not None and (
         effective_auth == {} or effective_auth.get("isAuthenticated")
     ))
+    entry["disabledReason"] = stdio_policy.instance_disabled_reason(instance)
     entry["tools"] = []
     entry["toolsError"] = None
 

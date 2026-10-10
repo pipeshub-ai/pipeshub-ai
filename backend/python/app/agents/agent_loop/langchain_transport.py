@@ -74,6 +74,7 @@ from app.utils.llm_api_mode_store import (
     LLMApiMode,
     get_llm_api_mode_store,
 )
+from app.utils.message_chunks import merge_message_chunks_off_loop
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -986,9 +987,7 @@ class LangChainTransport(LLMTransport):
         if not chunks:
             final_ai_message = AIMessage(content="")
         else:
-            final_ai_message = chunks[0]
-            for chunk in chunks[1:]:
-                final_ai_message = final_ai_message + chunk
+            final_ai_message = await merge_message_chunks_off_loop(chunks)
 
         assistant_message = convert_assistant_message_from_langchain(final_ai_message)
         usage = token_usage_from_ai_message(final_ai_message)

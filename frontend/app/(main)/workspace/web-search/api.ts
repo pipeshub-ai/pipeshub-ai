@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type {
   ConfiguredWebSearchProvider,
   WebSearchConfigData,
@@ -41,6 +42,15 @@ const normalizeWebSearchSettings = (settings: Record<string, unknown>): WebSearc
 // ============================================================
 
 export const WebSearchApi = {
+  /** Stored API key of one provider. Only where the deployment allows it. */
+  async revealProviderApiKey(providerKey: string): Promise<string | null> {
+    const { data } = await apiClient.get(BASE_URL, { params: REVEAL_PARAMS });
+    const providers: { providerKey?: string; configuration?: { apiKey?: unknown } }[] =
+      Array.isArray(data?.providers) ? data.providers : [];
+    const apiKey = providers.find((p) => p.providerKey === providerKey)?.configuration?.apiKey;
+    return typeof apiKey === 'string' ? apiKey : null;
+  },
+
   async getConfig(): Promise<WebSearchConfigData> {
     try {
       const { data } = await apiClient.get(BASE_URL);

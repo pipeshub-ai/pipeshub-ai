@@ -13,6 +13,11 @@ from fastapi.responses import JSONResponse
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
+@pytest.fixture(autouse=True)
+def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1294,6 +1299,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_custom_args(self):
@@ -1310,6 +1316,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=4,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_defaults_to_the_edition_worker_count(self):
@@ -1334,6 +1341,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=max_connector_workers(),
+            timeout_worker_healthcheck=60,
         )
 
     @staticmethod
@@ -1791,3 +1799,29 @@ class TestRefreshConnectorMetrics:
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         logger.warning.assert_called()
+
+
+class TestCorsPolicy:
+    """Browsers reach this service only through the Node API, so it must not grant CORS."""
+
+    def test_no_cors_middleware(self) -> None:
+        from starlette.middleware.cors import CORSMiddleware
+
+        from app.connectors_main import app
+        assert all(m.cls is not CORSMiddleware for m in app.user_middleware)
+
+    def test_cross_origin_preflight_is_not_granted(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from app.connectors_main import app
+        evil = "https://evil.example"
+        response = TestClient(app, raise_server_exceptions=False).options(
+            "/api/v1/chat",
+            headers={
+                "Origin": evil,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert response.headers.get("access-control-allow-origin") is None
+        assert response.headers.get("access-control-allow-credentials") is None

@@ -113,9 +113,10 @@ def mask_oauth_config_for_response(
     caller_org_id: str,
     *,
     is_admin: bool,
+    reveal: bool = False,
 ) -> dict[str, Any]:
     """OSS: admins get raw config; callers build essential fields themselves for non-admin."""
-    del caller_org_id
+    del caller_org_id, reveal
     if is_admin:
         return {
             "config": dict(oauth_config.get("config") or {}),

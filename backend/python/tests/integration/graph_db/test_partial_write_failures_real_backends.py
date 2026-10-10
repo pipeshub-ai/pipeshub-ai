@@ -12,18 +12,33 @@ write below is now one statement on Neo4j:
   IS_OF_TYPE edge;
 - a hard delete: the type nodes went first, and the records stayed live
   without them;
+- a connector's delete of one record: its parent edge went in a statement of
+  its own, so a failure left the record live and searchable but in no folder;
 - a record's permission rewrite: the old edges, the new ones and the
   inherit-permissions edge were three writes, so a failure on the last left a
   file its drive should no longer read still readable through the drive;
 - a record changing record group: it left the old group before it lost that
   group's inherit-permissions edge, with the same result;
-- a permission upgrade: the old edge was deleted before the new one was written.
+- a permission upgrade: the old edge was deleted before the new one was written;
+- a move inside a knowledge base: the old parent edge was deleted, the record
+  rewritten and the new parent edge created in three writes, so a failure left
+  the item, and everything beneath it, in no folder at all.
+
+A knowledge-base move into a folder in the trash is refused too, with a 409 that
+says so, whether the folder was in the trash when the move was checked or went
+there before it was written; nothing moves. Creating a folder in it, or uploading
+to it, is refused the same way.
 
 A failed permission write is also raised now on both stores, where it used to
 be logged and the surrounding write committed without the permissions. On
 ArangoDB the same goes for a failed delete of a record's inherit-permissions or
 belongs-to edge, or of a user's permission on a record, which was answered with
 False: the rest committed, or the caller was told the permission was gone.
+
+Taking a user out of a user group, and deleting a user group or an app role,
+raise too when the delete fails. They used to answer False, which for a member
+removal is also the answer for "was not a member", so the user kept the group's
+access and the connector moved on.
 
 Looking up who a permission is for raises as well when the lookup fails. It used
 to answer "nobody by that email", and a rewrite then replaced the record's
@@ -50,6 +65,7 @@ Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -62,8 +78,13 @@ import pytest
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    DeleteSource,
     OriginTypes,
     ProgressStatus,
+)
+from app.config.constants.neo4j import collection_to_label
+from app.connectors.core.base.data_processor import (
+    data_source_entities_processor as processor_module,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -72,6 +93,7 @@ from app.connectors.core.base.data_store import (
     graph_data_store as graph_data_store_module,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -426,6 +448,41 @@ async def test_a_failed_hard_delete_keeps_records_and_their_types(world: _World)
     assert await _typed(w, record.id) == (False, False, False)
 
 
+async def test_a_failed_record_delete_keeps_the_record_in_its_folder(world: _World) -> None:
+    """A connector's per-record delete is one statement: the record goes with its parent edge or stays with it."""
+    w = world
+    folder, note = _file(w, "folder"), _file(w, "note")
+    await _upsert(w, folder)
+    await _upsert(w, note)
+    async with w.processor.data_store_provider.transaction() as tx_store:
+        await tx_store.create_record_relation(folder.id, note.id, "PARENT_CHILD")
+    assert await _parents(w, note.id) == [folder.id]
+
+    async def delete() -> bool:
+        return await w.processor.on_record_deleted(note.id)
+
+    # A sync is writing the record's type node on Neo4j, whose lock the delete of the
+    # record needs (for its IS_OF_TYPE edge) but a delete of just its parent edge does not.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (f:File {id: $id}) SET f.heldByTest = true RETURN count(f) AS n",
+                           {"id": note.id})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(w, CollectionNames.RECORDS.value,
+                            "UPDATE @key WITH {updatedAtTimestamp: @now} IN records RETURN 1",
+                            {"key": note.id, "now": get_epoch_timestamp_in_ms() + 1})
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(delete)
+
+    assert await _typed(w, note.id) == (True, True, True)
+    assert await _parents(w, note.id) == [folder.id], "the record lost its folder but stayed live and searchable"
+
+    assert await delete() is False
+    assert await w.graph.get_document(note.id, CollectionNames.RECORDS.value) is None
+    assert await _parents(w, note.id) == []
+
+
 async def _add_app(w: _World, *users: str) -> None:
     """The connector's app and the users who have it: a connector's record is read only through it."""
     now = get_epoch_timestamp_in_ms()
@@ -590,6 +647,105 @@ async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_
     await remove()
     assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
     assert await _readers(w, record.id, alice, bob) == {alice}
+
+
+async def _share_with(w: _World, target: _Target, record: FileRecord) -> None:
+    """Let the user group or app role read the record."""
+    entity_type = EntityType.GROUP if target.kind == "user_group" else EntityType.ROLE
+    await w.graph.batch_create_edges(
+        [Permission(type=PermissionType.READ, entity_type=entity_type).to_arango_permission(
+            target.node.id, target.collection, record.id, CollectionNames.RECORDS.value)],
+        collection=CollectionNames.PERMISSION.value,
+    )
+
+
+async def test_a_failed_group_member_removal_is_raised_and_the_access_stays_until_it_succeeds(world: _World) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    team = _Target("user_group", w)
+    await team.sync(alice_email, bob_email)
+    record = _file(w, "handbook")
+    await _upsert(w, record)
+    await _share_with(w, team, record)
+    assert await _sources(w, team.node.id, team.collection) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    def remove() -> Awaitable[bool]:
+        return w.processor.on_user_group_member_removed(team.node.source_user_group_id, bob_email, w.connector_id)
+
+    # Bob leaves the group at the source, and his membership edge cannot be deleted.
+    if w.neo4j:
+        hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": bob})
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(
+            w, CollectionNames.PERMISSION.value,
+            "FOR e IN permission FILTER e._from == @from AND e._to == @to "
+            "UPDATE e WITH {heldByTest: true} IN permission RETURN 1",
+            {"from": f"users/{bob}", "to": f"groups/{team.node.id}"},
+        )
+        expected = ARANGO_CONFLICT
+    async with hold:
+        # Raised, so the connector knows Bob is still in the group. False would
+        # have read as "he was not a member".
+        assert expected in await _failure(remove)
+
+    assert await _sources(w, team.node.id, team.collection) == {alice, bob}
+    assert await _readers(w, record.id, alice, bob) == {alice, bob}
+
+    assert await remove() is True
+    assert await _sources(w, team.node.id, team.collection) == {alice}
+    assert await _readers(w, record.id, alice, bob) == {alice}
+
+    # Not a member any more: nothing to remove is an answer, not a failure.
+    assert await remove() is False
+
+
+@pytest.mark.parametrize("kind", ["user_group", "app_role"])
+async def test_a_failed_group_or_role_deletion_is_raised_and_the_access_stays_until_it_succeeds(
+    world: _World, kind: str
+) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    await _add_app(w, alice)
+    target = _Target(kind, w)
+    await target.sync(alice_email)
+    record = _file(w, "runbook")
+    await _upsert(w, record)
+    await _share_with(w, target, record)
+    assert await _readers(w, record.id, alice) == {alice}
+
+    def delete() -> Awaitable[bool]:
+        if kind == "user_group":
+            return w.processor.on_user_group_deleted(target.node.source_user_group_id, w.connector_id)
+        return w.processor.on_app_role_deleted(target.node.source_role_id, w.connector_id)
+
+    # The source deleted it while another sync is writing to it.
+    if w.neo4j:
+        hold = _neo4j_hold(
+            w, f"MATCH (n:{collection_to_label(target.collection)} {{id: $id}}) SET n.heldByTest = true RETURN count(n) AS n",
+            {"id": target.node.id},
+        )
+        expected = NEO4J_LOCK_TIMEOUT
+    else:
+        hold = _arango_hold(
+            w, target.collection, f"UPDATE @key WITH {{updatedAtTimestamp: @now}} IN {target.collection} RETURN 1",
+            {"key": target.node.id, "now": get_epoch_timestamp_in_ms()},
+        )
+        expected = ARANGO_CONFLICT
+    async with hold:
+        assert expected in await _failure(delete)
+
+    # Still there with its member and its share, as the caller was told.
+    assert await w.graph.get_document(target.node.id, target.collection) is not None
+    assert await _sources(w, target.node.id, target.collection) == {alice}
+    assert await _readers(w, record.id, alice) == {alice}
+
+    assert await delete() is True
+    assert await w.graph.get_document(target.node.id, target.collection) is None
+    assert await _readers(w, record.id, alice) == set()
 
 
 async def test_a_rewrite_whose_principal_lookup_fails_replaces_nothing(world: _World) -> None:
@@ -776,3 +932,383 @@ async def test_a_failed_group_to_user_migration_keeps_the_users_own_permissions(
     await migrate()
     assert await _roles(w, alice, handbook.id) == ["WRITER"]
     assert await _roles(w, alice, payroll.id) == ["WRITER"]
+
+
+@dataclass
+class _KbTree:
+    """Old/Reports/q3.pdf and New/Archive in one knowledge base, and the service that moves its items."""
+
+    service: KnowledgeBaseService
+    kb_id: str
+    owner: str
+    old: str
+    new: str
+    reports: str
+    report: str
+    storage_moves: AsyncMock
+
+
+async def _kb_tree(w: _World) -> _KbTree:
+    owner, _ = await _add_user(w, "owner")
+
+    async def processor_for_kb(_kb_id: str) -> DataSourceEntitiesProcessor:
+        return w.processor
+
+    service = KnowledgeBaseService(logger, w.graph, MagicMock(), processor_for_kb=processor_for_kb)
+    created = await service.create_knowledge_base(user_id=owner, org_id=w.org_id, name="Handbook")
+    assert created.get("success") is True, created
+    kb_id = created["id"]
+    w.ids.add(kb_id)
+
+    async def folder(name: str, parent: str | None = None) -> str:
+        made = await (
+            service.create_nested_folder(kb_id, parent, name, owner, w.org_id) if parent
+            else service.create_folder_in_kb(kb_id, name, owner, w.org_id)
+        )
+        assert made.get("success") is True, made
+        w.ids.add(made["id"])
+        return made["id"]
+
+    old, new = await folder("Old"), await folder("New")
+    reports = await folder("Reports", old)
+    # New holds a folder already, so on ArangoDB a second child of it can be refused.
+    await folder("Archive", new)
+    report = _file(w, "q3").model_copy(update={
+        "origin": OriginTypes.UPLOAD, "connector_name": Connectors.KNOWLEDGE_BASE, "connector_id": kb_id,
+        "external_record_group_id": kb_id, "parent_external_record_id": reports,
+    })
+    await w.processor.on_new_records([(report, [])])
+
+    # The stored files follow the graph: the move asks the storage service to
+    # move them, and that request is all there is of it here.
+    storage_moves = AsyncMock(return_value={"moved": 1})
+    w.processor._get_storage_cleanup().move_record_tree = storage_moves
+    return _KbTree(service, kb_id, owner, old, new, reports, report.id, storage_moves)
+
+
+async def _parents(w: _World, record_id: str) -> list[str]:
+    """The record at the other end of each PARENT_CHILD edge into the record."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
+            parameters={"id": record_id},
+        )
+        return [row["id"] for row in rows or []]
+    return await w.graph.http_client.execute_aql(
+        "FOR e IN recordRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
+        "RETURN PARSE_IDENTIFIER(e._from).key",
+        {"to": f"records/{record_id}"},
+    ) or []
+
+
+async def _kb_place(w: _World, kb: _KbTree) -> dict[str, object]:
+    """Where the Reports folder is: by its edges, by its own record, and as the product reads it."""
+    stored = await w.graph.get_document(kb.reports, CollectionNames.RECORDS.value)
+    shown_in = []
+    for name, parent in (("root", None), ("Old", kb.old), ("New", kb.new)):
+        found = await w.graph.find_folder_by_name_in_parent(
+            kb_id=kb.kb_id, folder_name="Reports", parent_folder_id=parent, raise_on_error=True
+        )
+        if found:
+            shown_in.append(name)
+    return {
+        "parents": await _parents(w, kb.reports),
+        "externalParentId": stored.get("externalParentId"),
+        "shown_in": shown_in,
+        # Read through the folder: only a parent the record itself names counts.
+        "path_of_its_file": await w.graph.get_record_path_segments(kb.report, raise_on_error=True),
+    }
+
+
+async def _failed_kb_move(
+    w: _World,
+    kb: _KbTree,
+    new_parent_id: str | None,
+    *,
+    code: int = 500,
+    reason: str | None = None,
+    before_write: Callable[[], Awaitable[object]] | None = None,
+) -> str:
+    """Move Reports through the KB service, which answers a failure instead of raising it; return its cause.
+
+    *before_write* runs after the service has checked the move and before the move is written.
+    """
+    causes: list[str] = []
+    write = w.processor.on_records_moved
+
+    async def recording(moves: list) -> None:
+        if before_write:
+            await before_write()
+        try:
+            await write(moves)
+        except Exception as exc:
+            causes.append(str(exc))
+            raise
+
+    w.processor.on_records_moved = recording
+    try:
+        result = await kb.service.move_record(kb.kb_id, kb.reports, new_parent_id, kb.owner)
+    finally:
+        w.processor.on_records_moved = write
+    assert result["success"] is False and result["code"] == code, result
+    if reason is not None:
+        assert result["reason"] == reason, result
+    assert len(causes) == 1, causes
+    return causes[0]
+
+
+@pytest.mark.parametrize("fails_on", ["old_edge", "record", "new_edge"])
+async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World, fails_on: str) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    target: str | None = kb.new
+    moved = {
+        "parents": [kb.new], "externalParentId": kb.new, "shown_in": ["New"],
+        "path_of_its_file": ["New", "Reports", "q3.pdf"],
+    }
+    expected = NEO4J_LOCK_TIMEOUT if w.neo4j else ARANGO_CONFLICT
+    if fails_on == "old_edge":
+        # The edge from the old folder cannot be deleted. Neo4j answered that with
+        # False, and the move went on to put the item in the new folder as well.
+        if w.neo4j:
+            hold = _neo4j_hold(
+                w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.old}
+            )
+        else:
+            hold = _arango_hold(
+                w, CollectionNames.RECORD_RELATIONS.value,
+                "FOR e IN recordRelations FILTER e._to == @to "
+                "UPDATE e WITH {updatedAtTimestamp: @now} IN recordRelations RETURN 1",
+                {"to": f"records/{kb.reports}", "now": get_epoch_timestamp_in_ms()},
+            )
+    elif fails_on == "record":
+        # To the root there is no new edge: the move fails on rewriting the record,
+        # after the edge from the old folder is deleted. Neo4j's hold is on the
+        # folder's File node, which that delete does not need.
+        target = None
+        moved = {
+            "parents": [], "externalParentId": None, "shown_in": ["root"],
+            "path_of_its_file": ["Reports", "q3.pdf"],
+        }
+        if w.neo4j:
+            hold = _neo4j_hold(
+                w, "MATCH (f:File {id: $id}) SET f.heldByTest = true RETURN count(f) AS n", {"id": kb.reports}
+            )
+        else:
+            hold = _arango_hold(w, CollectionNames.RECORDS.value,
+                                "UPDATE @key WITH {updatedAtTimestamp: @now} IN records RETURN 1",
+                                {"key": kb.reports, "now": get_epoch_timestamp_in_ms()})
+    # The move fails on the edge from the new folder, after the edge from the old
+    # one is deleted and the record rewritten. Another writer holds the new folder
+    # on Neo4j; on ArangoDB, whose edges have random keys, a unique index refuses
+    # the folder a second child.
+    elif w.neo4j:
+        hold = _neo4j_hold(
+            w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.new}
+        )
+    else:
+        hold = _arango_unique(w, CollectionNames.RECORD_RELATIONS.value, ["_from", "relationshipType"])
+        expected = "unique constraint violated"
+    async with hold:
+        assert expected in await _failed_kb_move(w, kb, target)
+
+    # Still in the old folder, with everything beneath it, and nowhere else.
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+
+    result = await kb.service.move_record(kb.kb_id, kb.reports, target, kb.owner)
+    assert result["success"] is True, result
+    assert await _kb_place(w, kb) == moved
+    # The retry is a whole move, the stored files included.
+    old_path, new_path = (
+        "/".join(["records", kb.kb_id, *place["path_of_its_file"][:-1]]) for place in (in_old, moved)
+    )
+    assert [call.args[1:3] for call in kb.storage_moves.await_args_list] == [(old_path, new_path)]
+
+
+async def test_a_kb_move_into_a_folder_deleted_on_the_way_moves_nothing(world: _World) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    # The new folder is there when the service checks it and gone when the move is
+    # written. Neither store refuses an edge from a record that does not exist:
+    # Neo4j wrote none and ArangoDB a dangling one, after the old edge was deleted.
+    async def delete_the_new_folder() -> None:
+        await w.graph.delete_nodes_and_edges([kb.new], CollectionNames.RECORDS.value)
+        assert await w.graph.get_document(kb.new, CollectionNames.RECORDS.value) is None
+
+    cause = await _failed_kb_move(w, kb, kb.new, code=404, before_write=delete_the_new_folder)
+    assert f"its new parent {kb.new} is not in the graph" in cause
+
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+
+    result = await kb.service.move_record(kb.kb_id, kb.reports, None, kb.owner)
+    assert result["success"] is True, result
+    assert await _kb_place(w, kb) == {
+        "parents": [], "externalParentId": None, "shown_in": ["root"],
+        "path_of_its_file": ["Reports", "q3.pdf"],
+    }
+
+
+
+def _in_trash(folder: str, action: str) -> str:
+    return f"'{folder}' is in Recently deleted, so you can't {action}. Restore it first, or choose another folder."
+
+
+async def _trash(w: _World, kb: _KbTree, folder_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put the folder, and everything in it, in the trash as its owner's delete does."""
+    monkeypatch.setattr(processor_module, "is_soft_delete_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(processor_module, "notify_kb_records_changed", AsyncMock())
+    result = await w.processor.on_records_deleted_cascade(
+        [folder_id], kb.kb_id, delete_source=DeleteSource.USER, deleted_by_user_id=kb.owner
+    )
+    assert result["success"] is True and result["softDeleted"] is True, result
+    assert (await w.graph.get_document(folder_id, CollectionNames.RECORDS.value))["isDeleted"] is True
+
+
+async def _children(w: _World, record_id: str) -> set[str]:
+    """The record at the other end of each PARENT_CHILD edge out of the record."""
+    if w.neo4j:
+        rows = await w.graph.client.execute_query(
+            "MATCH (:Record {id: $id})-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
+            parameters={"id": record_id},
+        )
+        return {row["id"] for row in rows or []}
+    return set(await w.graph.http_client.execute_aql(
+        "FOR e IN recordRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
+        "RETURN PARSE_IDENTIFIER(e._to).key",
+        {"from": f"records/{record_id}"},
+    ) or [])
+
+
+@pytest.mark.parametrize("item", ["folder", "file"])
+async def test_a_kb_move_into_a_folder_in_the_trash_is_refused(
+    world: _World, item: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    await _trash(w, kb, kb.new, monkeypatch)
+    in_trash = await _children(w, kb.new)
+    moving, home = (kb.reports, kb.old) if item == "folder" else (kb.report, kb.reports)
+    before = await _kb_place(w, kb)
+
+    result = await kb.service.move_record(kb.kb_id, moving, kb.new, kb.owner)
+
+    assert result == {"success": False, "code": 409, "reason": _in_trash("New", "move items into it")}
+    assert await _parents(w, moving) == [home]
+    assert (await w.graph.get_document(moving, CollectionNames.RECORDS.value))["externalParentId"] == home
+    assert await _kb_place(w, kb) == before
+    assert await _children(w, kb.new) == in_trash
+    kb.storage_moves.assert_not_awaited()
+
+    # A live folder still takes it.
+    made = await kb.service.create_folder_in_kb(kb.kb_id, "Live", kb.owner, w.org_id)
+    assert made.get("success") is True, made
+    w.ids.add(made["id"])
+    moved = await kb.service.move_record(kb.kb_id, moving, made["id"], kb.owner)
+    assert moved["success"] is True, moved
+    assert await _parents(w, moving) == [made["id"]]
+    assert (await w.graph.get_document(moving, CollectionNames.RECORDS.value))["externalParentId"] == made["id"]
+
+
+async def test_a_kb_move_into_a_folder_trashed_on_the_way_moves_nothing(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    assert await _kb_place(w, kb) == in_old
+
+    # The new folder is live when the service checks it and in the trash when the move is written.
+    async def trash_the_new_folder() -> None:
+        await _trash(w, kb, kb.new, monkeypatch)
+
+    cause = await _failed_kb_move(
+        w, kb, kb.new, code=409, reason=_in_trash("New", "move items into it"), before_write=trash_the_new_folder
+    )
+    assert f"its new parent {kb.new} is not in the graph or is in the trash" in cause
+
+    assert await _kb_place(w, kb) == in_old
+    assert kb.reports not in await _children(w, kb.new)
+    kb.storage_moves.assert_not_awaited()
+
+
+async def test_a_folder_in_the_trash_takes_no_new_folder_and_no_upload(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    kb = await _kb_tree(w)
+    await _trash(w, kb, kb.new, monkeypatch)
+    in_trash = await _children(w, kb.new)
+
+    made = await kb.service.create_nested_folder(kb.kb_id, kb.new, "Q4", kb.owner, w.org_id)
+    assert made == {"success": False, "code": 409, "reason": _in_trash("New", "create a folder in it")}
+
+    upload_refused = {"code": 409, "reason": _in_trash("New", "upload files to it")}
+    checked = await kb.service.validate_folder_for_upload(kb.kb_id, kb.new, kb.owner, w.org_id)
+    assert checked["valid"] is False and {k: checked[k] for k in upload_refused} == upload_refused, checked
+    files = [{"filePath": "q4.pdf", "record": {"recordName": "q4.pdf"}, "fileRecord": {"name": "q4.pdf"}}]
+    uploaded = await kb.service.upload_records_to_folder(kb.kb_id, kb.new, kb.owner, w.org_id, files)
+    assert uploaded["success"] is False and {k: uploaded[k] for k in upload_refused} == upload_refused, uploaded
+
+    assert await _children(w, kb.new) == in_trash
+
+    # A live folder still takes both.
+    made = await kb.service.create_nested_folder(kb.kb_id, kb.old, "Q4", kb.owner, w.org_id)
+    assert made.get("success") is True, made
+    w.ids.add(made["id"])
+    assert (await kb.service.validate_folder_for_upload(kb.kb_id, kb.old, kb.owner, w.org_id))["valid"] is True
+
+
+# Neo4j only: ArangoDB reads the parent without a lock (see upsert_record_under_parent).
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_kb_move_waits_for_a_trash_of_its_folder_still_being_written(world: _World) -> None:
+    """The trash marks the folder in a transaction still open when the move is checked and written.
+
+    The service's check reads the folder as live, since the trash has not committed.
+    The move must then wait for the trash and see it, not read the folder as live
+    before taking its lock and put the item under it once the trash commits.
+    """
+    w = world
+    kb = await _kb_tree(w)
+    in_old = {
+        "parents": [kb.old], "externalParentId": kb.old, "shown_in": ["Old"],
+        "path_of_its_file": ["Old", "Reports", "q3.pdf"],
+    }
+    session = w.graph.client.driver.session(database=w.graph.client.database)
+    trash = await session.begin_transaction()
+    try:
+        marked = await (await trash.run(
+            "MATCH (n:Record) WHERE n.id IN $ids SET n.isDeleted = true, n.deletedAtTimestamp = $now "
+            "RETURN count(n) AS n",
+            {"ids": [kb.new, *await _children(w, kb.new)], "now": get_epoch_timestamp_in_ms()},
+        )).single()
+        assert marked["n"] == 2, marked
+        move = asyncio.create_task(kb.service.move_record(kb.kb_id, kb.reports, kb.new, kb.owner))
+        await asyncio.sleep(3)
+        assert not move.done(), await move
+        await trash.commit()
+    finally:
+        await session.close()
+
+    result = await asyncio.wait_for(move, timeout=30)
+    assert result == {"success": False, "code": 409, "reason": _in_trash("New", "move items into it")}
+    assert await _kb_place(w, kb) == in_old
+    kb.storage_moves.assert_not_awaited()
+    stored = await w.graph.get_document(kb.new, CollectionNames.RECORDS.value)
+    assert not any("lock" in key.lower() for key in stored), stored

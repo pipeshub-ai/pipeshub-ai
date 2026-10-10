@@ -997,10 +997,15 @@ class BoxConnector(BaseConnector):
                 self.logger.info(f"Deleting stale group: {group.name} ({external_id})")
 
                 # Use existing delete handler
-                await self.data_entities_processor.on_user_group_deleted(
-                    external_group_id=external_id,
-                    connector_id=self.connector_id
-                )
+                try:
+                    await self.data_entities_processor.on_user_group_deleted(
+                        external_group_id=external_id,
+                        connector_id=self.connector_id
+                    )
+                except Exception as e:
+                    # The other stale groups are still deleted; this one is found
+                    # stale again on the next sync.
+                    self.logger.error(f"Failed to delete stale group {group.name} ({external_id}): {e}", exc_info=True)
 
         except Exception as e:
             self.logger.error(f"Error during group reconciliation: {e}", exc_info=True)

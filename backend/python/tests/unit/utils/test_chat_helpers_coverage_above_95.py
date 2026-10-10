@@ -23,7 +23,6 @@ from app.utils.chat_helpers import (
     create_record_instance_from_dict,
     enrich_virtual_record_id_to_result_with_fk_children,
     extract_bounding_boxes,
-    extract_start_end_text,
     generate_text_fragment_url,
     get_message_content,
     get_flattened_results,
@@ -430,24 +429,19 @@ class TestRecordToMessageMultimodalAndFk:
 
 
 # ---------------------------------------------------------------------------
-# extract_start_end_text / generate_text_fragment_url
+# generate_text_fragment_url
 # ---------------------------------------------------------------------------
 
 
-class TestExtractStartEndAndFragmentUrl:
-    def test_end_text_fallback_when_no_second_match_but_long_first(self):
-        # One long alphabetic run; FRAGMENT_WORD_COUNT is 4 — forces elif branch on end_text
-        s = "one two three four five six seven eight"
-        start, end = extract_start_end_text(s)
-        assert start
-        assert end  # last four words subset
+class TestFragmentUrlFallback:
+    def test_generation_failure_falls_back_to_base_url(self, monkeypatch):
+        from app.utils.text_fragments import TextFragmentGenerator
 
-    def test_generate_fragment_url_exception_falls_back(self, monkeypatch):
-        def boom(_snippet):
+        def boom(self, snippet, source_format=None):
             raise RuntimeError("fail")
 
-        monkeypatch.setattr("app.utils.chat_helpers.extract_start_end_text", boom)
-        url = generate_text_fragment_url("https://ex.com/page", "one two three four")
+        monkeypatch.setattr(TextFragmentGenerator, "build_directive", boom)
+        url = generate_text_fragment_url("https://ex.com/page", "unique fallback snippet words")
         assert url == "https://ex.com/page"
 
 
@@ -647,13 +641,6 @@ class TestBuildGroupBlocksSkipsImages:
             result={"score": 1.0, "metadata": {}},
         )
         assert isinstance(out, list)
-
-
-class TestExtractStartEndEmptyEndText:
-    def test_two_word_fragment_yields_blank_end_segment(self):
-        start, end = extract_start_end_text("Alpha Beta")
-        assert start == "Alpha Beta"
-        assert end == ""
 
 
 class TestBuildFkInfoOnlyChild:

@@ -345,6 +345,7 @@
   },
   "form": {
     "leaveBlankToKeep": "मौजूदा मान बनाए रखने के लिए खाली छोड़ें।",
+    "showStoredValues": "सहेजे गए मान दिखाएँ",
     "title": "शीर्षक",
     "description": "विवरण",
     "search": "खोजें",
@@ -2235,6 +2236,17 @@
         "addRecords": "रिकॉर्ड जोड़ें"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "कनेक्शन की जाँच हो रही है…",
+          "egressTitle": "अपने फ़ायरवॉल में PipesHub को अनुमति दें",
+          "egressDescription": "यदि {{name}} फ़ायरवॉल के पीछे है या केवल ज्ञात IP पतों को स्वीकार करता है, तो इनसे कनेक्शन की अनुमति दें:",
+          "copyIp": "IP पता कॉपी करें",
+          "ipCopied": "IP पता कॉपी किया गया",
+          "copyFailed": "कॉपी नहीं हो सका",
+          "copyFailedDescription": "पता मैन्युअल रूप से कॉपी करें या इस साइट को क्लिपबोर्ड एक्सेस की अनुमति दें।",
+          "failedTitle": "{{name}} से कनेक्ट नहीं हो सका",
+          "requestFailed": "कनेक्शन की जाँच नहीं हो सकी। कृपया फिर से प्रयास करें।"
+        },
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
@@ -2531,7 +2543,8 @@
       "status": {
         "ready": "तैयार",
         "notConnected": "कनेक्ट नहीं है",
-        "needsAuth": "प्रमाणीकरण आवश्यक"
+        "needsAuth": "प्रमाणीकरण आवश्यक",
+        "disabled": "अक्षम"
       },
       "team": {
         "title": "MCP सर्वर",
@@ -2653,7 +2666,13 @@
         "noState": "कोई state पैरामीटर नहीं मिला।",
         "backendRejected": "सर्वर ने प्रमाणीकरण अनुरोध को अस्वीकार कर दिया।"
       },
-      "deleteDisabledTooltip": "यह सर्वर हटाया नहीं जा सकता"
+      "deleteDisabledTooltip": "यह सर्वर हटाया नहीं जा सकता",
+      "stdioPolicy": {
+        "disabledTitle": "इस डिप्लॉयमेंट पर अक्षम",
+        "disabledDescription": "कस्टम STDIO सर्वर PipesHub सर्वर पर एक कमांड चलाते हैं, इसलिए वे तब तक बंद रहते हैं जब तक ऑपरेटर डिप्लॉयमेंट के एनवायरनमेंट में {{flag}}=true सेट नहीं करता (Docker Compose .env, या Helm में config.mcpAllowCustomStdio)। तब तक एजेंट इस सर्वर के टूल का उपयोग नहीं कर सकते। आप इसे हटा सकते हैं या इसे रिमोट (HTTP) सर्वर में बदल सकते हैं।",
+        "unavailableHint": "इस डिप्लॉयमेंट पर लोकल कमांड (STDIO) सर्वर बंद हैं। इन्हें अनुमति देने के लिए ऑपरेटर को {{flag}}=true सेट करना होगा।",
+        "enabledWarning": "यह कमांड PipesHub सर्वर पर सेवा के विशेषाधिकारों के साथ चलती है, जिसमें उसका नेटवर्क एक्सेस और क्रेडेंशियल शामिल हैं। केवल भरोसेमंद कमांड ही जोड़ें।"
+      }
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
@@ -4017,6 +4036,9 @@
     "errorTitle": "प्राधिकरण त्रुटि",
     "signedInAs": "{{display}} के रूप में साइन इन",
     "requestHeading": "यह ऐप्लिकेशन इस तक पहुँच माँग रहा है:",
+    "notGrantedHeading": "इस एप्लिकेशन ने ये अनुमतियाँ भी माँगी थीं। इसकी सेटिंग्स इनकी अनुमति नहीं देतीं, इसलिए इसे ये नहीं मिलेंगी:",
+    "notGrantedOwnerHint": "जिस व्यक्ति ने यह एप्लिकेशन बनाया है, वह इन्हें वर्कस्पेस सेटिंग्स → डेवलपर सेटिंग्स → OAuth 2.0 Apps में जोड़ सकता है।",
+    "notGrantedOfflineAccess": "एप्लिकेशन साइन इन नहीं रहेगा। सत्र समाप्त होने पर आपको फिर से साइन इन करना होगा।",
     "unreviewedApp": "इस एप्लिकेशन ने स्वयं को पंजीकृत किया है। किसी व्यवस्थापक ने इसकी समीक्षा नहीं की।",
     "legalNotice": "“अनुमति दें” पर क्लिक करके, आप {{appName}} को ऊपर वर्णित अनुसार अपने डेटा तक पहुँच की अनुमति देते हैं।",
     "privacyPolicy": "गोपनीयता नीति",

@@ -114,6 +114,11 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_record_taxonomy_links": (
+        Rule.ALL,
+        _STRUCTURE + "; search_entities passes only records the user can open, and the label "
+        "repair restores a trashed record's labels too, so a restore shows its own",
+    ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",
     ),
@@ -146,6 +151,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "link_record_to_group": (Rule.WRITE, ""),
     "replace_record_permissions": (Rule.WRITE, ""),
     "batch_upsert_record_permissions": (Rule.WRITE, ""),
+    "replace_record_permissions": (Rule.WRITE, "rewrites the permission and inherit edges of a record the caller resolved"),
+    "link_record_to_group": (Rule.WRITE, "moves a record the caller resolved between record groups"),
+    "upsert_record_under_parent": (Rule.WRITE, "moves a record the caller resolved under another parent"),
     "delete_records_and_relations": (Rule.WRITE, ""),
     "delete_record": (Rule.WRITE, ""),
     "delete_record_by_external_id": (Rule.WRITE, "looks the record up with ALL; LIVE for a soft delete"),

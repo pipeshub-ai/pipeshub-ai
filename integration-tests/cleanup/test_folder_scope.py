@@ -25,16 +25,15 @@ The tree built here::
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import Any, AsyncGenerator
-from urllib.parse import urlparse, urlunparse
 
 import pytest
 import pytest_asyncio
 import requests
 
 from helper.clients.kb_client import KBClient
+from helper.connector_service import connector_service_url
 from helper.stored_names import stored_name
 
 logger = logging.getLogger("cleanup-folder-scope")
@@ -42,15 +41,6 @@ logger = logging.getLogger("cleanup-folder-scope")
 pytestmark = [pytest.mark.integration, pytest.mark.cleanup]
 
 CONTENT = b"# Scope check\n\nA file that only exists to be deleted, or not.\n"
-
-
-def _connector_service_url(base_url: str) -> str:
-    """The connector service beside the gateway; the integration stack publishes 8088."""
-    explicit = os.getenv("PIPESHUB_CONNECTOR_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    parsed = urlparse(base_url)
-    return urlunparse(parsed._replace(netloc=f"{parsed.hostname}:8088"))
 
 
 def _folder_id(payload: dict[str, Any]) -> str:
@@ -117,7 +107,7 @@ def _record_status(pipeshub_client, record_id: str) -> int:
 def _delete_from_folder(pipeshub_client, kb_id: str, folder_id: str, record_ids: list[str]):
     pipeshub_client._ensure_access_token()
     url = (
-        f"{_connector_service_url(pipeshub_client.base_url)}"
+        f"{connector_service_url(pipeshub_client.base_url)}"
         f"/api/v1/kb/{kb_id}/folder/{folder_id}/records"
     )
     try:

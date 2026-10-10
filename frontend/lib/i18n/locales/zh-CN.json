@@ -425,6 +425,7 @@
   },
   "form": {
     "leaveBlankToKeep": "留空则保留现有值。",
+    "showStoredValues": "显示已保存的值",
     "title": "标题",
     "description": "描述",
     "search": "搜索",
@@ -2377,6 +2378,17 @@
         "addRecords": "添加记录"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "正在测试连接…",
+          "egressTitle": "在防火墙中允许 PipesHub",
+          "egressDescription": "如果 {{name}} 位于防火墙之后或只接受已知的 IP 地址，请允许来自以下地址的连接：",
+          "copyIp": "复制 IP 地址",
+          "ipCopied": "已复制 IP 地址",
+          "copyFailed": "无法复制",
+          "copyFailedDescription": "请手动复制地址，或允许此网站访问剪贴板。",
+          "failedTitle": "无法连接到 {{name}}",
+          "requestFailed": "无法测试连接，请重试。"
+        },
         "methodLabel": "认证方式",
         "methodPlaceholder": "选择认证类型...",
         "credentialsHeading": "{{name}} 凭证",
@@ -2673,7 +2685,8 @@
       "status": {
         "ready": "就绪",
         "notConnected": "未连接",
-        "needsAuth": "需要认证"
+        "needsAuth": "需要认证",
+        "disabled": "已禁用"
       },
       "team": {
         "title": "MCP 服务器",
@@ -2795,7 +2808,13 @@
         "noState": "未返回 state 参数。",
         "backendRejected": "服务器拒绝了授权请求。"
       },
-      "deleteDisabledTooltip": "此服务器无法删除"
+      "deleteDisabledTooltip": "此服务器无法删除",
+      "stdioPolicy": {
+        "disabledTitle": "此部署已禁用",
+        "disabledDescription": "自定义 STDIO 服务器会在 PipesHub 服务器上运行命令，因此在运维人员于部署环境中设置 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前保持关闭。在此之前，智能体无法使用此服务器的工具。你可以删除它，或将其改为远程（HTTP）服务器。",
+        "unavailableHint": "此部署已关闭本地命令（STDIO）服务器。如需允许，运维人员必须设置 {{flag}}=true。",
+        "enabledWarning": "此命令以服务的权限在 PipesHub 服务器上运行，包括其网络访问和凭据。请只添加你信任的命令。"
+      }
     },
     "bots": {
       "subtitle": "配置机器人凭据，并可选择将每个机器人映射到一个智能体",
@@ -4089,6 +4108,9 @@
     "errorTitle": "授权错误",
     "signedInAs": "已以 {{display}} 身份登录",
     "requestHeading": "此应用程序正在请求访问以下内容：",
+    "notGrantedHeading": "此应用还请求了以下权限。其设置不允许这些权限，因此它不会获得这些权限：",
+    "notGrantedOwnerHint": "创建此应用的人可以在 工作区设置 → 开发者设置 → OAuth 2.0 应用 中添加这些权限。",
+    "notGrantedOfflineAccess": "此应用不会保持登录状态。会话结束后，你需要重新登录。",
     "unreviewedApp": "此应用是自行注册的，没有管理员审核过。",
     "legalNotice": "点击「允许」，即表示您授权 {{appName}} 按上述说明访问您的数据。",
     "privacyPolicy": "隐私政策",

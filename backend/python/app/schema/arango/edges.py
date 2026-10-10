@@ -401,6 +401,8 @@ taxonomy_edge_schema = {
             "_to": {"type": "string", "minLength": 1},
             "createdAtTimestamp": {"type": "number"},
             "extractedName": {"type": ["string", "null"]},
+            # Every spelling the record used for the node, extractedName first.
+            "extractedNames": {"type": ["array", "null"], "items": {"type": "string"}},
             # The node this edge was moved from by a taxonomy merge or
             # migration (app.modules.entity_resolution.consolidation).
             "mergedFrom": {"type": ["string", "null"]},

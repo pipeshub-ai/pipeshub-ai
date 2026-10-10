@@ -169,6 +169,14 @@ class IndexingAppContainer(BaseAppContainer):
         sink_orchestrator=sink_orchestrator,
     )
 
+    # Settles queued events of turned-off or removed connectors as the
+    # consumer reads them; None when INDEXING_CONNECTOR_STATE_REFRESH_SECONDS=0.
+    connector_off_filter = providers.Resource(
+        container_utils.create_connector_off_filter,
+        logger=logger,
+        graph_provider=graph_provider,
+    )
+
     # Indexing-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[

@@ -94,10 +94,21 @@ class CloudRecordsDb(FakeRecordsDb):
     ) -> dict[str, Any]:
         """Deletes each root and what hangs under it, as the store does.
 
-        Attachments (a FILE whose parent is the root) always go; child records only
-        with ``cascade_children``.
+        The store always follows ATTACHMENT edges and follows PARENT_CHILD ones only
+        with ``cascade_children``. Which edge a child has is decided the way
+        ``DataSourceEntitiesProcessor._handle_parent_record`` decides it when saving.
         """
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            DataSourceEntitiesProcessor,
+        )
         from app.models.entities import RecordType
+
+        def linked_as_attachment(child: Any) -> bool:  # noqa: ANN401
+            return (
+                child.record_type == RecordType.FILE
+                and child.parent_record_type in DataSourceEntitiesProcessor.ATTACHMENT_CONTAINER_TYPES
+                and getattr(child, "is_file", True)
+            )
 
         self.cascade_deleted.extend(record_ids)
         by_id = {r.id: r for r in self.records.values()}
@@ -108,7 +119,7 @@ class CloudRecordsDb(FakeRecordsDb):
             for child in list(self.records.values()):
                 if child.parent_external_record_id != parent.external_record_id or child in doomed:
                     continue
-                if cascade_children or child.record_type == RecordType.FILE:
+                if cascade_children or linked_as_attachment(child):
                     doomed.append(child)
                     queue.append(child)
         for record in doomed:

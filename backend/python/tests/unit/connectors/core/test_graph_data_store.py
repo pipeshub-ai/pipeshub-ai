@@ -210,6 +210,23 @@ class TestGraphTransactionStore:
         assert mock_graph_provider.get_record_by_external_id.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_a_record_moved_under_a_parent_is_reread_too(self, tx_store, mock_graph_provider) -> None:
+        mock_graph_provider.upsert_record_under_parent = AsyncMock()
+        before = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=before)
+        await tx_store.get_record_by_external_id("conn-1", "z")
+
+        moved = MagicMock(id="rec-x", connector_id="conn-1", external_record_id="z")
+        await tx_store.upsert_record_under_parent(moved, "folder-1")
+
+        mock_graph_provider.upsert_record_under_parent.assert_awaited_once_with(
+            moved, "folder-1", transaction="txn-123"
+        )
+        after = MagicMock(id="rec-x")
+        mock_graph_provider.get_record_by_external_id = AsyncMock(return_value=after)
+        assert await tx_store.get_record_by_external_id("conn-1", "z") is after
+
+    @pytest.mark.asyncio
     async def test_deleting_by_key_drops_it_from_the_cache(
         self, tx_store, mock_graph_provider
     ) -> None:
@@ -385,9 +402,19 @@ class TestGraphTransactionStore:
         mock_graph_provider.batch_upsert_record_permissions.assert_awaited_once_with("rec1", [], transaction="txn-123")
 
     @pytest.mark.asyncio
+    async def test_create_edges_if_absent(self, tx_store: GraphTransactionStore, mock_graph_provider: MagicMock) -> None:
+        mock_graph_provider.create_edges_if_absent = AsyncMock()
+        edge = {"from_id": "u1", "from_collection": "users", "to_id": "a1", "to_collection": "apps"}
+        await tx_store.create_edges_if_absent([edge], "permission")
+        mock_graph_provider.create_edges_if_absent.assert_awaited_once_with([edge], "permission", transaction="txn-123")
+
+    @pytest.mark.asyncio
     async def test_delete_record_by_key(self, tx_store, mock_graph_provider) -> None:
         await tx_store.delete_record_by_key("key1")
-        mock_graph_provider.delete_nodes.assert_awaited_once()
+        mock_graph_provider.delete_nodes_and_edges.assert_awaited_once_with(
+            ["key1"], "records", graph_name="knowledgeGraph", transaction="txn-123"
+        )
+        mock_graph_provider.delete_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_edge(self, tx_store, mock_graph_provider) -> None:

@@ -251,7 +251,9 @@ class TestNeo4j:
         query, = p.client.execute_query.await_args.args
         # The match already pins the org, so every written node has one.
         assert "WHERE n.orgId = $org_id" in query
-        assert "UNWIND n.normalizedAliases AS normalized" in query
+        # Only the spellings this call stored, not every alias on the node.
+        assert "UNWIND [normalized IN $normalized WHERE normalized IN n.normalizedAliases] AS normalized" in query
+        assert "UNWIND n.normalizedAliases" not in query
         assert (
             "MERGE (a:TaxonomyAlias {orgId: n.orgId, collection: $collection, normalized: normalized})"
             in query

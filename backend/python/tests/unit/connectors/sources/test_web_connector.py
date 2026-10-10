@@ -1146,7 +1146,8 @@ class TestWebConnectorFetchAndProcessDeep:
         connector.retry_urls = {}
         connector._normalize_url = MagicMock(return_value="https://example.com/page")
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
-                    new_callable=AsyncMock, return_value=None):
+                    new_callable=AsyncMock, return_value=None), \
+                patch.object(connector, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             result = await connector._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
         assert "https://example.com/page" in connector.retry_urls
@@ -1162,7 +1163,8 @@ class TestWebConnectorFetchAndProcessDeep:
         connector.retry_urls = {}
         connector._normalize_url = MagicMock(return_value="https://example.com/page")
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
-                    new_callable=AsyncMock) as mock_fetch:
+                    new_callable=AsyncMock) as mock_fetch, \
+                patch.object(connector, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             mock_fetch.return_value = FetchResponse(
                 status_code=429, content_bytes=b"Rate limited",
                 headers={}, final_url="https://example.com/page", strategy="aiohttp",

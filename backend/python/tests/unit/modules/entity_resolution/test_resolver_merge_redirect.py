@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.keys import taxonomy_node_key
+from app.modules.entity_resolution.models import MAX_ALIASES_PER_NODE
 from app.modules.entity_resolution.normalizer import normalize_name
 
 LANGUAGES = CollectionNames.LANGUAGES.value
@@ -34,7 +35,8 @@ async def test_new_name_on_a_merged_key_resolves_to_the_winner(
     resolution = await make_resolver().resolve(ctx_factory("r1", ORG, meta))
     (entity,) = resolution.entries.values()
     assert (entity.key, entity.is_new, entity.decision) == ("win", False, "redirect")
-    assert entity.name == "English (US)" and meta.languages == ["English (US)"]
+    assert entity.name == "English (US)" and meta.languages == ["English"]
+    assert resolution.get(LANGUAGES, "English").key == "win"
     assert "English" in entity.new_aliases
     assert resolution.stats.new_nodes == 0
 
@@ -43,7 +45,7 @@ async def test_redirect_holds_when_the_winner_is_at_its_alias_cap(
     make_resolver, fake_graph, metadata_factory, ctx_factory,
 ) -> None:
     _node(fake_graph, _english_key(), "English", merged_into="win")
-    _node(fake_graph, "win", "English (US)", aliases=tuple(f"a{i}" for i in range(20)))
+    _node(fake_graph, "win", "English (US)", aliases=tuple(f"a{i}" for i in range(MAX_ALIASES_PER_NODE)))
     meta = metadata_factory(languages=["english"])
     resolution = await make_resolver().resolve(ctx_factory("r1", ORG, meta))
     (entity,) = resolution.entries.values()
@@ -91,7 +93,8 @@ async def test_two_names_redirecting_to_one_winner_become_one_entity(
     resolution = await make_resolver().resolve(ctx_factory("r1", ORG, meta))
     (entity,) = resolution.entries.values()
     assert entity.key == "win" and sorted(entity.new_aliases) == ["English", "French"]
-    assert meta.languages == ["Bilingual"]
+    assert meta.languages == ["English", "French"]
+    assert {resolution.get(LANGUAGES, n).key for n in meta.languages} == {"win"}
 
 
 async def test_unmerged_new_names_cost_one_lookup_and_stay_new(

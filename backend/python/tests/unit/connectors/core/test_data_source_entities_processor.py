@@ -1161,6 +1161,23 @@ class TestOnNewAppRoles:
         proc.logger.error.assert_called()
 
 
+class TestGetUserGroupByExternalId:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raise_on_error", [False, True])
+    async def test_the_caller_chooses_whether_a_failed_read_is_raised(self, raise_on_error: bool) -> None:
+        """A caller that acts on "no such group" has to be able to tell it from a read that failed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        found = await proc.get_user_group_by_external_id("conn-1", "ext-grp", raise_on_error=raise_on_error)
+
+        assert found is tx_store.get_user_group_by_external_id.return_value
+        tx_store.get_user_group_by_external_id.assert_awaited_once_with(
+            "conn-1", "ext-grp", raise_on_error=raise_on_error
+        )
+
+
 # ===========================================================================
 # on_user_group_member_removed (lines 1425-1436)
 # ===========================================================================
@@ -1211,11 +1228,17 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "group-1"
         mock_group.name = "Test Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = True
+        tx_store.batch_delete_edges.return_value = 1
 
         result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
         assert result is True
+        # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+        tx_store.batch_delete_edges.assert_awaited_once_with(
+            [{"from_id": "user-1", "from_collection": "users", "to_id": "group-1", "to_collection": "groups"}],
+            collection="permission",
+        )
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_edge_not_found(self):
@@ -1232,7 +1255,7 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "group-1"
         mock_group.name = "Test Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = False
+        tx_store.batch_delete_edges.return_value = 0
 
         result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
@@ -1240,18 +1263,52 @@ class TestOnUserGroupMemberRemoved:
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, it read as "was not a member" and the user kept the group's access."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        mock_group = MagicMock()
+        mock_group.id = "group-1"
+        mock_group.name = "Test Group"
+        tx_store.get_user_group_by_external_id.return_value = mock_group
+        tx_store.batch_delete_edges.side_effect = RuntimeError("write conflict")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lookup", ["get_user_by_email", "get_user_group_by_external_id"])
+    async def test_a_failed_lookup_is_raised(self, lookup: str) -> None:
+        """Taken for "no such user" or "no such group", it returned with the membership in place."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        getattr(tx_store, lookup).side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
+
+        assert getattr(tx_store, lookup).await_args.kwargs["raise_on_error"] is True
+        tx_store.batch_delete_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_transaction_that_cannot_start_is_raised(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
         ctx = _make_ctx(tx_store)
         ctx.__aenter__.side_effect = RuntimeError("db fail")
         proc.data_store_provider.transaction.return_value = ctx
 
-        result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
-
-        assert result is False
-        proc.logger.error.assert_called()
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
 
 # ===========================================================================
@@ -1392,8 +1449,8 @@ class TestOnUserGroupDeleted:
         tx_store.delete_nodes_and_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, nobody had to look, and the group kept giving its members access."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -1404,10 +1461,22 @@ class TestOnUserGroupDeleted:
         tx_store.get_user_group_by_external_id.return_value = mock_group
         tx_store.delete_nodes_and_edges.side_effect = RuntimeError("db fail")
 
-        result = await proc.on_user_group_deleted("ext-grp", "conn-1")
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_user_group_deleted("ext-grp", "conn-1")
 
-        assert result is False
-        proc.logger.error.assert_called()
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised(self) -> None:
+        """Taken for "no such group", it was reported as already deleted, and stayed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_group_by_external_id.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_user_group_deleted("ext-grp", "conn-1")
+
+        assert tx_store.get_user_group_by_external_id.await_args.kwargs["raise_on_error"] is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1860,8 +1929,8 @@ class TestOnAppRoleDeleted:
         )
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, nobody had to look, and the role kept giving its members access."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -1872,10 +1941,22 @@ class TestOnAppRoleDeleted:
         tx_store.get_app_role_by_external_id.return_value = mock_role
         tx_store.delete_nodes_and_edges.side_effect = RuntimeError("db fail")
 
-        result = await proc.on_app_role_deleted("ext-role-1", "conn-1")
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_app_role_deleted("ext-role-1", "conn-1")
 
-        assert result is False
-        proc.logger.error.assert_called()
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised(self) -> None:
+        """Taken for "no such role", the deletion was dropped and the role stayed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_app_role_by_external_id.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_app_role_deleted("ext-role-1", "conn-1")
+
+        assert tx_store.get_app_role_by_external_id.await_args.kwargs["raise_on_error"] is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -4986,8 +5067,8 @@ class TestOnRecordMetadataUpdateAndDelete:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_parent_child_edge_to_record.assert_awaited_with("rec-1")
         tx_store.delete_record_by_key.assert_awaited_with("rec-1")
+        tx_store.delete_parent_child_edge_to_record.assert_not_called()
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
 
@@ -6423,8 +6504,8 @@ class TestOnRecordsMovedKeepsStoredState:
 
 
 class TestOnRecordsMovedKbUpload:
-    @pytest.mark.asyncio
-    async def test_upload_with_parent_creates_edge(self):
+    @staticmethod
+    def _moving(parent_external_record_id: str | None) -> tuple:
         proc = _make_processor()
         tx_store = _make_tx_store()
         old = MagicMock(
@@ -6435,32 +6516,70 @@ class TestOnRecordsMovedKbUpload:
             record_name="upload.pdf",
         )
         tx_store.get_record_by_external_id = _live_lookup(old)
-        new_record = _make_kb_upload_record(parent_external_record_id="parent-folder")
+        new_record = _make_kb_upload_record(parent_external_record_id=parent_external_record_id)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
-
-        await proc.on_records_moved([("old-ext", new_record, [])])
-
-        tx_store.create_record_relation.assert_awaited_once_with(
-            "parent-folder", "r1", RecordRelations.PARENT_CHILD.value
-        )
+        return proc, tx_store, new_record
 
     @pytest.mark.asyncio
-    async def test_upload_to_root_no_parent_edge(self):
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        old = MagicMock(
-            id="r1",
-            external_revision_id="rev1",
-            indexing_status=ProgressStatus.COMPLETED.value,
-            mime_type="application/pdf",
-            record_name="upload.pdf",
-        )
-        tx_store.get_record_by_external_id = _live_lookup(old)
-        new_record = _make_kb_upload_record(parent_external_record_id=None)
-        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+    async def test_a_move_under_a_folder_is_one_write(self) -> None:
+        proc, tx_store, new_record = self._moving("parent-folder")
 
         await proc.on_records_moved([("old-ext", new_record, [])])
+
+        tx_store.upsert_record_under_parent.assert_awaited_once_with(new_record, "parent-folder")
+        assert new_record.id == "r1"
+        # Not the three writes it replaces: on Neo4j each commits on its own.
+        tx_store.delete_parent_child_edge_to_record.assert_not_awaited()
+        tx_store.batch_upsert_records.assert_not_awaited()
         tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_move_to_the_root_leaves_no_parent(self) -> None:
+        proc, tx_store, new_record = self._moving(None)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        tx_store.upsert_record_under_parent.assert_awaited_once_with(new_record, None)
+        tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_move_is_the_last_write(self) -> None:
+        """A write that failed after it would report a failed move for an item that had moved."""
+        proc, tx_store, new_record = self._moving("parent-folder")
+        writes: list[str] = []
+        tx_store.batch_create_edges = AsyncMock(side_effect=lambda _edges, collection: writes.append(collection))
+        tx_store.upsert_record_under_parent = AsyncMock(side_effect=lambda *_: writes.append("move"))
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert writes == [CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value, "move"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_move_is_raised_before_any_stored_file_moves(self) -> None:
+        proc, tx_store, new_record = self._moving("parent-folder")
+        tx_store.upsert_record_under_parent = AsyncMock(side_effect=RuntimeError("lock timeout"))
+        proc._flush_pending_blob_moves = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="lock timeout"):
+            await proc.on_records_moved([("old-ext", new_record, [])])
+
+        proc._flush_pending_blob_moves.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_connector_move_keeps_its_own_writes(self) -> None:
+        """Its parent is looked up by external id after the record is written, so it stays as it was."""
+        proc, tx_store, _ = self._moving(None)
+        new_record = _make_record(id="new-id", external_record_id="new-ext", parent_external_record_id=None)
+        writes: list[str] = []
+        tx_store.delete_parent_child_edge_to_record = AsyncMock(side_effect=lambda *_: writes.append("delete edge"))
+        tx_store.batch_upsert_records = AsyncMock(side_effect=lambda *_, **__: writes.append("upsert"))
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert writes == ["delete edge", "upsert"]
+        tx_store.delete_parent_child_edge_to_record.assert_awaited_once_with("r1")
+        tx_store.upsert_record_under_parent.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_old_record_treated_as_add(self):
@@ -6916,7 +7035,11 @@ class TestOnRecordsMovedDuplicateGuard:
         await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
 
         tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
-        tx_store.delete_parent_child_edge_to_record.assert_any_await("rec-duplicate")
+        # One statement: the delete takes the duplicate's parent edge with it. A
+        # separate edge delete could commit on its own (Neo4j) and leave the
+        # duplicate live but in no folder.
+        edge_deletes = [c.args for c in tx_store.delete_parent_child_edge_to_record.await_args_list]
+        assert ("rec-duplicate",) not in edge_deletes
         # The move still reuses the original vertex, so its edges survive.
         assert new_record.id == "rec-original"
 

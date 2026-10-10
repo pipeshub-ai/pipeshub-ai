@@ -333,6 +333,7 @@ export const DefaultMcpScopes = [
   'kb:read',
   'team:read',
   'user:read',
+  'usergroup:read',
   'config:read',
   'agent:read',
   'agent:execute',

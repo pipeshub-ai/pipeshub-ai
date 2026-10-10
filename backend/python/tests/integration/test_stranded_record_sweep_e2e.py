@@ -12,8 +12,9 @@ records built on the model default carried the connector process's start time
 and went the same way an hour after start.
 
 Runs on Neo4j and on ArangoDB. Arango enforces the records schema strictly, so
-the Arango run is also what proves the sweep's claim marker and the queue clock
-are declared there: an undeclared field is rejected and nothing is recovered.
+the Arango run is also what proves the sweep's claim marker, its re-send count
+and the queue clock are declared there: an undeclared field is rejected and
+nothing is recovered.
 
 Needs Docker services, and skips cleanly when they are not reachable:
 
@@ -286,11 +287,13 @@ async def test_an_issue_whose_event_was_lost_is_resent_exactly_once(env: _Env) -
     await env.sweep()
 
     assert await env.events_for(issue.id) == 2
-    assert (await env.stored(issue.id)).get("lastRepublishedAt"), "the claim marker was stored"
+    stored = await env.stored(issue.id)
+    assert stored.get("lastRepublishedAt"), "the claim marker was stored"
+    assert stored.get("republishCount") == 1, "and so was the count the back-off reads"
 
     await env.sweep()
 
-    assert await env.events_for(issue.id) == 2, "at most one resend per threshold window"
+    assert await env.events_for(issue.id) == 2, "not again until its back-off has passed"
 
 
 async def test_a_metadata_refresh_does_not_postpone_recovering_a_lost_event(env: _Env) -> None:

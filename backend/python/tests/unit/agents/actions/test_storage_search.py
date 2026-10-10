@@ -15,6 +15,7 @@ Covers all 9 test categories from the plan:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import platform
 from datetime import datetime, timedelta, timezone
@@ -1759,3 +1760,64 @@ class TestRankingIsBounded:
         many = r"\|".join(f"term{i}" for i in range(100))
         assert len(_grep_search_regexes(f'grep -rci "{many}" .')) == 32
         assert _grep_search_regexes(f'grep -rci "{"a" * 600}" .') == []
+
+
+class TestLogging:
+    """Record content stays out of the INFO log and search terms out of every log;
+    operators and the log pipeline are not authorised to read them."""
+
+    _LOGGER = "app.agents.actions.storage_search.storage_search"
+    _SECRET = "ACME-PAYROLL-SSN-123-45-6789"
+
+    def _info_text(self, caplog: pytest.LogCaptureFixture) -> str:
+        return "\n".join(
+            r.getMessage() for r in caplog.records
+            if r.levelno >= logging.INFO and r.name == self._LOGGER
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_command_does_not_log_output_body_at_info(self, tmp_path, caplog) -> None:
+        caplog.set_level(logging.INFO, logger=self._LOGGER)
+        tool = _make_tool(connector_dir=str(tmp_path), apps=["c"], has_knowledge=True)
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, f"employee: {self._SECRET}"),
+        ):
+            ok, out = await tool.run_command("c", 'grep -rh "employee" .')
+        assert ok is True and self._SECRET in out
+        assert self._SECRET not in self._info_text(caplog)
+
+    @pytest.mark.asyncio
+    async def test_find_records_does_not_log_output_body_at_info(self, tmp_path, caplog) -> None:
+        """This stdout predates the permission check, so it can name records the
+        user may not read."""
+        caplog.set_level(logging.INFO, logger=self._LOGGER)
+        tool = _make_tool(connector_dir=str(tmp_path), apps=["c"], has_knowledge=True)
+        gp = tool.state["graph_provider"]
+        gp.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+        gp.get_records_by_record_ids = AsyncMock(return_value=[])
+        leaked_path = f"Payroll/{self._SECRET}/record_0f0f0f0f-0000-0000-0000-000000000000.json"
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, leaked_path),
+        ):
+            await tool.find_records("c", 'grep -rl "employee" .')
+        assert self._SECRET not in self._info_text(caplog)
+
+    @pytest.mark.asyncio
+    async def test_search_terms_are_logged_at_no_level(self, tmp_path, caplog) -> None:
+        """A grep pattern is the user's query; debug logs ship to the same pipeline."""
+        caplog.set_level(logging.DEBUG, logger=self._LOGGER)
+        tool = _make_tool(connector_dir=str(tmp_path), apps=["c"], has_knowledge=True)
+        with patch(
+            "app.agents.actions.storage_search.storage_search._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=(True, ""),
+        ):
+            await tool.run_command("c", f'grep -rl "{self._SECRET}" .')
+            await tool.find_records("c", f'grep -rl "{self._SECRET}" .')
+        logged = [r.getMessage() for r in caplog.records if r.name == self._LOGGER]
+        assert logged, "the calls should still log their metadata"
+        assert not any(self._SECRET in m for m in logged)

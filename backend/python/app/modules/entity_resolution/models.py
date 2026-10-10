@@ -11,8 +11,9 @@ from pydantic import BaseModel, Field
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityType
 from app.modules.entity_resolution.normalizer import normalize_name
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 
-MAX_ALIASES_PER_NODE = 20
+MAX_ALIASES_PER_NODE = MAX_TAXONOMY_ALIASES
 
 
 class ResolutionMode(str, Enum):
@@ -20,8 +21,8 @@ class ResolutionMode(str, Enum):
 
     ``OFF`` skips resolution entirely. ``SHADOW`` computes and logs every
     decision but writes nothing and leaves the extracted names untouched.
-    ``APPLY`` rewrites the record's metadata to canonical names and hands the
-    graph transformer the nodes to use.
+    ``APPLY`` cleans the record's own names and hands the graph transformer
+    the canonical nodes they link to.
     """
 
     OFF = "off"
@@ -111,7 +112,9 @@ class ResolutionStats:
     names_dropped: int = 0
     names_deduped: int = 0
     tier0_hits: int = 0
+    # Names given at least one live candidate (not candidates offered).
     winners_offered: int = 0
+    # Candidates dropped as stale (deleted, another org's, merged away).
     stale_winners: int = 0
     model_calls: int = 0
     model_failures: int = 0
@@ -132,8 +135,9 @@ class ResolutionStats:
 class EntityResolution:
     """The resolver's output for one record.
 
-    ``entries`` is keyed by ``(collection, normalized canonical name)``, which
-    is how the graph transformer looks a rewritten metadata name back up.
+    ``entries`` is keyed by ``(collection, normalized canonical name)`` and
+    ``by_extracted`` by ``(collection, normalized extracted name)``, which is
+    how the graph transformer looks a metadata name back up.
     """
 
     org_id: str
@@ -141,12 +145,14 @@ class EntityResolution:
     stats: ResolutionStats = field(default_factory=ResolutionStats)
     entries: dict[tuple[str, str], ResolvedEntity] = field(default_factory=dict)
     assignments: dict[int, ResolvedEntity] = field(default_factory=dict)
+    by_extracted: dict[tuple[str, str], ResolvedEntity] = field(default_factory=dict)
 
     def add(self, entity: ResolvedEntity) -> None:
         self.entries[(entity.kind.collection, entity.normalized)] = entity
 
     def get(self, collection: str, name: str) -> ResolvedEntity | None:
-        return self.entries.get((collection, normalize_name(name)))
+        key = (collection, normalize_name(name))
+        return self.by_extracted.get(key) or self.entries.get(key)
 
     def decisions_for_log(self) -> list[dict[str, Any]]:
         """What was decided, by id and count: extracted names are document

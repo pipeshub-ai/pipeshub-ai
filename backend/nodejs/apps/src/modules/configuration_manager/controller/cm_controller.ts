@@ -84,6 +84,10 @@ import {
   maskSlackBotConfig,
   mergeSlackBotConfigPlaceholders,
 } from '../utils/maskConfigSecrets';
+import {
+  canRevealSecrets,
+  isSecretRevealAvailable,
+} from '../utils/secretReveal';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import {
   buildS3HealthCheckErrorMessage,
@@ -127,6 +131,11 @@ async function requesterIsOrgAdmin(
   }
   return isUserOrgAdmin(userId, orgId);
 }
+
+/** Tells the settings UI whether to offer its "show secrets" button; carries no secret itself. */
+export const getSecretRevealStatus = (_req: Request, res: Response): void => {
+  res.status(200).json({ available: isSecretRevealAvailable() }).end();
+};
 
 const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   includeImages: false,
@@ -530,11 +539,11 @@ const getParsedSmtpConfig = async (
 
 export const getSmtpConfig =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
       if (smtpConfig) {
-        const hideSecrets = shouldHideSecrets();
+        const hideSecrets = shouldHideSecrets() && !canRevealSecrets(req);
         res
           .status(200)
           .json(hideSecrets ? maskSmtpConfig(smtpConfig) : smtpConfig)
@@ -647,8 +656,8 @@ const updateSlackBotStoreWithCAS = async <T>(
 
 /** Admin-facing shape. Credentials are masked; an edit re-submitting the
  * placeholder is restored from storage by mergeSlackBotConfigPlaceholders. */
-const slackBotConfig = (config: SlackBotConfigEntry) =>
-  maskSlackBotConfig({
+const slackBotConfig = (config: SlackBotConfigEntry, reveal = false) => {
+  const entry = {
     id: config.id,
     name: config.name,
     agentId: config.agentId ?? null,
@@ -656,7 +665,9 @@ const slackBotConfig = (config: SlackBotConfigEntry) =>
     updatedAt: config.updatedAt,
     botToken: config.botToken,
     signingSecret: config.signingSecret,
-  });
+  };
+  return reveal ? entry : maskSlackBotConfig(entry);
+};
 
 /** Everything the bot process needs to verify a signature and act as the bot,
  * and nothing else. Served only to SLACK_BOT_VERIFY holders. */
@@ -669,14 +680,15 @@ const slackBotInternalConfig = (config: SlackBotConfigEntry) => ({
 
 export const getSlackBotConfigs =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const store = await getSlackBotStore(keyValueStoreService);
+      const reveal = canRevealSecrets(req);
       res
         .status(HTTP_STATUS.OK)
         .json({
           status: 'success',
-          configs: store.configs.map(slackBotConfig),
+          configs: store.configs.map((config) => slackBotConfig(config, reveal)),
         })
         .end();
     } catch (error: any) {
@@ -2660,6 +2672,16 @@ async function sendEvent(eventService: EntitiesEventProducer | AiConfigEventProd
   }
 }
 
+const MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK = [
+  'ocr',
+  'slm',
+  'reasoning',
+  'multiModal',
+  'imageGeneration',
+  'tts',
+  'stt',
+] as const;
+
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -2672,6 +2694,8 @@ export const createAIModelsConfig =
       if (!aiConfig) {
         throw new BadRequestError('Invalid configuration passed');
       }
+      aiConfig.llm = aiConfig.llm ?? [];
+      aiConfig.embedding = aiConfig.embedding ?? [];
 
       // Handle LLM health check
       if (aiConfig.llm.length > 0) {
@@ -2718,6 +2742,30 @@ export const createAIModelsConfig =
             'Failed to do health check of embedding configuration, check credentials again',
             aiResponseData?.data,
           );
+        }
+      }
+
+      // The llm and embedding health checks above refuse an endpoint the
+      // deployment may not call; every other model type is checked here.
+      const otherModels = MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK.flatMap(
+        (modelType) => aiConfig[modelType] ?? [],
+      );
+      if (otherModels.length > 0) {
+        const endpointCheck = (await new AIServiceCommand({
+          uri: `${appConfig.aiBackend}/api/v1/model-endpoint-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: otherModels,
+        }).execute()) as AIServiceResponse;
+
+        if (endpointCheck?.statusCode !== 200) {
+          const fallback = 'Failed to check the model endpoints, try again';
+          if (endpointCheck?.statusCode === 400) {
+            throw new BadRequestError(
+              healthCheckFailureMessage(endpointCheck.data, fallback),
+            );
+          }
+          throw new InternalServerError(fallback, endpointCheck?.data);
         }
       }
 
@@ -2945,9 +2993,10 @@ export const getModelsByType =
         return;
       }
       const configs = aiModels[modelType] as AIModelConfiguration[];
+      const reveal = canRevealSecrets(req);
       res.status(200).json({
         status: 'success',
-        models: configs.map((c) => stripAiModelSecrets(c)),
+        models: reveal ? configs : configs.map((c) => stripAiModelSecrets(c)),
         message: `Found ${configs.length} ${modelType} models`,
       });
     } catch (error: any) {
@@ -4505,7 +4554,7 @@ export const getWebSearchProviders =
       // Members may list providers (the agent builder does), but only admins
       // may read their API keys.
       const hideSecrets =
-        shouldHideSecrets() || !(await requesterIsOrgAdmin(req));
+        !(await requesterIsOrgAdmin(req)) || (shouldHideSecrets() && !canRevealSecrets(req));
       const providers = [
         {
           ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,

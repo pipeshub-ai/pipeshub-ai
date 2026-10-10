@@ -1151,16 +1151,20 @@ class TestNeo4jProvider(Neo4jProvider):
             total += int(result[0]["c"]) if result else 0
         return total
 
-    async def count_edges_touching(self, handles: Iterable[str]) -> int:
-        """Relationships with either end on one of these nodes, each counted once."""
+    async def count_edges_touching(self, handles: Iterable[str], *, excluding: Iterable[str] = ()) -> int:
+        """Relationships with either end on one of these nodes, each counted once.
+
+        *excluding* names edge collections, as on ArangoDB; their relationship types are left out.
+        """
         if not self.client:
             raise RuntimeError("Provider not connected")
+        skipped = sorted({self._get_relationship_type(c) for c in excluding})
         seen: set = set()
         for label, ids in self._handles_by_label(handles).items():
             result = await self.client.execute_query(
-                f"MATCH (n:`{label}`)-[r]-() WHERE n.id IN $ids "
+                f"MATCH (n:`{label}`)-[r]-() WHERE n.id IN $ids AND NOT type(r) IN $skipped "
                 "RETURN collect(DISTINCT elementId(r)) AS rels",
-                {"ids": ids},
+                {"ids": ids, "skipped": skipped},
             )
             if result:
                 seen.update(result[0]["rels"] or [])

@@ -1,8 +1,9 @@
 """``EntityResolver``: map extracted taxonomy names to canonical per-org nodes.
 
-Runs once per record, after classification and before any write, so the
-blob, the graph and the entity vector points all see canonical names. See
-the package docstring for the three tiers.
+Runs once per record, after classification and before any write. The
+record keeps the names extracted from its own content; the resolution decides
+which canonical node each of them links to in the graph and the entity index.
+See the package docstring for the three tiers.
 
 Failure policy: a vector-store or model failure never fails the record. The
 names involved simply become new nodes and a counter is bumped. A graph
@@ -67,6 +68,11 @@ LLM_ROLE = "indexing"
 # every unresolved name of the record a new node for good.
 MERGE_CALL_TIMEOUT_SECONDS = 60.0
 
+# Existing nodes offered to the model per unresolved name. Measured on the
+# resolution eval: the right node is first 90% of the time and within the
+# top 3 every time (tests/evals/entity_resolution, KG-12).
+MERGE_CANDIDATES = 3
+
 
 class EntityResolver:
     """Resolves one record's taxonomy names. Safe to share across records.
@@ -101,9 +107,11 @@ class EntityResolver:
     async def resolve(self, ctx: TransformContext) -> EntityResolution | None:
         """Resolve ``ctx.record.semantic_metadata``.
 
-        In ``APPLY`` mode the metadata is rewritten to canonical names and the
-        resolution is attached to ``ctx.entity_resolution``. Returns the
-        resolution (also in shadow mode) or ``None`` when nothing ran.
+        In ``APPLY`` mode the metadata keeps the record's own cleaned names
+        (blank, invalid and repeated ones dropped, languages in their ISO
+        form) and the resolution is attached to ``ctx.entity_resolution``.
+        Returns the resolution (also in shadow mode) or ``None`` when nothing
+        ran.
         """
         mode = self.mode
         if mode is ResolutionMode.OFF:
@@ -114,10 +122,14 @@ class EntityResolver:
         if metadata is None or not org_id:
             return None
 
+        if mode is ResolutionMode.APPLY:
+            # The labels are this record's own words whether or not
+            # resolution succeeds, and they are stored either way.
+            metadata.own_labels = True
         started = time.monotonic()
         stats = ResolutionStats()
         try:
-            resolution = await self._resolve(org_id, metadata, mode, stats)
+            names, resolution = await self._resolve(org_id, metadata, mode, stats)
         except Exception:
             if mode is ResolutionMode.SHADOW:
                 self.logger.warning(
@@ -130,7 +142,7 @@ class EntityResolver:
         metrics.record_latency(mode.value, time.monotonic() - started)
 
         if mode is ResolutionMode.APPLY:
-            self._rewrite_metadata(metadata, resolution)
+            self._keep_own_names(metadata, names)
             ctx.entity_resolution = resolution
         else:
             self.logger.info(
@@ -155,7 +167,7 @@ class EntityResolver:
         metadata: SemanticMetadata,
         mode: ResolutionMode,
         stats: ResolutionStats,
-    ) -> EntityResolution:
+    ) -> tuple[list[ExtractedName], EntityResolution]:
         resolution = EntityResolution(org_id=org_id, mode=mode, stats=stats)
         names = self._collect_names(metadata, stats)
 
@@ -175,13 +187,13 @@ class EntityResolver:
             entity = self._existing_entity(resolution, name.kind, node, decision="exact")
             self._attach(resolution, name, entity)
 
-        winners = await self._tier1(org_id, unresolved, stats)
-        decisions = await self._tier2(metadata, unresolved, winners, stats)
-        await self._apply_decisions(org_id, resolution, unresolved, winners, decisions)
+        candidates = await self._tier1(org_id, unresolved, stats)
+        decisions = await self._tier2(metadata, unresolved, candidates, stats)
+        await self._apply_decisions(org_id, resolution, unresolved, candidates, decisions)
         await self._follow_merge_redirects(org_id, resolution, names)
 
         self._record_outcomes(resolution)
-        return resolution
+        return names, resolution
 
     async def _follow_merge_redirects(
         self, org_id: str, resolution: EntityResolution, names: list[ExtractedName],
@@ -360,10 +372,12 @@ class EntityResolver:
 
     async def _tier1(
         self, org_id: str, unresolved: list[ExtractedName], stats: ResolutionStats
-    ) -> dict[int, WinnerCandidate | None]:
-        winners: dict[int, WinnerCandidate | None] = {n.index: None for n in unresolved}
+    ) -> dict[int, tuple[WinnerCandidate, ...]]:
+        """Up to ``MERGE_CANDIDATES`` live nodes per unresolved name, best
+        first. The right node is often second (KG-12), so one is not enough."""
+        offered: dict[int, tuple[WinnerCandidate, ...]] = {n.index: () for n in unresolved}
         if self.entity_vector_store is None or not unresolved:
-            return winners
+            return offered
 
         groups: dict[tuple[str, str | None], list[ExtractedName]] = {}
         for name in unresolved:
@@ -371,8 +385,8 @@ class EntityResolver:
 
         for (entity_type, level), group in groups.items():
             try:
-                matches = await self.entity_vector_store.find_best_matches(
-                    [n.display for n in group], org_id, entity_type, level=level,
+                matches = await self.entity_vector_store.find_candidates(
+                    [n.display for n in group], org_id, entity_type, level=level, k=MERGE_CANDIDATES,
                 )
             except Exception:
                 stats.vector_failures += 1
@@ -382,25 +396,27 @@ class EntityResolver:
                     "names as new", entity_type, level, len(group), exc_info=True,
                 )
                 continue
-            candidates: dict[int, WinnerCandidate] = {}
-            for name, match in zip(group, matches):
-                winner = self._winner_from_match(match, entity_type, level)
-                if winner is not None:
-                    candidates[name.index] = winner
-            if not candidates:
+            found: dict[int, list[WinnerCandidate]] = {}
+            for name, name_matches in zip(group, matches):
+                for match in name_matches or []:
+                    winner = self._winner_from_match(match, entity_type, level)
+                    if winner is not None:
+                        found.setdefault(name.index, []).append(winner)
+            if not found:
                 continue
             live = await self._live_node_ids(
-                org_id, group[0].kind.collection, {w.entity_id for w in candidates.values()},
+                org_id, group[0].kind.collection,
+                {w.entity_id for winners in found.values() for w in winners},
             )
             if live is None:
                 continue
-            for index, winner in candidates.items():
-                if winner.entity_id in live:
+            for index, winners in found.items():
+                kept = tuple(w for w in winners if w.entity_id in live)
+                stats.stale_winners += len(winners) - len(kept)
+                if kept:
                     stats.winners_offered += 1
-                    winners[index] = winner
-                else:
-                    stats.stale_winners += 1
-        return winners
+                    offered[index] = kept
+        return offered
 
     async def _live_node_ids(
         self, org_id: str, collection: str, ids: set[str],
@@ -461,9 +477,9 @@ class EntityResolver:
     # ---- tier 2 ------------------------------------------------------
 
     def _needs_model(
-        self, unresolved: list[ExtractedName], winners: dict[int, WinnerCandidate | None]
+        self, unresolved: list[ExtractedName], candidates: dict[int, tuple[WinnerCandidate, ...]]
     ) -> bool:
-        if any(winners.get(n.index) is not None for n in unresolved):
+        if any(candidates.get(n.index) for n in unresolved):
             return True
         per_kind: dict[str, int] = {}
         for name in unresolved:
@@ -474,13 +490,13 @@ class EntityResolver:
         self,
         metadata: SemanticMetadata,
         unresolved: list[ExtractedName],
-        winners: dict[int, WinnerCandidate | None],
+        candidates: dict[int, tuple[WinnerCandidate, ...]],
         stats: ResolutionStats,
     ) -> dict[int, MergeDecision]:
-        if not unresolved or not self._needs_model(unresolved, winners):
+        if not unresolved or not self._needs_model(unresolved, candidates):
             return {}
         stats.model_calls += 1
-        prompt = build_prompt(metadata.summary, unresolved, winners)
+        prompt = build_prompt(metadata.summary, unresolved, candidates)
         try:
             llm = await self._get_llm()
             response = await invoke_with_structured_output_and_reflection(
@@ -531,7 +547,7 @@ class EntityResolver:
         org_id: str,
         resolution: EntityResolution,
         unresolved: list[ExtractedName],
-        winners: dict[int, WinnerCandidate | None],
+        candidates: dict[int, tuple[WinnerCandidate, ...]],
         decisions: dict[int, MergeDecision],
     ) -> None:
         stats = resolution.stats
@@ -562,8 +578,10 @@ class EntityResolver:
                 continue
             # The offered node is the stronger answer: an item pointer only
             # groups names that still need a node.
-            winner = winners.get(name.index)
-            if winner is not None and decision.target == winner.entity_id:
+            winner = next(
+                (c for c in candidates.get(name.index, ()) if c.entity_id == decision.target), None,
+            )
+            if winner is not None:
                 merged_to_winner[name.index] = winner
                 continue
             if decision.same_as_item >= 0:
@@ -711,6 +729,7 @@ class EntityResolver:
     ) -> None:
         stats = resolution.stats
         resolution.assignments[name.index] = entity
+        resolution.by_extracted[(name.kind.collection, name.normalized)] = entity
         entity.extracted_names.append(name.raw)
         if name.normalized == entity.normalized:
             return
@@ -735,24 +754,23 @@ class EntityResolver:
 
     # ---- apply -------------------------------------------------------
 
-    def _rewrite_metadata(
-        self, metadata: SemanticMetadata, resolution: EntityResolution
-    ) -> None:
-        """Replace extracted names with canonical ones, in place."""
+    @staticmethod
+    def _keep_own_names(metadata: SemanticMetadata, names: list[ExtractedName]) -> None:
+        """Write back the record's own names, cleaned, in place: a canonical
+        node's name is the spelling of whichever record created it, not
+        necessarily this one's."""
         by_slot: dict[str, list[str]] = {}
-        for index in sorted(resolution.assignments):
-            entity = resolution.assignments[index]
-            bucket = by_slot.setdefault(entity.kind.slot, [])
-            if entity.name not in bucket:
-                bucket.append(entity.name)
+        for name in names:
+            by_slot.setdefault(name.kind.slot, []).append(name.display)
 
-        metadata.categories = by_slot.get(CATEGORY.slot, [])
+        metadata.categories = by_slot.get(CATEGORY.slot, [])[:1]
         chain = [by_slot.get(kind.slot, [None])[0] for kind in SUBCATEGORY_CHAIN]
         metadata.sub_category_level_1 = chain[0] or None
         metadata.sub_category_level_2 = (chain[1] if chain[0] else None) or None
         metadata.sub_category_level_3 = (chain[2] if chain[0] and chain[1] else None) or None
         metadata.topics = by_slot.get(TOPIC.slot, [])
         metadata.languages = by_slot.get(LANGUAGE.slot, [])
+        metadata.own_labels = True
 
 
 __all__ = ["LLM_ROLE", "EntityResolver"]

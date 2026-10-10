@@ -376,6 +376,41 @@ cases:
       - state: "A purchase of up to and including $250 needs no approval."
         expect: [contradicted, missing]
 
+  # Two nightly answers to "How much can I spend without my manager's
+  # approval?". Both are right, and the software rule they add is the policy's.
+  - id: expense-manager-band-with-software-rule
+    about: the manager band, plus the software rule that needs finance
+    answer: |
+      You can spend up to $250 per purchase without manager approval.
+      You must submit the receipt within 30 days.
+      Software subscriptions require Finance approval regardless of amount.
+    claims:
+      - state: "A purchase of up to and including $250 needs no manager approval."
+        expect: supported
+      - not_state: "Purchases above $250 need no manager approval."
+        expect: [contradicted, missing]
+
+  - id: expense-manager-band-and-the-next-band
+    about: the manager band, then who approves above it
+    answer: |
+      You can spend up to $250 per purchase without manager approval.
+      Submit the receipt within 30 days.
+      Purchases over $250 and up to $2,500 require manager approval; software subscriptions require Finance approval regardless of amount.
+    claims:
+      - state: "A purchase of up to and including $250 needs no manager approval."
+        expect: supported
+      - not_state: "Purchases above $250 need no manager approval."
+        expect: [contradicted, missing]
+
+  - id: expense-no-approval-at-all-vs-software-rule
+    about: '"no approval at all" is taken back in part by the software rule'
+    answer: |
+      You can spend up to $250 per purchase without manager approval.
+      Software subscriptions require Finance approval regardless of amount.
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: [contradicted, missing]
+
   # --- PR #482's review ---------------------------------------------------------
   - id: pr482-full
     about: both facts, with code formatting in the answer

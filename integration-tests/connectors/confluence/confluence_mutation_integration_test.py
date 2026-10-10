@@ -31,6 +31,7 @@ from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     assert_confluence_pages_match_graph_records,
     count_confluence_space_pages_v1_search,
+    wait_for_space_page_count_at_least,
     get_confluence_page_version_number_v1,
     wait_until_confluence_condition,
     check_page_in_v1_search_bool,
@@ -390,8 +391,8 @@ class TestConfluenceConnectorMutation:
             ),
             description=f"TC-INCR-001: both new pages in v1 search for {space_key}",
         )
-        api_after_create = await count_confluence_space_pages_v1_search(
-            confluence_datasource, space_key
+        api_after_create = await wait_for_space_page_count_at_least(
+            confluence_datasource, space_key, api_before + 2
         )
         # At least: another run may be writing to the same space.
         assert api_after_create >= api_before + 2, (

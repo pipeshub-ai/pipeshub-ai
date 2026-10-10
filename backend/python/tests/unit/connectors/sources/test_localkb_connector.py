@@ -54,6 +54,8 @@ def _make_kb_service():
     """Build a KnowledgeBaseService with mocked dependencies."""
     logger = MagicMock()
     graph_provider = AsyncMock()
+    # Synchronous like the real providers; an AsyncMock's coroutine would read as a yes.
+    graph_provider.is_write_conflict = MagicMock(return_value=False)
     kafka_service = MagicMock()
     processor = AsyncMock()
     processor.on_new_records = AsyncMock()
@@ -358,6 +360,105 @@ class TestKnowledgeBaseService:
         assert result["code"] == 200
 
     @pytest.mark.asyncio
+    async def test_a_new_kb_is_given_its_queue_lane_as_a_knowledge_base(self) -> None:
+        svc = _make_kb_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "fullName": "Test User"}
+        )
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock()
+        svc.graph_provider.batch_create_edges = AsyncMock()
+        svc.graph_provider.commit_transaction = AsyncMock()
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.assign_lane_to_new_connector",
+            new_callable=AsyncMock,
+        ) as assign:
+            result = await svc.create_knowledge_base("user-1", "org-1", "My KB")
+
+        assign.assert_awaited_once()
+        assert assign.await_args.args[1] == result["id"]
+        assert assign.await_args.kwargs == {
+            "connector_type": "KB", "scope": "personal", "org_id": "org-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_create_retried_after_a_write_conflict_gives_the_kb_one_lane_after_the_commit(self) -> None:
+        """The writes run under a retry (one user's creates collide on the user
+        node); the lane assignment runs once, after the commit that stuck."""
+        deadlock = RuntimeError("Neo.TransientError.Transaction.DeadlockDetected")
+        svc = _make_kb_service()
+        provider = svc.graph_provider
+        provider.is_write_conflict = MagicMock(side_effect=lambda e: e is deadlock)
+        provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key-1", "fullName": "Test User"})
+        provider.begin_transaction = AsyncMock(side_effect=["txn1", "txn2"])
+        provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        provider.batch_create_edges = AsyncMock(side_effect=[deadlock, True, True, True])
+        provider.commit_transaction = AsyncMock()
+        provider.rollback_transaction = AsyncMock()
+        commits_when_assigned: list[int] = []
+
+        async def note_commits(*_args: object, **_kwargs: object) -> None:
+            commits_when_assigned.append(provider.commit_transaction.await_count)
+
+        with patch("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", new=AsyncMock()), patch(
+            "app.connectors.sources.localKB.handlers.kb_service.assign_lane_to_new_connector",
+            side_effect=note_commits,
+        ) as assign:
+            result = await svc.create_knowledge_base("user-1", "org-1", "My KB")
+
+        assert result["success"] is True
+        provider.rollback_transaction.assert_awaited_once_with("txn1")
+        provider.commit_transaction.assert_awaited_once_with("txn2")
+        assign.assert_awaited_once()
+        assert assign.await_args.args[1] == result["id"]
+        assert commits_when_assigned == [1], "assigned once, after the commit"
+
+    @pytest.mark.asyncio
+    async def test_a_kb_that_failed_to_commit_is_given_no_lane(self) -> None:
+        svc = _make_kb_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "fullName": "Test User"}
+        )
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock()
+        svc.graph_provider.batch_create_edges = AsyncMock()
+        svc.graph_provider.commit_transaction = AsyncMock(side_effect=RuntimeError("commit failed"))
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.assign_lane_to_new_connector",
+            new_callable=AsyncMock,
+        ) as assign:
+            result = await svc.create_knowledge_base("user-1", "org-1", "My KB")
+
+        assert result["success"] is False
+        assign.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_kb_frees_its_queue_lane_after_its_cleanup_events(self) -> None:
+        svc = _make_kb_service()
+        svc.graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "fullName": "Test User"}
+        )
+        svc.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        svc.graph_provider.delete_connector_instance = AsyncMock(
+            return_value={"success": True, "virtual_record_ids": []}
+        )
+        order: list[str] = []
+        svc._publish_with_retry = AsyncMock(side_effect=lambda event, _kb: order.append(event["eventType"]))
+
+        async def freed(_logger, kb_id) -> None:
+            order.append(f"free:{kb_id}")
+
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.free_lane_of_deleted_connector",
+            side_effect=freed,
+        ):
+            result = await svc.delete_knowledge_base("kb-1", "user-1", "org-1")
+
+        assert result["success"] is True
+        assert order[-1] == "free:kb-1"
+        assert len(order) > 1, "the cleanup events go out first"
+
+    @pytest.mark.asyncio
     async def test_create_folder_in_kb_success(self):
         svc = _make_kb_service()
         svc.graph_provider._validate_folder_creation = AsyncMock(
@@ -389,7 +490,7 @@ class TestKnowledgeBaseService:
         svc.graph_provider._validate_folder_creation = AsyncMock(
             return_value={"valid": True}
         )
-        svc.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=False)
+        svc.graph_provider.validate_folder_in_kb = AsyncMock(return_value=False)
 
         result = await svc.create_nested_folder("kb-1", "parent-1", "Sub", "user-1", "org-1")
         assert result["success"] is False

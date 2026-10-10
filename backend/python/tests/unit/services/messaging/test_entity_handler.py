@@ -1,6 +1,7 @@
 """Unit tests for app.services.messaging.kafka.handlers.entity.EntityEventService."""
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -829,7 +830,242 @@ def _make_service():
     app_container.messaging_producer.send_message = AsyncMock()
     app_container.config_service.return_value = AsyncMock()
     app_container.data_store = AsyncMock()
+    # A mock's coroutine is truthy, which would read as "retry" to the idempotent writer.
+    graph_provider.is_write_conflict = MagicMock(return_value=False)
     return EntityEventService(logger, graph_provider, app_container)
+
+
+class _Conflict(RuntimeError):
+    pass
+
+
+class _KbGraph:
+    """The apps and edges of one org, on a graph where each statement lands as it
+    runs (Neo4j's default) and the write numbered *conflicts_on* hits another writer."""
+
+    def __init__(self, *, conflicts_on: int | None = None, lookup_fails: bool = False,
+                 user_lookup_fails: bool = False) -> None:
+        self.logger = MagicMock()
+        self.apps: dict[str, dict] = {}
+        self.users: dict[str, dict] = {}
+        self.edges: dict[tuple[str, str, str], dict] = {}
+        self.writes = 0
+        self.conflicts_on = conflicts_on
+        self.lookup_fails = lookup_fails
+        self.user_lookup_fails = user_lookup_fails
+
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
+        if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
+            if raise_on_error:
+                raise RuntimeError("LockAcquisitionTimeout")
+            return None
+        found = next((u for u in self.users.values() if u.get("email") == email), None)
+        return SimpleNamespace(id=found["id"]) if found else None
+
+    async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
+        return {"_key": key, "accountType": "enterprise"}
+
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        pass
+
+    async def get_nodes_by_filters(self, collection: str, filters: dict, *, raise_on_error: bool = False) -> list[dict]:
+        if self.lookup_fails:  # As both providers do: raise only when asked, else answer "nothing".
+            if raise_on_error:
+                raise RuntimeError("LockAcquisitionTimeout")
+            return []
+        return [app for app in self.apps.values() if all(app.get(k) == v for k, v in filters.items())]
+
+    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
+        return "txn"
+
+    async def commit_transaction(self, txn: str) -> None:
+        pass
+
+    async def rollback_transaction(self, txn: str) -> None:
+        pass  # Nothing to undo: every statement already committed.
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return isinstance(error, _Conflict)
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
+    def _statement(self) -> None:
+        self.writes += 1
+        if self.writes == self.conflicts_on:
+            raise _Conflict("DeadlockDetected")
+
+    async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
+        self._statement()
+        bucket = self.users if collection == CollectionNames.USERS.value else self.apps
+        for node in nodes:
+            bucket.setdefault(node["id"], {}).update(node)
+        return True
+
+    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> None:
+        self._statement()
+        for edge in edges:  # MERGE then SET r = props: an existing edge is replaced
+            self.edges[(collection, edge["from_id"], edge["to_id"])] = edge
+
+    async def create_edges_if_absent(self, edges: list[dict], collection: str, transaction: str | None = None) -> None:
+        self._statement()
+        for edge in edges:  # MERGE then ON CREATE SET: an existing edge is left as it is
+            self.edges.setdefault((collection, edge["from_id"], edge["to_id"]), edge)
+
+    async def ensure_app_membership(self, principal_id: str, principal_collection: str, connector_id: str, *,
+                                    is_external: bool, source_user_id: str | None = None,
+                                    transaction: str | None = None) -> None:
+        self._statement()
+        self.edges.setdefault(
+            (CollectionNames.USER_APP_RELATION.value, principal_id, connector_id),
+            {"isExternalUser": is_external, "syncState": "NOT_STARTED"},
+        )
+
+    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str,
+                       collection: str, transaction: str | None = None) -> dict | None:
+        return None  # What both providers answer when the read itself fails.
+
+
+def _kb_edges(graph: _KbGraph, kb_id: str) -> set[tuple[str, str]]:
+    return {(collection, from_id) for collection, from_id, to_id in graph.edges if to_id == kb_id}
+
+
+_ALL_KB_EDGES = {
+    (CollectionNames.PERMISSION.value, "user-key"),
+    (CollectionNames.ORG_APP_RELATION.value, "org-1"),
+    (CollectionNames.USER_APP_RELATION.value, "user-key"),
+}
+
+
+def _service_on(graph: _KbGraph) -> EntityEventService:
+    svc = _make_service()
+    svc = EntityEventService(svc.logger, graph, svc.app_container)
+    svc.app_container.connectors_map = {}
+    return svc
+
+
+class TestDefaultKbCreateConverges:
+    """The default knowledge base is four writes. On Neo4j each commits on its own, so
+    a failure partway used to leave an App with edges missing, and every later call
+    found it by filter and handed it back as it was."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_on_the_second_write_is_retried_into_one_complete_kb(self) -> None:
+        graph = _KbGraph(conflicts_on=2)
+        svc = _service_on(graph)
+        with patch(
+            "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock, return_value=None,
+        ):
+            result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert result.get("success") is True, result
+        assert list(graph.apps) == [result["kb_id"]]
+        assert _kb_edges(graph, result["kb_id"]) == _ALL_KB_EDGES
+
+    @pytest.mark.asyncio
+    async def test_a_half_built_kb_is_completed_on_the_next_call(self) -> None:
+        graph = _KbGraph()
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        graph.edges[(CollectionNames.ORG_APP_RELATION.value, "org-1", "kb-1")] = {}
+        svc = _service_on(graph)
+
+        result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert result["id"] == "kb-1"
+        assert list(graph.apps) == ["kb-1"]
+        assert _kb_edges(graph, "kb-1") == _ALL_KB_EDGES
+
+    @pytest.mark.asyncio
+    async def test_a_complete_kb_keeps_its_edges_as_they_are(self) -> None:
+        """The providers answer None to a failed edge read as well as to a missing edge,
+        so the repair must never decide from a read: it writes create-only."""
+        graph = _KbGraph()
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        graph.edges[(CollectionNames.PERMISSION.value, "user-key", "kb-1")] = {"role": "OWNER", "createdAtTimestamp": 1}
+        graph.edges[(CollectionNames.ORG_APP_RELATION.value, "org-1", "kb-1")] = {"createdAtTimestamp": 1}
+        graph.edges[(CollectionNames.USER_APP_RELATION.value, "user-key", "kb-1")] = {
+            "syncState": "COMPLETED", "isExternalUser": False, "sourceUserId": "src-1", "createdAtTimestamp": 1,
+        }
+        before = {key: dict(edge) for key, edge in graph.edges.items()}
+        svc = _service_on(graph)
+
+        result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert result["id"] == "kb-1"
+        assert graph.edges == before
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised_and_adds_no_second_kb(self) -> None:
+        """The providers answer [] to a failed lookup unless told to raise; read as "no
+        knowledge base", that minted a second App and acknowledged the event."""
+        graph = _KbGraph(lookup_fails=True)
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        svc = _service_on(graph)
+
+        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+        assert list(graph.apps) == ["kb-1"]
+
+        graph.get_user_by_email = AsyncMock(return_value=None)
+        graph.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
+        graph.batch_upsert_nodes = AsyncMock()
+        graph.batch_create_edges = AsyncMock()
+        svc._adopt_existing_person = AsyncMock()
+        payload = {"userId": "user-1", "orgId": "org-1", "email": "a@b.co", "syncAction": "none"}
+        assert await svc.process_event("userAdded", payload) is False
+        assert list(graph.apps) == ["kb-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_lookup_mints_no_second_user_and_fails_the_event(self) -> None:
+        """get_user_by_email answers None to a failed read unless told to raise; read as
+        "nobody", that minted a second user and healed the knowledge base from its id."""
+        graph = _KbGraph(user_lookup_fails=True)
+        graph.users["u-key"] = {"id": "u-key", "userId": "user-1", "orgId": "org-1", "email": "a@b.co"}
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        svc = _service_on(graph)
+        svc._adopt_existing_person = AsyncMock()
+
+        payload = {"userId": "user-1", "orgId": "org-1", "email": "a@b.co", "syncAction": "none"}
+        assert await svc.process_event("userAdded", payload) is False
+        assert list(graph.users) == ["u-key"]
+        assert {from_id for _, from_id, to_id in graph.edges if to_id == "kb-1"} <= {"u-key"}
+
+    @pytest.mark.asyncio
+    async def test_every_knowledge_base_of_the_user_is_repaired(self) -> None:
+        """The lookup is unordered and matches every KB of the user, so repairing only
+        the first could skip the half-built one on a redelivery."""
+        graph = _KbGraph()
+        for kb in ("kb-1", "kb-2"):
+            graph.apps[kb] = {"id": kb, "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        for collection, from_id in _ALL_KB_EDGES:
+            graph.edges[(collection, from_id, "kb-1")] = {"createdAtTimestamp": 1}
+        svc = _service_on(graph)
+
+        await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert _kb_edges(graph, "kb-1") == _ALL_KB_EDGES
+        assert _kb_edges(graph, "kb-2") == _ALL_KB_EDGES
+
+    @pytest.mark.asyncio
+    async def test_a_failed_repair_is_raised_and_fails_the_user_event(self) -> None:
+        """Swallowed, the event is acknowledged with the knowledge base still incomplete."""
+        svc = _make_service()
+        gp = svc.graph_provider
+        gp.get_nodes_by_filters = AsyncMock(return_value=[{"id": "kb-1", "isDeleted": False}])
+        gp.create_edges_if_absent = AsyncMock(side_effect=RuntimeError("org node unavailable"))
+        with pytest.raises(RuntimeError, match="org node unavailable"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        gp.get_user_by_email = AsyncMock(return_value=None)
+        gp.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
+        svc._adopt_existing_person = AsyncMock()
+        payload = {"userId": "user-1", "orgId": "org-1", "email": "a@b.co", "syncAction": "none"}
+        assert await svc.process_event("userAdded", payload) is False
 
 
 # ===================================================================
@@ -1091,17 +1327,16 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
 
     @pytest.mark.asyncio
     async def test_rollback_on_kb_upsert_failure(self):
-        """Failed KB app write rolls back the transaction and returns empty."""
+        """A failed KB app write rolls back the transaction and is raised, so the
+        user event is not acknowledged with no knowledge base."""
         svc = _make_service()
         svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
         svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("upsert failed"))
         svc.graph_provider.rollback_transaction = AsyncMock()
 
-        result = await svc._get_or_create_knowledge_base(
-            "user-key", "user-1", "org-1"
-        )
-        assert result == {}
+        with pytest.raises(RuntimeError, match="upsert failed"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
         svc.graph_provider.rollback_transaction.assert_awaited_once_with("txn1")
 
     @pytest.mark.asyncio

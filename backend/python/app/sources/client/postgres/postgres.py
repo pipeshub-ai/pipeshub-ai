@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -18,6 +18,7 @@ from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_vali
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.utils.url_fetcher import IPAddress, vetted_addresses
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,65 @@ else:
         import asyncpg
     except ImportError:
         asyncpg = None
+
+
+class _CheckedDialLoop:
+    """The event loop one asyncpg connection is given: its TCP connection goes to the
+    addresses already checked for the host, instead of a fresh lookup of the name.
+
+    Everything else, TLS included, runs on the real loop with the host name, so SNI and
+    certificate checks still see the name and asyncpg's sslmode fallbacks are unchanged.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, addresses: Sequence[IPAddress]) -> None:
+        self._loop = loop
+        self._addresses = addresses
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._loop, name)
+
+    async def create_connection(
+        self,
+        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        host: str | None = None,
+        port: int | None = None,
+        **kwargs: object,
+    ) -> tuple[asyncio.Transport, asyncio.BaseProtocol]:
+        if kwargs.get("ssl") and kwargs.get("server_hostname") is None:
+            kwargs["server_hostname"] = host  # direct TLS would otherwise name the address
+        error: OSError | None = None
+        for ip in self._addresses:
+            try:
+                return await self._loop.create_connection(protocol_factory, str(ip), port, **kwargs)
+            except OSError as e:
+                error = e
+        assert error is not None
+        raise error
+
+
+async def connect_to_checked_address(
+    dsn: str | None = None,
+    *,
+    host: str,
+    loop: asyncio.AbstractEventLoop | None = None,
+    **kwargs: object,
+) -> asyncpg.Connection:
+    """``asyncpg.connect`` for one pool connection, to an address of ``host`` that passes the
+    deployment's address policy (``vetted_addresses``). Each new connection looks the name
+    up again, so a failover that moves the name is followed.
+
+    Raises:
+        HostCheckError: before anything is dialled, when the host is refused or doesn't resolve.
+    """
+    real_loop = loop or asyncio.get_running_loop()
+    # The lookup spends the connection's timeout (asyncpg's default is 60 s), as asyncpg's own would.
+    timeout = float(kwargs.get("timeout") or 60)
+    started = real_loop.time()
+    addresses = await vetted_addresses(host, lookup_timeout_s=timeout)
+    kwargs["timeout"] = max(timeout - (real_loop.time() - started), 1.0)
+    dial_loop = _CheckedDialLoop(real_loop, addresses) if addresses else real_loop
+    return await asyncpg.connect(dsn, host=host, loop=dial_loop, **kwargs)
+
 
 class PostgreSQLClient:
     """PostgreSQL client for asyncpg pool management."""
@@ -113,6 +173,7 @@ class PostgreSQLClient:
                     # where that name is another client's statement. With the
                     # cache off, asyncpg prepares unnamed statements instead.
                     statement_cache_size=0,
+                    connect=connect_to_checked_address,
                 )
 
                 logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")

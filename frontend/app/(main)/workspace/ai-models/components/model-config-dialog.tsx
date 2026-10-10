@@ -5,11 +5,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Callout, Flex, Switch, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { SchemaField } from '@/app/(main)/workspace/connectors/types';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../types';
@@ -225,8 +227,11 @@ export function ModelConfigDialog({
   } | null>(null);
   const downloadResolverRef = useRef<((ready: boolean) => void) | null>(null);
   const touchedFieldsRef = useRef<Set<string>>(new Set());
+  const [revealState, setRevealState] = useState<'hidden' | 'loading' | 'shown'>('hidden');
+  const revealAvailable = useSecretRevealAvailable(open && mode === 'edit');
 
   useEffect(() => {
+    setRevealState('hidden');
     if (!open || !provider || !capability) {
       setFields([]);
       setValues({});
@@ -292,6 +297,40 @@ export function ModelConfigDialog({
     },
     [provider?.providerId]
   );
+
+  const canReveal =
+    revealAvailable &&
+    revealState !== 'shown' &&
+    hiddenCredentials.size > 0 &&
+    (editModel as { _source?: string } | null)?._source !== 'parent';
+  const beginReveal = useRevealScope(
+    `${open}:${mode}:${editModel?.modelType ?? ''}:${editModel?.modelKey ?? ''}`
+  );
+
+  // Display only: a revealed field the user leaves alone is still omitted on
+  // save, so the stored value is kept exactly as it is without a reveal.
+  const handleReveal = useCallback(async () => {
+    if (!editModel) return;
+    const stillCurrent = beginReveal();
+    setRevealState('loading');
+    try {
+      const stored = await AIModelsApi.revealModelConfiguration(
+        editModel.modelType,
+        editModel.modelKey
+      );
+      if (!stillCurrent()) return;
+      setValues((prev) => {
+        const next = { ...prev };
+        for (const name of hiddenCredentials) {
+          if (name in stored && !touchedFieldsRef.current.has(name)) next[name] = stored[name];
+        }
+        return next;
+      });
+      setRevealState('shown');
+    } catch {
+      if (stillCurrent()) setRevealState('hidden');
+    }
+  }, [editModel, hiddenCredentials, beginReveal]);
 
   const waitForModelDownload = useCallback(
     (modelName: string, trustRemoteCode: boolean) =>
@@ -567,6 +606,8 @@ export function ModelConfigDialog({
         error={error}
         hiddenCredentials={hiddenCredentials}
         onFieldChange={handleFieldChange}
+        onReveal={canReveal ? () => void handleReveal() : undefined}
+        revealing={revealState === 'loading'}
       />
       {downloadTarget && (
         <EmbeddingDownloadProgress
@@ -612,6 +653,8 @@ function ModelConfigFormBody({
   error,
   hiddenCredentials,
   onFieldChange,
+  onReveal,
+  revealing,
 }: {
   provider: AIModelProvider | null;
   capability: string | null;
@@ -622,6 +665,9 @@ function ModelConfigFormBody({
   error: string | null;
   hiddenCredentials: Set<string>;
   onFieldChange: (name: string, value: unknown) => void;
+  /** Absent when the deployment does not allow reading stored secrets back. */
+  onReveal?: () => void;
+  revealing: boolean;
 }) {
   const { t } = useTranslation();
   const leaveBlankPlaceholder = t('form.leaveBlankToKeep');
@@ -745,9 +791,18 @@ function ModelConfigFormBody({
 
       <Box style={CARD_STYLE}>
         <Flex direction="column" gap="3">
-          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.aiModels.configSectionModelConfiguration')}
-          </Text>
+          <Flex align="center" justify="between" gap="3">
+            <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.aiModels.configSectionModelConfiguration')}
+            </Text>
+            {onReveal ? (
+              <ShowStoredValuesButton
+                loading={revealing}
+                disabled={saving}
+                onClick={onReveal}
+              />
+            ) : null}
+          </Flex>
           {provider ? (
             <Flex direction="column" gap="1">
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>

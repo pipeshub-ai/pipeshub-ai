@@ -572,7 +572,7 @@ class TestDeleteVectorCollectionEvent:
         sink.vector_store.embedding_size = embedding_size
         handler.event_processor.sink_orchestrator = sink
         registry = AsyncMock()
-        registry.recreate_all_collections = AsyncMock(return_value=["records"])
+        registry.recreate_records_collections = AsyncMock(return_value=["records"])
         handler.event_processor.processor.indexing_pipeline.collection_registry = registry
         return handler, sink, registry
 
@@ -594,7 +594,7 @@ class TestDeleteVectorCollectionEvent:
         assert events[0].data.record_id == "delete_vector_collection"
         # The dimension comes from the live model, not the manifest: this event
         # fires precisely because the model (and so the width) changed.
-        registry.recreate_all_collections.assert_awaited_once_with(1024)
+        registry.recreate_records_collections.assert_awaited_once_with(1024)
         assert mark.await_args.args[1] == PHASE_READY
 
     @pytest.mark.asyncio
@@ -619,7 +619,7 @@ class TestDeleteVectorCollectionEvent:
     @pytest.mark.asyncio
     async def test_rebuild_failure_marks_failed(self):
         handler, _sink, registry = self._handler_with_vector_store()
-        registry.recreate_all_collections = AsyncMock(side_effect=Exception("qdrant down"))
+        registry.recreate_records_collections = AsyncMock(side_effect=Exception("qdrant down"))
 
         with patch(
             "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
@@ -632,6 +632,37 @@ class TestDeleteVectorCollectionEvent:
             )
 
         assert mark.await_args.args[1] == PHASE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_manifest_marks_failed_not_ready(self) -> None:
+        """With the real registry. The KV store answers a failed read as an
+        empty manifest; taken as that, the cleanup logged "Recreated 0
+        collection(s)" and marked itself ready with the old vectors still in
+        place, after every record had been reset to be indexed again."""
+        from tests.unit.services.vector_db.test_collection_registry import (
+            _make_config_service,
+            _make_registry,
+            _make_vdb,
+        )
+
+        handler, _sink, _registry = self._handler_with_vector_store()
+        vdb = _make_vdb(exists=True, dimension=768)
+        handler.event_processor.processor.indexing_pipeline.collection_registry = _make_registry(
+            vector_db_service=vdb, config_service=_make_config_service(down=True)
+        )
+
+        with patch(
+            "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
+            new_callable=AsyncMock,
+        ) as mark, pytest.raises(RuntimeError, match="KV store unreachable"):
+            await _collect_events(
+                handler,
+                EventTypes.DELETE_VECTOR_COLLECTION.value,
+                {"requestedByOrgId": "org-1"},
+            )
+
+        assert [call.args[1] for call in mark.await_args_list] == [PHASE_FAILED]
+        vdb.delete_collection.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unresolvable_dimension_refuses_to_recreate(self):
@@ -648,7 +679,7 @@ class TestDeleteVectorCollectionEvent:
                 {"requestedByOrgId": "org-1"},
             )
 
-        registry.recreate_all_collections.assert_not_awaited()
+        registry.recreate_records_collections.assert_not_awaited()
 
 
 class TestVectorDbOnlyReindex:

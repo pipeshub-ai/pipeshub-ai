@@ -5,7 +5,7 @@ permission role grants, stop at the limit."""
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from app.services.graph_db.common.utils import PermittedEntityRows
@@ -22,6 +22,7 @@ def permitted_records(
     returns candidates keyed by entity id or ``(type, id)``; it is asked for
     one window (``limit_per_entity`` is the window size)."""
     granted = set(permitted)
+    returned: dict[str, set[str]] = {}
 
     async def _permitted(
         refs: list[dict],
@@ -51,6 +52,7 @@ def permitted_records(
                 connector = row.get("connectorId")
                 if connector in scope and (connector in app_level or row.get("_key") in granted):
                     hits.append({"pos": pos, "row": row})
+                    returned.setdefault(str(row.get("_key")), set()).add(entity[1])
                     if len(hits) == limit_per_entity:
                         break
             out[entity] = PermittedEntityRows.from_window(
@@ -59,4 +61,28 @@ def permitted_records(
             )
         return out
 
+    _permitted.returned = returned  # type: ignore[attr-defined]
     return _permitted
+
+
+def record_spellings(
+    permitted: Callable[..., Any],
+    names: Mapping[str, str] | None = None,
+) -> Callable[..., Any]:
+    """``get_record_taxonomy_links`` for the records ``permitted`` returned:
+    each spells its entity ``names[entity_id]``, by default the entity id
+    (the name these fixtures give a hit)."""
+    spelled = dict(names or {})
+
+    async def _links(record_keys: list[str], transaction: str | None = None) -> list[dict]:
+        return [
+            {
+                "recordId": key, "collection": "topics", "entityId": entity_id,
+                "name": spelled.get(entity_id, entity_id), "canonical": True,
+                "extractedName": spelled.get(entity_id, entity_id), "migrated": False,
+            }
+            for key in record_keys
+            for entity_id in sorted(permitted.returned.get(key, ()))  # type: ignore[attr-defined]
+        ]
+
+    return _links

@@ -396,6 +396,52 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
     })
   })
 
+  describe('reveal forwarding', () => {
+    const revealHandlers = [
+      { name: 'listMcpInstances', factory: listMcpInstances, path: '/api/v1/mcp-servers/instances' },
+      {
+        name: 'getMcpOAuthConfig',
+        factory: getMcpOAuthConfig,
+        path: '/api/v1/mcp-servers/instances/inst-1/oauth-config',
+      },
+    ]
+
+    for (const { name, factory, path } of revealHandlers) {
+      it(`${name} forwards reveal=true`, async () => {
+        executeStub.resolves({ statusCode: 200, data: {} })
+        const req = createMockRequest({ params: { instanceId: 'inst-1' }, query: { reveal: 'true' } })
+
+        await factory(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+
+        expect(executeStub.firstCall.args[0]).to.equal(`http://localhost:8088${path}?reveal=true`)
+      })
+
+      for (const reveal of [['true'], ['false', 'true'], 'TRUE', '1', { a: 'true' }]) {
+        it(`${name} drops reveal=${JSON.stringify(reveal)}`, async () => {
+          executeStub.resolves({ statusCode: 200, data: {} })
+          const req = createMockRequest({ params: { instanceId: 'inst-1' }, query: { reveal } })
+
+          await factory(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+
+          expect(executeStub.firstCall.args[0]).to.equal(`http://localhost:8088${path}`)
+        })
+      }
+
+      it(`${name} drops reveal for OAuth-app tokens`, async () => {
+        executeStub.resolves({ statusCode: 200, data: {} })
+        const req = createMockRequest({
+          params: { instanceId: 'inst-1' },
+          query: { reveal: 'true' },
+          user: { userId: 'user-1', orgId: 'org-1', isOAuth: true },
+        })
+
+        await factory(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+
+        expect(executeStub.firstCall.args[0]).to.equal(`http://localhost:8088${path}`)
+      })
+    }
+  })
+
   describe('handleMcpOAuthCallback', () => {
     it('should forward code, state, and error query params without requiring instanceId', async () => {
       executeStub.resolves({ statusCode: 200, data: { success: true } })

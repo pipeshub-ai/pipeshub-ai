@@ -295,6 +295,69 @@ class TestSmbConnectorConnection:
         assert client._registered is False
 
 
+    def test_every_call_carries_the_credentials_for_a_reconnect(self):
+        from app.sources.client.smb.smb import SmbClient
+
+        client = SmbClient(server="h", username="u", password="p", domain="CORP", port=4450)
+        client._registered = True
+        with patch.object(client, "_smbclient") as smbclient:
+            smbclient.return_value.scandir.return_value.__enter__.return_value = []
+            client.list_directory(SHARE, "")
+        kwargs = smbclient.return_value.scandir.call_args.kwargs
+        assert (kwargs["username"], kwargs["password"], kwargs["port"]) == ("CORP\\u", "p", 4450)
+        assert kwargs["connection_cache"] is client.connection_cache()
+
+
+    def test_calls_on_one_connection_do_not_overlap(self):
+        import threading
+        import time
+
+        from app.sources.client.smb.smb import SmbClient
+
+        client = SmbClient(server="h", username="u", password="p")
+        client._registered = True
+        inside = 0
+        most = 0
+
+        def slow_scandir(*_args, **_kwargs):
+            nonlocal inside, most
+            inside += 1
+            most = max(most, inside)
+            time.sleep(0.02)
+            inside -= 1
+            scan = MagicMock()
+            scan.__enter__.return_value = []
+            return scan
+
+        handle = MagicMock()
+        handle.read.side_effect = lambda _size: slow_scandir() and b""
+        with patch.object(client, "_smbclient") as smbclient:
+            smbclient.return_value.scandir.side_effect = slow_scandir
+            workers = [threading.Thread(target=client.list_directory, args=(SHARE, "")) for _ in range(4)]
+            workers += [threading.Thread(target=client.serialized, args=(handle.read, 8192)) for _ in range(4)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+        assert most == 1
+
+    async def test_file_chunks_are_read_through_the_connection_lock(self):
+        from app.sources.external.smb.smb import SmbDataSource
+
+        handle = MagicMock()
+        handle.read.side_effect = [b"ab", b""]
+        client = MagicMock()
+        client.open_file.return_value = handle
+        client.serialized.side_effect = lambda fn, *args: fn(*args)
+        chunks = [chunk async for chunk in SmbDataSource(client).read_file(SHARE, "a.txt")]
+        assert chunks == [b"ab"]
+        assert [call.args[0] for call in client.serialized.call_args_list] == [
+            handle.read,
+            handle.read,
+            handle.close,
+        ]
+
+
 class TestSmbConnectorSync:
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_creates_groups_walks_and_prunes(self, mock_filters, smb_connector, mock_processor):
@@ -324,6 +387,20 @@ class TestSmbConnectorSync:
         mock_processor.get_records_by_record_type.assert_not_awaited()
         mock_processor.on_record_deleted.assert_not_awaited()
         smb_connector.record_sync_point.update_sync_point.assert_not_awaited()
+        assert smb_connector.notify.await_args.kwargs["title"] == "Sync could not read the share"
+        assert SHARE in smb_connector.notify.await_args.kwargs["message"]
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_one_unreadable_subfolder_does_not_notify(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(
+            tree={(SHARE, ""): [_entry("locked", is_directory=True, file_id=5)]},
+            fail_dirs={(SHARE, "locked")},
+        )
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+        smb_connector.notify.assert_not_awaited()
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_existing_id(self, mock_filters, smb_connector, mock_processor):
@@ -460,7 +537,7 @@ class TestSmbConnectorSync:
         assert perms[0].external_id == "org-1"
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_empty_shares_filter_syncs_only_the_configured_share(
+    async def test_only_the_configured_share_is_synced(
         self, mock_filters, smb_connector, mock_processor
     ):
         mock_filters.return_value = _empty_filters()
@@ -485,7 +562,7 @@ class TestSmbConnectorSync:
         assert f"{finance}/a.txt" in upserted
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_selected_admin_share_is_still_crawled(
+    async def test_a_saved_shares_filter_from_an_older_version_is_ignored(
         self, mock_filters, smb_connector, mock_processor
     ):
         mock_filters.return_value = (
@@ -493,7 +570,7 @@ class TestSmbConnectorSync:
                 filters=[
                     Filter(
                         key="shares",
-                        value=["C$"],
+                        value=["Archive"],
                         type=FilterType.MULTISELECT,
                         operator=MultiselectOperator.IN,
                     )
@@ -502,16 +579,25 @@ class TestSmbConnectorSync:
             FilterCollection(),
         )
         ds = FakeNetworkShareDataSource(
-            tree={("C$", ""): [_entry("admin.txt", file_id=3)]},
-            shares=[
-                ShareInfo(name="C$", share_type="disk"),
-                ShareInfo(name="Finance", share_type="disk"),
-            ],
+            tree={
+                ("Finance", ""): [_entry("a.txt", file_id=3)],
+                ("Archive", ""): [_entry("old.txt", file_id=4)],
+            }
         )
         smb_connector.data_source = ds
         smb_connector.configured_share = "Finance"
         await smb_connector.run_sync()
-        assert {share for share, _path in ds.list_calls} == {"C$"}
+        assert {share for share, _path in ds.list_calls} == {"Finance"}
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_no_configured_share_syncs_nothing(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        ds = _ds(tree={(SHARE, ""): [_entry("a.txt", file_id=5)]})
+        smb_connector.data_source = ds
+        smb_connector.configured_share = None
+        await smb_connector.run_sync()
+        assert ds.list_calls == []
+        mock_processor.on_new_record_groups.assert_not_awaited()
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_reparse_file_is_upserted_and_directory_reparse_is_not_walked(
@@ -596,7 +682,7 @@ class TestSmbConnectorSync:
 
 class TestSmbConnectorStreamAndFilters:
     async def test_sharing_violation_raises_stream_error_not_raw_oserror(self, smb_connector):
-        ds = FakeNetworkShareDataSource()
+        ds = FakeNetworkShareDataSource(stats={(SHARE, "locked.docx"): _entry("locked.docx", file_id=5)})
         ds.read_file = MagicMock(side_effect=OSError("STATUS_SHARING_VIOLATION"))
         smb_connector.data_source = ds
         record = _file_record(ext_id=f"{SHARE}/locked.docx", revision="r")
@@ -605,6 +691,17 @@ class TestSmbConnectorStreamAndFilters:
         assert not isinstance(exc.value, OSError)
         assert exc.value.status_code == 500
 
+    async def test_file_deleted_at_the_source_is_a_404_naming_the_connector(self, smb_connector):
+        ds = FakeNetworkShareDataSource(stats={(SHARE, "gone.txt"): None})
+        ds.read_file = MagicMock()
+        smb_connector.data_source = ds
+        record = _file_record(ext_id=f"{SHARE}/gone.txt", revision="r")
+        with pytest.raises(HTTPException) as exc:
+            await smb_connector.stream_record(record)
+        assert exc.value.status_code == 404
+        assert "no longer exists" in exc.value.detail
+        ds.read_file.assert_not_called()
+
     async def test_directory_is_not_downloadable(self, smb_connector):
         smb_connector.data_source = FakeNetworkShareDataSource()
         record = _file_record(ext_id=f"{SHARE}/folder", revision="r", is_file=False)
@@ -612,38 +709,18 @@ class TestSmbConnectorStreamAndFilters:
             await smb_connector.stream_record(record)
         assert exc.value.status_code == 400
 
-    async def test_get_filter_options_pages_and_unknown_key(self, smb_connector):
-        ds = FakeNetworkShareDataSource(
-            shares=[
-                ShareInfo(name="alpha", share_type="disk"),
-                ShareInfo(name="bravo", share_type="disk"),
-                ShareInfo(name="IPC$", share_type="ipc"),
-                ShareInfo(name="ADMIN$", share_type="disk"),
-                ShareInfo(name="charlie", share_type="disk"),
-            ]
-        )
-        smb_connector.data_source = ds
-        page1 = await smb_connector.get_filter_options("shares", page=1, limit=2)
-        assert [opt.id for opt in page1.options] == ["alpha", "bravo"]
-        assert page1.has_more is True
-        page2 = await smb_connector.get_filter_options("shares", page=2, limit=2)
-        assert [opt.id for opt in page2.options] == ["charlie"]
-        with pytest.raises(ValueError):
-            await smb_connector.get_filter_options("nope")
+    async def test_there_are_no_dynamic_filter_options(self, smb_connector):
+        smb_connector.data_source = FakeNetworkShareDataSource()
+        for key in ("shares", "folder_paths"):
+            with pytest.raises(ValueError):
+                await smb_connector.get_filter_options(key)
 
-    async def test_filter_options_hide_drive_admin_shares(self, smb_connector):
-        smb_connector.data_source = FakeNetworkShareDataSource(
-            shares=[
-                ShareInfo(name="Finance", share_type="disk"),
-                ShareInfo(name="C$", share_type="disk"),
-                ShareInfo(name="D$", share_type="disk"),
-                ShareInfo(name="IPC$", share_type="ipc"),
-                ShareInfo(name="ADMIN$", share_type="disk"),
-                ShareInfo(name="archive$", share_type="disk"),
-            ]
-        )
-        result = await smb_connector.get_filter_options("shares")
-        assert [opt.id for opt in result.options] == ["Finance", "archive$"]
+    def test_the_share_is_an_auth_field_and_not_a_sync_filter(self):
+        metadata = SmbConnector._connector_metadata
+        sync_filters = [f["name"] for f in metadata["config"]["filters"]["sync"]["schema"]["fields"]]
+        auth_fields = [f["name"] for f in metadata["config"]["auth"]["schemas"]["BASIC_AUTH"]["fields"]]
+        assert "shares" not in sync_filters
+        assert "share" in auth_fields
 
     def test_stat_reparse_file_is_not_a_symlink(self):
         client = SmbClient(server="files", username="u", password="p")
@@ -674,13 +751,27 @@ class TestSmbConnectorStreamAndFilters:
         assert opened is not None
         assert opened.is_reparse is True
 
-    async def test_get_filter_options_enum_failure_returns_configured_share(self, smb_connector):
-        ds = FakeNetworkShareDataSource(shares=ShareListingError("NetrShareEnum failed"))
-        smb_connector.data_source = ds
-        smb_connector.configured_share = SHARE
-        result = await smb_connector.get_filter_options("shares")
-        assert result.success is True
-        assert [opt.id for opt in result.options] == [SHARE]
+    def test_stat_time_equals_the_listing_time_of_the_same_file(self):
+        # FILETIME 2026-10-05T20:32:12.6567569Z. The listing truncates to .656756;
+        # float seconds round to .656757.
+        nanos = 1791232332656756900
+        listed = datetime(2026, 10, 5, 20, 32, 12, 656756, tzinfo=timezone.utc)
+        assert datetime.fromtimestamp(nanos / 1_000_000_000, tz=timezone.utc) != listed
+        result = MagicMock()
+        result.st_mode = stat.S_IFREG
+        result.st_file_attributes = 0
+        result.st_size = 43
+        result.st_ino = 7
+        result.st_mtime = nanos / 1_000_000_000
+        result.st_mtime_ns = nanos
+        result.st_ctime = nanos / 1_000_000_000
+        result.st_ctime_ns = nanos
+        client = SmbClient(server="files", username="u", password="p")
+        with patch.object(client, "register"), patch.object(client, "_smbclient") as smbclient:
+            smbclient.return_value.stat.return_value = result
+            entry = client.stat("Finance", "budget.csv")
+        assert entry.last_write_time == listed
+        assert entry.created_time == listed
 
     async def test_reindex_changed_vs_unchanged(self, smb_connector, mock_processor):
         item = _entry("a.txt", file_id=3, size=10)

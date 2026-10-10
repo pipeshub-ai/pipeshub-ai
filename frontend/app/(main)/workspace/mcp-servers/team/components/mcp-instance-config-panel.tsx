@@ -1,15 +1,19 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Avatar, Badge, Box, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
+import { Avatar, Badge, Box, Callout, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { toast } from '@/lib/store/toast-store';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { apiClient, isProcessedError } from '@/lib/api';
 import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
 import { WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
 import { McpServersApi } from '../../api';
+import { McpDisabledCallout } from '../../components';
 import {
   isOauthClientMissing,
   isOauthClientRequired,
@@ -30,7 +34,7 @@ import type {
   McpToolInfo,
   McpTransport,
 } from '../../types';
-import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
+import { MCP_AUTH_MODE_LABELS, MCP_CUSTOM_STDIO_FLAG, MCP_TRANSPORT_LABELS } from '../../types';
 
 /** Matches the redirect URI the backend builds — see `_build_oauth_authorization_url` in
  * `backend/python/app/api/routes/mcp_servers.py` (trailing slash included). */
@@ -53,6 +57,8 @@ interface McpInstanceConfigPanelProps {
   templates: McpServerTemplate[];
   /** Live org instances — keeps connection status fresh after OAuth completes while the drawer is open. */
   instances: McpMyServerEntry[];
+  /** Operator setting from `GET /catalog`; custom STDIO servers are refused when false. */
+  customStdioAllowed: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
   onRequestDelete: (instance: McpMyServerEntry) => void;
@@ -68,10 +74,8 @@ type ToolsResult = { tools: McpToolInfo[]; error?: string; loading: boolean };
 
 // SSE is deliberately excluded here — custom servers can only be created as STDIO or
 // Streamable HTTP; SSE remains a valid `McpTransport` value for existing/catalog instances.
-const TRANSPORT_OPTIONS: { value: McpTransport; label: string }[] = [
-  { value: 'stdio', label: MCP_TRANSPORT_LABELS.stdio },
-  { value: 'streamable_http', label: MCP_TRANSPORT_LABELS.streamable_http },
-];
+const STDIO_OPTION = { value: 'stdio' as const, label: MCP_TRANSPORT_LABELS.stdio };
+const HTTP_OPTION = { value: 'streamable_http' as const, label: MCP_TRANSPORT_LABELS.streamable_http };
 
 const ALL_AUTH_MODES: McpAuthMode[] = ['none', 'api_token', 'oauth', 'headers'];
 
@@ -87,6 +91,7 @@ export function McpInstanceConfigPanel({
   state,
   templates,
   instances,
+  customStdioAllowed,
   onOpenChange,
   onSaved,
   onRequestDelete,
@@ -136,6 +141,14 @@ export function McpInstanceConfigPanel({
   const [oauthClientId, setOauthClientId] = useState('');
   const [oauthClientSecret, setOauthClientSecret] = useState('');
 
+  // Read by the form reset below without being one of its deps: the catalog that carries
+  // this flag can arrive after the drawer opens, and re-running the reset then would wipe
+  // whatever the admin has already typed.
+  const customStdioAllowedRef = useRef(customStdioAllowed);
+  useEffect(() => {
+    customStdioAllowedRef.current = customStdioAllowed;
+  }, [customStdioAllowed]);
+
   useEffect(() => {
     if (!open) return;
     setActiveTab('configuration');
@@ -171,7 +184,7 @@ export function McpInstanceConfigPanel({
     } else {
       setName('');
       setDescription('');
-      setTransport('stdio');
+      setTransport(customStdioAllowedRef.current ? 'stdio' : 'streamable_http');
       setAuthMode('none');
       setUseAdminAuth(false);
       setCommand('');
@@ -189,6 +202,14 @@ export function McpInstanceConfigPanel({
     setOauthClientId('');
     setOauthClientSecret('');
   }, [open, editingInstance, prefillTemplate]);
+
+  // An existing STDIO instance, or a STDIO form open when the setting turned off, keeps the
+  // option so the dropdown still shows the selected value; saving it is blocked below.
+  const transportOptions: { value: McpTransport; label: string }[] =
+    customStdioAllowed || editingInstance?.transport === 'stdio' || transport === 'stdio'
+      ? [STDIO_OPTION, HTTP_OPTION]
+      : [HTTP_OPTION];
+  const customStdioBlocked = !isTemplateBased && transport === 'stdio' && !customStdioAllowed;
 
   const availableAuthModes = resolvedTemplate?.supportedAuthModes?.length
     ? resolvedTemplate.supportedAuthModes
@@ -257,6 +278,43 @@ export function McpInstanceConfigPanel({
   }, [open, mode, editingInstance, authMode]);
 
   const hasExistingOAuthClient = existingOAuthConfig?.configured ?? Boolean(editingInstance?.hasOAuthClientConfig);
+
+  const revealAvailable = useSecretRevealAvailable(open && mode === 'edit' && authMode === 'oauth');
+  // What a reveal put in the OAuth fields; Save only sends the pair once it differs.
+  const [revealedOAuthClient, setRevealedOAuthClient] = useState<{
+    clientId: string;
+    clientSecret: string;
+  } | null>(null);
+  const oauthClientRevealed = revealedOAuthClient !== null;
+  const [revealingOAuthClient, setRevealingOAuthClient] = useState(false);
+  const [showOauthClientSecret, setShowOauthClientSecret] = useState(false);
+  const isMobile = useIsMobile();
+  useEffect(() => {
+    setRevealedOAuthClient(null);
+    setShowOauthClientSecret(false);
+  }, [open, editingInstance?._id]);
+  const beginReveal = useRevealScope(`${open}:${editingInstance?._id ?? ''}`);
+
+  // Fills only the fields the admin has left empty.
+  const handleRevealOAuthClient = async () => {
+    if (!editingInstance) return;
+    const stillCurrent = beginReveal();
+    setRevealingOAuthClient(true);
+    try {
+      const stored = await McpServersApi.revealOAuthConfig(editingInstance._id);
+      if (!stillCurrent()) return;
+      setOauthClientId((prev) => prev || stored.clientId || '');
+      setOauthClientSecret((prev) => prev || stored.clientSecret || '');
+      setRevealedOAuthClient({
+        clientId: stored.clientId || '',
+        clientSecret: stored.clientSecret || '',
+      });
+    } catch {
+      // The fields stay blank, which still saves as "keep the stored value".
+    } finally {
+      setRevealingOAuthClient(false);
+    }
+  };
   const oauthClientRequired = isOauthClientRequired(authMode, dcrSupported);
   const oauthClientMissing = isOauthClientMissing(
     oauthClientRequired,
@@ -279,7 +337,8 @@ export function McpInstanceConfigPanel({
           tagsToStrings(requiredEnvTags).length > 0
         : url.trim().length > 0)) &&
     !oauthPairError &&
-    !oauthClientMissing;
+    !oauthClientMissing &&
+    !customStdioBlocked;
 
   const saveCredentialsIfProvided = async (instanceId: string) => {
     try {
@@ -304,7 +363,16 @@ export function McpInstanceConfigPanel({
           headerName: headerName.trim() || undefined,
           headerValue: headerValue.trim(),
         });
-      } else if (authMode === 'oauth' && oauthClientId.trim() && oauthClientSecret.trim()) {
+      } else if (
+        authMode === 'oauth' &&
+        oauthClientId.trim() &&
+        oauthClientSecret.trim() &&
+        !(
+          revealedOAuthClient &&
+          oauthClientId.trim() === revealedOAuthClient.clientId.trim() &&
+          oauthClientSecret.trim() === revealedOAuthClient.clientSecret.trim()
+        )
+      ) {
         await McpServersApi.updateOAuthConfig(instanceId, {
           clientId: oauthClientId.trim(),
           clientSecret: oauthClientSecret.trim(),
@@ -326,7 +394,7 @@ export function McpInstanceConfigPanel({
       const payload: McpServerInstancePayload = {
         name: name.trim(),
         typeId: resolvedTemplate?.typeId ?? null,
-        transport,
+        transport: resolvedTemplate?.transport ?? transport,
         authMode,
         useAdminAuth: canUseAdminAuth ? useAdminAuth : false,
         description: description.trim() || null,
@@ -398,6 +466,7 @@ export function McpInstanceConfigPanel({
   const configurationForm = (
     <Flex direction="column" gap="4">
       <McpInheritedCallout instance={editingInstance} />
+      <McpDisabledCallout instance={liveInstance} />
 
       <FormField label={t('workspace.mcpServers.form.name')} required>
         <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
@@ -412,9 +481,23 @@ export function McpInstanceConfigPanel({
           <SelectDropdown
             value={transport}
             onChange={(v) => setTransport(v as McpTransport)}
-            options={TRANSPORT_OPTIONS}
+            options={transportOptions}
           />
+          {!customStdioAllowed && mode === 'create' && (
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              {t('workspace.mcpServers.stdioPolicy.unavailableHint', { flag: MCP_CUSTOM_STDIO_FLAG })}
+            </Text>
+          )}
         </FormField>
+      )}
+
+      {!isTemplateBased && transport === 'stdio' && customStdioAllowed && (
+        <Callout.Root color="amber" variant="surface" size="1">
+          <Callout.Icon>
+            <MaterialIcon name="warning" size={16} />
+          </Callout.Icon>
+          <Callout.Text size="1">{t('workspace.mcpServers.stdioPolicy.enabledWarning')}</Callout.Text>
+        </Callout.Root>
       )}
 
       {!isTemplateBased && transport === 'stdio' && (
@@ -568,6 +651,18 @@ export function McpInstanceConfigPanel({
                 dcrSupported={dcrSupported}
                 documentationUrl={resolvedTemplate?.documentationUrl}
               />
+              {mode === 'edit' &&
+                hasExistingOAuthClient &&
+                revealAvailable &&
+                !isReadOnly &&
+                !oauthClientRevealed && (
+                  <Flex justify="end">
+                    <ShowStoredValuesButton
+                      loading={revealingOAuthClient}
+                      onClick={() => void handleRevealOAuthClient()}
+                    />
+                  </Flex>
+                )}
               <FormField
                 label={t('workspace.mcpServers.oauthConfig.clientId')}
                 required={oauthClientRequired}
@@ -588,11 +683,28 @@ export function McpInstanceConfigPanel({
               >
                 <TextField.Root
                   size="2"
-                  type="password"
+                  type={showOauthClientSecret ? 'text' : 'password'}
                   value={oauthClientSecret}
                   onChange={(e) => setOauthClientSecret(e.target.value)}
                   placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientSecretPlaceholder')}
-                />
+                >
+                  <TextField.Slot side="right">
+                    <IconButton
+                      type="button"
+                      variant="ghost"
+                      color="gray"
+                      size="1"
+                      onClick={() => setShowOauthClientSecret((v) => !v)}
+                      style={{ cursor: 'pointer', ...(isMobile ? { minWidth: 44, minHeight: 44 } : null) }}
+                    >
+                      <MaterialIcon
+                        name={showOauthClientSecret ? 'visibility_off' : 'visibility'}
+                        size={16}
+                        color="var(--gray-10)"
+                      />
+                    </IconButton>
+                  </TextField.Slot>
+                </TextField.Root>
               </FormField>
               {mode === 'edit' && hasExistingOAuthClient && (
                 <Text size="1" style={{ color: 'var(--amber-11)' }}>
@@ -859,6 +971,7 @@ function ConnectionAndToolsTab({
 
   return (
     <Flex direction="column" gap="4" style={{ height: '100%', minHeight: 0 }}>
+      <McpDisabledCallout instance={instance} />
       {!isReadOnly && (
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
           <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>

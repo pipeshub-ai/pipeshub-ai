@@ -29,14 +29,35 @@ from -- so nothing has to agree with the broker's hash function.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-__all__ = ["LaneConfig", "LaneRouter"]
+__all__ = ["LaneAssignmentMode", "LaneConfig", "LaneHint", "LaneRouter"]
 
 # Events whose fairness key is missing share this lane rather than being
 # spread unpredictably; it matches the scheduler's sentinel so they also
 # share one virtual queue.
 DEFAULT_LANE_KEY = "__default__"
+
+
+class LaneAssignmentMode(StrEnum):
+    """How a Redis producer picks a connector's lane."""
+
+    # Recorded once per connector in the lane map (``assignment.py``).
+    ASSIGNED = "assigned"
+    # ``stable_lane(connectorId)``, as before the lane map existed.
+    HASH = "hash"
+
+
+@dataclass(frozen=True)
+class LaneHint:
+    """What a producer can tell about a connector from one of its events,
+    for a lane chosen on its first publish."""
+
+    org_id: str | None = None
+    # ``ConnectorClass`` value; None means unknown, which is placed as large.
+    connector_class: str | None = None
+    connector_type: str | None = None
 
 
 @runtime_checkable
@@ -49,7 +70,17 @@ class LaneRouter(Protocol):
     def route(
         self, topic: str, lane_key: str | None
     ) -> tuple[str, str | None]:
-        """Return the ``(topic, broker_key)`` this message should be sent to."""
+        """Return the ``(topic, broker_key)`` hashing places this message at."""
+        ...
+
+    async def place(
+        self, topic: str, lane_key: str | None, hint: LaneHint | None = None
+    ) -> tuple[str, str | None]:
+        """Return the ``(topic, broker_key)`` this message should be sent to.
+
+        The hash routers answer with ``route``; the assigned router looks the
+        connector up in the lane map.
+        """
         ...
 
     def lane_topics(self, topic: str) -> list[str]:
@@ -76,6 +107,10 @@ class LaneConfig:
     # Only the indexing topic is laned; entity/sync events are low volume and
     # have no fairness problem to solve.
     laned_topics: tuple[str, ...] = ("record-events",)
+    # Redis only: Kafka places by key whatever this says.
+    assignment: LaneAssignmentMode = LaneAssignmentMode.HASH
+    # How long a producer trusts a lane it looked up before asking again.
+    assignment_cache_seconds: float = 60.0
 
     @property
     def enabled(self) -> bool:

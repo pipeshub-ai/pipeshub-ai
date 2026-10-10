@@ -14,6 +14,7 @@ import {
   snapshotOAuthCredentialFieldValues,
 } from '../../utils/auth-helpers';
 import { DocumentationSection } from './documentation-section';
+import { ConnectionCheckError, EgressIpNotice } from './connection-check';
 import { OAuthAppSelector } from '@/config';
 import { resolveAuthFields, formatAuthTypeName } from './helpers';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -55,6 +56,7 @@ export function AuthenticateTab() {
     setInstanceName,
     setSelectedAuthType,
     oauthCredentialBaselineTick,
+    connectionCheck,
   } = useConnectorsStore();
 
   const { t } = useTranslation();
@@ -242,8 +244,10 @@ export function AuthenticateTab() {
   const supportedAuthTypes = authConfig?.supportedAuthTypes ?? [];
   const showAuthTypeSelector = isCreateMode && supportedAuthTypes.length > 1;
 
+  const isCheckingConnection = connectionCheck.status === 'checking';
+  // Locked while a check runs, so what gets saved is what was tested.
   const authFieldsDisabled =
-    isProfileInitialized && !isCreateMode && isAdmin === false;
+    (isProfileInitialized && !isCreateMode && isAdmin === false) || isCheckingConnection;
 
   const redirectPath =
     (authConfig?.schemas?.[selectedAuthType] as { redirectUri?: string } | undefined)?.redirectUri ||
@@ -503,6 +507,7 @@ export function AuthenticateTab() {
               type="text"
               data-ph-connector-instance-name
               value={instanceName}
+              disabled={isCheckingConnection}
               onChange={(e) => setInstanceName(e.target.value)}
               placeholder={t('workspace.actions.instanceNamePlaceholder', { name: connectorTypeName })}
               aria-invalid={instanceNameError ? true : undefined}
@@ -537,6 +542,7 @@ export function AuthenticateTab() {
           <Select.Root
             value={supportedAuthTypes.includes(selectedAuthType) ? selectedAuthType : undefined}
             onValueChange={setSelectedAuthType}
+            disabled={isCheckingConnection}
           >
             <Select.Trigger
               style={{ width: '100%', height: 32 }}
@@ -581,6 +587,14 @@ export function AuthenticateTab() {
             </Flex>
           )}
         </>
+      )}
+
+      {connectorSchema.supportsConnectionCheck && (
+        <EgressIpNotice connectorName={connectorTypeName} />
+      )}
+
+      {connectionCheck.status === 'failed' && connectionCheck.message && (
+        <ConnectionCheckError connectorName={connectorTypeName} message={connectionCheck.message} />
       )}
 
       {isNoneAuthType(selectedAuthType) && (

@@ -4,10 +4,13 @@ import { useTranslation } from 'react-i18next';
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Flex, Text, Button, TextField, Callout } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
 import { ConfirmationDialog } from '../../components/confirmation-dialog';
 import { InheritedConfigNotice } from '@/config';
 import { isProcessedError } from '@/lib/api';
+import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { WebSearchApi } from '../api';
 import type {
   ConfigurableProvider,
@@ -51,6 +54,7 @@ export function ConfigurePanel({
   const { t } = useTranslation();
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const revealAvailable = useSecretRevealAvailable(open);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -82,6 +86,28 @@ export function ConfigurePanel({
     },
     [onClose, isSaving, isDeleting],
   );
+
+  const [isRevealing, setIsRevealing] = useState(false);
+  const canReveal =
+    revealAvailable && !inherited && Boolean(existingProvider) && apiKey === CONFIG_SECRET_PLACEHOLDER;
+  const beginReveal = useRevealScope(`${open}:${existingProvider?.providerKey ?? ''}`);
+
+  // Swaps the placeholder for the stored key, unless the user already typed a new one.
+  const handleReveal = async () => {
+    if (!existingProvider) return;
+    const stillCurrent = beginReveal();
+    setIsRevealing(true);
+    try {
+      const stored = await WebSearchApi.revealProviderApiKey(existingProvider.providerKey);
+      if (stored && stillCurrent()) {
+        setApiKey((prev) => (prev === CONFIG_SECRET_PLACEHOLDER ? stored : prev));
+      }
+    } catch {
+      // The field keeps its placeholder, which still saves correctly.
+    } finally {
+      setIsRevealing(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!provider || !providerMeta || !apiKey.trim()) return;
@@ -205,9 +231,18 @@ export function ConfigurePanel({
           )}
 
           <Flex direction="column" gap="1">
-            <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              API Key
-            </Text>
+            <Flex align="center" justify="between" gap="3">
+              <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                API Key
+              </Text>
+              {canReveal ? (
+                <ShowStoredValuesButton
+                  loading={isRevealing}
+                  disabled={isSaving || isDeleting}
+                  onClick={() => void handleReveal()}
+                />
+              ) : null}
+            </Flex>
             <TextField.Root
               type={showKey ? 'text' : 'password'}
               placeholder={providerMeta.apiKeyPlaceholder}

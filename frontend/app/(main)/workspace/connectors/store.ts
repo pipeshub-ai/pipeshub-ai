@@ -13,6 +13,7 @@ import type {
   PanelView,
   SyncStrategy,
   AuthCardState,
+  ConnectionCheckState,
   ConnectorInstance,
   InstancePanelTab,
   ConnectorStatsResponse,
@@ -96,6 +97,7 @@ interface ConnectorsState {
   isSavingAuth: boolean;
   isSavingConfig: boolean;
   saveError: string | null;
+  connectionCheck: ConnectionCheckState;
 
   // ── Instance page state ───────────────────────────────────────
   /** Connector type instances list */
@@ -188,6 +190,7 @@ interface ConnectorsState {
   setIsSavingAuth: (saving: boolean) => void;
   setIsSavingConfig: (saving: boolean) => void;
   setSaveError: (error: string | null) => void;
+  setConnectionCheck: (check: ConnectionCheckState) => void;
   /** Set or clear individual form error keys. Pass `null` to remove a key. */
   mergeFormErrors: (patch: Record<string, string | null | undefined>) => void;
   clearOAuthAppsListState: () => void;
@@ -235,6 +238,8 @@ interface ConnectorsState {
 // ========================================
 // Default form data
 // ========================================
+
+const idleConnectionCheck: ConnectionCheckState = { status: 'idle', message: null };
 
 const defaultFormData: PanelFormData = {
   auth: {},
@@ -305,6 +310,7 @@ const initialState = {
   isSavingAuth: false,
   isSavingConfig: false,
   saveError: null as string | null,
+  connectionCheck: { ...idleConnectionCheck },
 
   // Instance page
   instances: [] as ConnectorInstance[],
@@ -357,6 +363,7 @@ const panelResetState = {
   isSavingAuth: false,
   isSavingConfig: false,
   saveError: null as string | null,
+  connectionCheck: { ...idleConnectionCheck },
 
   oauthAppsList: [] as ConnectorOAuthAppListRow[],
   oauthAppsListPhase: 'idle' as OAuthAppsListPhase,
@@ -456,6 +463,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
           }
           s.panelView = 'tabs';
           s.isAuthTypeImmutable = !!connectorId;
+          s.connectionCheck = { ...idleConnectionCheck };
 
           // Existing instance: drop cached schema/config immediately so we never use another
           // instance's `isAuthenticated` before GET /config returns (fixes wrong Authorize tab).
@@ -624,6 +632,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
         set((s) => {
           if (s.isAuthTypeImmutable) return;
           s.selectedAuthType = authType;
+          s.connectionCheck = { ...idleConnectionCheck };
 
           // Re-initialize auth form data for this auth type
           const schema = s.connectorSchema;
@@ -706,6 +715,11 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setSaveError: (error) =>
         set((s) => {
           s.saveError = error;
+        }),
+
+      setConnectionCheck: (check) =>
+        set((s) => {
+          s.connectionCheck = check;
         }),
 
       mergeFormErrors: (patch) =>

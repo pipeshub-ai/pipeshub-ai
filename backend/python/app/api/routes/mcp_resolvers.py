@@ -25,8 +25,10 @@ async def get_mcp_instance(
 
 def mask_mcp_instance_for_response(
     instance: dict[str, Any],
+    reveal: bool = False,
 ) -> dict[str, Any]:
     """Redact secrets on response."""
+    del reveal
     return dict(instance)
 
 

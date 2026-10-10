@@ -186,6 +186,14 @@ app_schema = {
             "entityIndexExhausted": {"type": ["boolean", "null"]},
             "entityIndexTarget": {"type": ["string", "null"]},
             "entityIndexErrors": {"type": ["integer", "null"]},
+            # app.modules.indexing.record_label_repair
+            "recordLabelRepairState": {"type": ["string", "null"]},
+            "recordLabelRepairAfterKey": {"type": ["string", "null"]},
+            "recordLabelRepairRepaired": {"type": ["integer", "null"]},
+            "recordLabelRepairSkipped": {"type": ["integer", "null"]},
+            "recordLabelRepairFailures": {"type": ["integer", "null"]},
+            "recordLabelRepairAttempts": {"type": ["integer", "null"]},
+            "recordLabelRepairExhausted": {"type": ["boolean", "null"]},
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
@@ -281,9 +289,11 @@ record_schema = {
             # When a restore brought the record back; see RESTORED_AT_FIELD.
             "restoredAtTimestamp": {"type": ["number", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
-            # Clocks the stranded-record sweep in indexing_main ages rows on.
+            # Clocks the stranded-record sweep in indexing_main ages rows on,
+            # and how many times it has re-sent the record since it was queued.
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
+            "republishCount": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [

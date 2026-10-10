@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { SlackBotConfig, SlackBotConfigPayload, AgentOption } from './types';
 
 const SLACK_BOT_BASE_URL = '/api/v1/configurationManager/slack-bot';
@@ -9,6 +10,13 @@ export const BotsApi = {
   async getSlackBotConfigs(): Promise<SlackBotConfig[]> {
     const { data } = await apiClient.get(SLACK_BOT_BASE_URL);
     return data?.configs || [];
+  },
+
+  /** One bot's stored credentials instead of placeholders. Only where the deployment allows it. */
+  async revealSlackBotConfig(configId: string): Promise<SlackBotConfig | null> {
+    const { data } = await apiClient.get(SLACK_BOT_BASE_URL, { params: REVEAL_PARAMS });
+    const configs: SlackBotConfig[] = data?.configs || [];
+    return configs.find((c) => c.id === configId) ?? null;
   },
 
   async createSlackBotConfig(payload: SlackBotConfigPayload): Promise<SlackBotConfig> {

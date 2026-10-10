@@ -5,10 +5,13 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Flex, Box, Text, TextField, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { WorkspaceRightPanel } from '../../components/workspace-right-panel';
 import { isValidEmail } from '@/lib/utils/validators';
 import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
 import { InheritedConfigNotice } from '@/config';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { SmtpApi } from '../api';
 import type { SmtpConfig, SmtpFormData, SmtpFormErrors } from '../types';
 
 const INHERITABLE_SECRET_KEYS = ['host', 'username', 'fromEmail', 'password'] as const;
@@ -96,6 +99,7 @@ export function SmtpConfigurePanel({
   const [showPassword, setShowPassword] = useState(false);
   const [touched, setTouched] = useState<Set<keyof SmtpFormData>>(new Set());
   const isInherited = !!initialConfig?.inherited;
+  const revealAvailable = useSecretRevealAvailable(open);
 
   // ── Sync initial config in ──────────────────────────────
   useEffect(() => {
@@ -130,6 +134,37 @@ export function SmtpConfigurePanel({
     [],
   );
 
+
+  const [isRevealing, setIsRevealing] = useState(false);
+  const canReveal =
+    revealAvailable &&
+    !isInherited &&
+    INHERITABLE_SECRET_KEYS.some((key) => form[key] === CONFIG_SECRET_PLACEHOLDER);
+  const beginReveal = useRevealScope(open ? initialConfig : null);
+
+  // Swaps placeholders for the stored values; a field the user already edited is left as typed.
+  const handleReveal = async () => {
+    const stillCurrent = beginReveal();
+    setIsRevealing(true);
+    try {
+      const stored = await SmtpApi.revealSmtpConfig();
+      if (stored && stillCurrent()) {
+        setForm((prev) => {
+          const next = { ...prev };
+          for (const key of INHERITABLE_SECRET_KEYS) {
+            if (prev[key] === CONFIG_SECRET_PLACEHOLDER && typeof stored[key] === 'string') {
+              next[key] = stored[key] as string;
+            }
+          }
+          return next;
+        });
+      }
+    } catch {
+      // The fields keep their placeholders, which still save correctly.
+    } finally {
+      setIsRevealing(false);
+    }
+  };
 
   const resolveEffectiveForm = (raw: SmtpFormData): SmtpFormData => {
     if (!isInherited) return raw;
@@ -246,6 +281,15 @@ export function SmtpConfigurePanel({
           }}
         >
           <Flex direction="column" gap="5">
+            {canReveal ? (
+              <Flex justify="end">
+                <ShowStoredValuesButton
+                  loading={isRevealing}
+                  onClick={() => void handleReveal()}
+                />
+              </Flex>
+            ) : null}
+
             {/* ── SMTP Host ── */}
             <Box>
               <FieldLabel

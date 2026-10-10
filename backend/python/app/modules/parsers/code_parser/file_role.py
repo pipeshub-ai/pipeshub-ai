@@ -18,6 +18,7 @@ __all__ = [
     "FileRole",
     "SKIPPED_ROLES",
     "classify_file_role",
+    "is_generated_file_name",
     "is_ignored_path",
     "should_index_code_file",
 ]
@@ -138,6 +139,17 @@ def _is_ci_workflow(segs: list[str]) -> bool:
     return False
 
 
+def is_generated_file_name(file_name: str) -> bool:
+    """True for lock files, minified bundles, source maps and snapshots.
+
+    The name-only half of ``is_ignored_path``, for callers that must not apply
+    its directory rules: the indexer sees files from connectors that sync
+    ``bin/`` and ``vendor/`` on purpose.
+    """
+    name = _basename(file_name)
+    return name in _IGNORED_FILENAMES or name.endswith(_IGNORED_SUFFIXES)
+
+
 def is_ignored_path(file_path: str) -> bool:
     """True when the file lives in a dependency, build-output or cache tree."""
     segs = _segments(file_path)
@@ -145,10 +157,7 @@ def is_ignored_path(file_path: str) -> bool:
         return False
     if any(seg in _IGNORED_DIRS for seg in segs[:-1]):
         return True
-    name = segs[-1]
-    if name in _IGNORED_FILENAMES:
-        return True
-    return name.endswith(_IGNORED_SUFFIXES)
+    return is_generated_file_name(segs[-1])
 
 
 def classify_file_role(file_path: str, file_name: str | None = None) -> FileRole:

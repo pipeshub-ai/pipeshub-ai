@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { streamSSEGet, type SSEEvent } from '@/lib/api/streaming';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type {
   AllModelsResponse,
   CapabilitiesResponse,
@@ -48,6 +49,16 @@ export const AIModelsApi = {
       `${BASE}/ai-models/${modelType}`
     );
     return data;
+  },
+
+  /** Stored configuration of one model, credentials included. Only where the deployment allows it. */
+  revealModelConfiguration: async (modelType: string, modelKey: string) => {
+    const { data } = await apiClient.get<ModelsByTypeResponse>(
+      `${BASE}/ai-models/${modelType}`,
+      { params: REVEAL_PARAMS }
+    );
+    const model = data?.models?.find((m) => m.modelKey === modelKey);
+    return (model?.configuration ?? {}) as Record<string, unknown>;
   },
 
   addProvider: async (payload: {

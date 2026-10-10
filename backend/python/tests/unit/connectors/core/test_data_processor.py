@@ -2176,7 +2176,7 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "g1"
         mock_group.name = "Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = True
+        tx_store.batch_delete_edges.return_value = 1
 
         result = await proc.on_user_group_member_removed("ext-g", "user@test.com", "conn-1")
         assert result is True

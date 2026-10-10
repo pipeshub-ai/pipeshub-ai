@@ -9,6 +9,11 @@ from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.normalizer import normalize_name
+from app.services.graph_db.taxonomy import (
+    MAX_TAXONOMY_ALIASES,
+    TAXONOMY_COLLECTIONS,
+    TAXONOMY_EDGE_COLLECTIONS,
+)
 
 RECORDS = CollectionNames.RECORDS.value
 DEPARTMENTS = CollectionNames.DEPARTMENTS.value
@@ -126,7 +131,8 @@ class FakeGraph:
         self.edges.setdefault(edge, {"from_id": child_key, "to_id": parent_key})
 
     async def add_taxonomy_aliases(
-        self, collection, key, aliases, normalized_aliases, *, org_id, max_aliases=20, transaction=None
+        self, collection, key, aliases, normalized_aliases, *, org_id, max_aliases=MAX_TAXONOMY_ALIASES,
+        transaction=None,
     ) -> None:
         self.calls.append(("add_taxonomy_aliases", (collection, key, list(aliases), list(normalized_aliases))))
         node = self.nodes.get((collection, key))
@@ -141,6 +147,35 @@ class FakeGraph:
                 current_normalized.append(normalized)
         node["aliases"] = current[:max_aliases]
         node["normalizedAliases"] = current_normalized[:max_aliases]
+
+    async def get_record_taxonomy_links(self, record_keys, transaction=None) -> list[dict[str, Any]]:
+        """Rows shaped as both providers return them: every category,
+        subcategory, topic and language edge of the given records."""
+        wanted = set(record_keys)
+        rows: list[dict[str, Any]] = []
+        for (edge_collection, frm, to), edge in self.edges.items():
+            if edge_collection not in TAXONOMY_EDGE_COLLECTIONS.values():
+                continue
+            from_collection, record_key = frm.split("/", 1)
+            to_collection, entity_key = to.split("/", 1)
+            if from_collection != RECORDS or record_key not in wanted:
+                continue
+            if to_collection not in TAXONOMY_COLLECTIONS:
+                continue
+            node = self.nodes.get((to_collection, entity_key))
+            if node is None:
+                continue
+            rows.append({
+                "recordId": record_key,
+                "collection": to_collection,
+                "entityId": entity_key,
+                "name": node.get("name"),
+                "canonical": node.get("normalizedName") is not None,
+                "extractedName": edge.get("extractedName"),
+                "extractedNames": edge.get("extractedNames"),
+                "migrated": edge.get("migratedFrom") is not None,
+            })
+        return rows
 
     # ---- transaction-store level (GraphDBTransformer) ----
     async def get_record_by_key(self, key, *, raise_on_error: bool = False) -> dict[str, Any] | None:

@@ -164,9 +164,16 @@ _CONFIG_RECHECK_SECONDS = 60.0
 _CLEANUP_WRITE_ATTEMPTS = 2
 
 _QUERY_VECTOR_CACHE_SIZE = 64
+# Hits fetched per candidate wanted, so skipped hits do not shorten the list.
+_CANDIDATE_OVERFETCH = 2
 
 # Metadata key recording which model embedded the point (``embedding_fingerprint``).
 EMBEDDING_MODEL_FIELD = "embeddingModel"
+
+# The point holding ``EntityVectorStore.collection_stamp``. Entity point ids
+# are derived from "org:type:id", which this name cannot be.
+_STAMP_POINT_ID = str(uuid.uuid5(uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "entity-index-stamp"))
+_STAMP_FIELD = "indexStamp"
 
 _STRING_METADATA_FIELDS = (
     "entityId", "entityType", "orgId", "name", "canonicalName", "domain", "typeCategory", "level",
@@ -201,6 +208,30 @@ def _entity_metadata(payload: dict[str, Any] | None) -> dict[str, Any]:
     if isinstance(aliases, list):
         meta["aliases"] = [_as_text(a) for a in aliases if a is not None]
     return meta
+
+
+def _type_groups(
+    entity_types: list[str] | None,
+) -> list[tuple[str | list[str] | None, str | None]]:
+    """``(must entityType, must_not entityType)`` per request of a pass:
+    record titles apart from everything else when both are wanted."""
+    from app.models.entities import EntityType
+
+    record = EntityType.RECORD.value
+    if not entity_types:
+        return [(None, record), (record, None)]
+    others = [t for t in entity_types if t != record]
+    if record in entity_types and others:
+        return [(others, None), (record, None)]
+    return [(list(entity_types), None)]
+
+
+def _interleave(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Alternate the groups' hits, first group first, each in its own order."""
+    merged: list[dict[str, Any]] = []
+    for rank in range(max((len(g) for g in groups), default=0)):
+        merged.extend(g[rank] for g in groups if rank < len(g))
+    return merged
 
 
 class EntityVectorStore:
@@ -381,6 +412,70 @@ class EntityVectorStore:
         delete), and the chat routes hide the entity tools."""
         return await self.vector_db_service.collection_exists(self.collection_name)
 
+    async def collection_stamp(self) -> str:
+        """A token kept in the collection as a point of its own, so that it
+        goes when the collection's points go.
+
+        A collection dropped, recreated or emptied from outside (by hand, or
+        by a records rebuild in a release that took the entity index along)
+        therefore has no stamp. It is then set up again (``ensure_collection``)
+        and given a new one. The rebuild puts the stamp in its marker: what
+        was projected under another stamp is not in this collection, however
+        many points indexing has written to it since. One read by id per call.
+        For the rebuild leader only (see ``ensure_collection``)."""
+        stamp = await self._read_stamp()
+        if stamp:
+            return stamp
+        await self.ensure_collection()
+        # Never all digits: Redis hands a numeric string back as a number.
+        stamp = f"s{uuid.uuid4().hex[:11]}"
+        unit = [1.0] + [0.0] * (self._embedding_size - 1)
+        await self.vector_db_service.upsert_points(
+            collection_name=self.collection_name,
+            # No orgId and no entityType: no search, sweep or delete matches it.
+            points=[VectorPoint(
+                id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
+                payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp}},
+            )],
+        )
+        self.logger.info(
+            "Entity collection '%s' carried no stamp (it is new, or was dropped, recreated or "
+            "emptied from outside); stamped %s, so the rebuild projects the graph into it again",
+            self.collection_name, stamp,
+        )
+        return stamp
+
+    async def _read_stamp(self) -> str | None:
+        try:
+            points = await self.vector_db_service.retrieve_points(self.collection_name, [_STAMP_POINT_ID])
+        except Exception:
+            # Some backends refuse a read by id from a collection that does
+            # not exist; anything else is a read that failed.
+            if await self.collection_exists():
+                raise
+            return None
+        for point in points:
+            stamp = ((point.payload or {}).get("metadata") or {}).get(_STAMP_FIELD)
+            if stamp:
+                return _as_text(stamp)
+        return None
+
+    async def ensure_collection(self) -> None:
+        """Create the collection and its payload indexes where they are missing.
+
+        Initialisation does this once per model, so a collection dropped or
+        recreated from outside afterwards would stay as it was left until the
+        service restarts. For the rebuild leader only: like initialisation
+        with ``recreate``, it drops a collection of another dimension."""
+        await self._ensure_initialized(recreate=True)
+        async with self._init_lock:
+            if not self._initialized:
+                raise VectorStoreError(
+                    "Entity vector store is re-initialising; the collection is set up when it has",
+                    details={"collection": self.collection_name},
+                )
+            await self._init_collection(recreate=self.recreate_on_dimension_mismatch)
+
     async def _init_embeddings(self, embedding_configs: list[dict[str, Any]] | None = None) -> None:
         if not embedding_configs:
             self._dense_embeddings = get_default_embedding_model()
@@ -412,6 +507,13 @@ class EntityVectorStore:
 
     async def _init_collection(self, *, recreate: bool = False) -> None:
         info = await self.vector_db_service.get_collection_info(self.collection_name)
+        if info.exists:
+            # Ensured on every start, not only at creation: a process that
+            # died between the two left the collection without them. Before
+            # the mismatch check, which filters on one: a collection recreated
+            # from outside this store has none, and Redis cannot filter on a
+            # field its index does not have.
+            await self._ensure_payload_indexes()
         mismatch = await self._collection_mismatch(info)
         if mismatch:
             if not recreate:
@@ -434,11 +536,12 @@ class EntityVectorStore:
                 ),
             )
             self.logger.info("Created entity vector collection '%s'", self.collection_name)
-        # Ensured on every start, not only at creation: create_index is
-        # idempotent on every provider, and a process that died between the
-        # two left the collection without them. connectorIds and
-        # recordGroupIds are top-level payload siblings of metadata (not
-        # nested in it) — see ``upsert_entities_batch``.
+            await self._ensure_payload_indexes()
+
+    async def _ensure_payload_indexes(self) -> None:
+        """create_index is idempotent on every provider. connectorIds and
+        recordGroupIds are top-level payload siblings of metadata (not nested
+        in it) — see ``upsert_entities_batch``."""
         for field, schema in [
             ("metadata.orgId", {"type": "keyword"}),
             ("metadata.entityType", {"type": "keyword"}),
@@ -1373,8 +1476,17 @@ class EntityVectorStore:
         There is no ``min_should_match``, since KB records have no record group
         by design and are reachable only via ``connectorIds``.
 
-        Each hit is ``{entityId, entityType, name, canonicalName, aliases,
-        score, connectorIds, recordGroupIds}``.
+        Record titles outnumber the other entities by orders of magnitude, and
+        in one pool a word shared by many titles pushed the taxonomy entities
+        out (KG-14). So when both are asked for, a pass is two requests with
+        half of ``top_k`` each, titles apart, merged alternately with the
+        other types first. A caller that later sorts by score keeps that order
+        only on ties; fused scores are ranks within each request, so the
+        result stays roughly alternating.
+
+        Each hit is ``{entityId, entityType, name, canonicalName, score,
+        connectorIds, recordGroupIds}``; aliases are a matching aid and are
+        not returned (KG-17).
 
         Raises on a vector DB failure so callers can tell it apart from "no
         match".
@@ -1395,9 +1507,7 @@ class EntityVectorStore:
         from app.services.vector_db.models import FusionMethod, HybridSearchRequest
 
         dense_vec, sparse_vec = await self._query_vectors(query)
-        must: dict[str, Any] = {"metadata.orgId": org_id}
-        if entity_types:
-            must["metadata.entityType"] = entity_types  # list → "any of" filter
+        groups = _type_groups(entity_types)
         requests = []
         for index in searchable:
             scope = passes[index]
@@ -1406,15 +1516,22 @@ class EntityVectorStore:
                 should[RECORD_GROUP_IDS_FIELD] = sorted(scope.record_group_ids)
             if scope.connector_ids:
                 should[CONNECTOR_IDS_FIELD] = sorted(scope.connector_ids)
-            requests.append(HybridSearchRequest(
-                dense_query=dense_vec,
-                sparse_query=sparse_vec,
-                text_query=query,
-                filter=await self.vector_db_service.filter_collection(must=must, should=should),
-                limit=top_k,
-                fusion_method=FusionMethod.RRF,
-                with_payload=True,
-            ))
+            for must_types, must_not_types in groups:
+                must: dict[str, Any] = {"metadata.orgId": org_id}
+                if must_types is not None:
+                    must["metadata.entityType"] = must_types  # list → "any of" filter
+                filter_kwargs: dict[str, Any] = {"must": must, "should": should}
+                if must_not_types is not None:
+                    filter_kwargs["must_not"] = {"metadata.entityType": must_not_types}
+                requests.append(HybridSearchRequest(
+                    dense_query=dense_vec,
+                    sparse_query=sparse_vec,
+                    text_query=query,
+                    filter=await self.vector_db_service.filter_collection(**filter_kwargs),
+                    limit=max(1, -(-top_k // len(groups))),
+                    fusion_method=FusionMethod.RRF,
+                    with_payload=True,
+                ))
         try:
             batch = await self.vector_db_service.query_nearest_points(
                 collection_name=self.collection_name, requests=requests,
@@ -1426,10 +1543,13 @@ class EntityVectorStore:
             )
             await self._reset_if_collection_changed()
             raise
-        for index, hits in zip(searchable, batch or []):
-            results[index] = [
-                self._search_hit(hit) for hit in hits if hit.score >= score_threshold
+        batch = list(batch or [])
+        for position, index in enumerate(searchable):
+            per_group = [
+                [self._search_hit(hit) for hit in hits if hit.score >= score_threshold]
+                for hits in batch[position * len(groups):(position + 1) * len(groups)]
             ]
+            results[index] = _interleave(per_group)
         return results
 
     @staticmethod
@@ -1440,7 +1560,6 @@ class EntityVectorStore:
             "entityType": meta.get("entityType"),
             "name": meta.get("name", hit.payload.get("page_content", "")),
             "canonicalName": meta.get("canonicalName"),
-            "aliases": meta.get("aliases") or [],
             "score": round(hit.score, 4),
             "connectorIds": hit.payload.get(CONNECTOR_IDS_FIELD) or [],
             "recordGroupIds": hit.payload.get(RECORD_GROUP_IDS_FIELD) or [],
@@ -1469,30 +1588,33 @@ class EntityVectorStore:
             self._query_vector_cache.popitem(last=False)
         return dense_vec, sparse_vec
 
-    async def find_best_matches(
+    async def find_candidates(
         self,
         names: list[str],
         org_id: str,
         entity_type: str,
         level: str | None = None,
-    ) -> list[dict[str, Any] | None]:
-        """The single nearest existing entity for each of ``names``, within
-        one org, one entity type and (for subcategories) one level.
+        *,
+        k: int = 3,
+    ) -> list[list[dict[str, Any]]]:
+        """Up to ``k`` nearest existing entities for each of ``names``, best
+        first, within one org, one entity type and (for subcategories) one
+        level.
 
-        Used by ``app.modules.entity_resolution`` to pick the winner offered
-        to the merge-decision model. There is deliberately no score
-        threshold: the model decides every pair, so the ranking only has to
-        put the best candidate first. Hybrid dense + BM25 with RRF is used
+        Used by ``app.modules.entity_resolution`` to pick the candidates
+        offered to the merge-decision model. There is deliberately no score
+        threshold: the model decides, so the ranking only has to get the
+        right node into the first ``k``. Hybrid dense + BM25 with RRF is used
         for that, since lexical near-variants are the common case.
 
-        Returns one entry per input name, ``None`` when the name is blank or
-        no point of that type/level exists yet. Raises on a vector DB
-        failure so the caller can count it and fall back.
+        Returns one list per input name, empty when the name is blank or no
+        point of that type/level exists yet. Raises on a vector DB failure so
+        the caller can count it and fall back.
         """
         await self._ensure_initialized()
         cleaned = [(name or "").strip() for name in names]
-        results: list[dict[str, Any] | None] = [None] * len(cleaned)
-        if not org_id or not entity_type:
+        results: list[list[dict[str, Any]]] = [[] for _ in cleaned]
+        if not org_id or not entity_type or k < 1:
             return results
         indices = [i for i, name in enumerate(cleaned) if name]
         if not indices:
@@ -1512,13 +1634,15 @@ class EntityVectorStore:
 
         from app.services.vector_db.models import FusionMethod, HybridSearchRequest
 
+        # Over-fetched: a hit that fails the checks below is skipped, and
+        # must not cost the name one of its k candidates.
         requests = [
             HybridSearchRequest(
                 dense_query=dense,
                 sparse_query=sparse,
                 text_query=text,
                 filter=filter_expr,
-                limit=1,
+                limit=k * _CANDIDATE_OVERFETCH,
                 fusion_method=FusionMethod.RRF,
                 with_payload=True,
             )
@@ -1534,23 +1658,25 @@ class EntityVectorStore:
 
         for position, index in enumerate(indices):
             hits = batch_results[position] if position < len(batch_results) else []
-            if not hits:
-                continue
-            hit = hits[0]
-            meta = _entity_metadata(hit.payload)
-            if meta.get("orgId") != org_id or meta.get("entityType") != entity_type:
-                continue
-            if (meta.get("level") or None) != (level or None):
-                continue
-            entity_id = meta.get("entityId")
-            if not entity_id:
-                continue
-            results[index] = {
-                "entityId": entity_id,
-                "entityType": meta.get("entityType"),
-                "name": meta.get("name") or hit.payload.get("page_content") or entity_id,
-                "aliases": list(meta.get("aliases") or []),
-                "level": meta.get("level"),
-                "score": round(hit.score, 4),
-            }
+            seen: set[str] = set()
+            for hit in hits:
+                meta = _entity_metadata(hit.payload)
+                if meta.get("orgId") != org_id or meta.get("entityType") != entity_type:
+                    continue
+                if (meta.get("level") or None) != (level or None):
+                    continue
+                entity_id = meta.get("entityId")
+                if not entity_id or entity_id in seen:
+                    continue
+                seen.add(entity_id)
+                results[index].append({
+                    "entityId": entity_id,
+                    "entityType": meta.get("entityType"),
+                    "name": meta.get("name") or hit.payload.get("page_content") or entity_id,
+                    "aliases": list(meta.get("aliases") or []),
+                    "level": meta.get("level"),
+                    "score": round(hit.score, 4),
+                })
+                if len(results[index]) == k:
+                    break
         return results

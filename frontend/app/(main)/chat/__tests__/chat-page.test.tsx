@@ -340,6 +340,104 @@ describe('Chat page — opening a conversation', () => {
     expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
   });
 
+  it('loads the open conversation again when it is invalidated, as a notification about it does', async () => {
+    fetchConversation.mockResolvedValueOnce(conversationDetail());
+    renderPage('conversationId=conv-1');
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+
+    fetchConversation.mockResolvedValueOnce(
+      conversationDetail({
+        messages: [
+          apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
+          apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
+          apiMessage({ _id: 'u2', messageType: 'user_query', content: 'And sick days?' }),
+          apiMessage({ _id: 'b2', messageType: 'bot_response', content: 'Ten paid sick days.' }),
+        ],
+      }),
+    );
+    await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+
+    expect(await screen.findByText('Ten paid sick days.')).toBeTruthy();
+    expect(fetchConversation).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops a history response fetched before an invalidation that arrived while it was loading', async () => {
+    let resolveFirst: (v: ReturnType<typeof conversationDetail>) => void = () => {};
+    fetchConversation.mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }));
+    fetchConversation.mockResolvedValueOnce(
+      conversationDetail({
+        messages: [
+          apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
+          apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
+          apiMessage({ _id: 'u2', messageType: 'user_query', content: 'And sick days?' }),
+          apiMessage({ _id: 'b2', messageType: 'bot_response', content: 'Ten paid sick days.' }),
+        ],
+      }),
+    );
+    renderPage('conversationId=conv-1');
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalledTimes(1));
+
+    await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+    await act(async () => resolveFirst(conversationDetail()));
+
+    expect(await screen.findByText('Ten paid sick days.')).toBeTruthy();
+    expect(fetchConversation).toHaveBeenCalledTimes(2);
+  });
+
+  it('never initializes from a stale response after the refetch limit, and loads again shortly after', async () => {
+    const pending: Array<(v: ReturnType<typeof conversationDetail>) => void> = [];
+    for (let i = 0; i < 4; i++) {
+      fetchConversation.mockImplementationOnce(() => new Promise((r) => { pending.push(r); }));
+    }
+    fetchConversation.mockResolvedValueOnce(
+      conversationDetail({
+        messages: [
+          apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
+          apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
+          apiMessage({ _id: 'u2', messageType: 'user_query', content: 'And sick days?' }),
+          apiMessage({ _id: 'b2', messageType: 'bot_response', content: 'Ten paid sick days.' }),
+        ],
+      }),
+    );
+    renderPage('conversationId=conv-1');
+
+    // Every allowed request is overtaken by an invalidation before it answers.
+    for (let i = 0; i < 4; i++) {
+      await waitFor(() => expect(pending).toHaveLength(i + 1));
+      await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+      await act(async () => pending[i](conversationDetail()));
+    }
+
+    // The fourth (stale) answer is not applied: nothing is shown yet and the slot is still loading.
+    expect(screen.queryByText('You get 25 days a year.')).toBeNull();
+    const slot = Object.values(useChatStore.getState().slots).find((x) => x.convId === 'conv-1');
+    expect(slot?.isInitialized).toBe(false);
+
+    // The fresh load scheduled after the limit brings the current conversation.
+    expect(await screen.findByText('Ten paid sick days.', {}, { timeout: 3000 })).toBeTruthy();
+    expect(fetchConversation).toHaveBeenCalledTimes(5);
+  });
+
+  it('does not mark the slot loaded when an overtaken request fails after the refetch limit', async () => {
+    const pending: Array<(e: Error) => void> = [];
+    for (let i = 0; i < 4; i++) {
+      fetchConversation.mockImplementationOnce(() => new Promise((_r, reject) => { pending.push(reject); }));
+    }
+    fetchConversation.mockResolvedValueOnce(conversationDetail());
+    renderPage('conversationId=conv-1');
+
+    for (let i = 0; i < 4; i++) {
+      await waitFor(() => expect(pending).toHaveLength(i + 1));
+      await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+      await act(async () => pending[i](new Error('network')));
+    }
+
+    const slot = Object.values(useChatStore.getState().slots).find((x) => x.convId === 'conv-1');
+    expect(slot?.isInitialized).toBe(false);
+    expect(await screen.findByText('You get 25 days a year.', {}, { timeout: 3000 })).toBeTruthy();
+    expect(fetchConversation).toHaveBeenCalledTimes(5);
+  });
+
   it('restores the collections the last question was scoped to', async () => {
     fetchConversation.mockResolvedValue(
       conversationDetail({

@@ -389,7 +389,8 @@ async def _endpoint_refusal(config: dict) -> JSONResponse | None:
     if not isinstance(configuration, dict):
         return None  # the health check that follows reports the malformed config
     try:
-        await require_public_endpoint(configuration.get("endpoint"))
+        for field in ("endpoint", "baseUrl"):
+            await require_public_endpoint(configuration.get(field))
     except ValueError as e:
         return _config_error(str(e), config, configuration.get("model", ""))
     return None
@@ -570,6 +571,20 @@ async def web_search_health_check(request: Request, provider_config: dict = Body
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
+
+
+@router.post("/model-endpoint-check")
+async def model_endpoint_check(model_configs: list[dict] = Body(...)) -> JSONResponse:
+    """Whether this deployment may call each config's endpoint, without calling the model.
+    For model types saved without a health check of their own."""
+    for model_config in model_configs:
+        refusal = await _endpoint_refusal(model_config)
+        if refusal is not None:
+            return refusal
+    return JSONResponse(
+        status_code=200,
+        content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+    )
 
 
 @router.post("/llm-health-check")
@@ -781,16 +796,19 @@ async def handle_model_change(
             ) from e
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
-    """Rebuild every managed collection for the new embedding dimension.
+    """Rebuild every managed records collection for the new embedding dimension.
 
     Routed through CollectionRegistry so each rebuilt collection gets the same
     config, payload indexes, and manifest entry as one created by the normal
     indexing write path — and so a multi-collection strategy rebuilds all of
     them, not just the one this service happens to name.
+
+    The entity index is left alone, as in ``survey_managed_collections``: the
+    indexing service recreates and re-embeds it once the new model is saved.
     """
     registry = retrieval_service.collection_registry
     try:
-        recreated = await registry.recreate_all_collections(embedding_size)
+        recreated = await registry.recreate_records_collections(embedding_size)
         if not recreated:
             # Nothing managed yet. There is no collection to rebuild, and
             # creating one here would have to invent a context — which under a
@@ -828,7 +846,9 @@ async def survey_managed_collections(retrieval_service, logger) -> tuple[int, in
     collection still holds data, so the enumeration is read fresh: a cached
     view could miss a collection another service created since this process
     started, and the guard would wave the change through while that collection
-    still holds vectors from the outgoing model.
+    still holds vectors from the outgoing model. It is read strictly for the
+    same reason: a manifest that cannot be read otherwise answers as an empty
+    one, which is "nothing indexed".
 
     The entity index is left out: it is a projection of the graph that the
     indexing service recreates and re-embeds itself for a new model
@@ -838,7 +858,9 @@ async def survey_managed_collections(retrieval_service, logger) -> tuple[int, in
     try:
         managed = [
             entry
-            for entry in await registry.list_managed_collections(fresh=True)
+            for entry in await registry.list_managed_collections(
+                fresh=True, strict=True
+            )
             if entry.collection_type == CollectionType.RECORDS.value
         ]
         existing_vector_size = 0

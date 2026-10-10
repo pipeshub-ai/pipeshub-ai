@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.edition_config import (
@@ -80,6 +79,7 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import SOMETHING_WENT_WRONG
 
@@ -689,6 +689,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
     # Initialize container
     app_container = await get_initialized_container()
     app.container = app_container  # type: ignore
@@ -981,15 +982,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         )
 
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)
 # Telemetry: outermost metrics middleware; pusher started/stopped in lifespan.
@@ -1259,6 +1251,8 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
             workers = 1
     if reload and workers > 1:
         workers = 1
+    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+
     uvicorn.run(
         "app.connectors_main:app",
         host=host,
@@ -1266,6 +1260,7 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 

@@ -123,6 +123,10 @@ class TestResolveTinyRefUrl:
         result = _resolve_tiny_ref_url(url, None)
         assert result == "https://example.com/about"
 
+    def test_directive_after_anchor_is_stripped_keeping_the_anchor(self) -> None:
+        url = "https://example.com/page#section:~:text=e%2Dmail%2C%20x"
+        assert _resolve_tiny_ref_url(url, None) == "https://example.com/page#section"
+
     def test_tiny_ref_resolved_via_mapper(self) -> None:
         mock_mapper = MagicMock()
         mock_mapper.ref_to_url = {"ref1": "https://real-url.com/page"}

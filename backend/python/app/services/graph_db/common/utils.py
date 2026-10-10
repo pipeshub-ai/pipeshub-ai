@@ -1,8 +1,16 @@
 import re
 from collections.abc import Iterable
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    OriginTypes,
+    RecordRelations,
+)
+
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Connectors whose record groups are scoped by their root instead of by the full
 # descendant closure. Slack qualifies because grants sit on the channel and every
@@ -433,3 +441,23 @@ def jira_issue_browse_url_regex(issue_key: str) -> str:
     the same under Neo4j's whole-string ``=~`` and Arango's substring REGEX_TEST.
     """
     return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"
+
+
+async def org_id_from_app_edge(graph_provider: "IGraphDBProvider", app_id: str) -> str | None:
+    """The org an app belongs to, from its org-app edge.
+
+    Connector apps created before ``orgId`` was stored on the document have
+    their org only on this edge. Neo4j returns a bare id in ``from_id``;
+    Arango a document handle in ``_from`` ("organizations/<key>").
+    """
+    edges = await graph_provider.get_edges_to_node(
+        f"{CollectionNames.APPS.value}/{app_id}",
+        CollectionNames.ORG_APP_RELATION.value,
+    )
+    for edge in edges or []:
+        if not isinstance(edge, dict):
+            continue
+        source = edge.get("from_id") or edge.get("_from")
+        if source:
+            return str(source).rsplit("/", 1)[-1]
+    return None

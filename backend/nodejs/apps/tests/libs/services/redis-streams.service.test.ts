@@ -1102,8 +1102,25 @@ describe('Redis Streams Service', () => {
         ];
         mockRedis.exists.resolves(0);
         await admin.ensureTopicsExist(topics);
-        // Each topic triggers xgroup CREATE + xgroup DESTROY = 2 calls per topic
-        expect(mockRedis.xgroup.callCount).to.equal(4);
+        // record-events is the base stream plus its eight lanes by default,
+        // as the Python services read it; each stream triggers xgroup CREATE
+        // + xgroup DESTROY = 2 calls.
+        expect(mockRedis.xgroup.callCount).to.equal(2 * (1 + 8 + 1));
+      });
+
+      it('should create only the base stream when laning is off', async () => {
+        const original = process.env.FAIR_SCHEDULING_LANE_COUNT;
+        process.env.FAIR_SCHEDULING_LANE_COUNT = '1';
+        try {
+          mockRedis.exists.resolves(0);
+          await admin.ensureTopicsExist([
+            { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
+          ]);
+          expect(mockRedis.xgroup.callCount).to.equal(2);
+        } finally {
+          if (original === undefined) delete process.env.FAIR_SCHEDULING_LANE_COUNT;
+          else process.env.FAIR_SCHEDULING_LANE_COUNT = original;
+        }
       });
 
       it('should skip existing streams', async () => {

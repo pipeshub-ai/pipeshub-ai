@@ -35,7 +35,15 @@ import pytest_asyncio
 from helper.clients.kb_client import KBClient
 from helper.compose_control import ComposeStack
 from helper.fault_switches import KILL_INDEXING, ai_provider_hosts, block_hosts_script, restore_hosts_script
-from helper.indexing_progress import POLL, document, record_fields, statuses, wait_until_finished
+from helper.indexing_progress import (
+    POLL,
+    RECOVERY_TIMEOUT,
+    document,
+    record_fields,
+    statuses,
+    wait_until_enriched,
+    wait_until_finished,
+)
 
 logger = logging.getLogger("reindex-failed")
 
@@ -90,6 +98,12 @@ async def failed_records(
         healthy = _upload(kb_client, kb_id)
         final = await wait_until_finished(kb_client, [healthy])
         assert final[healthy] == "COMPLETED", f"the healthy document did not index before the outage: {final}"
+        # Its event is acknowledged only after enrichment. Killing indexing before then
+        # leaves it pending, and the restarted consumer re-indexes it once the provider
+        # is back, which this test would read as Reindex failed touching it. The entity
+        # sync and the acknowledgement follow the COMPLETED write within a second or so.
+        await wait_until_enriched(kb_client, healthy, timeout=RECOVERY_TIMEOUT)
+        await asyncio.sleep(POLL)
         state = FailedRecords(kb_id=kb_id, healthy=healthy)
         state.healthy_before = await _index_marks(graph_provider, vector_store, kb_client, healthy)
         assert state.healthy_before["lastIndexTimestamp"], (

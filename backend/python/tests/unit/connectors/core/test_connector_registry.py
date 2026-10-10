@@ -1845,6 +1845,58 @@ class TestCreateConnectorInstanceDeep:
         assert result is None
 
 
+class TestCreateConnectorInstanceGivesItAQueueLane:
+    """A new connector is given its indexing lane at creation, when its scope is known."""
+
+    def _created(self):  # noqa: ANN202
+        registry, container = _make_registry()
+        registry.register_connector(_make_connector_class(name="Gmail", app_group="Google"))
+        gp = _make_graph_provider()
+        gp.get_document.return_value = {"_key": "org-1"}
+        gp.check_connector_name_exists.return_value = False
+        gp.batch_upsert_nodes.return_value = True
+        gp.batch_create_edges.return_value = True
+        data_store = MagicMock()
+        data_store.graph_provider = gp
+        container.data_store = AsyncMock(return_value=data_store)
+        return registry
+
+    @pytest.mark.asyncio
+    async def test_the_new_connector_is_placed_with_its_type_scope_and_org(self) -> None:
+        registry = self._created()
+        with patch(
+            "app.connectors.core.registry.connector_registry.assign_lane_to_new_connector",
+            new_callable=AsyncMock,
+        ) as assign:
+            created = await registry._create_connector_instance(
+                "Gmail", "My Gmail", registry._connectors["Gmail"],
+                "personal", "user-1", "org-1", selected_auth_type="OAUTH",
+            )
+
+        assert created is not None
+        assign.assert_awaited_once()
+        assert assign.await_args.args[1] == created["_key"]
+        assert assign.await_args.kwargs == {
+            "connector_type": "Gmail", "scope": "personal", "org_id": "org-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_lane_is_given_when_the_connector_was_not_created(self) -> None:
+        registry = self._created()
+        graph_provider = (await registry.container.data_store()).graph_provider
+        graph_provider.batch_upsert_nodes.return_value = False
+        with patch(
+            "app.connectors.core.registry.connector_registry.assign_lane_to_new_connector",
+            new_callable=AsyncMock,
+        ) as assign:
+            await registry._create_connector_instance(
+                "Gmail", "My Gmail", registry._connectors["Gmail"],
+                "personal", "user-1", "org-1", selected_auth_type="OAUTH",
+            )
+
+        assign.assert_not_awaited()
+
+
 # ===========================================================================
 # ConnectorRegistry.get_active_agent_connector_instances
 # ===========================================================================

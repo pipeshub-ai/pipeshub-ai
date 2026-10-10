@@ -425,6 +425,7 @@
   },
   "form": {
     "leaveBlankToKeep": "기존 값을 유지하려면 비워 두세요.",
+    "showStoredValues": "저장된 값 표시",
     "title": "제목",
     "description": "설명",
     "search": "검색",
@@ -2377,6 +2378,17 @@
         "addRecords": "레코드 추가"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "연결 테스트 중…",
+          "egressTitle": "방화벽에서 PipesHub 허용",
+          "egressDescription": "{{name}}이(가) 방화벽 뒤에 있거나 알려진 IP 주소만 허용하는 경우 다음 주소의 연결을 허용하세요:",
+          "copyIp": "IP 주소 복사",
+          "ipCopied": "IP 주소를 복사했습니다",
+          "copyFailed": "복사할 수 없습니다",
+          "copyFailedDescription": "주소를 직접 복사하거나 이 사이트의 클립보드 접근을 허용하세요.",
+          "failedTitle": "{{name}}에 연결하지 못했습니다",
+          "requestFailed": "연결을 테스트하지 못했습니다. 다시 시도하세요."
+        },
         "methodLabel": "인증 방법",
         "methodPlaceholder": "인증 유형 선택...",
         "credentialsHeading": "{{name}} 자격 증명",
@@ -2673,7 +2685,8 @@
       "status": {
         "ready": "준비됨",
         "notConnected": "연결 안 됨",
-        "needsAuth": "인증 필요"
+        "needsAuth": "인증 필요",
+        "disabled": "비활성화됨"
       },
       "team": {
         "title": "MCP 서버",
@@ -2795,7 +2808,13 @@
         "noState": "state 매개변수가 반환되지 않았습니다.",
         "backendRejected": "서버가 인증 요청을 거부했습니다."
       },
-      "deleteDisabledTooltip": "이 서버는 삭제할 수 없습니다"
+      "deleteDisabledTooltip": "이 서버는 삭제할 수 없습니다",
+      "stdioPolicy": {
+        "disabledTitle": "이 배포에서 비활성화됨",
+        "disabledDescription": "사용자 지정 STDIO 서버는 PipesHub 서버에서 명령을 실행하므로, 운영자가 배포 환경에 {{flag}}=true를 설정하기 전까지는 꺼져 있습니다(Docker Compose .env 또는 Helm의 config.mcpAllowCustomStdio). 그때까지 에이전트는 이 서버의 도구를 사용할 수 없습니다. 서버를 삭제하거나 원격(HTTP) 서버로 전환할 수 있습니다.",
+        "unavailableHint": "이 배포에서는 로컬 명령(STDIO) 서버가 꺼져 있습니다. 허용하려면 운영자가 {{flag}}=true를 설정해야 합니다.",
+        "enabledWarning": "이 명령은 서비스 권한(네트워크 접근 및 자격 증명 포함)으로 PipesHub 서버에서 실행됩니다. 신뢰할 수 있는 명령만 추가하세요."
+      }
     },
     "bots": {
       "subtitle": "봇 자격 증명을 구성하고 필요에 따라 각 봇을 에이전트에 연결합니다",
@@ -4089,6 +4108,9 @@
     "errorTitle": "승인 오류",
     "signedInAs": "{{display}}(으)로 로그인됨",
     "requestHeading": "이 애플리케이션이 다음에 대한 액세스를 요청합니다:",
+    "notGrantedHeading": "이 애플리케이션은 다음 권한도 요청했습니다. 애플리케이션 설정에서 허용하지 않으므로 이 권한은 부여되지 않습니다:",
+    "notGrantedOwnerHint": "이 애플리케이션을 만든 사람이 워크스페이스 설정 → 개발자 설정 → OAuth 2.0 앱에서 이 권한을 추가할 수 있습니다.",
+    "notGrantedOfflineAccess": "애플리케이션이 로그인 상태를 유지하지 않습니다. 세션이 끝나면 다시 로그인해야 합니다.",
     "unreviewedApp": "이 애플리케이션은 스스로 등록했습니다. 검토한 관리자가 없습니다.",
     "legalNotice": "“허용”을 클릭하면 위에 설명된 대로 {{appName}}이(가) 사용자의 데이터에 액세스하는 것을 승인하게 됩니다.",
     "privacyPolicy": "개인정보 처리방침",

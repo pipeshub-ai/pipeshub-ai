@@ -9,6 +9,8 @@ one place keeps the Arango and Neo4j providers in parity.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
+from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
 
@@ -26,6 +28,13 @@ TAXONOMY_COLLECTIONS: frozenset[str] = frozenset(
         *SUBCATEGORY_LEVELS,
     }
 )
+
+# Spellings kept per taxonomy node. A spelling past the cap is never stored,
+# so every later record that uses it asks the merge model again; 20 was hit
+# by popular nodes. Aliases are not shown to users (KG-17) or embedded, and
+# the merge prompt shows only a few per candidate, so a larger cap costs
+# payload and alias-node count only.
+MAX_TAXONOMY_ALIASES = 200
 
 # Set on a node merged into another (app.modules.entity_resolution.consolidation);
 # lookups skip it and the resolver follows it to the winner.
@@ -56,6 +65,16 @@ def hierarchy_edge_key(child_key: str, parent_key: str) -> str:
     ``parent_key``, so concurrent writers of one edge converge on one."""
     return str(uuid.uuid5(_HIERARCHY_EDGE_NAMESPACE, f"{child_key}->{parent_key}"))
 
+
+# Edges indexing enrichment writes from a record. Every record delete removes
+# these, so an edge never points at a record that is gone; a new enrichment edge
+# joins this tuple instead of being added path by path.
+RECORD_ENRICHMENT_EDGE_COLLECTIONS: tuple[str, ...] = (
+    CollectionNames.BELONGS_TO_DEPARTMENT.value,
+    CollectionNames.BELONGS_TO_CATEGORY.value,
+    CollectionNames.BELONGS_TO_LANGUAGE.value,
+    CollectionNames.BELONGS_TO_TOPIC.value,
+)
 
 # The edge collection a record reaches each taxonomy collection over.
 TAXONOMY_EDGE_COLLECTIONS: dict[str, str] = {
@@ -100,12 +119,19 @@ __all__ = [
     "MAX_MERGE_REDIRECT_HOPS",
     "MERGED_INTO_FIELD",
     "SUBCATEGORY_LEVELS",
+    "RECORD_ENRICHMENT_EDGE_COLLECTIONS",
     "TAXONOMY_COLLECTIONS",
     "TAXONOMY_EDGE_COLLECTIONS",
     "TAXONOMY_ENTITY_TYPES",
+    "TaxonomyLink",
     "alias_pairs",
     "is_taxonomy_collection",
+    "edge_spellings",
+    "own_record_labels",
+    "record_spelling",
+    "record_spellings",
     "subcategory_level",
+    "taxonomy_links",
 ]
 
 
@@ -137,3 +163,140 @@ def check_edge_move_target(
     if target_org is None and provenance == "migratedFrom" and only_merged_from == to_key:
         return
     raise ValueError(f"{collection}/{to_key} is not a node of org {org_id}")
+
+
+def edge_spellings(extracted_name: object, extracted_names: object) -> list[str]:
+    """The raw spellings an edge records for its record, first one first:
+    ``extractedNames`` when present, else ``extractedName``."""
+    raw = extracted_names if isinstance(extracted_names, list) else [extracted_name]
+    spellings: list[str] = []
+    for value in raw:
+        if isinstance(value, str) and value.strip() and value not in spellings:
+            spellings.append(value)
+    if not spellings and isinstance(extracted_name, str) and extracted_name.strip():
+        spellings.append(extracted_name)
+    return spellings
+
+
+def record_spellings(
+    name: str | None,
+    extracted_name: object,
+    extracted_names: object = None,
+    *,
+    canonical: bool,
+    migrated: bool,
+) -> list[str]:
+    """How a record's own content spells the node one of its edges reaches,
+    every spelling it used, or ``[]`` when the edge does not say.
+
+    The edge's ``extractedNames`` (or ``extractedName``) are those spellings.
+    Without them, a legacy node's name is one, since a legacy node was created
+    from the exact name each of its records extracted, and so is a canonical
+    node's on an edge migrated off a legacy node of the same name. Any other
+    canonical node is named by whichever record created it.
+    """
+    from app.modules.entity_resolution.normalizer import display_form, normalize_name
+
+    raw = edge_spellings(extracted_name, extracted_names)
+    if not raw and name and (not canonical or migrated):
+        raw = [name]
+    shown: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        cleaned = display_form(value)
+        if cleaned and normalize_name(cleaned) not in seen:
+            seen.add(normalize_name(cleaned))
+            shown.append(cleaned)
+    return shown
+
+
+def record_spelling(
+    name: str | None, extracted_name: object, *, canonical: bool, migrated: bool,
+) -> str | None:
+    """The first of :func:`record_spellings`, or ``None``."""
+    spellings = record_spellings(name, extracted_name, canonical=canonical, migrated=migrated)
+    return spellings[0] if spellings else None
+
+
+@dataclass(frozen=True)
+class TaxonomyLink:
+    """One record's ``belongsTo*`` edge to a category, subcategory, topic or
+    language node, as ``get_record_taxonomy_links`` returns it."""
+
+    record_id: str
+    collection: str
+    entity_id: str
+    name: str
+    # Every raw spelling the edge records for its record, first one first.
+    extracted_names: tuple[str, ...]
+    # The node is a per-org canonical node (it has a normalizedName).
+    canonical: bool
+    # The edge was moved off a legacy node of the same name.
+    migrated: bool
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> TaxonomyLink | None:
+        record_id, entity_id = row.get("recordId"), row.get("entityId")
+        collection = row.get("collection")
+        if not record_id or not entity_id or not is_taxonomy_collection(collection or ""):
+            return None
+        return cls(
+            record_id=str(record_id),
+            collection=str(collection),
+            entity_id=str(entity_id),
+            name=str(row.get("name") or ""),
+            extracted_names=tuple(edge_spellings(row.get("extractedName"), row.get("extractedNames"))),
+            canonical=bool(row.get("canonical")),
+            migrated=bool(row.get("migrated")),
+        )
+
+    @property
+    def extracted_name(self) -> str | None:
+        return self.extracted_names[0] if self.extracted_names else None
+
+    @property
+    def spellings(self) -> tuple[str, ...]:
+        return tuple(record_spellings(
+            self.name, self.extracted_name, list(self.extracted_names),
+            canonical=self.canonical, migrated=self.migrated,
+        ))
+
+    @property
+    def spelling(self) -> str | None:
+        return self.spellings[0] if self.spellings else None
+
+
+def taxonomy_links(rows: list[dict[str, Any]] | None) -> list[TaxonomyLink]:
+    return [link for row in rows or [] if (link := TaxonomyLink.from_row(row)) is not None]
+
+
+# Keys of a record's metadata read whose items are taxonomy nodes the record
+# was extracted into; departments are the org's own list and are left alone.
+_RECORD_LABEL_KEYS = ("categories", "subcategories1", "subcategories2", "subcategories3", "topics", "languages")
+
+
+def own_record_labels(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A record's ``{departments, categories, ..., languages}`` read with each
+    taxonomy item named as the record's own extraction spells it.
+
+    Items arrive as ``{id, name, extractedName, extractedNames, canonical,
+    migrated}``. A node the record spells two ways is listed under each
+    spelling; an item whose edge does not record the spelling is left out.
+    """
+    if not isinstance(metadata, dict):
+        return metadata
+    shown = dict(metadata)
+    for key in _RECORD_LABEL_KEYS:
+        items: list[dict[str, Any]] = []
+        for item in metadata.get(key) or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            items.extend(
+                {"id": item["id"], "name": spelling}
+                for spelling in record_spellings(
+                    item.get("name"), item.get("extractedName"), item.get("extractedNames"),
+                    canonical=bool(item.get("canonical")), migrated=bool(item.get("migrated")),
+                )
+            )
+        shown[key] = items
+    return shown

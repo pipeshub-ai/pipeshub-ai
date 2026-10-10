@@ -55,6 +55,7 @@ import {
   setPlatformSettings,
   getAvailablePlatformFeatureFlags,
   getEffectivePlatformFeatureFlags,
+  getSecretRevealStatus,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
   getWebSearchProviders,
@@ -526,6 +527,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/platform/feature-flags/effective',
     authMiddleware.authenticate,
     getEffectivePlatformFeatureFlags(keyValueStoreService),
+  );
+
+  router.get(
+    '/secretReveal',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getSecretRevealStatus,
   );
 
   // Slack Bot configuration

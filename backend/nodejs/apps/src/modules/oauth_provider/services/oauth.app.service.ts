@@ -425,6 +425,8 @@ export class OAuthAppService {
       this.validateGrantTypes(data.allowedGrantTypes)
     }
 
+    const previousScopes = [...app.allowedScopes]
+
     // Update fields
     if (data.name !== undefined) app.name = data.name
     if (data.description !== undefined) app.description = data.description
@@ -450,6 +452,27 @@ export class OAuthAppService {
     }
 
     await app.save()
+
+    // Tokens carry their scopes in the claim, and neither Node nor the Python
+    // services compare that claim with the app on each request. Removing a
+    // scope therefore only takes effect for tokens issued after the change.
+    const removedScopes = previousScopes.filter(
+      (scope) => !app.allowedScopes.includes(scope),
+    )
+    if (removedScopes.length > 0) {
+      try {
+        await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+      } catch (error) {
+        app.allowedScopes = previousScopes
+        await app.save()
+        throw error
+      }
+      this.logger.info('OAuth app scopes reduced; tokens revoked', {
+        appId: (app._id as Types.ObjectId).toString(),
+        orgId,
+        removedScopes,
+      })
+    }
 
     this.logger.info('OAuth app updated', {
       appId: (app._id as Types.ObjectId).toString(),

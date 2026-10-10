@@ -94,7 +94,7 @@ def _same_source_refusal(record_id: str, external_id: str) -> RestoreRefused:
         409,
         "Two of the items being restored came from the same source item, so only one of them "
         "can come back. Restore them one at a time, starting with the one you want to keep.",
-        record_id=record_id,
+        blockedRecordId=record_id,
         external_id=external_id,
     )
 
@@ -2129,7 +2129,8 @@ class DataSourceEntitiesProcessor:
                                     old_record.id, child_id, RecordRelations.PARENT_CHILD.value
                                 )
 
-                        await tx_store.delete_parent_child_edge_to_record(duplicate.id)
+                        # One write: the delete takes the duplicate's own parent edge
+                        # with it, where a separate edge delete could commit alone.
                         await tx_store.delete_record_by_key(duplicate.id)
 
                     old_path = old_path_snap.get(old_external_id)
@@ -2142,9 +2143,11 @@ class DataSourceEntitiesProcessor:
                         new_record, old_record
                     )
 
-                    # Drop the stale parent-child edge so _handle_parent_record can
-                    # create the correct one pointing at the new parent folder.
-                    await tx_store.delete_parent_child_edge_to_record(old_record.id)
+                    is_kb_item = new_record.origin == OriginTypes.UPLOAD
+                    if not is_kb_item:
+                        # Drop the stale parent-child edge so _handle_parent_record can
+                        # create the correct one pointing at the new parent folder.
+                        await tx_store.delete_parent_child_edge_to_record(old_record.id)
 
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
@@ -2217,30 +2220,31 @@ class DataSourceEntitiesProcessor:
                                 (vrid, new_record.connector_id)
                             )
 
-                    # The release shares this write: on Neo4j each statement commits on
-                    # its own, so a release written first outlived a refused move.
-                    await tx_store.batch_upsert_records([new_record], release_trashed_external_ids=True)
-
-                    if record_group_id:
-                        await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
-
-                    # existing_record=None forces _handle_parent_record to build a
-                    # fresh parent edge (the stale one was deleted above).
-                    if new_record.origin == OriginTypes.UPLOAD:
-                        # Re-point the KB PARENT_CHILD edge by _key; a None parent means
-                        # the record moved to KB root (no edge). belongsTo / inheritPermissions
-                        # already exist on the reused vertex, so the idempotent re-link is a
-                        # no-op unless they were missing.
-                        if new_record.parent_external_record_id:
-                            await tx_store.create_record_relation(
-                                new_record.parent_external_record_id,
-                                new_record.id,
-                                RecordRelations.PARENT_CHILD.value,
-                            )
+                    if is_kb_item:
+                        # belongsTo / inheritPermissions already exist on the reused vertex,
+                        # so the idempotent re-link is a no-op unless they were missing.
                         await self._link_kb_record_to_app(new_record, tx_store)
+                        await self._handle_record_permissions(new_record, permissions, tx_store)
+                        # The move itself is the last write and a single one: the record
+                        # (its externalParentId) and its PARENT_CHILD edge, re-pointed by
+                        # _key, or removed for the KB root. On Neo4j each statement commits
+                        # on its own, so written apart a failure left the item in no folder,
+                        # or in its old one under a path that no longer matched.
+                        await tx_store.upsert_record_under_parent(
+                            new_record, new_record.parent_external_record_id or None
+                        )
                     else:
+                        # The release shares this write: on Neo4j each statement commits on
+                        # its own, so a release written first outlived a refused move.
+                        await tx_store.batch_upsert_records([new_record], release_trashed_external_ids=True)
+
+                        if record_group_id:
+                            await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
+
+                        # existing_record=None forces _handle_parent_record to build a
+                        # fresh parent edge (the stale one was deleted above).
                         await self._handle_parent_record(new_record, tx_store, existing_record=None)
-                    await self._handle_record_permissions(new_record, permissions, tx_store)
+                        await self._handle_record_permissions(new_record, permissions, tx_store)
 
             # Compute and attempt the storage move for every record that was
             # actually moved (not new) BEFORE publishing any Kafka event below
@@ -2430,7 +2434,7 @@ class DataSourceEntitiesProcessor:
                     f"'{name}' can't be restored because '{holder.record_name}' has taken its place. "
                     "That usually means the same item was added again after this one was deleted. "
                     f"To restore this one, delete '{holder.record_name}' first, then try again.",
-                    record_id=item["id"],
+                    blockedRecordId=item["id"],
                     conflicting_record_id=holder.id,
                     conflicting_record_name=holder.record_name,
                 )
@@ -2519,16 +2523,18 @@ class DataSourceEntitiesProcessor:
                 [record_id], connector_id, delete_source=DeleteSource.CONNECTOR, follow=()
             )
             return True
-        # Connector per-record delete: remove the record vertex and its incoming
-        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
-        # call is a no-op for root records with no parent). Capture VRID before the
-        # vertex is gone so indexing can strip/delete embeddings.
+        # Connector per-record delete: one write that removes the record vertex with
+        # every edge on it, its incoming PARENT_CHILD edge included. Neo4j commits each
+        # statement on its own, so deleting the edge in a statement of its own could
+        # leave the record live and searchable but in no folder. Capture VRID before
+        # the vertex is gone so indexing can strip/delete embeddings.
         event_payload = None
         async with self.data_store_provider.transaction() as tx_store:
             # The stored document, not a Record: reading Record attributes off it
             # found no virtualRecordId, so no delete ever published its cleanup.
-            existing = await tx_store.get_record_by_key(record_id) or {}
-            await tx_store.delete_parent_child_edge_to_record(record_id)
+            # A failed read must raise: None would read as "nothing stored", and the
+            # record would be deleted with no cleanup event for its vectors.
+            existing = await tx_store.get_record_by_key(record_id, raise_on_error=True) or {}
             await tx_store.delete_record_by_key(record_id)
             vrid = existing.get("virtualRecordId")
             if isinstance(vrid, str) and vrid:
@@ -3549,11 +3555,11 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_user_by_email(email)
 
     async def get_user_group_by_external_id(
-        self, connector_id: str, external_id: str
+        self, connector_id: str, external_id: str, *, raise_on_error: bool = False
     ) -> AppUserGroup | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_user_group_by_external_id(
-                connector_id, external_id
+                connector_id, external_id, raise_on_error=raise_on_error
             )
 
     async def get_app_user_by_email(self, email: str, connector_id: str) -> AppUser | None:
@@ -3775,56 +3781,62 @@ class DataSourceEntitiesProcessor:
         user_email: str,
         connector_id: str
     ) -> bool:
+        """
+        Remove a user from a user group.
 
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the user by email
-                user = await tx_store.get_user_by_email(user_email)
-                if not user:
-                    self.logger.warning(
-                        f"Cannot remove member from group {external_group_id}: "
-                        f"User with email {user_email} not found in database"
-                    )
-                    return False
+        Returns:
+            bool: True if the membership was removed. False if there was nothing to
+            remove: the user or the group is not stored, or the user was not a member.
 
-                # 2. Look up the user group by external ID
-                user_group = await tx_store.get_user_group_by_external_id(
-                    connector_id=connector_id,
-                    external_id=external_group_id
+        Raises:
+            Exception: if a lookup or the delete fails. The user is then still in the
+            group and keeps its access, so the caller must try the removal again.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            # A user or group that could not be read is not one that is not there:
+            # returning False on a failed read would leave the user in the group.
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            if not user:
+                self.logger.warning(
+                    f"Cannot remove member from group {external_group_id}: "
+                    f"User with email {user_email} not found in database"
                 )
-                if not user_group:
-                    self.logger.warning(
-                        f"Cannot remove member from group: "
-                        f"Group with external ID {external_group_id} not found in database"
-                    )
-                    return False
+                return False
 
-                # 3. Delete the permission edge
-                edge_deleted = await tx_store.delete_edge(
-                    from_id=user.id,
-                    from_collection=CollectionNames.USERS.value,
-                    to_id=user_group.id,
-                    to_collection=CollectionNames.GROUPS.value,
-                    collection=CollectionNames.PERMISSION.value
+            user_group = await tx_store.get_user_group_by_external_id(
+                connector_id=connector_id,
+                external_id=external_group_id,
+                raise_on_error=True,
+            )
+            if not user_group:
+                self.logger.warning(
+                    f"Cannot remove member from group: "
+                    f"Group with external ID {external_group_id} not found in database"
                 )
+                return False
 
-                if edge_deleted:
-                    self.logger.debug(
-                        f"Successfully removed user {user_email} from group {user_group.name} "
-                        f"(external_id: {external_group_id})"
-                    )
-                    return True
-                else:
-                    self.logger.warning(
-                        f"No permission edge found between user {user_email} "
-                        f"and group {user_group.name} (external_id: {external_group_id})"
-                    )
-                    return False
+            # Not delete_edge: ArangoDB's answers False when the delete fails, the
+            # same answer as "was not a member".
+            deleted = await tx_store.batch_delete_edges(
+                [{
+                    "from_id": user.id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": user_group.id,
+                    "to_collection": CollectionNames.GROUPS.value,
+                }],
+                collection=CollectionNames.PERMISSION.value,
+            )
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to remove user {user_email} from group {external_group_id}: {str(e)}",
-                exc_info=True
+            if deleted:
+                self.logger.debug(
+                    f"Successfully removed user {user_email} from group {user_group.name} "
+                    f"(external_id: {external_group_id})"
+                )
+                return True
+
+            self.logger.warning(
+                f"No permission edge found between user {user_email} "
+                f"and group {user_group.name} (external_id: {external_group_id})"
             )
             return False
 
@@ -3975,43 +3987,40 @@ class DataSourceEntitiesProcessor:
             connector_id: The ID of the connector (e.g., 'DROPBOX')
 
         Returns:
-            bool: True if the group was successfully deleted, False otherwise
+            bool: True once the group is gone, including when it was not stored.
+
+        Raises:
+            Exception: if the lookup or the delete fails. The group then still gives
+            its members access, so the caller must try the deletion again.
         """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the user group by external ID
-                user_group = await tx_store.get_user_group_by_external_id(
-                    connector_id=connector_id,
-                    external_id=external_group_id
-                )
+        async with self.data_store_provider.transaction() as tx_store:
+            # Raising: a group that could not be read would otherwise be reported
+            # as already deleted, and stay.
+            user_group = await tx_store.get_user_group_by_external_id(
+                connector_id=connector_id,
+                external_id=external_group_id,
+                raise_on_error=True,
+            )
 
-                if not user_group:
-                    self.logger.warning(
-                        f"❕ Group with external ID {external_group_id} not in database, skipping deletion"
-                    )
-                    return True
-
-                group_internal_id = user_group.id
-                group_name = user_group.name
-
-                self.logger.debug(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
-
-                #Delete the node and edges
-                await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
-
-                self.logger.debug(
-                    f"Successfully deleted user group {group_name} "
-                    f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
-                    f"and all associated edges"
+            if not user_group:
+                self.logger.warning(
+                    f"❕ Group with external ID {external_group_id} not in database, skipping deletion"
                 )
                 return True
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to delete user group {external_group_id}: {str(e)}",
-                exc_info=True
+            group_internal_id = user_group.id
+            group_name = user_group.name
+
+            self.logger.debug(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
+
+            await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
+
+            self.logger.debug(
+                f"Successfully deleted user group {group_name} "
+                f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
+                f"and all associated edges"
             )
-            return False
+            return True
 
     @retry_on_deadlock()
     async def delete_user_group_by_id(self, group_id: str) -> None:
@@ -4255,43 +4264,39 @@ class DataSourceEntitiesProcessor:
             connector_id: The instance ID of the connector
 
         Returns:
-            bool: True if the role was successfully deleted, False otherwise
+            bool: True if the role was deleted, False if it was not stored.
+
+        Raises:
+            Exception: if the lookup or the delete fails. The role then still gives
+            its members access, so the caller must try the deletion again.
         """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                # 1. Look up the app role by external ID
-                app_role = await tx_store.get_app_role_by_external_id(
-                    connector_id=connector_id,
-                    external_id=external_role_id
-                )
-
-                if not app_role:
-                    self.logger.warning(
-                        f"Cannot delete role: Role with external ID {external_role_id} not found in database"
-                    )
-                    return False
-
-                role_internal_id = app_role.id
-                role_name = app_role.name
-
-                self.logger.debug(f"Deleting app role: {role_name} (internal_id: {role_internal_id})")
-
-                # Delete the node and all associated edges
-                await tx_store.delete_nodes_and_edges([role_internal_id], CollectionNames.ROLES.value)
-
-                self.logger.debug(
-                    f"Successfully deleted app role {role_name} "
-                    f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
-                    f"and all associated edges"
-                )
-                return True
-
-        except Exception as e:
-            self.logger.error(
-                f"Failed to delete app role {external_role_id}: {str(e)}",
-                exc_info=True
+        async with self.data_store_provider.transaction() as tx_store:
+            # Raising: a role that could not be read is not a role that is not there.
+            app_role = await tx_store.get_app_role_by_external_id(
+                connector_id=connector_id,
+                external_id=external_role_id,
+                raise_on_error=True,
             )
-            return False
+
+            if not app_role:
+                self.logger.warning(
+                    f"Cannot delete role: Role with external ID {external_role_id} not found in database"
+                )
+                return False
+
+            role_internal_id = app_role.id
+            role_name = app_role.name
+
+            self.logger.debug(f"Deleting app role: {role_name} (internal_id: {role_internal_id})")
+
+            await tx_store.delete_nodes_and_edges([role_internal_id], CollectionNames.ROLES.value)
+
+            self.logger.debug(
+                f"Successfully deleted app role {role_name} "
+                f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
+                f"and all associated edges"
+            )
+            return True
 
     @retry_on_deadlock()
     async def on_record_group_deleted(

@@ -197,9 +197,12 @@ def mask_oauth_secrets(
     cfg_data: dict[str, Any],
     *,
     is_inherited: bool = False,
+    reveal: bool = False,
 ) -> dict[str, Any]:
     """Redact secret fields; OSS has no org inheritance, so ``is_inherited`` changes nothing."""
     del is_inherited
+    if reveal:
+        return dict(cfg_data)
     return {k: (REDACTED_PLACEHOLDER if k in _TOOLSET_SECRET_FIELDS else v) for k, v in cfg_data.items()}
 
 

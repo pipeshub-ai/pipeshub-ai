@@ -176,7 +176,8 @@ async def _seed_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
         for key, ts in stamps.items()
     ])
     await _insert(provider, CollectionNames.BELONGS_TO_TOPIC.value, [
-        {"_from": f"records/{key}", "_to": f"topics/{keys['topic']}", "createdAtTimestamp": 1}
+        {"_from": f"records/{key}", "_to": f"topics/{keys['topic']}", "createdAtTimestamp": 1,
+         "extractedName": "Security"}
         for key in stamps
     ])
     await _insert(provider, CollectionNames.USERS.value, [

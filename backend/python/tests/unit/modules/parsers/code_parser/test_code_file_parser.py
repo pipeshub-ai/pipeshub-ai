@@ -123,3 +123,22 @@ def test_docstring_extraction_with_annotated_signature():
 )
 def test_decode_source_reads_windows_1252(raw: bytes, expected: str) -> None:
     assert decode_source(raw) == expected.encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_parse_uses_the_extension_it_was_given_when_the_name_has_none() -> None:
+    """The parsing service picks this parser by extension. A record whose name
+    carries none ("build-script", declared as py) must not come back empty."""
+    source = b"def main():\n    return 1\n"
+
+    result = await CodeFileParser().parse(source, "build-script", {"extension": "py"})
+
+    assert result.metadata["language"] == "python"
+    assert result.block_container.blocks
+
+
+@pytest.mark.asyncio
+async def test_parse_prefers_the_file_name_over_the_extension_it_was_given() -> None:
+    result = await CodeFileParser().parse(b"x = 1\n", "main.py", {"extension": "go"})
+
+    assert result.metadata["language"] == "python"

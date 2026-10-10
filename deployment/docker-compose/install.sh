@@ -1370,6 +1370,10 @@ PIPESHUB_ACCESSIBLE_RECORDS_CACHE=
 PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=300
 # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
 PIPESHUB_SIGNED_URL_CACHE_SECONDS=0
+# Most characters one agent turn may stream (text, reasoning and tool-call
+# arguments together) before it is stopped as a runaway. Blank keeps the
+# built-in 1000000; 0 removes the limit.
+PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=
 
 # ── ML performance ───────────────────────────────────────────────────────────
 # Caps PyTorch / OpenBLAS / MKL thread fan-out per operation.

@@ -11,6 +11,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     OriginTypes,
     ProgressStatus,
+    RecordTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
@@ -32,7 +33,10 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
-from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
+from app.modules.parsers import parse_pool
+from app.modules.parsers.code_parser import engine as code_parser_engine
+from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
+from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
@@ -48,9 +52,10 @@ from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
+from app.utils.cpu_offload import offload_if_large
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
+from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR, text_file_too_large
 
 
 SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
@@ -1409,14 +1414,24 @@ class Processor:
 
             llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
 
-            try:
-                all_rows = parser.read_raw_rows(io.StringIO(decode_text(file_binary)))
-                self.logger.info(f"✅ Successfully parsed delimited file. Rows: {len(all_rows)}")
-            except Exception as e:
-                self.logger.warning(f"Failed to read rows from delimited file {recordName}: {str(e)}")
-                all_rows = None
+            # A large file is read, and its tables found, in a parse worker
+            # process: both steps hold the GIL, so a thread would not free the loop.
+            in_worker = parse_pool.should_offload(len(file_binary))
+            if in_worker:
+                tables = await parser.read_tables_in_worker(file_binary, recordName)
+                has_rows = tables is not None
+            else:
+                try:
+                    all_rows = await offload_if_large(
+                        parser.read_raw_rows, io.StringIO(decode_text(file_binary)), sized_arg=file_binary
+                    )
+                    self.logger.info(f"✅ Successfully parsed delimited file. Rows: {len(all_rows)}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to read rows from delimited file {recordName}: {str(e)}")
+                    all_rows = None
+                has_rows = bool(all_rows)
 
-            if not all_rows:
+            if not has_rows:
                 self.logger.info(f"Delimited file could not be read or is empty for record: {recordName}. Setting indexing status to EMPTY.")
 
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1428,7 +1443,10 @@ class Processor:
             self.logger.debug("📑 Delimited file result processed")
 
             # Detect multiple tables
-            tables = parser.find_tables_in_csv(all_rows)
+            if not in_worker:
+                tables = await offload_if_large(
+                    parser.find_tables_in_csv, all_rows, sized_arg=file_binary
+                )
             self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
 
             record = await self.graph_provider.get_document(
@@ -1470,7 +1488,9 @@ class Processor:
                 details={"error": str(e)},
             ) from e
 
-    async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
+    async def _mark_record(
+        self, record_id, indexing_status: ProgressStatus, reason: str | None = None
+    ) -> None:
         record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
@@ -1490,6 +1510,13 @@ class Processor:
         }
         if indexing_status == ProgressStatus.EMPTY:
             status_update["reason"] = ""
+        elif reason is not None:
+            status_update["reason"] = reason
+        # The parsing-service path writes parsingStatus=IN_PROGRESS before it
+        # dispatches. Left there with processingStartedAt cleared, the record
+        # reads as a crashed parse and stale recovery republishes it for ever.
+        if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+            status_update["parsingStatus"] = indexing_status.value
 
         success = await self.graph_provider.update_node(
             record_id,
@@ -1689,7 +1716,16 @@ class Processor:
             self.logger.debug("📄 Processing Markdown content")
             parser = self.parsers[ExtensionTypes.MD.value]
 
-            modified_markdown, images = parser.extract_and_replace_images(markdown)
+            # Each regex pass over a large document is one C call that holds
+            # the GIL, so a thread would not keep the event loop turning.
+            if parse_pool.should_offload(len(markdown)):
+                modified_markdown, images = await parse_pool.submit(
+                    extract_and_replace_images, markdown, label=recordName, size=len(markdown)
+                )
+            else:
+                modified_markdown, images = await offload_if_large(
+                    parser.extract_and_replace_images, markdown
+                )
             caption_map = {}
 
             # Collect all image URLs
@@ -1756,12 +1792,29 @@ class Processor:
             self.logger.warning(f"Could not read filePath for {record_id}: {e}")
             return None
 
+    async def _skip_code_file(
+        self, record_name: str, record_id: str, size_bytes: int, cause: str, reason: str | None
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """Mark a repository file as not indexed, with the reason people see."""
+        self.logger.info(
+            f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
+        )
+        await self._mark_record(record_id, ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason=reason)
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+
     async def process_code_document(
         self, recordName, recordId, code_binary, virtual_record_id, extension=None,
         file_path: Optional[str] = None,
         event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process a source file into code blocks, yielding phase events."""
+        """Process a source file, or any file from a code repository.
+
+        Source with a grammar becomes code blocks and a data file goes to the
+        parser for its format. Anything else is read as text; for a repository
+        file that is capped at the code size limit, and generated files are
+        skipped (see ``plan_code_file``).
+        """
         self.logger.info(f"🚀 Starting code document processing for record: {recordName}")
 
         try:
@@ -1776,6 +1829,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
+            repository_file = record.get("recordType") == RecordTypes.CODE_FILE.value
             record = convert_record_dict_to_record(record)
 
             # Preserve the repo-relative path so block metadata remains unique
@@ -1783,19 +1837,46 @@ class Processor:
             if not file_path:
                 file_path = await self._lookup_code_file_path(recordId)
             file_path = file_path or recordName
-            language = detect_language(recordName) or detect_language(file_path)
-            if not language and extension:
-                cfg = config_for_extension(extension)
-                if cfg:
-                    language = cfg.name
-            if not language:
+
+            plan = plan_code_file(
+                recordName, file_path, extension, code_binary, repository_file=repository_file
+            )
+
+            if plan.route is CodeFileRoute.SKIP:
+                async for event in self._skip_code_file(
+                    recordName, recordId, len(code_binary), plan.skip_cause.value, plan.skip_reason
+                ):
+                    yield event
+                return
+
+            if plan.route is CodeFileRoute.DELIMITED:
+                self.logger.info(f"{recordName} is a data file; reading it as {plan.parser.upper()}")
+                async for event in self.process_delimited_document(
+                    recordName, recordId, code_binary, virtual_record_id,
+                    extension=plan.parser,
+                    event_type=event_type, prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
+            if plan.route is CodeFileRoute.STRUCTURED:
+                self.logger.info(f"{recordName} is a data file; reading it as {plan.parser.upper()}")
+                async for event in self.process_structured_document(
+                    recordName, recordId, code_binary, virtual_record_id,
+                    extension=plan.parser,
+                    event_type=event_type, prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
+            if plan.route is CodeFileRoute.TEXT:
                 self.logger.info(
                     f"No code grammar for {recordName}; falling back to text parsing"
                 )
                 async for event in self.process_md_document(
                     recordName=recordName,
                     recordId=recordId,
-                    md_binary=code_binary.decode("utf-8", errors="replace"),
+                    md_binary=decode_text(code_binary),
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
@@ -1804,17 +1885,20 @@ class Processor:
                 return
 
             parser = self.parsers[ExtensionTypes.CODE.value]
-            block_containers = parser.parse_to_blocks(
-                code_binary, recordName, file_path, language
+            block_containers = await parser.parse_to_blocks_off_loop(
+                code_binary, recordName, file_path, plan.parser
             )
 
             if block_containers is None:
-                self.logger.info(
-                    f"Code parser skipped {recordName} (oversized); marking as not supported"
-                )
-                await self._mark_record(recordId, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                async for event in self._skip_code_file(
+                    recordName, recordId, len(code_binary), "too_large",
+                    text_file_too_large(
+                        len(code_binary),
+                        code_parser_engine.MAX_FILE_SIZE_BYTES,
+                        repository_file=repository_file,
+                    ),
+                ):
+                    yield event
                 return
 
             if not block_containers.blocks and not block_containers.block_groups:

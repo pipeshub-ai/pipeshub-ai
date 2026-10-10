@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type {
   McpAuthenticatePayload,
   McpCatalogResponse,
@@ -108,6 +109,15 @@ export const McpServersApi = {
 
   async getOAuthConfig(instanceId: string): Promise<McpOAuthConfigResponse> {
     const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/oauth-config`);
+    return data;
+  },
+
+  /** Stored OAuth client id and secret in full. Only where the deployment allows it. */
+  async revealOAuthConfig(instanceId: string): Promise<McpOAuthConfigResponse> {
+    const { data } = await apiClient.get(
+      `${BASE_URL}/instances/${encodeURIComponent(instanceId)}/oauth-config`,
+      { params: REVEAL_PARAMS },
+    );
     return data;
   },
 

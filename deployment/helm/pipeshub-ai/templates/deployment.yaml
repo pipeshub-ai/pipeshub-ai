@@ -104,8 +104,12 @@ spec:
               value: {{ .Values.config.accessibleRecordsCacheTtl | quote }}
             - name: PIPESHUB_SIGNED_URL_CACHE_SECONDS
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
+            - name: PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS
+              value: {{ .Values.config.agentMaxTurnOutputChars | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
+            - name: MCP_ALLOW_CUSTOM_STDIO
+              value: {{ .Values.config.mcpAllowCustomStdio | toString | lower | quote }}
             # Coding sandbox. The service has no default: unset, unknown, or
             # "local" without SANDBOX_ALLOW_LOCAL drops the code tools.
             - name: SANDBOX_MODE
@@ -174,6 +178,8 @@ spec:
               value: {{ .Values.config.kvStoreType | quote }}
             - name: ALLOWED_ORIGINS
               value: {{ .Values.config.allowedOrigins | quote }}
+            - name: PIPESHUB_BLOCK_PRIVATE_ADDRESSES
+              value: {{ .Values.config.blockPrivateAddresses | default "" | quote }}
             - name: SAML_SP_ENTITY_ID
               value: {{ .Values.config.samlSpEntityId | default .Values.config.frontendPublicUrl | default "pipeshub" | quote }}
             
@@ -248,6 +254,10 @@ spec:
               value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
+            - name: FAIR_SCHEDULING_LANE_COUNT
+              value: {{ .Values.messageBroker.laneCount | default "8" | quote }}
+            - name: FAIR_SCHEDULING_LANE_ASSIGNMENT
+              value: {{ .Values.messageBroker.laneAssignment | default "assigned" | quote }}
 
             {{- if eq .Values.messageBroker.type "kafka" }}
             # Kafka config

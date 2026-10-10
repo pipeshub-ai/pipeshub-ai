@@ -230,7 +230,7 @@ class TestInitializeCollectionBasics:
 
 
 @pytest.mark.skip(
-    reason="recreate_records_collection replaced by CollectionRegistry.recreate_all_collections; "
+    reason="recreate_records_collection replaced by CollectionRegistry.recreate_records_collections; "
     "covered by test_collection_registry.py"
 )
 class TestRecreateRecordsCollection:

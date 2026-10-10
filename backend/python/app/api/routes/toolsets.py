@@ -38,6 +38,7 @@ from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_j
 from app.edition_containers import ConnectorAppContainer
 from app.edition_config import (
     REDACTED_PLACEHOLDER,
+    can_reveal_secrets,
     check_user_is_admin,
     get_oauth_credentials_for_toolset,
     get_toolset_by_id,
@@ -242,18 +243,20 @@ def _mask_inline_auth(auth: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _instance_for_response(instance: dict[str, Any], *, is_admin: bool) -> dict[str, Any]:
+def _instance_for_response(
+    instance: dict[str, Any], *, is_admin: bool, reveal: bool = False
+) -> dict[str, Any]:
     """Copy of *instance* that is safe to return.
 
     Its inline ``auth`` holds credentials: non-admins never get it, admins get it
-    masked the way the edition masks OAuth secrets.
+    masked the way the edition masks OAuth secrets unless they asked to see it.
     """
     if "auth" not in instance:
         return instance
     safe = {k: v for k, v in instance.items() if k != "auth"}
     auth = instance["auth"]
     if is_admin and isinstance(auth, dict) and auth:
-        safe["auth"] = _mask_inline_auth(auth)
+        safe["auth"] = dict(auth) if reveal else _mask_inline_auth(auth)
     return safe
 
 
@@ -1434,8 +1437,9 @@ async def get_toolset_instance(
     toolset_type = instance.get("toolsetType", "")
     meta = registry.get_toolset_metadata(toolset_type)
 
+    reveal = is_admin and can_reveal_secrets(request)
     result: dict[str, Any] = {
-        **_instance_for_response(instance, is_admin=is_admin),
+        **_instance_for_response(instance, is_admin=is_admin, reveal=reveal),
         "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
         "description": meta.get("description", "") if meta else "",
         "iconPath": meta.get("icon_path", "") if meta else "",
@@ -1471,7 +1475,9 @@ async def get_toolset_instance(
                     is_inherited_oauth = True
                 if oauth_cfg:
                     cfg_data = oauth_cfg.get("config", {}) or {}
-                    masked = mask_oauth_secrets(cfg_data, is_inherited=is_inherited_oauth)
+                    masked = mask_oauth_secrets(
+                        cfg_data, is_inherited=is_inherited_oauth, reveal=reveal
+                    )
                     oauth_config_dict = {
                         "_id": oauth_cfg.get("_id"),
                         "oauthInstanceName": oauth_cfg.get("oauthInstanceName"),
@@ -2636,7 +2642,11 @@ async def list_toolset_oauth_configs(
         entry["inherited"] = is_inherited
         if is_admin:
             cfg_data = cfg.get("config", {}) or {}
-            entry.update(mask_oauth_secrets(cfg_data, is_inherited=is_inherited))
+            entry.update(
+                mask_oauth_secrets(
+                    cfg_data, is_inherited=is_inherited, reveal=can_reveal_secrets(request)
+                )
+            )
             if "clientSecret" in cfg_data:
                 entry["clientSecretSet"] = bool(cfg_data["clientSecret"])
         org_configs.append(entry)

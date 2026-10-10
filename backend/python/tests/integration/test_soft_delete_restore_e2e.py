@@ -900,6 +900,7 @@ async def test_a_restore_refused_by_a_later_item_leaves_the_other_records_extern
         "item was added again after this one was deleted. To restore this one, delete 'report.pdf' first, "
         "then try again."
     )
+    assert refused.value.details["blockedRecordId"] == world.ids["file_b"]
     assert refused.value.details["conflicting_record_id"] == world.ids["report"]
     await _assert_nothing_moved(world, old_id)
 

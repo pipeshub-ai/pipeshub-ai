@@ -663,6 +663,27 @@ class TestSearchSurvivesQueryTransformationFailure:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_rewrite_that_never_answers_does_not_hold_the_search(self) -> None:
+        """A stalled LLM call gives up at the route's bound, not at the LLM's own timeout of minutes."""
+        request, retrieval = self._build_request(), self._retrieval()
+        async def never(_query: str) -> str:
+            await asyncio.Event().wait()
+            return "unreachable"
+
+        stalled = MagicMock()
+        stalled.ainvoke = never
+
+        with patch("app.api.routes.search.QUERY_TRANSFORM_TIMEOUT_SECONDS", 0.05):
+            response = await asyncio.wait_for(
+                self._search(request, retrieval, stalled, self._chain(returns="angle one")),
+                timeout=5,
+            )
+
+        assert response.status_code == 200
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [QUERY_TEXT, "angle one"]
+        assert any("rewrite" in w and "TimeoutError" in w for w in self._warnings(request))
+
+    @pytest.mark.asyncio
     async def test_an_expansion_repeated_by_the_model_is_searched_once(self) -> None:
         request, retrieval = self._build_request(), self._retrieval()
 

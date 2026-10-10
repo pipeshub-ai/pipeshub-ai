@@ -4,6 +4,7 @@ knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
+from app.config.redaction import can_reveal_secrets
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
     REDACTED_PLACEHOLDER,

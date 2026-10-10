@@ -2,10 +2,12 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 
 import asyncio
 import inspect
+import logging
 import os
 from uuid import uuid4
-from collections.abc import AsyncGenerator, Awaitable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any, Protocol, TypeVar
 
 import uvicorn
@@ -24,6 +26,9 @@ from app.modules.indexing.duplicate_reconcile import (
     retry_pending_duplicate_reconciles,
 )
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
+from app.modules.indexing.record_label_repair import run_record_label_repair_loop
+from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
+from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
@@ -51,11 +56,15 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
+from app.services.messaging.lanes.assignment import lane_assignments_in_use
+from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -151,10 +160,18 @@ async def recover_in_progress_records(
         # container by the time recovery runs) so recovery events go out on the
         # same producer as live retries.
         retry_producer = None
+        read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None
         consumers = getattr(app_container, "kafka_consumers", [])
         if consumers and len(consumers[0]) > 2:
             retry_producer = consumers[0][2]
             record_consumer = consumers[0][1]
+            lane_backlog = getattr(record_consumer, "lane_backlog", None)
+            if lane_backlog is not None:
+                # Not through run_coordination: the consumer hops to the loop
+                # that owns its broker client by itself, with its own timeout.
+                # Read at most once per pass, shared by the sweep and the lane
+                # upkeep below.
+                read_backlog = _read_once(partial(lane_backlog, Topic.RECORD_EVENTS.value))
             if concurrency_manager is None:
                 concurrency_manager = getattr(
                     record_consumer, "concurrency_manager", None
@@ -322,13 +339,16 @@ async def recover_in_progress_records(
                             results["skipped"] += 1
                             return True
 
-                    # Reconstruct the payload from the record data
+                    # Reconstruct the payload from the record data. With the
+                    # connector id the event goes to its connector's own lane;
+                    # without it every recovered record shared the default lane.
                     payload = {
                         "recordId": record_id,
                         "recordName": record.get("recordName"),
                         "orgId": record.get("orgId"),
                         "version": record.get("version", 0),
                         "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
+                        "connectorId": record.get("connectorId"),
                         "extension": record.get("extension"),
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),
@@ -563,6 +583,13 @@ async def recover_in_progress_records(
             run_coordination=run_coordination,
             concurrency_manager=concurrency_manager,
             page_size=page_size,
+            read_backlog=read_backlog,
+        )
+
+        await _upkeep_lanes(
+            graph_provider=graph_provider,
+            read_backlog=read_backlog,
+            logger=logger,
         )
 
         # Vectors whose last referencing record was repointed elsewhere are
@@ -634,6 +661,60 @@ async def recover_in_progress_records(
                     "Failed to release stale-record recovery lease: %s",
                     release_exc,
                 )
+
+
+def _read_once(read: Callable[[], Awaitable[_T]]) -> Callable[[], Awaitable[_T]]:
+    """``read``, run on first call only; later calls get the same answer or error."""
+    outcome: list[tuple[_T | None, BaseException | None]] = []
+
+    async def once() -> _T:
+        if not outcome:
+            try:
+                outcome.append((await read(), None))
+            except Exception as e:
+                outcome.append((None, e))
+        value, error = outcome[0]
+        if error is not None:
+            raise error
+        return value  # type: ignore[return-value]
+
+    return once
+
+
+async def _upkeep_lanes(
+    *,
+    graph_provider: IGraphDBProvider,
+    read_backlog: Callable[[], Awaitable[LaneBacklog]] | None,
+    logger: logging.Logger,
+) -> None:
+    """Keep the Redis Streams lane map in step, when producers place by it.
+
+    Never fails the recovery pass: the map only steers placement, and the
+    next pass tries again.
+    """
+    assignments = lane_assignments_in_use(Topic.RECORD_EVENTS.value)
+    if assignments is None:
+        return
+    backlog: LaneBacklog | None = None
+    if read_backlog is not None:
+        try:
+            backlog = await read_backlog()
+        except Exception as e:
+            # The sweep has already said so; upkeep only skips what needs it.
+            logger.debug("Lane upkeep runs without the backlog this pass: %s", e)
+    try:
+        await run_lane_upkeep(
+            assignments=assignments,
+            graph_provider=graph_provider,
+            backlog=backlog,
+            logger=logger,
+        )
+    except Exception as e:
+        logger.warning(
+            "Queue lane upkeep failed this pass; it runs again next minute: %s: %s",
+            type(e).__name__,
+            e,
+        )
 
 
 # How much of virtualRecordToDocIdMapping one recovery tick will walk. Bounded
@@ -890,6 +971,42 @@ async def _sweep_queued_records_for_inactive_connectors(
     return swept
 
 
+# After each re-send of the same record the wait before the next one doubles,
+# up to this (or the configured minimum age, if that is longer).
+STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS = 24 * 3600.0
+# How far a record's queue time and the broker's timestamp for its event may
+# disagree: the two are stamped by different hosts, and the record is stamped
+# before its event is sent.
+STRANDED_QUEUE_CLOCK_ALLOWANCE_MS = 5 * 60 * 1000
+
+
+def _republishes_since_queued(record: dict[str, Any]) -> int:
+    """How many times the sweep has re-sent this record since it was last put in line."""
+    try:
+        last_republished_at = float(record.get("lastRepublishedAt"))
+    except (TypeError, ValueError):
+        return 0
+    try:
+        if float(record.get("queuedAtTimestamp")) > last_republished_at:
+            # Put in line again since: an earlier wait's re-sends say nothing
+            # about this one.
+            return 0
+    except (TypeError, ValueError):
+        pass
+    try:
+        count = int(record.get("republishCount") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    # A row re-sent before the counter existed has still been re-sent once.
+    return max(1, count)
+
+
+def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
+    cap = max(after_seconds, STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS)
+    # The exponent is clamped only so a corrupt counter cannot overflow.
+    return min(after_seconds * 2 ** min(republishes, 32), cap) * 1000
+
+
 async def _republish_stranded_records(
     *,
     graph_provider,
@@ -898,6 +1015,7 @@ async def _republish_stranded_records(
     run_coordination,
     concurrency_manager,
     page_size: int,
+    read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
 ) -> int:
     """Re-publish records that have been waiting on an event that never came.
 
@@ -907,16 +1025,21 @@ async def _republish_stranded_records(
     published because the send failed after the transaction committed — is
     reachable by neither, so it waits for ever.
 
-    Keyed on age rather than on what QUEUED is supposed to mean. That status is
-    written both by the upsert that precedes publishing and by the publish
-    itself, so it cannot distinguish "the event is on the broker" from "the
-    event was never sent"; age can, and it recovers the row either way.
+    The status cannot say which rows those are: QUEUED is written both by the
+    upsert that precedes publishing and by the publish itself. Age alone
+    cannot either, because a record queued behind a long backlog is just as
+    old as one whose event was lost, and re-sending it lengthens the very
+    backlog it is waiting behind. So the broker is asked (``read_backlog``,
+    once per pass, and only if some record is old enough to need it): a record
+    is left alone while a lane its event could be on still holds work at least
+    as old as the record's own queue time, and re-sent once that lane has moved
+    past it with the record still waiting.
 
-    On by default (one hour); STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0
-    disables it. Keep the threshold comfortably longer than the worst backlog
-    the broker is expected to carry, or healthy records still queued behind it
-    will be re-sent -- harmlessly, since re-publishing is idempotent, but
-    wastefully.
+    STRANDED_RECORD_REPUBLISH_AFTER_SECONDS is the minimum age before a record
+    is looked at at all (one hour by default; 0 disables the sweep). After each
+    re-send the wait before the next doubles, so a record is never re-sent
+    every period for ever -- which is also the whole of the rule on a pass
+    where the broker cannot be read.
 
     Re-publishing is safe to repeat: the handler skips a record that is already
     COMPLETED, and the per-record exclusivity lease stops a republished event
@@ -926,10 +1049,33 @@ async def _republish_stranded_records(
     if after_seconds <= 0:
         return 0
 
-    cutoff_ms = get_epoch_timestamp_in_ms() - int(after_seconds * 1000)
+    pass_started_ms = get_epoch_timestamp_in_ms()
+    cutoff_ms = pass_started_ms - int(after_seconds * 1000)
     # None means "could not read this pass": see the sibling sweep above.
     connector_active: dict[str, bool | None] = {}
     republished = 0
+    considered = 0
+    still_queued = 0
+    backed_off = 0
+    backlog: LaneBacklog | None = None
+    backlog_read = False
+
+    async def _lane_backlog() -> LaneBacklog | None:
+        """The broker's view, read on first use; None if it cannot be read this pass."""
+        nonlocal backlog, backlog_read
+        if not backlog_read:
+            backlog_read = True
+            if read_backlog is not None:
+                try:
+                    backlog = await read_backlog()
+                except Exception as e:
+                    # The type as well: a timeout's own message is empty.
+                    logger.warning(
+                        "Could not read the indexing queue's backlog, so this "
+                        "pass decides on age and back-off alone: %s: %s",
+                        type(e).__name__, e,
+                    )
+        return backlog
 
     async def _is_active(connector_id: str) -> bool:
         if connector_id not in connector_active:
@@ -1020,13 +1166,36 @@ async def _republish_stranded_records(
                     # The sweep above owns these; moving them here would race it.
                     continue
 
-                # A duplicate parked behind an in-flight twin is legitimately
-                # QUEUED with its message already acked — it is released by the
-                # twin's completion, not by us.
-                # Parking writes QUEUED, so a restored file still NOT_STARTED is
-                # not parked, though it keeps the checksum and content id it had.
-                if record.get("md5Checksum") and record.get("virtualRecordId") and not restored_upload:
+                if is_parked_duplicate(record, restored_upload=restored_upload):
                     continue
+
+                considered += 1
+                republishes = _republishes_since_queued(record)
+                if pass_started_ms - last_touched_at < _republish_wait_ms(after_seconds, republishes):
+                    backed_off += 1
+                    continue
+
+                event_type, payload = record_event(
+                    record,
+                    record_key=record_key,
+                    connector_id=connector_id,
+                    restored_upload=restored_upload,
+                )
+
+                # Older work still on a lane this record's event could be on
+                # means the consumer has not got as far as that event yet. A
+                # lane the consumer has paused, or whose head is buffered or in
+                # flight, counts: the broker reports what is not finished, not
+                # what is not delivered.
+                lanes = await _lane_backlog()
+                if lanes is not None:
+                    oldest_waiting = lanes.oldest_waiting_for(payload)
+                    if (
+                        oldest_waiting is not None
+                        and oldest_waiting <= last_touched_at + STRANDED_QUEUE_CLOCK_ALLOWANCE_MS
+                    ):
+                        still_queued += 1
+                        continue
 
                 record_owner = f"stranded:{uuid4().hex}"
                 record_pool = f"record:{record_key}"
@@ -1043,27 +1212,6 @@ async def _republish_stranded_records(
                             # Someone is working on it after all.
                             continue
 
-                    payload = {
-                        "recordId": record_key,
-                        "recordName": record.get("recordName"),
-                        "orgId": record.get("orgId"),
-                        "version": record.get("version", 0),
-                        "connectorName": record.get("connectorName"),
-                        "connectorId": connector_id,
-                        "extension": record.get("extension"),
-                        "mimeType": record.get("mimeType"),
-                        "origin": record.get("origin"),
-                        "recordType": record.get("recordType"),
-                        "virtualRecordId": record.get("virtualRecordId"),
-                    }
-                    version = int(payload.get("version", 0) or 0)
-                    # An upload keeps version 0; a restored one was indexed before.
-                    event_type = (
-                        EventTypes.REINDEX_RECORD.value
-                        if (version > 0 or restored_upload) and payload.get("virtualRecordId")
-                        else EventTypes.NEW_RECORD.value
-                    )
-
                     # The marker is a durable claim written BEFORE the send, not
                     # a receipt written after it. Written after, a Neo4j failure
                     # following a successful Redis send left the record eligible
@@ -1079,7 +1227,10 @@ async def _republish_stranded_records(
                     claimed = await graph_provider.update_node(
                         record_key,
                         CollectionNames.RECORDS.value,
-                        {"lastRepublishedAt": get_epoch_timestamp_in_ms()},
+                        {
+                            "lastRepublishedAt": get_epoch_timestamp_in_ms(),
+                            "republishCount": republishes + 1,
+                        },
                     )
                     if not claimed:
                         logger.error(
@@ -1101,20 +1252,24 @@ async def _republish_stranded_records(
                         )
                     except Exception:
                         # The claim is already persisted, so without this the
-                        # record would wait a full interval before its next
-                        # attempt. Clearing it (best effort) lets the next tick
-                        # retry; if even that fails the record still only
-                        # waits one interval -- bounded either way.
+                        # record would wait out a back-off for a send that
+                        # never happened. Putting back what was there (best
+                        # effort) lets the next tick retry; if even that fails
+                        # the record still only waits one back-off -- bounded
+                        # either way.
                         try:
                             await graph_provider.update_node(
                                 record_key,
                                 CollectionNames.RECORDS.value,
-                                {"lastRepublishedAt": None},
+                                {
+                                    "lastRepublishedAt": record.get("lastRepublishedAt"),
+                                    "republishCount": republishes,
+                                },
                             )
                         except Exception as clear_exc:
                             logger.warning(
-                                "Could not clear republish claim for %s after a "
-                                "failed send; it will retry after the interval: %s",
+                                "Could not undo republish claim for %s after a "
+                                "failed send; it will retry after its back-off: %s",
                                 record_key,
                                 clear_exc,
                             )
@@ -1153,11 +1308,18 @@ async def _republish_stranded_records(
             # not shrink under the cursor — advance over the whole page.
             offset += len(page)
 
-    if republished:
-        logger.warning(
-            "Re-published %d stranded record(s) whose events never arrived",
-            republished,
-        )
+    decided_without_the_queue = backlog_read and backlog is None
+    logger.log(
+        logging.INFO if considered else logging.DEBUG,
+        "Stranded-record sweep: %d considered, %d left alone because their "
+        "queue still holds older work, %d re-published, %d waiting out a "
+        "back-off%s",
+        considered,
+        still_queued,
+        republished,
+        backed_off,
+        " (queue not readable; decided on age alone)" if decided_without_the_queue else "",
+    )
     return republished
 
 
@@ -1251,6 +1413,7 @@ async def start_kafka_consumers(
         record_event_handler = await KafkaUtils.create_record_event_handler(
             app_container, producer=retry_producer
         )
+        connector_off_filter = await app_container.connector_off_filter()
 
         # Same process-wide singleton the ParsingClient/DoclingClient/
         # EmbeddingServerEmbeddings instances used by this consumer's
@@ -1268,6 +1431,7 @@ async def start_kafka_consumers(
             governor=governor,
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
+            connector_off_filter=connector_off_filter,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
@@ -1374,6 +1538,7 @@ async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
 
     app_container = await get_initialized_container()
     app.container = app_container
@@ -1413,6 +1578,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # periodic sampler noticing the pressure it already caused.
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
+    # Large text, code and CSV files are parsed in worker processes
+    # sized from this governor, so they cannot stall the consumer's loop.
+    from app.modules.parsers import parse_pool
+    parse_pool.set_resource_governor(governor)
 
     # This service flips records to COMPLETED, which is when a KB record first
     # becomes searchable — the query service's cached map must be dropped then.
@@ -1461,6 +1630,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_entity_index_rebuild_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.label_repair_future = asyncio.run_coroutine_threadsafe(
+            run_record_label_repair_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -1470,6 +1643,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.entity_index_task = asyncio.create_task(
             run_entity_index_rebuild_loop(app_container, graph_provider)
+        )
+        app.state.label_repair_task = asyncio.create_task(
+            run_record_label_repair_loop(app_container, graph_provider)
         )
 
     yield
@@ -1554,6 +1730,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Error during entity index rebuild future shutdown: {str(e)}")
 
+    label_repair_task = getattr(app.state, "label_repair_task", None)
+    if label_repair_task:
+        if not label_repair_task.done():
+            label_repair_task.cancel()
+        try:
+            await label_repair_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during record label repair shutdown: {str(e)}")
+
+    label_repair_future = getattr(app.state, "label_repair_future", None)
+    if label_repair_future:
+        if not label_repair_future.done():
+            label_repair_future.cancel()
+        try:
+            await asyncio.wrap_future(label_repair_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during record label repair future shutdown: {str(e)}")
+
     # Stop message consumers
     try:
         await stop_kafka_consumers(app_container)
@@ -1603,6 +1801,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+    try:
+        from app.modules.parsers.parse_pool import shutdown_parse_pool
+        if shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down parse worker pool: {e}")
 
 
 from app.api.middlewares.request_context import RequestContextMiddleware
@@ -1658,6 +1863,11 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        # Which connector is on which Redis Streams lane, from the last lane
+        # upkeep this replica ran (the one holding the recovery lock).
+        lane_report = last_lane_report(Topic.RECORD_EVENTS.value)
+        if lane_report is not None:
+            content["lanes"] = lane_report.as_dict()
         return JSONResponse(
             status_code=200,
             content=content,
@@ -1692,6 +1902,7 @@ def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, 
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 

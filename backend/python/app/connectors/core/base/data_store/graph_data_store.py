@@ -39,6 +39,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
@@ -342,8 +343,14 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_record_by_key(self, key: str) -> None:
         self._memo_forget_record(key)
-        # Delete the record node from the records collection
-        return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
+        # The node with its edges: on Neo4j that is the same single DETACH DELETE,
+        # and on ArangoDB the edges no longer dangle after the record is gone.
+        return await self.graph_provider.delete_nodes_and_edges(
+            [key],
+            CollectionNames.RECORDS.value,
+            graph_name="knowledgeGraph",
+            transaction=self.txn,
+        )
 
     async def delete_record_by_external_id(
         self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,
@@ -727,6 +734,14 @@ class GraphTransactionStore(TransactionStore):
         result = await self.graph_provider.batch_upsert_records(
             records, transaction=self.txn, release_trashed_external_ids=release_trashed_external_ids
         )
+        self._memo_forget_upserted(records)
+        return result
+
+    async def upsert_record_under_parent(self, record: Record, parent_record_id: str | None) -> None:
+        await self.graph_provider.upsert_record_under_parent(record, parent_record_id, transaction=self.txn)
+        self._memo_forget_upserted([record])
+
+    def _memo_forget_upserted(self, records: list[Record]) -> None:
         # Forget, never cache, what was just written: the upsert merges into the
         # stored vertex, so the caller's object is not what a read returns (it
         # lacks virtualRecordId, which the upsert never writes), and some record
@@ -740,7 +755,6 @@ class GraphTransactionStore(TransactionStore):
             if external_id and connector_id:
                 # Every visibility: releasing a trashed record's external id renames it.
                 self._memo_drop_external_id(connector_id, external_id)
-        return result
 
     async def batch_upsert_record_groups(self, record_groups: list[RecordGroup]) -> None:
         """
@@ -1030,6 +1044,9 @@ class GraphTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
+    async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
+        await self.graph_provider.create_edges_if_absent(edges, collection, transaction=self.txn)
+
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)
 
@@ -1126,7 +1143,7 @@ class GraphTransactionStore(TransactionStore):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
     ) -> None:
         await self.graph_provider.add_taxonomy_aliases(
             collection, key, aliases, normalized_aliases,

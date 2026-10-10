@@ -17,9 +17,14 @@ from app.config.constants.arangodb import (
     CollectionNames,
     DeleteSource,
     ProgressStatus,
+    RecordRelations,
 )
 from app.models.entities import Person
-from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
+from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 
 FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
     "Records were moved into this folder while it was being deleted, so nothing was deleted. "
@@ -29,6 +34,16 @@ FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
 
 class FolderChangedDuringDelete(RuntimeError):
     """Records were moved into a folder while it was being deleted; nothing was deleted."""
+
+
+class MoveDestinationMissing(RuntimeError):
+    """The parent a record was being moved under is not in the graph, or is in the trash; nothing was written."""
+
+    def __init__(self, record_id: str, parent_record_id: str) -> None:
+        super().__init__(
+            f"Record {record_id} was not moved: its new parent {parent_record_id} "
+            "is not in the graph or is in the trash"
+        )
 
 
 @dataclass(frozen=True)
@@ -747,6 +762,22 @@ class IGraphDBProvider(ABC):
 
         Returns:
             bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def create_edges_if_absent(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """Create the edges that are not there and leave the ones that are untouched.
+
+        The create-only counterpart of :meth:`batch_create_edges`, which replaces an
+        existing edge's properties. For a repair or a re-run that must not reset what
+        a live edge already carries (a sync state, a role). Raises on failure.
+        *edges* take the same generic format.
         """
         pass
 
@@ -1652,6 +1683,27 @@ class IGraphDBProvider(ABC):
             Exception: on query failure.
         """
         pass
+
+    async def update_nodes_fields_if_match(
+        self,
+        collection: str,
+        rows: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """``update_node_fields_if_match`` for many nodes: each row is
+        ``(key, updates, expected)``. Returns the keys whose write applied.
+
+        The default issues one call per row; Neo4j and ArangoDB override it with
+        a single statement. A row whose expectation no longer holds is left
+        unchanged, which is a normal outcome, not an error.
+        """
+        applied: list[str] = []
+        for key, updates, expected in rows:
+            if await self.update_node_fields_if_match(
+                key, collection, updates, expected, transaction
+            ):
+                applied.append(key)
+        return applied
 
     @abstractmethod
     async def update_node_fields_if_match(
@@ -2647,8 +2699,15 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         folder_id: str,
         transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> bool:
-        """Validate that a folder exists and belongs to the KB."""
+        """Validate that a folder exists, belongs to the KB and matches *visibility*.
+
+        LIVE, the default, refuses a folder in the trash, which is never a place to
+        put something. DELETED tells a folder in the trash from one that is not
+        there, so the caller can say which.
+        """
         pass
 
 
@@ -3464,6 +3523,38 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
         """
         pass
+
+    async def upsert_record_under_parent(
+        self,
+        record: "Record",
+        parent_record_id: str | None,
+        transaction: str | None = None,
+    ) -> None:
+        """Upsert a moved *record* and make *parent_record_id* its only PARENT_CHILD parent.
+
+        None leaves it under no parent: the root of its knowledge base. A parent
+        that is not in the graph, or is in the trash, raises ``MoveDestinationMissing``
+        before anything is written: a folder deleted while the move was on its way
+        would take the item out of its old folder and put it in none, and one moved
+        to the trash would hide it there. Records in the trash holding
+        the record's external id give it up, as in ``batch_upsert_records``.
+        Concrete by design: a provider with real transactions keeps the separate
+        calls. Neo4j overrides it with one statement: with the old edge deleted on
+        its own, a move that failed afterwards left the item, and everything
+        beneath it, in no folder at all.
+        """
+        if parent_record_id:
+            parent = await self.get_document(
+                parent_record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
+            if not parent or not is_live_record(parent):
+                raise MoveDestinationMissing(record.id, parent_record_id)
+        await self.delete_parent_child_edge_to_record(record.id, transaction)
+        await self.batch_upsert_records([record], transaction, release_trashed_external_ids=True)
+        if parent_record_id:
+            await self.create_record_relation(
+                parent_record_id, record.id, RecordRelations.PARENT_CHILD.value, transaction
+            )
 
     @abstractmethod
     async def batch_upsert_record_groups(
@@ -6328,6 +6419,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_taxonomy_links(
+        self,
+        record_keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every ``belongsTo*`` edge from the given records to a category,
+        subcategory, topic or language node, with the spelling the record's
+        own extraction gave that node.
+
+        Rows are ``{recordId, collection, entityId, name, canonical,
+        extractedName, migrated}``: ``name`` is the node's stored name,
+        ``canonical`` whether the node is a per-org canonical node (it has a
+        ``normalizedName``), ``extractedName`` the edge's own spelling or
+        None, and ``migrated`` whether the edge was moved off a legacy node.
+        ``app.services.graph_db.taxonomy.TaxonomyLink`` reads them.
+        Departments are not included.
+
+        Raises:
+            Exception: on query failure; a partial answer would read as the
+            records having fewer labels.
+        """
+        pass
+
+    @abstractmethod
     async def get_entity_candidate_records(
         self,
         refs: list[dict[str, Any]],
@@ -6624,7 +6739,7 @@ class IGraphDBProvider(ABC):
         normalized_aliases: list[str],
         *,
         org_id: str,
-        max_aliases: int = 20,
+        max_aliases: int = MAX_TAXONOMY_ALIASES,
         transaction: str | None = None,
     ) -> None:
         """Union ``aliases`` into the node's ``aliases`` list and

@@ -345,6 +345,7 @@
   },
   "form": {
     "leaveBlankToKeep": "Leer lassen, um den vorhandenen Wert zu behalten.",
+    "showStoredValues": "Gespeicherte Werte anzeigen",
     "title": "Titel",
     "description": "Beschreibung",
     "search": "Suchen",
@@ -2240,6 +2241,17 @@
         "addRecords": "Datensätze hinzufügen"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "Verbindung wird getestet…",
+          "egressTitle": "PipesHub in Ihrer Firewall zulassen",
+          "egressDescription": "Wenn {{name}} hinter einer Firewall liegt oder nur bekannte IP-Adressen zulässt, erlauben Sie Verbindungen von:",
+          "copyIp": "IP-Adresse kopieren",
+          "ipCopied": "IP-Adresse kopiert",
+          "copyFailed": "Kopieren nicht möglich",
+          "copyFailedDescription": "Kopieren Sie die Adresse manuell oder erlauben Sie dieser Website den Zugriff auf die Zwischenablage.",
+          "failedTitle": "Verbindung zu {{name}} fehlgeschlagen",
+          "requestFailed": "Die Verbindung konnte nicht getestet werden. Bitte versuchen Sie es erneut."
+        },
         "methodLabel": "Authentifizierungsmethode",
         "methodPlaceholder": "Authentifizierungstyp wählen...",
         "credentialsHeading": "{{name}}-Anmeldedaten",
@@ -2536,7 +2548,8 @@
       "status": {
         "ready": "Bereit",
         "notConnected": "Nicht verbunden",
-        "needsAuth": "Authentifizierung erforderlich"
+        "needsAuth": "Authentifizierung erforderlich",
+        "disabled": "Deaktiviert"
       },
       "team": {
         "title": "MCP-Server",
@@ -2658,7 +2671,13 @@
         "noState": "Es wurde kein State-Parameter zurückgegeben.",
         "backendRejected": "Der Server hat die Autorisierungsanfrage abgelehnt."
       },
-      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden"
+      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden",
+      "stdioPolicy": {
+        "disabledTitle": "In dieser Installation deaktiviert",
+        "disabledDescription": "Benutzerdefinierte STDIO-Server führen einen Befehl auf dem PipesHub-Server aus und bleiben deshalb deaktiviert, bis der Betreiber {{flag}}=true in der Umgebung der Installation setzt (Docker-Compose-.env oder config.mcpAllowCustomStdio in Helm). Bis dahin können Agenten die Tools dieses Servers nicht nutzen. Sie können ihn löschen oder auf einen Remote-Server (HTTP) umstellen.",
+        "unavailableHint": "Server mit lokalem Befehl (STDIO) sind in dieser Installation deaktiviert. Um sie zuzulassen, muss der Betreiber {{flag}}=true setzen.",
+        "enabledWarning": "Dieser Befehl läuft auf dem PipesHub-Server mit den Rechten des Dienstes, einschließlich seines Netzwerkzugriffs und seiner Zugangsdaten. Fügen Sie nur Befehle hinzu, denen Sie vertrauen."
+      }
     },
     "bots": {
       "subtitle": "Konfigurieren Sie Bot-Anmeldedaten und ordnen Sie optional jeden Bot einem Agenten zu",
@@ -4048,6 +4067,9 @@
       "invalid_client": "Die client_id stimmt mit keiner registrierten OAuth-Anwendung überein. Überprüfen Sie die Client-ID in der Konfiguration Ihrer Anwendung.",
       "server_error": "Ein unerwarteter Serverfehler ist aufgetreten. Bitte versuchen Sie es später erneut."
     },
+    "notGrantedHeading": "Diese Anwendung hat auch diese Berechtigungen angefordert. Die Einstellungen der Anwendung erlauben sie nicht, daher erhält sie sie nicht:",
+    "notGrantedOwnerHint": "Die Person, die diese Anwendung erstellt hat, kann sie unter Arbeitsbereich-Einstellungen → Entwicklereinstellungen → OAuth 2.0 Apps hinzufügen.",
+    "notGrantedOfflineAccess": "Die Anwendung bleibt nicht angemeldet. Sie müssen sich erneut anmelden, wenn die Sitzung endet.",
     "unreviewedApp": "Diese Anwendung hat sich selbst registriert. Sie wurde von keinem Administrator geprüft."
   },
   "auth": {

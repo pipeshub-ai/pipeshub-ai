@@ -14,10 +14,14 @@ import asyncio
 from typing import Any, Dict, List, Tuple
 
 from app.models.blocks import BlocksContainer
-from app.modules.parsers.markdown.docling_markdown_parser import (
-    _extract_and_replace_images,
+from app.modules.parsers.markdown.image_references import (
+    extract_and_replace_images as _extract_and_replace_images,
 )
-from app.modules.parsers.markdown.markdown_to_blocks import MarkdownToBlocksConverter
+from app.modules.parsers import parse_pool
+from app.modules.parsers.markdown.markdown_to_blocks import (
+    MarkdownToBlocksConverter,
+    convert_markdown_to_blocks,
+)
 from app.modules.parsers.text_decoding import decode_text
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.services.parsing.interface import ParseResult
@@ -58,10 +62,16 @@ class MarkdownItParser:
         markdown = md_content.strip()
 
         # Regex-based image extraction is synchronous CPU work; keep it off
-        # the event loop.
-        modified_markdown, images = await asyncio.to_thread(
-            self.extract_and_replace_images, markdown
-        )
+        # the event loop. Each regex pass over a large document is one C call
+        # that holds the GIL, so those go to a parse worker process.
+        if parse_pool.should_offload(len(markdown)):
+            modified_markdown, images = await parse_pool.submit(
+                _extract_and_replace_images, markdown, label=record_name, size=len(markdown)
+            )
+        else:
+            modified_markdown, images = await asyncio.to_thread(
+                self.extract_and_replace_images, markdown
+            )
         caption_map: Dict[str, str] = {}
 
         urls_to_convert = [image["url"] for image in images]
@@ -101,13 +111,21 @@ class MarkdownItParser:
 
                 The ``extract_and_replace_images`` step normalises alt-text to
                 unique ``Image_N`` labels, ensuring no key collisions.
-            name: Unused; kept for signature compatibility with other Markdown backends.
+            name: Names the document in logs when it is parsed in a worker process.
             page_number: Optional page number stamped on emitted blocks.
 
         Returns:
             Populated ``BlocksContainer``.
         """
-        del name  # structural parity with :class:`DoclingMarkdownParser`
+        if parse_pool.should_offload(len(md_content)):
+            return await parse_pool.submit(
+                convert_markdown_to_blocks,
+                md_content,
+                caption_map,
+                page_number,
+                label=name or "markdown",
+                size=len(md_content),
+            )
         return await asyncio.to_thread(
             self._converter.convert,
             md_content,

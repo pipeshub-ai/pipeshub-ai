@@ -18,6 +18,11 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import MessageBrokerType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+@pytest.fixture(autouse=True)
+def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
+
+
 
 @pytest.fixture(autouse=True)
 def disable_distributed_concurrency_by_default(monkeypatch):
@@ -44,6 +49,7 @@ def _make_container():
     mock_config_service.close = AsyncMock()
     container.config_service.return_value = mock_config_service
     container.graph_provider = AsyncMock()
+    container.connector_off_filter = AsyncMock(return_value=None)
     mock_producer = AsyncMock()
     mock_producer.send_event = AsyncMock(return_value=True)
     mock_consumer = MagicMock()
@@ -500,6 +506,36 @@ class TestRecoverInProgressRecords:
         assert send_kwargs["topic"] == "record-events"
         assert send_kwargs["payload"]["recordId"] == "r1"
         assert send_kwargs["key"] == "r1"
+
+    async def test_recovered_event_names_its_connector_so_it_goes_to_that_connectors_lane(
+        self,
+    ) -> None:
+        """Without it every recovered record shared the default lane, where one
+        connector's recovered backlog sat in front of everyone else's."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_document = AsyncMock(
+            side_effect=_document_lookup(gp, connector={"_key": "gitlab-1", "isActive": True})
+        )
+        in_progress = [
+            {
+                "_key": "r1",
+                "recordName": "README.md",
+                "version": 0,
+                "orgId": "org1",
+                "connectorId": "gitlab-1",
+                "origin": "CONNECTOR",
+            }
+        ]
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
+        assert producer.send_event.await_args.kwargs["payload"]["connectorId"] == "gitlab-1"
 
     async def test_in_progress_record_reindex_when_version_gt_zero_and_virtual_record_id(self):
         """Record with version > 0 and virtualRecordId is treated as REINDEX_RECORD."""
@@ -1056,6 +1092,30 @@ class TestStartKafkaConsumers:
         assert consumers[0][1] == mock_consumer
         assert consumers[0][2] == mock_producer
 
+    async def test_connector_off_filter_reaches_the_record_consumer(self) -> None:
+        """The container's filter is what lets the consumer settle a turned-off
+        connector's backlog as it is read; built but not passed, it does nothing."""
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        connector_off_filter = MagicMock()
+        mock_container.connector_off_filter = AsyncMock(return_value=connector_off_filter)
+        mock_consumer = MagicMock(start=AsyncMock())
+
+        with (
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.REDIS),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer) as create_consumer,
+        ):
+            await start_kafka_consumers(mock_container)
+
+        assert create_consumer.call_args.kwargs["connector_off_filter"] is connector_off_filter
+
     async def test_distributed_concurrency_failure_aborts_startup(self) -> None:
         """Redis is a startup requirement: an unreachable one fails the boot.
 
@@ -1381,6 +1441,36 @@ class TestIndexingHealthCheck:
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
 
+    async def test_the_queue_lane_view_is_included_once_upkeep_has_run(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+        from app.modules.indexing.lane_upkeep import LaneReport
+
+        report = LaneReport(
+            topic="record-events",
+            updated_at_ms=5,
+            lane_count=8,
+            backlog_read=True,
+            lanes=[{"lane": 0, "stream": "record-events.0"}],
+        )
+        with patch("app.indexing_main.last_lane_report", return_value=report):
+            result = await health_check(_make_health_request())
+
+        body = json.loads(result.body)
+        assert body["lanes"]["laneCount"] == 8
+        assert body["lanes"]["lanes"] == [{"lane": 0, "stream": "record-events.0"}]
+
+    async def test_no_lane_view_before_upkeep_has_run(self) -> None:
+        import json
+
+        from app.indexing_main import health_check
+
+        with patch("app.indexing_main.last_lane_report", return_value=None):
+            result = await health_check(_make_health_request())
+
+        assert "lanes" not in json.loads(result.body)
+
     async def test_stats_failures_are_not_echoed(self):
         """Still healthy; the exceptions go to the log and the payload says only that stats are unavailable."""
         import json
@@ -1461,6 +1551,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_custom_args(self):
@@ -1477,6 +1568,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
 
@@ -1621,6 +1713,7 @@ class TestRunWorkersWarning:
                 log_level="info",
                 reload=True,
                 workers=1,
+                timeout_worker_healthcheck=60,
             )
 
     def test_workers_gt_one_without_reload(self):
@@ -1640,6 +1733,7 @@ class TestRunWorkersWarning:
             log_level="info",
             reload=False,
             workers=4,
+            timeout_worker_healthcheck=60,
         )
 
     def test_workers_from_env_default(self):
@@ -2180,7 +2274,7 @@ def _stranded_env(after_seconds=3600.0):
     )
 
 
-async def _run_stranded(graph, producer=None, concurrency_manager=None):
+async def _run_stranded(graph, producer=None, concurrency_manager=None, read_backlog=None, logger=None):
     from app.indexing_main import _republish_stranded_records
 
     async def run_coordination(coro):
@@ -2188,12 +2282,33 @@ async def _run_stranded(graph, producer=None, concurrency_manager=None):
 
     return await _republish_stranded_records(
         graph_provider=graph,
-        logger=MagicMock(),
+        logger=logger or MagicMock(),
         producer=producer or AsyncMock(),
         run_coordination=run_coordination,
         concurrency_manager=concurrency_manager,
         page_size=100,
+        read_backlog=read_backlog,
     )
+
+
+def _lanes(oldest_waiting_ms: dict[str, float], lanes_for_event=None) -> AsyncMock:
+    """A broker that answers: per lane, when its oldest unfinished event was published."""
+    from app.services.messaging.lanes.backlog import LaneBacklog
+
+    return AsyncMock(return_value=LaneBacklog("record-events", oldest_waiting_ms, lanes_for_event))
+
+
+def _sweep_summary(logger: MagicMock) -> dict[str, int]:
+    """The counters from the sweep's one summary line."""
+    lines = [c.args for c in logger.log.call_args_list if "Stranded-record sweep" in c.args[1]]
+    assert len(lines) == 1, f"expected one summary line per pass, got {len(lines)}"
+    _level, _message, considered, still_queued, republished, backed_off, _note = lines[0]
+    return {
+        "considered": considered,
+        "still_queued": still_queued,
+        "republished": republished,
+        "backed_off": backed_off,
+    }
 
 
 class TestRepublishStrandedRecords:
@@ -2582,4 +2697,452 @@ class TestRepublishClaimIsWrittenBeforeTheSend:
         writes = [c.args[2] for c in graph.update_node.await_args_list]
         assert len(writes) == 2
         assert isinstance(writes[0]["lastRepublishedAt"], int)   # the claim
-        assert writes[1] == {"lastRepublishedAt": None}          # cleared on failure
+        assert writes[0]["republishCount"] == 1
+        # Put back as it was, so the send that never happened costs no back-off.
+        assert writes[1] == {"lastRepublishedAt": None, "republishCount": 0}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_send_keeps_the_back_off_already_earned(self) -> None:
+        """Undoing the claim must not erase the re-sends that did go out."""
+        two_hours_ago = get_epoch_timestamp_in_ms() - 2 * HOUR_MS - 1000
+        row = TestRepublishStrandedRecords._old_record(
+            lastRepublishedAt=two_hours_ago, republishCount=1
+        )
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        graph.update_node = AsyncMock(return_value=True)
+        producer = AsyncMock()
+        producer.send_event = AsyncMock(side_effect=RuntimeError("redis down"))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        writes = [c.args[2] for c in graph.update_node.await_args_list]
+        assert writes[0]["republishCount"] == 2
+        assert writes[1] == {"lastRepublishedAt": two_hours_ago, "republishCount": 1}
+
+
+HOUR_MS = 3600 * 1000
+ALLOWANCE_MS = 5 * 60 * 1000
+
+
+class TestRepublishOnlyWhatTheQueueHasPassed:
+    """A record waiting behind a backlog is as old as one whose event was lost.
+
+    Aged alone, every healthy record still in line was sent another copy each
+    hour once the consumer fell more than an hour behind, and each copy made
+    the backlog longer: about 185,000 duplicate events for about 43,000 GitLab
+    records in a day. The broker knows which is which, so the sweep asks it.
+    """
+
+    @staticmethod
+    def _queued(hours_ago: float, **overrides) -> dict:
+        return TestRepublishStrandedRecords._old_record(
+            queuedAtTimestamp=get_epoch_timestamp_in_ms() - int(hours_ago * HOUR_MS),
+            **overrides,
+        )
+
+    @pytest.mark.asyncio
+    async def test_older_work_still_on_the_lane_means_the_event_has_not_been_reached(self) -> None:
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+        # The consumer is still working through events published five hours ago.
+        backlog = _lanes({"record-events.3": get_epoch_timestamp_in_ms() - 5 * HOUR_MS})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 0
+
+        producer.send_event.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_lane_that_has_moved_past_the_record_means_its_event_is_not_coming(self) -> None:
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+        # Everything published up to an hour ago has been dealt with.
+        backlog = _lanes({"record-events.3": get_epoch_timestamp_in_ms() - HOUR_MS})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 1
+
+        producer.send_event.assert_awaited_once()
+        assert producer.send_event.await_args.kwargs["payload"]["recordId"] == "r1"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_queue_means_its_event_is_not_coming(self) -> None:
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._queued(3)]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=_lanes({})) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("offset_ms, republished", [
+        (-1000, 0),
+        (ALLOWANCE_MS - 1000, 0),
+        (ALLOWANCE_MS + 1000, 1),
+    ], ids=["published just before", "within the clock allowance", "past the clock allowance"])
+    async def test_the_two_clocks_are_allowed_to_disagree_a_little(self, offset_ms: int, republished: int) -> None:
+        """The record is stamped by one host before its event is stamped by another.
+
+        An event at the head of the lane that is a little *newer* than the
+        record's queue time may well be the record's own.
+        """
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        backlog = _lanes({"record-events.3": record["queuedAtTimestamp"] + offset_ms})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, AsyncMock(), read_backlog=backlog) == republished
+
+    @pytest.mark.asyncio
+    async def test_only_the_lanes_the_event_could_be_on_are_asked(self) -> None:
+        """Another connector's backlog must not hold up recovering this record."""
+        record = self._queued(3)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        long_ago = get_epoch_timestamp_in_ms() - 50 * HOUR_MS
+        seen: list[dict] = []
+
+        def lanes_for_event(payload: dict) -> set[str]:
+            seen.append(dict(payload))
+            return {"record-events.3"}
+
+        backlog = _lanes({"record-events.6": long_ago}, lanes_for_event)
+
+        with _stranded_env():
+            assert await _run_stranded(graph, AsyncMock(), read_backlog=backlog) == 1
+
+        # Asked with the payload that will be published, so the lane is the one
+        # the re-sent event would be routed to.
+        assert seen[0]["connectorId"] == "live"
+        assert seen[0]["recordId"] == "r1"
+
+    @pytest.mark.asyncio
+    async def test_the_broker_is_read_once_per_pass_however_many_records(self) -> None:
+        records = [self._queued(3, _key=f"r{i}") for i in range(40)]
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: records}, active_ids={"live"})
+        backlog = _lanes({"record-events.3": get_epoch_timestamp_in_ms() - 5 * HOUR_MS})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, AsyncMock(), read_backlog=backlog) == 0
+
+        backlog.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_broker_is_not_read_when_no_record_is_old_enough(self) -> None:
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._queued(0.5)]}, active_ids={"live"})
+        backlog = _lanes({})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, AsyncMock(), read_backlog=backlog) == 0
+
+        backlog.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_threshold_zero_still_disables_it_without_touching_the_broker(self) -> None:
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._queued(3)]}, active_ids={"live"})
+        producer = AsyncMock()
+        backlog = _lanes({})
+
+        with _stranded_env(0.0):
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 0
+
+        producer.send_event.assert_not_awaited()
+        backlog.assert_not_awaited()
+        graph.get_documents_paginated.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_republished_record_is_then_judged_from_its_republish_time(self) -> None:
+        """Its new event is on the lane now, behind whatever was published meanwhile."""
+        now = get_epoch_timestamp_in_ms()
+        record = self._queued(9, lastRepublishedAt=now - 3 * HOUR_MS, republishCount=1)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+        # Past the original queue time, not yet past the re-sent event.
+        backlog = _lanes({"record-events.3": now - 4 * HOUR_MS})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 0
+
+        producer.send_event.assert_not_awaited()
+
+
+class TestRepublishBackOff:
+    """Each re-send of the same record doubles the wait before the next.
+
+    This is the whole of the rule on a pass where the broker cannot be read,
+    and a bound on everything else: no record is re-sent every period for ever.
+    """
+
+    @staticmethod
+    def _resent(hours_ago: float, count: int | None, **overrides) -> dict:
+        fields = {
+            "queuedAtTimestamp": 1,
+            "lastRepublishedAt": get_epoch_timestamp_in_ms() - int(hours_ago * HOUR_MS),
+            **overrides,
+        }
+        if count is not None:
+            fields["republishCount"] = count
+        return TestRepublishStrandedRecords._old_record(**fields)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("count, hours_ago, republished", [
+        (1, 1.5, 0),
+        (1, 2.5, 1),
+        (2, 3.5, 0),
+        (2, 4.5, 1),
+        (3, 7.5, 0),
+        (3, 8.5, 1),
+        (5, 23.5, 0),
+        (5, 24.5, 1),
+        (40, 24.5, 1),
+    ], ids=[
+        "second waits two hours", "second goes after two", "third waits four hours",
+        "third goes after four", "fourth waits eight hours", "fourth goes after eight",
+        "the wait stops growing at a day", "and goes after a day", "however many times",
+    ])
+    async def test_the_wait_doubles_with_each_resend_up_to_a_day(
+        self, count: int, hours_ago: float, republished: int
+    ) -> None:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._resent(hours_ago, count)]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == republished
+
+        assert producer.send_event.await_count == republished
+
+    @pytest.mark.asyncio
+    async def test_each_resend_is_counted_on_the_record(self) -> None:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._resent(2.5, 1)]}, active_ids={"live"}
+        )
+
+        with _stranded_env():
+            assert await _run_stranded(graph, AsyncMock()) == 1
+
+        claim = graph.update_node.await_args_list[0].args[2]
+        assert claim["republishCount"] == 2
+        assert isinstance(claim["lastRepublishedAt"], int)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_broker_falls_back_to_age_and_back_off(self) -> None:
+        """First re-send at the minimum age, the second only after twice as long."""
+        first = TestRepublishStrandedRecords._old_record(_key="first", queuedAtTimestamp=1)
+        waiting = self._resent(1.5, 1, _key="resent-90-minutes-ago")
+        due = self._resent(2.5, 1, _key="resent-150-minutes-ago")
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [first, waiting, due]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+        logger = MagicMock()
+        unreadable = AsyncMock(side_effect=ConnectionError("broker down"))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=unreadable, logger=logger) == 2
+
+        sent = [c.kwargs["payload"]["recordId"] for c in producer.send_event.await_args_list]
+        assert sent == ["first", "resent-150-minutes-ago"]
+        # Asked once and reported once, not once per record.
+        unreadable.assert_awaited_once()
+        unreadable_warnings = [
+            c.args for c in logger.warning.call_args_list if "backlog" in c.args[0]
+        ]
+        assert len(unreadable_warnings) == 1
+        assert "broker down" in str(unreadable_warnings[0][-1])
+
+    @pytest.mark.asyncio
+    async def test_the_back_off_holds_even_when_the_queue_has_moved_on(self) -> None:
+        """A re-sent event the consumer dropped again is not re-sent every period."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._resent(1.5, 1)]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+        backlog = _lanes({})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 0
+
+        producer.send_event.assert_not_awaited()
+        backlog.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_being_queued_again_starts_the_count_over(self) -> None:
+        """Re-sends from an earlier wait say nothing about this one."""
+        now = get_epoch_timestamp_in_ms()
+        record = TestRepublishStrandedRecords._old_record(
+            lastRepublishedAt=now - 30 * HOUR_MS,
+            republishCount=5,
+            queuedAtTimestamp=now - int(1.5 * HOUR_MS),
+        )
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [record]}, active_ids={"live"})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, AsyncMock()) == 1
+
+        assert graph.update_node.await_args_list[0].args[2]["republishCount"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_row_resent_before_the_counter_existed_counts_as_resent_once(self) -> None:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._resent(1.5, None)]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_longer_minimum_age_is_never_shortened_by_the_cap(self) -> None:
+        """An operator who set two days keeps two days between re-sends."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._resent(30, 3)]}, active_ids={"live"}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env(2 * 24 * 3600.0):
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+
+class TestStrandedSweepSummary:
+    @pytest.mark.asyncio
+    async def test_one_line_per_pass_counts_what_happened_to_each_record(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+
+        def row(key: str, connector: str, **fields) -> dict:
+            return TestRepublishStrandedRecords._old_record(_key=key, connectorId=connector, **fields)
+
+        records = [
+            row("behind-1", "busy", queuedAtTimestamp=now - 3 * HOUR_MS),
+            row("behind-2", "busy", queuedAtTimestamp=now - 3 * HOUR_MS),
+            row("lost", "idle", queuedAtTimestamp=now - 3 * HOUR_MS),
+            row("resent", "idle", queuedAtTimestamp=1, lastRepublishedAt=now - int(1.5 * HOUR_MS), republishCount=1),
+            row("fresh", "idle", queuedAtTimestamp=now - 60_000),
+            row("upload", "idle", origin="UPLOAD", queuedAtTimestamp=now - 3 * HOUR_MS),
+        ]
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: records}, active_ids={"busy", "idle"})
+        producer = AsyncMock()
+        logger = MagicMock()
+        backlog = _lanes(
+            {"busy-lane": now - 5 * HOUR_MS},
+            lambda payload: {"busy-lane"} if payload["connectorId"] == "busy" else {"idle-lane"},
+        )
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog, logger=logger) == 1
+
+        # Too young, and an upload: neither is the sweep's to consider.
+        assert _sweep_summary(logger) == {
+            "considered": 4, "still_queued": 2, "republished": 1, "backed_off": 1,
+        }
+        assert producer.send_event.await_args.kwargs["payload"]["recordId"] == "lost"
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_queue_is_said_on_the_summary_line(self) -> None:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [TestRepublishStrandedRecords._old_record()]},
+            active_ids={"live"},
+        )
+        logger = MagicMock()
+
+        with _stranded_env():
+            await _run_stranded(
+                graph, read_backlog=AsyncMock(side_effect=TimeoutError("slow")), logger=logger
+            )
+
+        assert "queue not readable" in logger.log.call_args.args[-1]
+
+
+class TestRecoveryAsksTheRecordConsumerForItsBacklog:
+    @pytest.mark.asyncio
+    async def test_the_sweep_reads_the_backlog_of_the_record_topic_from_the_consumer(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+        from app.services.messaging.lanes.backlog import LaneBacklog
+
+        now = get_epoch_timestamp_in_ms()
+        container = _make_container()
+        consumer = container.kafka_consumers[0][1]
+        consumer.lane_backlog = AsyncMock(
+            return_value=LaneBacklog("record-events", {"record-events.3": now - 5 * HOUR_MS})
+        )
+        behind = TestRepublishStrandedRecords._old_record(queuedAtTimestamp=now - 3 * HOUR_MS)
+
+        async def _paged(
+            collection, skip=0, limit=50, filters=None, sort_field=None, raise_on_error=False
+        ) -> list[dict]:
+            if collection != CollectionNames.RECORDS.value or skip:
+                return []
+            return [behind] if (filters or {}).get("indexingStatus") == ProgressStatus.QUEUED.value else []
+
+        graph = AsyncMock()
+        graph.get_documents_paginated = AsyncMock(side_effect=_paged)
+        graph.get_document = AsyncMock(return_value={"isActive": True})
+
+        with _stranded_env():
+            await recover_in_progress_records(container, graph)
+
+        consumer.lane_backlog.assert_awaited_once_with("record-events")
+        container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+
+class TestLaneUpkeepInTheRecoveryPass:
+    async def test_the_backlog_is_read_once_and_shared(self) -> None:
+        from app.indexing_main import _read_once
+
+        read = AsyncMock(return_value="backlog")
+        once = _read_once(read)
+
+        assert (await once(), await once()) == ("backlog", "backlog")
+        read.assert_awaited_once()
+
+    async def test_a_failed_read_fails_every_caller_the_same_way_without_reading_again(self) -> None:
+        from app.indexing_main import _read_once
+
+        read = AsyncMock(side_effect=ConnectionError("broker down"))
+        once = _read_once(read)
+
+        for _ in range(2):
+            with pytest.raises(ConnectionError):
+                await once()
+        read.assert_awaited_once()
+
+    async def test_with_hashing_upkeep_does_nothing(self) -> None:
+        from app.indexing_main import _upkeep_lanes
+
+        read = AsyncMock()
+        with patch("app.indexing_main.lane_assignments_in_use", return_value=None), \
+             patch("app.indexing_main.run_lane_upkeep", new_callable=AsyncMock) as upkeep:
+            await _upkeep_lanes(
+                graph_provider=MagicMock(), read_backlog=read, logger=MagicMock(),
+            )
+
+        upkeep.assert_not_awaited()
+        read.assert_not_awaited()
+
+    async def test_upkeep_gets_the_backlog_or_none_and_never_fails_the_pass(self) -> None:
+        from app.indexing_main import _upkeep_lanes
+
+        assignments = MagicMock()
+        logger = MagicMock()
+        with patch("app.indexing_main.lane_assignments_in_use", return_value=assignments), \
+             patch(
+                 "app.indexing_main.run_lane_upkeep",
+                 new_callable=AsyncMock,
+                 side_effect=RuntimeError("redis gone"),
+             ) as upkeep:
+            await _upkeep_lanes(
+                graph_provider=MagicMock(),
+                read_backlog=AsyncMock(side_effect=ConnectionError("broker down")),
+                logger=logger,
+            )
+
+        assert upkeep.await_args.kwargs["backlog"] is None
+        assert upkeep.await_args.kwargs["assignments"] is assignments
+        logger.warning.assert_called_once()

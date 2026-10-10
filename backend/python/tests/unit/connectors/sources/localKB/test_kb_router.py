@@ -1040,6 +1040,18 @@ class TestMoveRecord:
         resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": "f1"})
         assert resp.status_code == 403
 
+    def test_a_folder_in_the_trash_is_answered_with_409_and_its_words(self) -> None:
+        app, kb_svc, _ = _make_app()
+        reason = (
+            "'Archive' is in Recently deleted, so you can't move items into it. "
+            "Restore it first, or choose another folder."
+        )
+        kb_svc.move_record = AsyncMock(return_value={"success": False, "code": 409, "reason": reason})
+        client = TestClient(app)
+        resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": "f1"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == reason
+
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
         kb_svc.move_record = AsyncMock(side_effect=RuntimeError("err"))

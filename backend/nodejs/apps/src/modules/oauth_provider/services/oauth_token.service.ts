@@ -9,7 +9,7 @@ import {
   IOAuthAccessToken,
 } from '../schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
-import { IOAuthApp } from '../schema/oauth.app.schema'
+import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema'
 import {
   InvalidTokenError,
   ExpiredTokenError,
@@ -166,6 +166,10 @@ export class OAuthTokenService {
       result.refreshToken = refreshToken
     }
 
+    if (opts?.recheckAppScopes) {
+      await this.revokeIfScopesWithdrawn(app.clientId, scopes, result)
+    }
+
     this.logger.info('OAuth tokens generated', {
       clientId: app.clientId,
       userId,
@@ -174,6 +178,48 @@ export class OAuthTokenService {
     })
 
     return result
+  }
+
+  /**
+   * updateApp saves a reduced scope list and then revokes the app's tokens.
+   * A grant that read the app before that save can insert its tokens after
+   * the revocation. Reading the app again after the insert closes the gap:
+   * if this read still sees the old scopes, the save and its revocation come
+   * later and catch these tokens; if it sees the new ones, they are revoked
+   * here.
+   */
+  private async revokeIfScopesWithdrawn(
+    clientId: string,
+    scopes: string[],
+    tokens: GeneratedTokens,
+  ): Promise<void> {
+    const current = await OAuthApp.findOne({
+      clientId: { $eq: clientId },
+      isDeleted: false,
+    })
+      .select('allowedScopes')
+      .lean()
+      .exec()
+    if (current && scopes.every((s) => current.allowedScopes.includes(s))) {
+      return
+    }
+
+    const revoked = { isRevoked: true, revokedAt: new Date() }
+    await Promise.all([
+      OAuthAccessToken.updateOne(
+        { tokenHash: { $eq: this.hashToken(tokens.accessToken) } },
+        revoked,
+      ),
+      tokens.refreshToken
+        ? OAuthRefreshToken.updateOne(
+            { tokenHash: { $eq: this.hashToken(tokens.refreshToken) } },
+            revoked,
+          )
+        : Promise.resolve(),
+    ])
+    throw new InvalidGrantError(
+      "The application's permissions changed during sign-in. Sign in again.",
+    )
   }
 
   /**
@@ -296,6 +342,8 @@ export class OAuthTokenService {
       // Filter to only include scopes that were in the original grant
       scopes = requestedScopes.filter((s) => storedToken.scopes.includes(s))
     }
+    // Nor beyond what the app allows now; it may have lost scopes since the grant.
+    scopes = scopes.filter((s) => app.allowedScopes.includes(s))
 
     // Revoke old refresh token (rotation)
     storedToken.isRevoked = true
@@ -311,6 +359,7 @@ export class OAuthTokenService {
       true, // Include new refresh token
       payload.fullName,
       payload.accountType,
+      { recheckAppScopes: true },
     )
 
     this.logger.info('Tokens refreshed', {

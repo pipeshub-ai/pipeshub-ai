@@ -16,7 +16,9 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import {
   ToolsetsApi,
   type BuilderSidebarToolset,
@@ -352,6 +354,47 @@ export function AdminManageActionPanel({
     },
     [selectedOauthRow, t]
   );
+
+  const revealAvailable = useSecretRevealAvailable(oauth);
+  const [revealing, setRevealing] = useState(false);
+  const [revealedConfigId, setRevealedConfigId] = useState('');
+  // The instance GET only carries the OAuth app it is linked to, so a different
+  // app picked in the dropdown has nothing to reveal until it is saved.
+  const canReveal =
+    revealAvailable &&
+    !!selectedOauthRow &&
+    (selectedOauthRow as { inherited?: boolean }).inherited !== true &&
+    selectedOauthRow._id === instance.oauthConfigId &&
+    revealedConfigId !== selectedOauthRow._id;
+  const beginReveal = useRevealScope(`${instanceId}:${selectedOauthConfigId}`);
+
+  const handleReveal = async () => {
+    if (!selectedOauthRow) return;
+    const stillCurrent = beginReveal();
+    setRevealing(true);
+    try {
+      const doc = await ToolsetsApi.getToolsetInstance(instanceId, { reveal: true });
+      const stored = asAuthRecord(doc.oauthConfig);
+      if (!stillCurrent() || !stored || stored._id !== selectedOauthRow._id) return;
+      const next = { ...oauthFieldValues };
+      for (const field of oauthFields) {
+        const current = next[field.name];
+        const value = stored[field.name];
+        const isBlank = current === undefined || current === null || current === '';
+        if (isBlank && typeof value === 'string' && value) next[field.name] = value;
+      }
+      // Showing what is stored is not an edit: keep an untouched form clean.
+      if (stableStringifyRecord(oauthFieldValues) === initialOauthSnapshot) {
+        setInitialOauthSnapshot(stableStringifyRecord(next));
+      }
+      setOauthFieldValues(next);
+      setRevealedConfigId(selectedOauthRow._id);
+    } catch {
+      // The fields stay blank, which still saves as "keep the stored value".
+    } finally {
+      setRevealing(false);
+    }
+  };
 
   const showOauthImpactCallout =
     oauth && oauthFields.length > 0 && stableStringifyRecord(oauthFieldValues) !== initialOauthSnapshot;
@@ -716,6 +759,14 @@ export function AdminManageActionPanel({
             </Flex>
           ) : oauthFields.length > 0 ? (
             <Flex direction="column" gap="3" mt="1">
+              {canReveal ? (
+                <Flex justify="end">
+                  <ShowStoredValuesButton
+                    loading={revealing}
+                    onClick={() => void handleReveal()}
+                  />
+                </Flex>
+              ) : null}
               {oauthFields.map((field) => (
                 <SchemaFormField
                   key={field.name}

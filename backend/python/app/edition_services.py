@@ -14,6 +14,15 @@ from app.connectors.core.registry.oauth_config_registry import (
     get_oauth_config_registry,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+# Which indexing lane a connector is given on Redis Streams, and whether an
+# administrator may move it. An edition can replace either: pin a connector to
+# a lane of its own, weight lanes, or allow admin moves.
+from app.services.messaging.lanes.assignment_policy import (
+    admin_lane_move_allowed as admin_lane_move_allowed,
+)
+from app.services.messaging.lanes.assignment_policy import (
+    choose_connector_lane as choose_connector_lane,
+)
 
 
 def __getattr__(name: str) -> Any:

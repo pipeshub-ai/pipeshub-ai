@@ -14,7 +14,7 @@ import importlib
 import sys
 import types
 from abc import ABC
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -258,6 +258,7 @@ class TestAbstractMethodInventory:
         "get_file_record_by_id",
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
+        "get_record_taxonomy_links",
         "get_entity_candidate_records",
         "get_permitted_entity_records",
         "get_taxonomy_entity_membership",
@@ -316,6 +317,7 @@ class TestAbstractMethodInventory:
         "get_person_by_email",
         "upsert_person_by_email",
         "ensure_app_membership",
+        "create_edges_if_absent",
         "migrate_person_to_user",
         "reap_stale_external_app_relations",
         "get_app_role_by_external_id",
@@ -661,3 +663,99 @@ class TestRecordLinkDefaults:
         instance.create_record_group_relation.assert_awaited_once_with("r1", "new", "tx")
         instance.create_inherit_permissions_relation_record_group.assert_not_awaited()
         instance.delete_edge.assert_not_awaited()
+
+    @staticmethod
+    def _recording(instance: IGraphDBProvider) -> list[tuple]:
+        """Every call to the three writes a move is made of, in the order they ran."""
+        calls: list[tuple] = []
+        for name in ("delete_parent_child_edge_to_record", "batch_upsert_records", "create_record_relation"):
+            getattr(instance, name).side_effect = (
+                lambda *args, _name=name, **kwargs: calls.append((_name, args, kwargs))
+            )
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_another_parent(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        record = MagicMock(id="r1")
+
+        await instance.upsert_record_under_parent(record, "folder-2", "tx")
+
+        instance.get_document.assert_awaited_once_with("folder-2", "records", "tx", raise_on_error=True)
+        assert calls == [
+            ("delete_parent_child_edge_to_record", ("r1", "tx"), {}),
+            ("batch_upsert_records", ([record], "tx"), {"release_trashed_external_ids": True}),
+            ("create_record_relation", ("folder-2", "r1", "PARENT_CHILD", "tx"), {}),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_to_the_root_creates_no_edge(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+
+        await instance.upsert_record_under_parent(MagicMock(id="r1"), None, "tx")
+
+        assert [name for name, _, _ in calls] == ["delete_parent_child_edge_to_record", "batch_upsert_records"]
+        instance.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_that_is_gone_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = None
+
+        # By name: other tests here reload the module, and its classes with it.
+        with pytest.raises(RuntimeError, match="Record r1 was not moved") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_moving_a_record_under_a_parent_in_the_trash_writes_nothing(self) -> None:
+        instance = _make_concrete_class()()
+        calls = self._recording(instance)
+        instance.get_document.return_value = {"_key": "folder-2", "isDeleted": True}
+
+        with pytest.raises(RuntimeError, match="folder-2 is not in the graph or is in the trash") as raised:
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        assert type(raised.value).__name__ == "MoveDestinationMissing"
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_move_whose_old_edge_cannot_be_deleted_writes_nothing_more(self) -> None:
+        instance = _make_concrete_class()()
+        instance.delete_parent_child_edge_to_record.side_effect = RuntimeError("write-write conflict")
+
+        with pytest.raises(RuntimeError, match="write-write conflict"):
+            await instance.upsert_record_under_parent(MagicMock(id="r1"), "folder-2", "tx")
+
+        instance.batch_upsert_records.assert_not_awaited()
+        instance.create_record_relation.assert_not_awaited()
+
+
+class TestBatchedFieldsIfMatchDefault:
+    """Providers without a single-statement version get one conditional write
+    per row, with the same answer: the keys whose expectation held."""
+
+    async def test_writes_each_row_through_the_single_row_method(self) -> None:
+        provider = _make_concrete_class()()
+        calls = []
+
+        async def single(key, collection, updates, expected, transaction=None):  # noqa: ANN202
+            calls.append((key, collection, updates, expected, transaction))
+            return key != "moved-on"
+
+        provider.update_node_fields_if_match = single
+        rows = [
+            ("queued", {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+            ("moved-on", {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+        ]
+
+        applied = await provider.update_nodes_fields_if_match("records", rows, "txn")
+
+        assert applied == ["queued"]
+        assert [c[0] for c in calls] == ["queued", "moved-on"]
+        assert calls[0][1:] == ("records", rows[0][1], rows[0][2], "txn")
