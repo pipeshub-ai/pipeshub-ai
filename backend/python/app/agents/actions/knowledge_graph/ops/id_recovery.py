@@ -78,29 +78,18 @@ def _label(record_id: str, names: Mapping[str, str], shortener: Any) -> str:  # 
     return f"{shown_id} ({name})" if name else shown_id
 
 
-# Where `views.py` prints a node's own id: the `Record ID:`/`Node ID:` line of
-# a header or `Record.to_llm_context()` block, and `record_id=`/`node_id=` on a
-# listing row. Anywhere else (a `* Linked Record ID:` line, a content summary,
-# a hint) the id is mentioned without its row, so its name was not shown.
-_OWN_ID_FIELD = r"(?:^(?:Record|Node) ID: |(?<![\w-])(?:record_id|node_id)=)"
+def ids_in_text(own_lines: Mapping[str, str], text: str) -> list[str]:
+    """The ids whose own line survived into `text`, in the order it shows them.
 
-
-def ids_in_text(record_ids: Iterable[str], text: str, shortener: Any = None) -> list[str]:  # noqa: ANN401
-    """The ids `text` prints as a node's own id, in the order it first does.
-
-    Renderers cut long output at a byte cap, and print the node being viewed
-    before its children, so text order is what the model read first.
+    `own_lines` maps each id to the exact line its renderer prints for it
+    (`views.own_id_lines`). Renderers cut long output at a byte cap; a whole
+    line is required so a name or summary that mentions an id cannot stand
+    in for its row, whose title the model would then never have seen.
     """
-    def printed(rid: str) -> str:
-        return shortener.shorten_if_known(rid) if shortener is not None else rid
-
-    found: dict[str, int] = {}
-    for rid in record_ids:
-        match = re.search(
-            rf"{_OWN_ID_FIELD}{re.escape(printed(rid))}(?![\w-])", text, flags=re.MULTILINE,
-        )
-        if match is not None and rid not in found:
-            found[rid] = match.start()
+    first_line: dict[str, int] = {}
+    for index, line in enumerate(text.split("\n")):
+        first_line.setdefault(line, index)
+    found = {rid: first_line[line] for rid, line in own_lines.items() if line in first_line}
     return sorted(found, key=found.__getitem__)
 
 

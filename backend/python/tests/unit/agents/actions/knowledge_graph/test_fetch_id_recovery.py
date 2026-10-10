@@ -17,6 +17,10 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
 from app.agents.actions.knowledge_graph.ops.id_recovery import ids_in_text
+from app.agents.actions.knowledge_graph.views import (
+    own_id_lines,
+    render_navigation_view,
+)
 from app.modules.agents.qna.chat_state import remember_record_ids
 
 if TYPE_CHECKING:
@@ -240,50 +244,61 @@ class TestUnknownIdRecovery:
         assert "Records returned earlier" not in output.error
 
 
+def _view_with_a_cut_tail() -> tuple[Any, list[Any], str]:
+    """A rendered 200-row view whose last row, `linked`, the 25KB cap cuts,
+    while its id is still mentioned in kept text: the viewed record's
+    `* Linked Record ID:` line, a row's summary and a row's name."""
+    from app.agents.actions.knowledge_graph.models import (
+        NavigationView,
+        NodeRef,
+        NodeRow,
+    )
+
+    linked = "ffffffff-1111-4222-8333-944445555666"
+    rows = [
+        NodeRow(
+            id=f"{i:08x}-1111-4222-8333-944445555666", name=f"Story {i}", node_type="record",
+            sub_type="TICKET", is_record=True, has_children=False, detail=None,
+            web_url="https://example.atlassian.net/browse/" + "x" * 300,
+        )
+        for i in range(200)
+    ]
+    rows[0].context_summary = f"Follows up on record_id={linked}"
+    rows[1].name = f"Copy of record_id={linked}"
+    rows.append(NodeRow(
+        id=linked, name="Hidden title", node_type="record", sub_type="TICKET",
+        is_record=True, has_children=False, detail=None,
+    ))
+    view = NavigationView(
+        current=NodeRef(id=REAL, name="Call notes", node_type="record", sub_type="TICKET", is_record=True),
+        breadcrumbs=[], rows=rows, related=[], pagination=None, web_url=None,
+        indexing_status=None, connector=None,
+        context_block=f"Record ID: {REAL}\nName: Call notes\n* Linked Record ID: {linked}",
+    )
+    return view, rows, linked
+
+
 class TestIdsInText:
-    def test_keeps_only_ids_that_survived_the_byte_cap(self) -> None:
-        text = f"- Call notes | record_id={REAL}\n[truncated]"
-        assert ids_in_text([REAL, OTHER], text) == [REAL]
-
-    def test_a_short_label_is_not_found_inside_a_longer_one(self) -> None:
-        shortener = MagicMock()
-        shortener.shorten_if_known = MagicMock(side_effect={REAL: "R1", OTHER: "R12"}.get)
-        assert ids_in_text([REAL, OTHER], "record_id=R12", shortener) == [OTHER]
-
     def test_an_id_mentioned_outside_its_own_row_does_not_count(self) -> None:
-        """A row the byte cap cut is not shown just because another record's
-        metadata or a summary mentions its id."""
-        from app.agents.actions.knowledge_graph.models import (
-            NavigationView,
-            NodeRef,
-            NodeRow,
-        )
-        from app.agents.actions.knowledge_graph.views import render_navigation_view
-
-        linked = "ffffffff-1111-4222-8333-944445555666"
-        rows = [
-            NodeRow(
-                id=f"{i:08x}-1111-4222-8333-944445555666", name=f"Story {i}", node_type="record",
-                sub_type="TICKET", is_record=True, has_children=False, detail=None,
-                web_url="https://example.atlassian.net/browse/" + "x" * 300,
-            )
-            for i in range(200)
-        ]
-        rows[0].context_summary = f"Follows up on {linked}"
-        rows.append(NodeRow(
-            id=linked, name="Hidden title", node_type="record", sub_type="TICKET",
-            is_record=True, has_children=False, detail=None,
-        ))
-        view = NavigationView(
-            current=NodeRef(id=REAL, name="Call notes", node_type="record", sub_type="TICKET", is_record=True),
-            breadcrumbs=[], rows=rows, related=[], pagination=None, web_url=None,
-            indexing_status=None, connector=None,
-            context_block=f"Record ID: {REAL}\nName: Call notes\n* Linked Record ID: {linked}",
-        )
+        """Not in another record's metadata, a summary, or a name that spells
+        out `record_id=`: only the row's own line shows its title."""
+        view, rows, linked = _view_with_a_cut_tail()
 
         text = render_navigation_view(view, page=1)
-        kept = ids_in_text([r.id for r in rows] + [REAL], text)
+        kept = ids_in_text(own_id_lines(view), text)
 
-        assert linked in text and "Hidden title" not in text
+        assert f"record_id={linked}" in text and "Hidden title" not in text
         assert linked not in kept
-        assert kept[0] == REAL and rows[0].id in kept
+        assert kept[:3] == [REAL, rows[0].id, rows[1].id]
+
+    def test_shortened_ids_are_matched_by_their_printed_label(self) -> None:
+        from app.utils.chat_helpers import RecordIdShortener
+
+        view, rows, linked = _view_with_a_cut_tail()
+        shortener = RecordIdShortener()
+
+        text = render_navigation_view(view, page=1, shortener=shortener)
+        kept = ids_in_text(own_id_lines(view, shortener), text)
+
+        assert kept[:3] == [REAL, rows[0].id, rows[1].id]
+        assert linked not in kept
