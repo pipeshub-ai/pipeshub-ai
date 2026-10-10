@@ -49,6 +49,9 @@ class PageResult:
     lost_leadership: bool = False
     # Nothing was done and the cursor stays: try the same page again later.
     deferred: bool = False
+    # Nothing was done and the cursor stays, but the wait is short: what the
+    # page needs (e.g. capacity downstream) frees up on its own.
+    waiting: bool = False
 
 
 def int_field(value: Any) -> int:  # noqa: ANN401
@@ -90,7 +93,8 @@ class ConnectorSweep(ABC):
     ) -> PageResult: ...
 
     async def tick(self) -> str:
-        """``not_leader``, ``no_apps``, ``idle`` (every connector done), ``page`` or ``deferred``."""
+        """``not_leader``, ``no_apps``, ``idle`` (every connector done), ``page``,
+        ``waiting`` or ``deferred``."""
         if not await self.lock.try_acquire():
             return "not_leader"
         apps = await self.graph.get_all_documents(_APPS)
@@ -120,6 +124,8 @@ class ConnectorSweep(ABC):
         result = await self.process_page(app, app_key, rows)
         if result.deferred:
             return "deferred"
+        if result.waiting:
+            return "waiting"
         if result.lost_leadership:
             self.logger.warning(
                 "%s: lost leadership mid-page | connector=%s after=%s; "
@@ -220,7 +226,7 @@ async def run_connector_sweep_loop(
                     if outcome == "idle":
                         logger.info("%s: every connector is done", name)
                         return
-                    if outcome == "page":
+                    if outcome in ("page", "waiting"):
                         interval = busy_interval_seconds
                     elif outcome == "deferred":
                         interval = deferred_interval_seconds

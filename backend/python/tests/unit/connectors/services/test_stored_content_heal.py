@@ -76,6 +76,18 @@ class HealGraph:
     async def _create_reindex_event_payload(self, record, file_record) -> dict[str, Any]:
         return {"recordId": record["_key"]}
 
+    async def compare_and_set_indexing_status(self, record_ids, expected, new_status, transaction=None) -> list[str]:
+        swapped = [k for k in record_ids if self.records[k].get("indexingStatus") == expected]
+        for k in swapped:
+            self.records[k]["indexingStatus"] = new_status
+        return swapped
+
+    async def get_records_by_record_ids(self, record_ids, org_id, visibility=None) -> list[dict[str, Any]]:
+        return [
+            {**copy.deepcopy(self.records[k]), "_key": k}
+            for k in record_ids if k in self.records and self.records[k]["orgId"] == org_id
+        ]
+
 
 class FakeBlobStore:
     def __init__(self) -> None:
@@ -179,8 +191,10 @@ class TestMissingContentIsRebuilt:
         app = world.graph.apps["conn-a"]
         assert app[StoredContentHealState.STATE] == HEAL_VERSION
         assert app[StoredContentHealState.HEALED] == 1
-        assert app[StoredContentHealState.MISSING] == 1
+        # a3 is a second record of the copy a1's re-index is already rebuilding.
+        assert app[StoredContentHealState.MISSING] == 2
         assert world.graph.apps["conn-b"][StoredContentHealState.HEALED] == 0
+        assert world.graph.apps["conn-b"][StoredContentHealState.MISSING] == 1
 
     async def test_a_record_whose_document_exists_is_untouched(self, world) -> None:
         world.record("a1", "conn-a", "v-ok", doc="d-ok")
@@ -210,20 +224,61 @@ class TestMissingContentIsRebuilt:
 
         assert world.lookups == [(ORG, ["d0", "d1", "d2", "d3", "d4"])]
 
-    async def test_publishes_are_capped_per_tick_and_the_rest_resume_next_tick(self, world) -> None:
+    async def test_no_more_reindexes_are_outstanding_than_the_window(self, world) -> None:
         for i in range(5):
             world.record(f"a{i}", "conn-a", f"v{i}", doc=f"d{i}", exists=False)
-        heal = world.heal(page_size=5, max_reindex_per_tick=2)
+        heal = world.heal(page_size=5, max_in_flight=2)
 
         assert await heal.tick() == "page"
         assert world.reindexed() == ["a0", "a1"]
         assert world.graph.apps["conn-a"][StoredContentHealState.AFTER_KEY] == "a1"
 
+        # Indexing has not finished either: nothing more is published.
+        assert await heal.tick() == "waiting"
+        assert world.reindexed() == ["a0", "a1"]
+
+        world.graph.records["a0"]["indexingStatus"] = "COMPLETED"
+        assert await heal.tick() == "page"
+        assert world.reindexed() == ["a0", "a1", "a2"]
+
+        for key in ("a1", "a2", "a3", "a4"):
+            world.graph.records[key]["indexingStatus"] = "COMPLETED"
+        assert await heal.tick() == "page"
+        for key in world.graph.records:
+            world.graph.records[key]["indexingStatus"] = "COMPLETED"
         await _run_until_idle(heal)
 
         assert world.reindexed() == ["a0", "a1", "a2", "a3", "a4"]
         assert world.graph.apps["conn-a"][StoredContentHealState.HEALED] == 5
-        assert world.graph.apps["conn-a"][StoredContentHealState.MISSING] == 5
+
+    async def test_a_reindexed_holder_is_marked_queued(self, world) -> None:
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+
+        await _run_until_idle(world.heal())
+
+        assert world.graph.records["a1"]["indexingStatus"] == "QUEUED"
+
+    async def test_a_restarted_sweep_does_not_reindex_a_vrid_already_being_indexed(self, world) -> None:
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+        world.record("a2", "conn-a", "v-lost", doc="d-lost", exists=False)
+
+        assert await world.heal(page_size=1).tick() == "page"
+        assert world.reindexed() == ["a1"]
+
+        # A fresh process resumes at a2 with nothing remembered.
+        await _run_until_idle(world.heal(page_size=1))
+
+        assert world.reindexed() == ["a1"]
+
+    async def test_a_vrid_whose_holder_a_sync_is_indexing_is_left_to_it(self, world) -> None:
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+        world.record("b1", "conn-b", "v-lost", doc="d-lost", exists=False, status="IN_PROGRESS")
+
+        await _run_until_idle(world.heal())
+
+        assert world.events == []
+        assert world.graph.apps["conn-a"][StoredContentHealState.HEALED] == 0
+        assert world.graph.apps["conn-a"][StoredContentHealState.ORPHANED] == 0
 
 
 class TestRunsOncePerVersion:

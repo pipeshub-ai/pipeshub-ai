@@ -9,6 +9,10 @@ them once per ``HEAL_VERSION``: per page of a connector's indexed records it
 resolves the mappings, asks storage in one call which documents are gone, and
 force re-indexes one live holder per lost VRID (``StorageCleanupHelper.
 reindex_one_holder``), whose storage write re-points the mapping for all.
+A VRID one of whose holders is already being indexed is left to that run, which
+the graph records, so a restart does not publish it again. At most
+``MAX_IN_FLIGHT`` of the sweep's re-indexes are outstanding at once: a tick
+tops the window up as indexing finishes them, so the pace follows indexing.
 
 It runs in the connectors service, which already publishes these re-index
 events (connector and KB delete) on its message producer. Mechanics are
@@ -26,6 +30,7 @@ from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.base.data_processor.storage_cleanup import (
     MissingDocumentsRouteUnavailable,
     StorageCleanupHelper,
+    indexing_under_way,
 )
 from app.modules.indexing.connector_sweep import (
     ConnectorSweep,
@@ -39,6 +44,7 @@ from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.utils import MessagingUtils
 
 if TYPE_CHECKING:
@@ -52,7 +58,7 @@ HEAL_VERSION = "v1"
 LEADER_KEY = "stored_content_heal:leader"
 PAGE_SIZE = 100
 # Forced re-indexes are full parse/embed runs on the indexing service.
-MAX_REINDEX_PER_TICK = 10
+MAX_IN_FLIGHT = 20
 MAX_ATTEMPTS = 3
 STARTUP_GRACE_SECONDS = 300.0
 BUSY_INTERVAL_SECONDS = 5.0
@@ -120,27 +126,40 @@ class StoredContentHeal(ConnectorSweep):
         publish: Callable[[str, dict], Awaitable[Any]],
         lock: LeaderLock,
         page_size: int = PAGE_SIZE,
-        max_reindex_per_tick: int = MAX_REINDEX_PER_TICK,
+        max_in_flight: int = MAX_IN_FLIGHT,
     ) -> None:
         super().__init__(logger=logger, graph_provider=graph_provider, lock=lock, page_size=page_size)
         self.blob_store = blob_store
         self.storage = storage
         self.publish = publish
-        self.max_reindex_per_tick = max(1, max_reindex_per_tick)
-        # VRIDs re-indexed (or found without a holder) by this process. Their
-        # mapping changes only once indexing finishes, so without this a VRID
-        # seen again on a later page or connector would be re-indexed again.
-        self._handled: set[str] = set()
+        self.max_in_flight = max(1, max_in_flight)
+        # Holders this process re-indexed and their org, until indexing is done
+        # with them. Only the window is lost with the process; the graph still
+        # marks each one under way.
+        self._in_flight: dict[str, str] = {}
+
+    async def _capacity(self) -> int:
+        by_org: dict[str, list[str]] = {}
+        for key, org_id in self._in_flight.items():
+            by_org.setdefault(org_id, []).append(key)
+        still: dict[str, str] = {}
+        for org_id, keys in by_org.items():
+            rows = await self.graph.get_records_by_record_ids(
+                keys, org_id, visibility=RecordVisibility.ALL,
+            )
+            still.update({k: org_id for row in rows or [] if indexing_under_way(row) and (k := key_of(row))})
+        self._in_flight = still
+        return self.max_in_flight - len(still)
 
     async def process_page(
         self, app: dict[str, Any], app_key: str, rows: list[dict[str, Any]],
     ) -> PageResult:
-        candidates = [
-            (row, vrid) for row in rows
-            if (vrid := _indexed_vrid(row)) and vrid not in self._handled
-        ]
+        candidates = [(row, vrid) for row in rows if (vrid := _indexed_vrid(row))]
         if not candidates:
             return PageResult()
+        capacity = await self._capacity()
+        if capacity <= 0:
+            return PageResult(waiting=True)
         lookups = await self.blob_store.get_document_ids_by_virtual_record_ids(
             list(dict.fromkeys(vrid for _, vrid in candidates))
         )
@@ -165,7 +184,9 @@ class StoredContentHeal(ConnectorSweep):
                     exc.status, app_key, org_id,
                 )
                 return PageResult(deferred=True)
-        return await self._heal(app_key, sorted(docs_by_org), rows, candidates, doc_of, missing_docs)
+        return await self._heal(
+            app_key, sorted(docs_by_org), rows, candidates, doc_of, missing_docs, capacity,
+        )
 
     async def _heal(
         self,
@@ -175,17 +196,18 @@ class StoredContentHeal(ConnectorSweep):
         candidates: list[tuple[dict[str, Any], str]],
         doc_of: dict[str, str],
         missing_docs: set[str],
+        capacity: int,
     ) -> PageResult:
         vrid_of_row = {id(row): vrid for row, vrid in candidates}
         checked: set[str] = set()
         missing: set[str] = set()
-        healed = orphaned = failed = published = 0
+        healed = orphaned = failed = 0
         stop_after: str | None = None
         previous_key: str | None = None
         for row in rows:
             vrid = vrid_of_row.get(id(row))
             lost = vrid is not None and vrid in doc_of and doc_of[vrid] in missing_docs
-            if lost and vrid not in missing and published >= self.max_reindex_per_tick:
+            if lost and vrid not in missing and healed >= capacity:
                 stop_after = previous_key
                 break
             previous_key = key_of(row)
@@ -195,13 +217,13 @@ class StoredContentHeal(ConnectorSweep):
             if not lost or vrid in missing:
                 continue
             missing.add(vrid)
-            published += 1
             try:
-                if await self.storage.reindex_one_holder(vrid, self.publish):
+                outcome = await self.storage.reindex_one_holder(vrid, self.publish)
+                if outcome.published:
                     healed += 1
-                else:
+                    self._in_flight[outcome.record_key] = str(row.get("orgId") or org_ids[0])
+                elif not outcome.under_way:
                     orphaned += 1
-                self._handled.add(vrid)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -210,7 +232,7 @@ class StoredContentHeal(ConnectorSweep):
                     "stored_content_heal: could not re-index a holder of VRID %s | connector=%s",
                     vrid, app_key, exc_info=True,
                 )
-            if published % _LEASE_RENEW_EVERY_N_PUBLISHES == 0 and not await self.lock.refresh():
+            if healed and healed % _LEASE_RENEW_EVERY_N_PUBLISHES == 0 and not await self.lock.refresh():
                 return PageResult(lost_leadership=True)
         if missing:
             self.logger.info(

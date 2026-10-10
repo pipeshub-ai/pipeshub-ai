@@ -13,7 +13,12 @@ from typing import Any
 
 import aiohttp
 
-from app.config.constants.arangodb import CollectionNames, EventTypes, RecordTypes
+from app.config.constants.arangodb import (
+    CollectionNames,
+    EventTypes,
+    ProgressStatus,
+    RecordTypes,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     DefaultEndpoints,
@@ -69,6 +74,32 @@ class MissingDocumentsRouteUnavailable(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"storage has no missing-documents route (HTTP {status})")
         self.status = status
+
+
+# A record in one of these is already headed for indexing, and indexing a holder
+# rewrites the VRID's stored content.
+_INDEXING_UNDER_WAY = frozenset({
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+})
+
+
+def indexing_under_way(record: dict | None) -> bool:
+    return bool(record) and record.get("indexingStatus") in _INDEXING_UNDER_WAY
+
+
+@dataclass(frozen=True)
+class HolderReindex:
+    """What ``reindex_one_holder`` did: published a re-index of ``record_key``,
+    found ``record_key`` already being indexed, or found no live holder."""
+
+    published: bool = False
+    record_key: str | None = None
+
+    @property
+    def under_way(self) -> bool:
+        return not self.published and self.record_key is not None
 
 
 class StorageCleanupHelper:
@@ -379,31 +410,36 @@ class StorageCleanupHelper:
         self,
         vrid: str,
         publish: Callable[[str, dict], Awaitable[Any]],
-    ) -> int:
+    ) -> HolderReindex:
         """Force re-index one live record holding ``vrid``; its storage write
         re-points the VRID's mapping at a new document, healing every holder.
 
-        Returns 1 when published, 0 when no live record holds the VRID (its
-        mapping row is then the orphan sweeper's to drop). Raises when the
-        event could not be published.
+        Nothing is published while a holder is already being indexed: that run
+        rewrites the content too. A published holder is marked QUEUED, as a
+        manual re-index marks it, so the next caller (or the next process) sees
+        it under way. With no live holder nothing is published (the mapping row
+        is then the orphan sweeper's to drop). Raises when the event could not
+        be published.
         """
         holders = await self.graph_provider.get_records_by_virtual_record_id(
             vrid, raise_on_error=True
         )
         record = None
         for key in holders:
-            record = await self.graph_provider.get_document(key, CollectionNames.RECORDS.value)
-            if record:
-                break
+            doc = await self.graph_provider.get_document(key, CollectionNames.RECORDS.value)
+            if indexing_under_way(doc):
+                return HolderReindex(record_key=key)
+            record = record or doc
         if not record:
             self.logger.warning(
                 "No live record found for shared VRID %s; nothing re-indexed", vrid
             )
-            return 0
+            return HolderReindex()
+        record_key = record.get("_key") or record.get("id")
         file_record = None
         if record.get("recordType") == RecordTypes.FILE.value:
             file_record = await self.graph_provider.get_document(
-                record.get("_key") or record.get("id"), CollectionNames.FILES.value
+                record_key, CollectionNames.FILES.value
             )
         payload = await self.graph_provider._create_reindex_event_payload(record, file_record)
         payload["forceReindex"] = True
@@ -418,7 +454,19 @@ class StorageCleanupHelper:
         # Publishers report failure by returning False rather than raising.
         if sent is False:
             raise RuntimeError("re-index event was not published")
-        return 1
+        # After the publish, never before (a record marked QUEUED for an event
+        # that never left is stuck), and conditional: indexing may already have
+        # moved it on.
+        try:
+            await self.graph_provider.compare_and_set_indexing_status(
+                [record_key], record.get("indexingStatus"), ProgressStatus.QUEUED.value,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Re-index of %s for VRID %s published but not marked QUEUED: %s",
+                record_key, vrid, e,
+            )
+        return HolderReindex(published=True, record_key=record_key)
 
     async def find_missing_documents(self, org_id: str, document_ids: list[str]) -> list[str]:
         """The ids storage cannot serve for the org: absent or deleted, as download sees it.

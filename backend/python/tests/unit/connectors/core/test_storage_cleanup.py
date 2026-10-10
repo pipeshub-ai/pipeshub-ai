@@ -1053,7 +1053,9 @@ class TestReindexOneHolder:
         )
         publish = AsyncMock()
 
-        assert await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish) == 1
+        outcome = await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish)
+
+        assert outcome.published and outcome.record_key == "r-team"
 
         topic, event = publish.await_args.args
         assert topic == "record-events"
@@ -1066,8 +1068,53 @@ class TestReindexOneHolder:
         gp = self._graph(holders_by_vrid={"v1": ["r-gone"]}, docs={})
         publish = AsyncMock()
 
-        assert await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish) == 0
+        outcome = await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish)
+
+        assert not outcome.published and not outcome.under_way
         publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["NOT_STARTED", "QUEUED", "IN_PROGRESS"])
+    async def test_nothing_is_published_while_a_holder_is_being_indexed(self, status):
+        gp = self._graph(
+            holders_by_vrid={"v1": ["r-done", "r-busy"]},
+            docs={
+                "r-done": {"_key": "r-done", "indexingStatus": "COMPLETED"},
+                "r-busy": {"_key": "r-busy", "indexingStatus": status},
+            },
+        )
+        publish = AsyncMock()
+
+        outcome = await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish)
+
+        assert outcome.under_way and outcome.record_key == "r-busy"
+        publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_published_holder_is_marked_queued_from_its_current_status(self):
+        gp = self._graph(
+            holders_by_vrid={"v1": ["r1"]},
+            docs={"r1": {"_key": "r1", "indexingStatus": "FAILED"}},
+        )
+        calls = []
+        publish = AsyncMock(side_effect=lambda *a: calls.append("publish") or True)
+        gp.compare_and_set_indexing_status = AsyncMock(
+            side_effect=lambda *a, **kw: calls.append("mark") or ["r1"]
+        )
+
+        await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish)
+
+        assert calls == ["publish", "mark"]
+        gp.compare_and_set_indexing_status.assert_awaited_once_with(["r1"], "FAILED", "QUEUED")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_queued_mark_still_reports_the_publish(self):
+        gp = self._graph(holders_by_vrid={"v1": ["r1"]}, docs={"r1": {"_key": "r1"}})
+        gp.compare_and_set_indexing_status = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        outcome = await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", AsyncMock())
+
+        assert outcome.published
 
     @pytest.mark.asyncio
     async def test_a_publish_reporting_failure_raises(self):
