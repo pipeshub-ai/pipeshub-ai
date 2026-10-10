@@ -29,10 +29,10 @@ the delete:
 * a record or folder delete leaves storage alone, so ``assert_unchanged``
   counts the envelope where it was before the delete: "unchanged" means those
   bytes are still there.
-* a connector or collection delete removes its whole ``records/{id}`` tree,
-  shared envelope included, then re-indexes one surviving holder
-  (``repair_shared_records``), which files a new envelope under the holder's
-  own place. ``assert_rebuilt`` checks the content is whole again there.
+* a connector or collection delete first hands each shared envelope over to
+  one surviving holder (``StorageCleanupHelper.release_connector_storage``),
+  moving it under the holder's own place, then removes the rest of its
+  ``records/{id}`` tree. ``assert_handed_over`` checks the content is whole there.
 """
 
 from __future__ import annotations
@@ -457,7 +457,7 @@ def store_changes(
     return changes
 
 
-async def wait_for_rebuild(
+async def wait_for_handover(
     graph: "GraphProviderProtocol",
     mongo: "MongoStoreProbe",
     *,
@@ -466,20 +466,20 @@ async def wait_for_rebuild(
     holder: Tracked,
     timeout: int = 480,
 ) -> str:
-    """The folder the survivor's re-index filed the shared content in, once that re-index has settled."""
+    """The folder the shared content was handed over to under the survivor, once its record has settled."""
     folder = records_folder(org_id, connector_id)
     path = await mongo.envelope_path(org_id, str(holder.virtual_record_id), within=folder, timeout=timeout)
     assert is_within(path, folder), (
-        f"The shared content {holder.virtual_record_id} was rebuilt at {path!r}, not under "
+        f"The shared content {holder.virtual_record_id} was filed at {path!r}, not under "
         f"{folder!r} where its surviving holder {holder.name} lives."
     )
-    # The re-index owns the content, so it runs enrichment too, and the summary vector
-    # it writes last is counted against the one the deleted copy had.
+    # The summary vector is counted against the one the deleted copy had; a
+    # holder still being enriched when the delete ran has none yet.
     await wait_for_connector_records(graph, connector_id, [holder.name], timeout=timeout, enriched=True)
     return path
 
 
-async def assert_rebuilt(
+async def assert_handed_over(
     before: StoresFootprint,
     graph: "GraphProviderProtocol",
     vector: "VectorStoreProbe",
@@ -495,13 +495,12 @@ async def assert_rebuilt(
     """Shared content whose envelope went with a connector or collection is whole again under *holder*.
 
     *before* counted it where it was filed before the delete. Edges are not
-    compared: the re-index re-runs extraction, which reconciles the record's
-    category and topic edges afresh.
+    compared: the holder's own category and topic edges are its own.
     """
     vrid = str(holder.virtual_record_id)
     old = before.envelope_paths.get(vrid)
     assert old, f"{what}: no envelope of {vrid} was counted before the delete, so there is nothing to compare."
-    new = await wait_for_rebuild(graph, mongo, org_id=org_id, connector_id=connector_id, holder=holder)
+    new = await wait_for_handover(graph, mongo, org_id=org_id, connector_id=connector_id, holder=holder)
     nodes_now = await graph.count_existing_nodes(before.graph.handles)
     after = await capture_when_stable(
         before.graph, vector, blob, mongo,
@@ -512,7 +511,7 @@ async def assert_rebuilt(
         f"graph nodes {len(before.graph.handles)} -> {nodes_now}"
     ]
     changes += store_changes(before, after, moved={old: new})
-    assert not changes, f"{what} was not rebuilt whole under {new!r}: " + "; ".join(changes)
+    assert not changes, f"{what} is not whole under {new!r}: " + "; ".join(changes)
 
 
 async def settle(check, what: str) -> None:
