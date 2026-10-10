@@ -399,6 +399,8 @@ def remember_record_ids(
     not resolve can point the model back at what it was actually given
     (`knowledge_graph/ops/id_recovery.py`). Only tools that applied the
     user's permissions may write here: that list is shown to the model.
+    Within one call the first id counts as the most recent: tools put what
+    matters first, so a cap on the list must keep the top of a long listing.
     """
     if state is None:
         return
@@ -415,7 +417,7 @@ def remember_record_ids(
     if not isinstance(shown, dict):
         shown = {}
         state["known_record_names"] = shown
-    for rid in ordered:
+    for rid in reversed(ordered):
         previous = shown.pop(rid, "")
         shown[rid] = (names or {}).get(rid) or previous
 

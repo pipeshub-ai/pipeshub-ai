@@ -78,6 +78,17 @@ def _label(record_id: str, names: Mapping[str, str], shortener: Any) -> str:  # 
     return f"{shown_id} ({name})" if name else shown_id
 
 
+def ids_in_text(record_ids: Iterable[str], text: str, shortener: Any = None) -> list[str]:  # noqa: ANN401
+    """The ids that survived into `text`; renderers cut long output at a byte cap."""
+    def printed(rid: str) -> str:
+        return shortener.shorten_if_known(rid) if shortener is not None else rid
+
+    return [
+        rid for rid in record_ids
+        if re.search(rf"(?<![\w-]){re.escape(printed(rid))}(?![\w-])", text)
+    ]
+
+
 def unresolved_id_hint(
     unresolved: list[str],
     *,
@@ -112,7 +123,7 @@ def unresolved_id_hint(
     lines.extend(f"- {_label(rid, known_record_names, shortener)}" for rid in listed)
 
     for wanted in unresolved:
-        match = closest_record_id(wanted, shown)
+        match = closest_record_id(wanted, listed)
         if match is None:
             continue
         label = _label(match, known_record_names, shortener)
