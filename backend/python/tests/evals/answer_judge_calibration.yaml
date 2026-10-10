@@ -12,8 +12,8 @@
 # pass/fail decisions agree with these labels less than 95% of the time.
 #
 # The facts come from the Acme Corp fixture: the expense policy's approval
-# bands, PR #482's review, the export fix, the on-call handbook, the exports
-# launch and the 2026 holiday carry-over change.
+# bands, PR #482's review, the export fix, the Northwind renewal, the on-call
+# handbook, the exports launch and the 2026 holiday carry-over change.
 
 cases:
   # --- Expense approvals: the edge at $250 -------------------------------------
@@ -477,6 +477,60 @@ cases:
     claims:
       - state: "The emailed download link is valid for 24 hours."
         expect: contradicted
+
+  # --- The Northwind renewal ----------------------------------------------------------
+  # The first two are nightly answers (2026-10-07 and 2026-10-09) that were failed
+  # as contradicting "no longer at risk". Both are right: the renewal is on track
+  # and still has to be signed.
+  - id: northwind-on-track-remaining-risk-is-signing
+    about: on track, plus the signature still to come called "the remaining risk"
+    answer: |
+      In the Acme Corp demo data, Northwind Traders is no longer considered at risk. The account plan, updated Apr 16, now marks it "on track," with renewal expected on time.
+      It was at risk in early April, when the export failures broke their monthly reporting and they were evaluating alternatives.
+      Engineering shipped the export fix in PR #211, and Omar and Bob checked their first export with them on the 16 April call.
+      The remaining risk is execution—getting the proposal agreed and signed by the target date, while converting the potential expansion to approximately 600 seats.
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: northwind-on-track-closing-depends-on-conditions
+    about: on track, while closing depends on the deal desk's conditions
+    answer: |
+      In the Acme Corp demo data, Northwind Traders' renewal was at risk in early April but is now considered on track.
+      The deal desk approved a 14% discount, conditional on a three-year term and an expansion to 600 seats.
+      Bottom line: the operational risk appears resolved and the renewal is currently on track, but closing the renewal still depends on delivering the conditions the deal desk set.
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: northwind-no-longer-at-risk-paraphrase
+    about: '"no longer at risk" and "renew on time" without the words "on track"'
+    answer: "Northwind is no longer at risk: they have stopped evaluating alternatives and expect to renew on time."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: northwind-still-at-risk
+    about: the 10 April view, given as the current one
+    answer: |
+      Yes, the Northwind renewal is at risk. Their ops lead says exports have failed all month and they are looking at options before 30 June.
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: contradicted
+
+  - id: northwind-hedged
+    about: on track, hedged
+    answer: "The renewal seems to be back on track after the export fix, but please confirm with Omar before relying on that."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: [missing, contradicted]
+
+  - id: northwind-history-only
+    about: the at-risk history with no current status
+    answer: "Northwind's renewal was at risk in early April, because their monthly exports kept failing."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: [missing, contradicted]
 
   # --- On-call handbook -------------------------------------------------------------
   - id: oncall-full

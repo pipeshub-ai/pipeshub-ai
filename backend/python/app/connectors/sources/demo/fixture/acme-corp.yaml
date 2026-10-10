@@ -1642,8 +1642,12 @@ pack_questions:
       # #deals thread is the at-risk moment, so it can't stand in for the call notes.
       must_cite: [drive-sales-northwind-plan, drive-sales-northwind-call-0416]
       answer_must_mention: ["Northwind"]
+      # "On track" is the account plan's own word. "No longer at risk" was failed
+      # as contradicted whenever a right answer added that the renewal still has
+      # to be signed (the call notes' target is 31 May), because any risk at all
+      # conflicts with "no longer at risk"; it does not conflict with "on track".
       answer_must_state:
-        - "The Northwind Traders renewal is no longer at risk."
+        - "The Northwind Traders renewal is now on track."
       must_not_cite: [drive-pricing-2026, drive-billing-resilience]
       personas: { alice: cites, bob: cites }
     - id: s2
