@@ -111,12 +111,53 @@ def _row_line(
 # ---------------------------------------------------------------------------
 
 
+def _name_line(block_lines: list[str]) -> int:
+    """Index of a `Record.to_llm_context()` block's `Name:` line, which follows
+    its `Record ID:` line: a node counts as shown once both were emitted."""
+    return min(1, len(block_lines) - 1)
+
+
+def _cap(lines: list[str], owners: list[tuple[int, str]], *, strip: bool = False) -> tuple[str, list[str]]:
+    """Join `lines`, cut at `_MAX_RESPONSE_BYTES`, and list the ids whose own
+    line (`owners`: line index, id) was emitted whole, in emission order.
+
+    Taken from the structure rather than parsed back out of the text, so a
+    name or summary that spells out another node's id cannot count for it.
+    """
+    joined = "\n".join(lines)
+    text = joined.strip() if strip else joined
+    lead = len(joined.encode("utf-8")) - len(joined.lstrip().encode("utf-8")) if strip else 0
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _MAX_RESPONSE_BYTES:
+        return text, list(dict.fromkeys(rid for _, rid in owners))
+    text = encoded[:_MAX_RESPONSE_BYTES].decode("utf-8", errors="ignore") + "\n" + _TRUNCATION_LINE
+    kept: list[bool] = []
+    start = 0
+    for line in lines:
+        end = start + len(line.encode("utf-8"))
+        kept.append(end - lead <= _MAX_RESPONSE_BYTES)
+        start = end + 1
+    emitted = list(dict.fromkeys(rid for index, rid in owners if kept[index]))
+    return text, emitted
+
+
 def render_navigation_view(
     view: NavigationView,
     page: int,
     shortener: "RecordIdShortener | None" = None,
 ) -> str:
-    """Render a NavigationView to the flat-text format the agent sees.
+    """`render_navigation_view_with_ids` without the emitted ids."""
+    return render_navigation_view_with_ids(view, page, shortener)[0]
+
+
+def render_navigation_view_with_ids(
+    view: NavigationView,
+    page: int,
+    shortener: "RecordIdShortener | None" = None,
+) -> tuple[str, list[str]]:
+    """Render a NavigationView to the flat-text format the agent sees, plus
+    the ids of the nodes whose own line made it past the byte cap, in the
+    order they were emitted (the viewed node first).
 
     page > 1 omits header / breadcrumbs / related to save tokens.
     Record nodes print their full `Record.to_llm_context()` block and a
@@ -130,6 +171,7 @@ def render_navigation_view(
     text) is shortened via its regex-based text path instead.
     """
     lines: list[str] = []
+    owners: list[tuple[int, str]] = []
 
     if page == 1:
         # Breadcrumbs line
@@ -155,7 +197,9 @@ def render_navigation_view(
                 context_block = view.context_block
                 if shortener is not None:
                     context_block = shortener.shorten_record_ids_in_text(context_block)
-                lines.append(context_block)
+                block_lines = context_block.split("\n")
+                owners.append((len(lines) + _name_line(block_lines), cur.id))
+                lines.extend(block_lines)
                 if view.indexing_status and view.indexing_status != "COMPLETED":
                     lines.append(f"Indexed: {view.indexing_status}")
             else:
@@ -166,6 +210,7 @@ def render_navigation_view(
                 meta = " | ".join(filter(None, [f"Type: {type_str}", connector_str, indexed_str]))
                 if meta:
                     lines.append(meta)
+                owners.append((len(lines), cur.id))
                 lines.append(f"{cur.display_id_label}: {_short(cur.id, shortener)}")
                 if view.web_url:
                     lines.append(f"URL: {view.web_url}")
@@ -181,6 +226,7 @@ def render_navigation_view(
         else:
             lines.append("\nChildren:")
         for row in view.rows:
+            owners.append((len(lines), row.id))
             lines.append(_row_line(row, shortener))
     elif view.current:
         lines.append("\n(no children)")
@@ -191,6 +237,7 @@ def render_navigation_view(
     if page == 1 and view.related:
         lines.append("\nRelated:")
         for row in view.related:
+            owners.append((len(lines), row.id))
             lines.append(_row_line(row, shortener))
 
     # Next-step hints
@@ -234,11 +281,7 @@ def render_navigation_view(
     if hints:
         lines.append("\nNext: " + " | ".join(hints))
 
-    result = "\n".join(lines)
-    encoded = result.encode("utf-8")
-    if len(encoded) > _MAX_RESPONSE_BYTES:
-        result = encoded[:_MAX_RESPONSE_BYTES].decode("utf-8", errors="ignore") + "\n" + _TRUNCATION_LINE
-    return result
+    return _cap(lines, owners)
 
 
 # ---------------------------------------------------------------------------
@@ -279,31 +322,16 @@ def _render_match(m: LookupMatch, shortener: "RecordIdShortener | None" = None) 
     return lines
 
 
-def own_id_lines(
-    view: NavigationView, shortener: "RecordIdShortener | None" = None,
-) -> dict[str, str]:
-    """The exact line `render_navigation_view` prints each node's own id on.
-
-    The viewed node's header line is `Record ID: <id>` in both of its shapes
-    (`Record.to_llm_context()` starts with it); rows print `_row_line`.
-    """
-    lines: dict[str, str] = {}
-    if view.current:
-        lines[view.current.id] = f"{view.current.display_id_label}: {_short(view.current.id, shortener)}"
-    for row in (*view.rows, *view.related):
-        lines.setdefault(row.id, _row_line(row, shortener))
-    return lines
-
-
-def lookup_id_lines(
-    result: LookupResult, shortener: "RecordIdShortener | None" = None,
-) -> dict[str, str]:
-    """The exact line `render_lookup_result` prints each match's id on."""
-    return {m.id: f"Record ID: {_short(m.id, shortener)}" for m in result.matches}
-
-
 def render_lookup_result(result: LookupResult, shortener: "RecordIdShortener | None" = None) -> str:
-    """Render a LookupResult to flat text.
+    """`render_lookup_result_with_ids` without the emitted ids."""
+    return render_lookup_result_with_ids(result, shortener)[0]
+
+
+def render_lookup_result_with_ids(
+    result: LookupResult, shortener: "RecordIdShortener | None" = None,
+) -> tuple[str, list[str]]:
+    """Render a LookupResult to flat text, plus the ids of the matches whose
+    id line made it past the byte cap, in the order they were emitted.
 
     Found records are listed with their full `Record.to_llm_context()`
     block plus a self-teaching `Next:` hint (same pattern as
@@ -318,10 +346,16 @@ def render_lookup_result(result: LookupResult, shortener: "RecordIdShortener | N
     `render_navigation_view`.
     """
     lines: list[str] = []
+    owners: list[tuple[int, str]] = []
 
     if result.matches:
         for m in result.matches:
-            lines.extend(_render_match(m, shortener))
+            block = [part for entry in _render_match(m, shortener) for part in entry.split("\n")]
+            id_line = _name_line(block) if m.context_block else next(
+                i for i, line in enumerate(block) if line.startswith("Record ID: ")
+            )
+            owners.append((len(lines) + id_line, m.id))
+            lines.extend(block)
             if len(result.matches) > 1:
                 lines.append(f"Matched by: {m.identifier_used}")
             lines.append("")
@@ -343,8 +377,4 @@ def render_lookup_result(result: LookupResult, shortener: "RecordIdShortener | N
             else:
                 lines.append(f"Not found (or no access): {ident}")
 
-    text = "\n".join(lines).strip()
-    encoded = text.encode("utf-8")
-    if len(encoded) > _MAX_RESPONSE_BYTES:
-        text = encoded[:_MAX_RESPONSE_BYTES].decode("utf-8", errors="ignore") + "\n" + _TRUNCATION_LINE
-    return text
+    return _cap(lines, owners, strip=True)
