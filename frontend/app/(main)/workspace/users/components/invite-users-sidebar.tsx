@@ -288,7 +288,7 @@ export function InviteUsersSidebar({
           ),
           description: t(
             'workspace.users.actions.maxAdminsReached',
-            'An organization can have at most 5 admins.'
+            'An organization can have at most 1 admin.'
           ),
           duration: 5000,
         });

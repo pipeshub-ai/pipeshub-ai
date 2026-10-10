@@ -1164,8 +1164,13 @@
         "changeRoleSuccess": "Rolle aktualisiert",
         "changeRoleSuccessDescription": "{{name}} ist jetzt {{role}}",
         "changeRoleError": "Rolle konnte nicht geändert werden",
+        "transferAdmin": "Adminrolle übergeben",
+        "transferAdminConfirmTitle": "Adminrolle übergeben?",
+        "transferAdminConfirmMessage": "{{name}} wird Admin und Sie werden Mitglied. Sie werden beide abgemeldet, damit die Änderung wirksam wird.",
+        "transferAdminConfirmButton": "Übergeben",
+        "transferAdminError": "Die Adminrolle konnte nicht übergeben werden",
         "maxAdminsReachedTitle": "Weiterer Admin nicht möglich",
-        "maxAdminsReached": "Eine Organisation kann höchstens 5 Admins haben.",
+        "maxAdminsReached": "Eine Organisation kann höchstens 1 Admin haben.",
         "removeFromWorkspace": "Aus dem Arbeitsbereich entfernen",
         "removeUserTitle": "Benutzer entfernen?",
         "removeUserMessage": "Sind Sie sicher, dass Sie {{email}} aus dem {{workspace}} Arbeitsbereich entfernen möchten?",
@@ -1285,7 +1290,14 @@
         "cancelPartialError_other": "{{count}} Einladungen konnten nicht zurückgezogen werden"
       },
       "inviteDisabledSmtp": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Benutzer einladen.",
-      "bulkLabel": "Benutzer"
+      "bulkLabel": "Benutzer",
+      "adminLimitNotice": {
+        "oneAdmin": "ein Admin",
+        "upcomingTitle": "PipesHub Community Edition unterstützt ab {{date}} nur einen Admin",
+        "upcomingDescription": "Ihre Organisation hat {{count}} Admins. Am {{date}} bleibt {{retainedAdmin}} Admin, alle anderen Admins werden zu Mitgliedern.",
+        "dueTitle": "PipesHub Community Edition unterstützt nur einen Admin",
+        "dueDescription": "Ihre Organisation hat noch {{count}} Admins. {{retainedAdmin}} bleibt Admin; alle anderen Admins werden beim nächsten Neustart von PipesHub zu Mitgliedern."
+      }
     },
     "groups": {
       "title": "Gruppen",

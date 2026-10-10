@@ -50,6 +50,9 @@ import {
   saveUserEnsuringOrgRetainsAdmin,
   saveUserEnsuringAdminCap,
   assertCanPromoteAdmin,
+  transferOrgAdmin,
+  isOrgOverAdminLimit,
+  MAX_ORG_ADMINS_MESSAGE,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
@@ -711,6 +714,10 @@ export class UserController {
         orgId: req.user?.orgId,
         role: resolveOptionalUserRole(req.body.role),
       });
+      const creatingAdmin = newUser.role === 'admin';
+      if (creatingAdmin) {
+        await assertCanPromoteAdmin(String(newUser.orgId));
+      }
 
       // Refuse a duplicate here rather than letting the unique index throw
       // after side effects have happened.
@@ -788,6 +795,10 @@ export class UserController {
           throw new BadRequestError('A user with this email already exists');
         }
         throw saveError;
+      }
+      if (creatingAdmin && (await isOrgOverAdminLimit(String(newUser.orgId)))) {
+        await undoSavedAccount('it took the org past its admin limit');
+        throw new BadRequestError(MAX_ORG_ADMINS_MESSAGE);
       }
       if (hashedPassword !== undefined) {
         try {
@@ -1050,6 +1061,94 @@ export class UserController {
     };
   }
 
+  /**
+   * Role change: same as password change — invalidate every workspace session
+   * for this email, then push force_logout to each connected tab.
+   */
+  private async endSessionsAfterRoleChange(
+    userId: string,
+    orgId: string,
+    email: string | undefined,
+    ip: string | undefined,
+  ): Promise<void> {
+    try {
+      const allMemberships = email
+        ? await Users.find({ email, isDeleted: false })
+            .select('_id orgId')
+            .lean()
+            .exec()
+        : [];
+      const memberships =
+        allMemberships.length > 0 ? allMemberships : [{ _id: userId, orgId }];
+
+      await UserActivities.insertMany(
+        memberships.map((member) => ({
+          orgId: member.orgId,
+          userId: member._id,
+          email,
+          activityType: userActivitiesType.ROLE_CHANGED,
+          ipAddress: ip || '',
+        })),
+      );
+
+      const notificationService =
+        NotificationContainer.getNotificationService();
+      for (const member of memberships) {
+        notificationService?.emitForceLogout(
+          String(member._id),
+          'role_changed',
+        );
+      }
+    } catch (invalidateError) {
+      this.logger.error('Failed to invalidate session after role change', {
+        userId,
+        orgId,
+        error:
+          invalidateError instanceof Error
+            ? invalidateError.message
+            : 'Unknown error',
+      });
+    }
+  }
+
+  async transferAdmin(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const fromUserId = String(req.user?.userId ?? '');
+      const orgId = String(req.user?.orgId ?? '');
+      const { id } = req.params;
+      if (!fromUserId || !orgId || !id) {
+        throw new BadRequestError('User or organization not found');
+      }
+
+      const result = await transferOrgAdmin(
+        orgId,
+        fromUserId,
+        id,
+        this.config.rsAvailable === 'true',
+      );
+
+      for (const party of [result.newAdmin, result.previousAdmin]) {
+        await this.endSessionsAfterRoleChange(
+          party.userId,
+          orgId,
+          party.email,
+          req.ip,
+        );
+      }
+
+      res.status(200).json({
+        previousAdminUserId: result.previousAdmin.userId,
+        newAdminUserId: result.newAdmin.userId,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async updateUser(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1215,48 +1314,8 @@ export class UserController {
         await user.save();
       }
 
-      // Role change: same as password change — invalidate every workspace
-      // session for this email, then push force_logout to each connected tab.
       if (roleChanging && id && orgId) {
-        try {
-          const email = user.email;
-          const allMemberships = email
-            ? await Users.find({ email, isDeleted: false })
-                .select('_id orgId')
-                .lean()
-                .exec()
-            : [];
-          const memberships =
-            allMemberships.length > 0 ? allMemberships : [{ _id: id, orgId }];
-
-          await UserActivities.insertMany(
-            memberships.map((member) => ({
-              orgId: member.orgId,
-              userId: member._id,
-              email,
-              activityType: userActivitiesType.ROLE_CHANGED,
-              ipAddress: req.ip || '',
-            })),
-          );
-
-          const notificationService =
-            NotificationContainer.getNotificationService();
-          for (const member of memberships) {
-            notificationService?.emitForceLogout(
-              String(member._id),
-              'role_changed',
-            );
-          }
-        } catch (invalidateError) {
-          this.logger.error('Failed to invalidate session after role change', {
-            userId: id,
-            orgId,
-            error:
-              invalidateError instanceof Error
-                ? invalidateError.message
-                : 'Unknown error',
-          });
-        }
+        await this.endSessionsAfterRoleChange(id, orgId, user.email, req.ip);
       }
 
       await this.eventService.start();

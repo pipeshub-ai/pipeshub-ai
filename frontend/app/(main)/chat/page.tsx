@@ -6,6 +6,7 @@ import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } f
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
+import { AdminLimitNoticeBanner } from '@/app/(main)/workspace/users/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -1399,6 +1400,7 @@ function ChatContent() {
                   // switch: others may still show it, and its sample accounts can sign in.
                   <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
                 )}
+                {showChatInput && <AdminLimitNoticeBanner style={{ marginTop: 'var(--space-5)' }} />}
                 {demoDataActive && showChatInput && !demoHidden && (
                   <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}

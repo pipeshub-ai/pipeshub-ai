@@ -2,6 +2,7 @@ import { apiClient } from '@/lib/api';
 import { toLookupUserIds } from '@/lib/utils/user-ids';
 import { USER_ROLES } from '../constants';
 import type {
+  AdminLimitStatus,
   User,
   UserByIdsDoc,
   UsersListResponse,
@@ -240,5 +241,27 @@ export const UsersApi = {
     );
     const succeeded = results.filter((r) => r.status === 'fulfilled').length;
     return { succeeded, failed: results.length - succeeded };
+  },
+
+  /**
+   * Whether this org has more admins than Community Edition allows.
+   * GET /api/v1/users/admin-limit (admins only)
+   */
+  async getAdminLimitStatus(): Promise<AdminLimitStatus> {
+    const { data } = await apiClient.get<AdminLimitStatus>(`${BASE_URL}/admin-limit`, {
+      suppressErrorToast: true,
+    });
+    return data;
+  },
+
+  /**
+   * Hand the caller's admin role to a signed-in member: they become admin and
+   * the caller becomes a member, in one step. Both are signed out to pick it up.
+   * POST /api/v1/users/:id/transfer-admin (admins only)
+   */
+  async transferAdmin(userId: string): Promise<void> {
+    await apiClient.post(`${BASE_URL}/${userId}/transfer-admin`, undefined, {
+      suppressErrorToast: true,
+    });
   },
 };

@@ -59,3 +59,9 @@ export { createRequestRouter } from './modules/user_management/routes/request.ro
 // --- OAuth Apps ---
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
+
+// --- Edition-only migrations (EE exports its own list) ---
+export { editionMigrations } from './modules/configuration_manager/services/migrations/edition.migrations';
+
+// --- Org admin limit (null = no limit; EE exports null) ---
+export { MAX_ORG_ADMINS as orgAdminLimit } from './modules/user_management/services/user-admin.service';

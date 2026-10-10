@@ -146,3 +146,14 @@ export interface UsersSort {
   field: UserSortField;
   order: 'asc' | 'desc';
 }
+
+/** GET /api/v1/users/admin-limit — admins only. */
+export interface AdminLimitStatus {
+  adminCount: number;
+  /** null when the edition has no admin limit. */
+  maxAdmins: number | null;
+  overLimit: boolean;
+  /** ISO date from which extra admins are made members. */
+  enforcementDate: string;
+  retainedAdminEmail: string | null;
+}

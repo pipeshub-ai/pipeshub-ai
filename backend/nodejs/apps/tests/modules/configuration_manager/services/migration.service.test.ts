@@ -86,6 +86,43 @@ describe('MigrationService', () => {
     })
   })
 
+  describe('editionMigrations', () => {
+    it('runs each edition migration with the logger and KV store, and survives one failing', async () => {
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      const failing = sinon.stub().rejects(new Error('boom'))
+      const next = sinon.stub().resolves()
+
+      await service.editionMigrations([failing, next])
+
+      expect(failing.calledOnceWith(mockLogger, mockKeyValueStore)).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(mockLogger.error.calledWith('Edition migration failed')).to.be.true
+    })
+
+    it('is called from runMigration with the migrations passed in', async () => {
+      const service = new MigrationService(mockLogger, mockKeyValueStore)
+      for (const name of [
+        'connectorSyncScheduleMigration',
+        'chatKbFiltersMigration',
+        'chatSessionsMigration',
+        'adminRoleMigration',
+        'documentOrgIdMigration',
+        'userGroupNameIndexMigration',
+      ]) {
+        sinon.stub(service, name as any).resolves()
+      }
+      const migration = sinon.stub().resolves()
+
+      await service.runMigration({
+        scheduler: {} as any,
+        appConfig: {} as any,
+        editionMigrations: [migration],
+      })
+
+      expect(migration.calledOnce).to.be.true
+    })
+  })
+
   describe('aiModelsMigration', () => {
     it('should return early when no AI config exists', async () => {
       const service = new MigrationService(mockLogger, mockKeyValueStore)

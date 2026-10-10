@@ -1164,8 +1164,13 @@
         "changeRoleSuccess": "भूमिका अपडेट की गई",
         "changeRoleSuccessDescription": "{{name}} अब {{role}} हैं",
         "changeRoleError": "भूमिका बदलने में विफल",
+        "transferAdmin": "एडमिन भूमिका सौंपें",
+        "transferAdminConfirmTitle": "एडमिन भूमिका सौंपें?",
+        "transferAdminConfirmMessage": "{{name}} एडमिन बन जाएंगे और आप सदस्य बन जाएंगे। बदलाव लागू करने के लिए आप दोनों को साइन आउट किया जाएगा।",
+        "transferAdminConfirmButton": "सौंपें",
+        "transferAdminError": "एडमिन भूमिका नहीं सौंपी जा सकी",
         "maxAdminsReachedTitle": "एक और एडमिन नहीं जोड़ सकते",
-        "maxAdminsReached": "एक संगठन में अधिकतम 5 एडमिन हो सकते हैं।",
+        "maxAdminsReached": "एक संगठन में अधिकतम 1 एडमिन हो सकता है।",
         "removeFromWorkspace": "कार्यक्षेत्र से हटाएं",
         "demoteAdminBeforeRemoveTitle": "व्यवस्थापक को हटाया नहीं जा सकता",
         "demoteAdminBeforeRemove": "व्यवस्थापक को सदस्य बनाएँ, फिर उन्हें हटाएँ।",
@@ -1285,7 +1290,14 @@
         "cancelPartialError_other": "{{count}} आमंत्रण रद्द नहीं किए जा सके"
       },
       "inviteDisabledSmtp": "SMTP कॉन्फ़िगर नहीं है। उपयोगकर्ताओं को आमंत्रित करने से पहले ईमेल सेटिंग्स सेट करें।",
-      "bulkLabel": "उपयोगकर्ता"
+      "bulkLabel": "उपयोगकर्ता",
+      "adminLimitNotice": {
+        "oneAdmin": "एक एडमिन",
+        "upcomingTitle": "PipesHub Community Edition {{date}} से केवल एक एडमिन सपोर्ट करेगा",
+        "upcomingDescription": "आपके संगठन में {{count}} एडमिन हैं। {{date}} को {{retainedAdmin}} एडमिन बने रहेंगे और बाकी सभी एडमिन मेंबर बन जाएँगे।",
+        "dueTitle": "PipesHub Community Edition केवल एक एडमिन सपोर्ट करता है",
+        "dueDescription": "आपके संगठन में अभी भी {{count}} एडमिन हैं। {{retainedAdmin}} एडमिन बने रहेंगे; PipesHub के अगली बार रीस्टार्ट होने पर बाकी सभी एडमिन मेंबर बन जाएँगे।"
+      }
     },
     "groups": {
       "title": "समूह",

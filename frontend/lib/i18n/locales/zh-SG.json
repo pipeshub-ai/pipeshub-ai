@@ -1247,8 +1247,13 @@
         "changeRoleSuccess": "角色已更新",
         "changeRoleSuccessDescription": "{{name}} 现在是 {{role}}",
         "changeRoleError": "更改角色失败",
+        "transferAdmin": "移交管理员角色",
+        "transferAdminConfirmTitle": "移交管理员角色？",
+        "transferAdminConfirmMessage": "{{name}} 将成为管理员，您将成为成员。你们双方都将被登出以使更改生效。",
+        "transferAdminConfirmButton": "移交",
+        "transferAdminError": "无法移交管理员角色",
         "maxAdminsReachedTitle": "无法再添加管理员",
-        "maxAdminsReached": "一个组织最多可以有 5 位管理员。",
+        "maxAdminsReached": "一个组织最多可以有 1 位管理员。",
         "removeFromWorkspace": "从工作区移除",
         "demoteAdminBeforeRemoveTitle": "无法移除管理员",
         "demoteAdminBeforeRemove": "请先将该管理员降级为成员，然后再移除。",
@@ -1362,7 +1367,14 @@
         "cancelPartialError_other": "取消 {{count}} 个邀请失败"
       },
       "inviteDisabledSmtp": "尚未配置 SMTP。邀请用户前请先设置邮件。",
-      "bulkLabel": "用户"
+      "bulkLabel": "用户",
+      "adminLimitNotice": {
+        "oneAdmin": "一位管理员",
+        "upcomingTitle": "自 {{date}} 起，PipesHub 社区版仅支持一位管理员",
+        "upcomingDescription": "您的组织有 {{count}} 位管理员。{{date}} 起，{{retainedAdmin}} 将保留管理员身份，其他管理员都将变为成员。",
+        "dueTitle": "PipesHub 社区版仅支持一位管理员",
+        "dueDescription": "您的组织仍有 {{count}} 位管理员。{{retainedAdmin}} 将保留管理员身份；其他管理员将在 PipesHub 下次重启时变为成员。"
+      }
     },
     "groups": {
       "title": "用户组",

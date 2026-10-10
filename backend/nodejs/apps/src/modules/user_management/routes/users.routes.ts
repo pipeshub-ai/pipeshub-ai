@@ -30,6 +30,7 @@ import {
   OWN_ADMIN_CHECK_ONLY_MESSAGE,
   findOrgAdminUserIds,
   getActiveUserOrgRole,
+  getOrgAdminLimitStatus,
   isUserOrgAdmin,
 } from '../services/user-admin.service';
 import { MailService } from '../services/mail.service';
@@ -324,6 +325,26 @@ export function createUserRouter(container: Container) {
           throw new UnauthorizedError('User not found, please login again');
         }
         res.status(200).json({ role });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Lets the UI warn an over-limit org (admins added before the 1-admin cap)
+  // which admin stays when the limit is enforced.
+  router.get(
+    '/admin-limit',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
+    userAdminCheck,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        res.status(200).json(await getOrgAdminLimitStatus(String(req.user?.orgId)));
       } catch (error) {
         next(error);
       }
@@ -773,6 +794,28 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.deleteUser(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Hands the caller's admin role to a member in one step, so an org at its
+  // admin limit can still change who its admin is.
+  router.post(
+    '/:id/transfer-admin',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    userAdminCheck,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.transferAdmin(req, res, next);
       } catch (error) {
         next(error);
       }

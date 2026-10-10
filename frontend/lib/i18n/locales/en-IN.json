@@ -1164,8 +1164,13 @@
         "changeRoleSuccess": "Role updated",
         "changeRoleSuccessDescription": "{{name}} is now {{role}}",
         "changeRoleError": "Failed to change role",
+        "transferAdmin": "Hand over admin role",
+        "transferAdminConfirmTitle": "Hand over admin role?",
+        "transferAdminConfirmMessage": "{{name}} becomes the admin and you become a member. You will both be signed out so the change takes effect.",
+        "transferAdminConfirmButton": "Hand Over",
+        "transferAdminError": "Could not hand over the admin role",
         "maxAdminsReachedTitle": "Cannot add another admin",
-        "maxAdminsReached": "An organization can have at most 5 admins.",
+        "maxAdminsReached": "An organization can have at most 1 admin.",
         "removeFromWorkspace": "Remove from Workspace",
         "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
         "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
@@ -1285,7 +1290,14 @@
         "cancelPartialError_other": "Failed to cancel {{count}} invites"
       },
       "inviteDisabledSmtp": "SMTP is not configured. Set up email settings before inviting users.",
-      "bulkLabel": "Users"
+      "bulkLabel": "Users",
+      "adminLimitNotice": {
+        "oneAdmin": "one admin",
+        "upcomingTitle": "PipesHub Community Edition will support one admin from {{date}}",
+        "upcomingDescription": "Your organisation has {{count}} admins. On {{date}}, {{retainedAdmin}} stays admin and every other admin becomes a member.",
+        "dueTitle": "PipesHub Community Edition supports one admin",
+        "dueDescription": "Your organisation still has {{count}} admins. {{retainedAdmin}} stays admin; every other admin becomes a member when PipesHub next restarts."
+      }
     },
     "groups": {
       "title": "Groups",
