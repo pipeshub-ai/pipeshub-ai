@@ -104,32 +104,38 @@ def _ordered_spellings(current: object, links: list[TaxonomyLink]) -> list[str]:
 
     A stored label that is a linked node's name (up to case, spacing and
     punctuation, as merges and migrations move edges only between such
-    names) is what the earlier rewrite wrote, once per node; the first such
-    label of a node is replaced, and any other stored label is one of the
-    record's own spellings and stays.
+    names) is what the earlier rewrite wrote, once per node, and is replaced
+    by the record's spellings of that node, unless one of those spellings is
+    stored too: then the stored labels were written with the record's own
+    wording, and the node-name label is one of its spellings and stays.
+    Every other stored label stays.
     """
+    def key(text: str) -> str:
+        return spelling_key(normalize_name(text))
+
+    stored = [v for v in (current if isinstance(current, list) else []) if isinstance(v, str) and v.strip()]
+    stored_keys = {key(v) for v in stored}
     remaining = sorted(links, key=lambda link: link.spelling or "")
     ordered: list[str] = []
-    for value in current if isinstance(current, list) else []:
-        if not isinstance(value, str) or not value.strip():
-            continue
-        wanted = spelling_key(normalize_name(value))
-        match = next(
-            (
-                link for link in remaining
-                if wanted in {
-                    spelling_key(normalize_name(link.name)),
-                    *(spelling_key(normalize_name(s)) for s in link.spellings),
-                }
-            ),
-            None,
-        )
+    for value in stored:
+        wanted = key(value)
+        # A label that is one of the link's spellings always matches it. A
+        # label that is only the node's name is the earlier rewrite's output
+        # unless the record's spelling of that node is stored too, in which
+        # case it is the record's own wording and stays.
+        match = next((link for link in remaining if wanted in {key(s) for s in link.spellings}), None)
+        if match is None:
+            match = next(
+                (
+                    link for link in remaining
+                    if wanted == key(link.name) and not stored_keys & {key(s) for s in link.spellings}
+                ),
+                None,
+            )
         if match is not None:
             remaining.remove(match)
             ordered.extend(match.spellings)
         else:
-            # Its node's name was already replaced where it first appeared,
-            # so a repeat of that name is one of the record's own spellings.
             ordered.append(value)
     for link in remaining:
         ordered.extend(link.spellings)
