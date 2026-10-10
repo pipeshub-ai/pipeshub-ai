@@ -114,6 +114,11 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_record_taxonomy_links": (
+        Rule.ALL,
+        _STRUCTURE + "; search_entities passes only records the user can open, and the label "
+        "repair restores a trashed record's labels too, so a restore shows its own",
+    ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",
     ),
