@@ -8,7 +8,7 @@
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<h3>开源的职场 AI 平台</h3>
+<h3>开源的 AI 智能体上下文层</h3>
 
 <p>
   <a href="https://www.pipeshub.com/">官网</a> ·
@@ -32,9 +32,6 @@
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
     <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
   </a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
-    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai" alt="GitHub Repo stars">
-  </a>
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>
@@ -49,37 +46,137 @@
 
 </div>
 
-<h2 id="about-pipeshub">PipesHub —— 可解释、可扩展</h2>
+<h2 id="about-pipeshub">让你的 AI 智能体真正理解你的公司</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> 是一个开源、可自托管的 AI 原生执行层，它连接企业知识、提供带引用的可解释搜索，并跨各类系统实现工作流自动化。
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> 把公司掌握的一切知识变成一个感知权限的工作区。AI 智能体探索它的方式，就像编程智能体探索代码仓库一样：搜索它、对它执行 `grep`、浏览它的文件夹和知识图谱，只读取需要的内容，并为每个回答引用其来源的确切块。
 
+连接 Slack、Google Drive、GitHub、Microsoft 365、Jira、Notion、Postgres 以及其他 25+ 个系统。你可以使用内置的对话、深度研究和智能体，也可以通过 MCP 和 SDK 把同样的上下文提供给 Claude Code、Cursor、Codex 以及你自己的智能体。支持自托管，采用 Apache 2.0 许可，可自带模型。
 
-## 功能特性
+> [!TIP]
+> 一条命令即可部署：
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install | bash
+> ```
 
-- 📝 **可解释的答案：** PipesHub 提供有据可依的答案，并精确引用到原始文档中的具体段落。
-- 🔒 **权限感知搜索：** 强制执行数据源级别的访问控制，用户只能看到其有权访问的内容。
-- 🕸️ **知识图谱检索：** 基于图谱的检索，捕捉企业数据之间的关联关系。
-- 🔌 **企业级连接器：** 开箱即用的 50 多个连接器，支持实时和定时索引。
-- 🔍 **统一搜索、深度研究与智能体：** 在同一上下文层上实现搜索、问答、深度研究、网页搜索与 AI 智能体。
-- 📊 **工件与代码执行：** 在安全的执行沙箱中生成报告、图表和仪表盘。
-- 🎙️ **多模态支持：** 理解图像、图表和扫描文件，并支持基于语音的交互。
-- 🤖 **无代码智能体与动作：** 可视化构建智能体，并跨企业工具执行动作。
-- 🧠 **自带模型，完全可自托管：** 支持任意 LLM 提供商，部署在你的 VPC 中——数据永不离开你的基础设施。
-- 🛠️ **开发者优先、可扩展：** 提供 API、SDK、MCP 工具、自定义连接器，以及可独立扩展的服务。
+## 为什么需要上下文层？
 
-## PipesHub 实战演示
+智能体在公司知识上表现不佳，通常是上下文的问题，而不是模型的问题。Top-k 文本块检索只给智能体几段零散的片段，却丢掉了每段内容位于何处、关联了什么、谁有权查看，以及它从哪里来。
 
-### 连接器
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
+编程智能体之所以变得好用，是因为它们可以对代码仓库执行 `ls`、`grep` 并直接阅读，而不再只是接收粘贴进来的代码片段。PipesHub 让智能体在公司数据上也拥有同样的能力。
+
+| | Top-k 文本块 RAG | PipesHub |
+| --- | --- | --- |
+| **智能体首先看到什么** | 几个文本块 | 每条记录的名称、位置、元数据和摘要，以及命中的块 |
+| **如何进一步深挖** | 做不到：每个问题只检索一次 | 混合搜索、对记录执行 `grep`/`find`、文件夹导航和知识图谱查询，循环进行 |
+| **结构** | 分块时丢失 | 每个数据源都会转换为 Blocks：章节、包含行和单元格的表格、讨论串、代码、带有 schema 的 SQL 表 |
+| **权限** | 通常在索引时近似处理 | 每次工具调用时，都按源系统权限对发起请求的用户进行校验 |
+| **引用** | 按文本块引用（如果有的话） | 按块引用：页面、表格单元格、行、幻灯片或代码行，并移除编造的引用 |
+
+## 工作原理
+
+```mermaid
+flowchart LR
+  subgraph Sources["40+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: search, grep, navigate, entities, fetch record"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
+每个数据源都会转换为 **Blocks**（块）。这是一种统一的表示形式，能完整保留表格、讨论串和代码，并记住每个块来自哪个页面、单元格或代码行。每个文档都以纯文本形式存储，因此智能体可以像对文本文件一样，对 PDF、Word 文件或幻灯片执行 `grep`。Blocks 以两种方式组织：按每个源系统的**文件夹结构**，以及按由人员、项目和客户构成的**知识图谱**。智能体通过**逐步展示细节的工具**来探索这两者：搜索先显示每条记录的名称、摘要和匹配的段落，智能体只在需要时才进一步深入（grep、浏览文件夹、追踪实体、读取完整记录）。**每次工具调用都会按源系统的权限进行校验**，校验对象是智能体所代表的那个人。
+
+**[了解上下文层的工作原理 →](../../context-layer.md)** 内容涵盖 Block 格式、层级结构与图谱、每个智能体工具及其代码位置、权限执行、智能体循环，以及当前的局限。
+
+## 用 PipesHub 能构建什么
+
+一个上下文层，可以支撑许多产品。你可以直接使用内置应用，也可以通过 MCP 和 SDK 构建自己的应用。
+
+| 构建什么 | PipesHub 提供什么 | 从这里开始 |
+| --- | --- | --- |
+| **智能体式 RAG 管道** | 供智能体循环调用的检索工具（混合搜索、`grep`、导航、实体查询、读取完整记录），权限校验和块级引用都已内置 | [SDK 入门示例](https://github.com/pipeshub-ai/examples/tree/main/sdk-starter) · [MCP](#在-claude-codecursor-或-codex-中使用) |
+| **企业搜索** | 一个覆盖 40+ 个连接器的搜索框，每个人只能看到自己有权查看的内容，并提供带引用的回答 | 内置 · [示例](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
+| **职场 AI 助手** | 基于公司知识的对话和深度研究，另有网页搜索和语音输入 | 内置 |
+| **编程智能体的上下文** | Claude Code、Cursor 和 Codex 不只依据代码作答，还能依据设计文档、工单、事故记录和聊天讨论串作答 | [示例](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
+| **无代码智能体和工作流构建器** | 一个可视化拖放构建器，把公司知识连接到 Slack、Gmail、Jira、Confluence、GitHub、Linear、Notion、Salesforce、Zendesk、Freshdesk 以及其他 20 个工具中的操作。你也可以基于同一套 API 构建自己的工作流产品，让每一步都获得感知权限的上下文。 | 内置 · [以 headless 方式构建](#我可以不用界面以-headless-方式使用-pipeshub-吗) |
+| **客服 Copilot** | 依据历史工单、运维手册和文档（ServiceNow、Zammad、Jira、Confluence）作答，并能回到工单系统中执行操作 | 内置 · SDK |
+| **销售与客户洞察** | Salesforce 中的客户、联系人和商机进入知识图谱，可与同一客户相关的邮件、文档和聊天一起搜索 | 内置 |
+| **对数据库提问** | 对 Postgres、MariaDB 和 Snowflake 表连同其 schema 和外键一起建立索引，另有可运行 SQL 和 Python 进行分析的沙箱 | 内置 |
+| **报告、图表和仪表盘** | 智能体在沙箱中编写并运行代码，把结果作为可分享的制品返回 | 内置 |
+| **工程知识搜索** | 来自 GitHub 和 GitLab 的代码、拉取请求和提交，并与相关的工单和文档关联 | 内置 |
+| **基于公司知识构建你自己的应用** | Python、TypeScript 和 Go SDK；“使用 PipesHub 登录”让每个用户以自己的身份搜索；以及用于上传任何连接器都未覆盖的文档的上传 API | [示例](https://github.com/pipeshub-ai/examples) |
+| **法律与合同（CLM）应用** | 对 Drive、SharePoint、Box 或上传文件中的合同提问。回答会引用确切的条款或页面，每个人只能看到自己有权查看的合同。 | [以 headless 方式构建](#我可以不用界面以-headless-方式使用-pipeshub-吗) |
+| **私有化、本地部署的 AI** | 以上全部能力均可自托管，可使用任意 LLM 提供商或通过 Ollama 使用本地模型，数据始终留在你的基础设施中 | [部署](#-部署指南) |
+
+## 在 Claude Code、Cursor 或 Codex 中使用
+
+**[让你的编程助手安全地访问公司知识 →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+
+在 PipesHub 已运行且数据已完成索引的前提下，大约十分钟即可完成。创建一个个人访问令牌（Personal Access Token，无需管理员权限），连接你的助手（Claude Code 只需一条命令，Cursor 或 Codex 只需一个配置文件），然后提问 *“为什么修改了计费 worker 中的重试逻辑？”* 它会依据事故复盘、拉取请求、聊天讨论串和设计文档作答，每条都附有引用，并且只引用你有权查看的内容。
+
+目前，助手可以通过 MCP 使用 PipesHub 的搜索、对话和记录工具。其余智能体工具（`grep`、`navigate`、实体查询）接下来会陆续接入 MCP。
+
+想在自己的代码里使用同样的检索能力，或者为团队做一个搜索框？[SDK 入门示例和搜索示例](https://github.com/pipeshub-ai/examples) 两者都有覆盖。做出了什么作品？[展示给我们看](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml)。
+
+## PipesHub 实际演示
 
 ### 引用
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
 
-### 所有记录
+### 连接器
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
+
+<details>
+<summary><b>更多演示：全部记录、知识搜索</b></summary>
+
+### 全部记录
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
 
 ### 知识搜索
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
+
+</details>
+
+## 功能特性
+
+**为智能体提供上下文**
+
+- 🗂️ **可探索，而不只是可搜索：** 混合搜索、对每个文档（包括 PDF 和 Office 文件）执行 `grep`、文件夹导航和知识图谱查询，全部作为智能体工具提供。
+- 🔒 **每一步都感知权限：** 每次工具调用都会按源系统的权限进行校验，校验对象是智能体所代表的那个人。
+- 📝 **块级引用：** 回答会引用其来源的页面、表格单元格、行、幻灯片或代码行。
+- 🧱 **结构化、半结构化和非结构化数据统一在一层：** 文档、电子表格、工单、聊天讨论串、代码和 SQL 表都会转换为 Blocks。
+
+**连接你的系统**
+
+- 🔌 **40+ 个连接器：** Google Workspace、Microsoft 365、Slack、Jira、Confluence、Notion、GitHub、GitLab、Salesforce、ServiceNow、Postgres、Snowflake 等，支持实时同步和定时同步。
+- 🕸️ **知识图谱：** 在索引时抽取实体和关系，在回答时加以利用。
+- 🎙️ **多模态：** 支持图片、图表和扫描文件，以及语音输入。
+- 🧠 **自带模型，完全自托管：** 可使用任意 LLM 提供商或本地模型，部署在你自己的基础设施中。
+
+## PipesHub Cloud
+
+想使用完全托管的 PipesHub，而不必运维自己的基础设施？PipesHub Cloud 即将推出。
+
+👉 **[加入 Cloud 候补名单](https://pipeshub.com/cloud-waitlist)**，抢先体验。
 
 ## 连接器
 
@@ -89,87 +186,105 @@
 
 ## 🚀 部署指南
 
-PipesHub（职场 AI 平台）可以在本地运行，也可以使用 Docker Compose 部署到云端。
-**注意**：如果你将 PipesHub 部署在云服务器上，请确保使用 HTTPS 端点。PipesHub 会执行更严格的安全检查，当应用通过 HTTP 提供服务时，浏览器会拦截某些请求。
-你可以使用 Cloudflare、Nginx 或 Traefik 等反向代理来终止 SSL/TLS 并提供有效的 HTTPS 证书。
-如果你在通过 HTTP 访问已部署的 PipesHub 时看到白屏，这很可能就是原因。由于更严格的安全检查，前端将拒绝加载。
+PipesHub 可以在本地运行，也可以通过 Docker Compose 部署到任意服务器。交互式安装程序会处理全部配置，包括密钥、图数据库、消息代理和镜像标签的选择，并为你生成 `.env` 文件。
+
+> **云服务器上的 HTTPS：** 如果你在云服务器上部署 PipesHub，请使用 HTTPS 端点。浏览器会拦截通过明文 HTTP 发出的某些请求。可以使用 Cloudflare、Nginx 或 Traefik 来终止 TLS。仅使用 HTTP 部署后出现白屏，通常就是这一限制导致的。
 
 ---
 
-### 📦 生产环境部署
+### ⚡ 快速开始（推荐）
+
+需要安装带有 Compose v2 的 [Docker](https://docs.docker.com/get-docker/)。只需一条命令：
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-### 📦 开发环境构建部署
+该命令会把最新版本的部署文件下载到 `./pipeshub`，
+并启动交互式安装程序。安装完成后，打开 **http://localhost:3000**。
+
+> **想先看看再运行？** 先下载脚本并检查：
+>
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install -o pipeshub-install.sh
+> less pipeshub-install.sh        # review it
+> bash pipeshub-install.sh
+> ```
+
+安装程序会：
+- 检查 Docker、内存和磁盘等前置条件
+- 询问你要使用 **slim**（精简）还是 **full**（完整）部署
+- 允许你按需自定义图数据库、消息代理和 KV 存储
+- 生成随机密钥并写入 `.env` 文件
+- 拉取镜像并启动整套服务
+- 等待 PipesHub 进入健康状态，确认可以访问，并输出访问地址
+
+### 🛠️ 从克隆的仓库安装（面向开发者）
+
+如果要从源码构建、参与贡献，或让安装程序固定使用你检出的代码：
 
 ```bash
-# Clone the repository
 git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+cd pipeshub-ai
 
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Optional Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the local build deployment
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
+# Same installer, run from the repo root
+./install.sh
 ```
 
-主 `Dockerfile` 会从 `pipeshubai/pipeshub-ai-base:python-deps` 和 `pipeshubai/pipeshub-ai-base:runtime` 拉取预构建的镜像层（构建/推送命令参见仓库根目录的 [`Dockerfile.base`](../../../Dockerfile.base)）。如需改用本地标签，请在环境变量或 compose 构建参数中设置 `PYTHON_DEPS_IMAGE` 和 `RUNTIME_BASE_IMAGE`。
+从源码构建本地镜像必须使用这种克隆仓库的方式（`./install.sh --build`）；
+上面的一键安装程序始终使用预构建镜像。
 
-## MCP 服务器
+> **高级选项：** 安装程序参数（`--yes`、`--version`、`--reconfigure`、`--print-env-only`）、CI 环境变量、slim 与 full 部署类型的区别、手动使用 Compose profile，以及本地源码构建，详见[高级部署选项](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md)。
 
-通过任意兼容 MCP 的客户端使用 PipesHub，将你的企业上下文带入 AI 工作流。设置与使用方法请参阅其 README。
+## 基于 PipesHub 构建：MCP 与 SDK
 
-**仓库地址：** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
+内置的搜索体验只是使用 PipesHub 的一种方式。同样经过连接、
+按权限过滤的上下文，也可以提供给你自己的智能体和应用：
+任何兼容的客户端都可以通过 MCP 使用，在自己的代码中调用时
+则可以使用 SDK。
 
-## SDK
+智能体以某个具体用户的身份连接，而不是以应用的身份连接，
+因此它检索到的内容恰好是这个人有权查看的内容。访问权限在
+查询运行时依据源系统自身的权限进行判定，而不是在构建时
+近似处理。
 
-PipesHub 提供 Python、TypeScript 和 Go 的开发者 SDK，帮助你快速集成。设置与使用细节请参阅各 SDK 仓库的 README。
+最常见构建场景的分步教程，包括为编程助手搭建 MCP、私有企业搜索
+以及 SDK 入门示例，都在
+[**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples) 中。
+各个构建模块的参考资料见下文。
+
+### MCP 服务器
+
+将 PipesHub 与任何兼容 MCP 的客户端配合使用，把企业上下文带入 AI 工作流。设置和使用方法请参阅其 README。
+
+**仓库：** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
+
+在使用 [Omnigent](https://omnigent.ai)？请参阅 [`integrations/omnigent/`](../../../integrations/omnigent/)，其中介绍了三种连接方式，从在 Web 界面中直接接入到使用脚本化的连接工具包。
+
+### SDK
+
+PipesHub 提供 Python、TypeScript 和 Go 的开发者 SDK，帮助你快速完成集成。设置和使用详情请参阅相应 SDK 仓库的 README。
 
 | 名称 | 说明 | 链接 |
 |------|-------------|------|
-| **Python SDK** | PipesHub 的 Python SDK | [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python) |
-| **TypeScript SDK** | PipesHub 的 TypeScript SDK | [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) |
-| **Go SDK** | PipesHub 的 Go SDK | [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go) |
+| **Python SDK** | 适用于 PipesHub 的 Python SDK | [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python) |
+| **TypeScript SDK** | 适用于 PipesHub 的 TypeScript SDK | [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) |
+| **Go SDK** | 适用于 PipesHub 的 Go SDK | [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go) |
 
-> 需要其他语言的 SDK？请通过 developer@pipeshub.com 联系我们
+> 需要其他语言的 SDK？请联系我们：developer@pipeshub.com
 
 ## 路线图
 
-<p>我们在开放中迭代。以下是已完成和即将推出的内容：</p>
+<p>我们公开开发。以下是已完成和即将推进的内容：</p>
 
 <ul>
 <li>✅ 🤖 <strong>职场 AI 智能体</strong>：一流的无代码智能体构建器</li>
-<li>✅ 🔗 <strong>MCP（模型上下文协议）</strong> 支持，包括服务端和客户端</li>
+<li>✅ 🔗 <strong>MCP（Model Context Protocol）</strong>支持，包括服务端和客户端</li>
 <li>✅ 🧰 <strong>开发者 SDK</strong></li>
-<li>✅ 🔍 跨 GitHub、GitLab 和 Bitbucket 的<strong>代码搜索</strong></li>
-<li>⬜ 👤 基于团队、角色和历史的<strong>个性化搜索</strong></li>
-<li>✅ ☸️ 默认高可用的<strong>生产级 Kubernetes</strong> 部署</li>
-<li>⬜ 📈 跨知识图谱的 <strong>PageRank 增强相关性</strong></li>
+<li>✅ 🔍 跨 GitHub 和 GitLab 的<strong>代码搜索</strong></li>
+<li>⬜ 👤 基于团队、角色和历史记录的<strong>个性化搜索</strong></li>
+<li>✅ ☸️ 带有高可用默认配置的<strong>生产级 Kubernetes</strong> 部署</li>
+<li>⬜ 📈 覆盖整个知识图谱的 <strong>PageRank 增强相关性</strong></li>
 </ul>
 <p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">在 Notion 上查看完整产品路线图</a></strong></p>
 
@@ -177,104 +292,60 @@ PipesHub 提供 Python、TypeScript 和 Go 的开发者 SDK，帮助你快速集
 
 ## 👥 参与贡献
 
-想加入我们的开发者社区吗？请查看我们的[贡献指南](CONTRIBUTING.md)，了解如何搭建开发环境、我们的编码规范以及贡献流程的更多细节。
-<h3>遇到问题去哪里</h3>
+想加入我们的开发者社区？请查看我们的[贡献指南](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md)，了解如何搭建开发环境、我们的编码规范以及贡献流程。
+<h3>去哪里做什么</h3>
 
 <table>
 
 <tr><td>提问或寻求帮助</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
-<tr><td>报告缺陷或提出功能需求</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
-<tr><td>报告安全问题</td><td><a href="SECURITY.md">报告安全问题</a></td></tr>
+<tr><td>报告 Bug 或提出功能请求</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
+<tr><td>报告安全问题</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">报告安全问题</a></td></tr>
 <tr><td>阅读文档</td><td><a href="https://docs.pipeshub.com/">Pipeshub 文档</a></td></tr>
-</tbody>
+<tr><td>查看每个版本的变更</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">更新日志</a></td></tr>
 </table>
 
 ## 常见问题
 
-### 什么是 PipesHub？
+### PipesHub 是什么？
 
-PipesHub 是一个开源、可自托管的 AI 原生执行层，它连接企业知识、提供带引用的可解释搜索，并跨各类系统实现工作流自动化。它为搜索、问答、深度研究、网页搜索和 AI 智能体提供统一的上下文层。
+PipesHub 是开源的 AI 智能体上下文层。它把分散在公司各个业务系统中的知识，变成一个感知权限的工作区，让智能体可以搜索、`grep`、导航和引用。
 
-### PipesHub 与其他职场 AI 工具有何不同？
+它连接 Slack、Google Drive、GitHub、Microsoft 365 和 Notion 等系统，并以两种方式提供其中的内容：为团队提供带引用、感知权限的搜索，以及通过 API、SDK 和 MCP 为 AI 智能体提供可信的上下文。智能体看到的公司知识视图与人看到的一样受管控，并应用同样的访问控制，因此它们可以基于真实的公司数据作答，而不是在各个工具之间猜测。你可以使用内置的搜索体验，也可以在其之上构建自己的智能体、工作流和应用。
 
-PipesHub 完全开源（Apache 2.0）且可自托管——你的数据永不离开你的基础设施。它具备权限感知搜索，强制执行数据源级别的访问控制，并提供精确引用原始文档具体段落的可解释答案。
+### 我可以不用界面，以 headless 方式使用 PipesHub 吗？
+
+可以。PipesHub 的 Web 应用使用的就是你可以自己调用的同一套 API，所以在界面中能做的事，在代码中也都能做：连接数据源、上传文件、管理用户和权限、搜索、聊天，以及构建和运行智能体。
+
+- **REST API：** 一份包含约 300 个端点的 [OpenAPI 规范](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml)。可在你的实例上访问 `/api/v1/docs` 浏览。
+- **SDK：** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python)、[TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) 和 [Go](https://github.com/pipeshub-ai/pipeshub-sdk-go)。
+- **MCP：** 适用于 Claude Code、Cursor、Codex 和其他 MCP 客户端。
+
+选择你的代码如何登录：
+- **个人访问令牌（Personal Access Token）或 OAuth：** 以某一个人的身份行事，只能看到此人有权查看的内容。
+- **服务账号：** 用于后台任务，拥有自己的权限。
+- **OAuth 应用：** 让你的应用的每个用户都以自己的身份登录（“使用 PipesHub 登录”）。
+
+团队用它在 PipesHub 之上构建自己的产品，例如工作流构建器、法律与合同管理（CLM）工具、客服控制台和内部智能体，而无需展示 PipesHub 的界面。
+
+### PipesHub 与其他职场 AI 工具有什么不同？
+
+大多数工具只是把几段检索到的文本块交给 AI 模型。PipesHub 则为智能体提供工具，让它们像编程智能体探索代码仓库一样探索公司知识：混合搜索、对记录执行 `grep`、文件夹导航和知识图谱查询，每一项都会按源系统中发起请求的用户的权限进行校验。每个数据源都会转换为 Blocks，因此回答可以引用确切的页面、表格单元格、行或幻灯片。它完全开源（Apache 2.0）且支持自托管，你的数据永远不会离开你的基础设施。参见[为什么需要上下文层？](#为什么需要上下文层)
 
 ### PipesHub 支持哪些连接器？
 
-PipesHub 拥有 50 多个企业级连接器，支持实时和定时索引。详见 [连接器概览](https://docs.pipeshub.com/connectors/overview)。
-
-### PipesHub 可以索引哪些文件格式？
-
-PDF（含扫描件）、Microsoft Office（Word、Excel、PowerPoint）、Google Docs/Sheets/Slides、Markdown、HTML、CSV、纯文本和图像。音频和视频可以存储，但尚不索引。存储服务接受更广的 MIME 类型 — 见 [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage)。
-
-### 如何部署 PipesHub？
-
-```bash
-curl -fsSL https://get.pipeshub.com/install | bash
-```
-
-此命令会把 Compose 文件写到 `./pipeshub` 并启动交互式安装程序。完成后打开 **http://localhost:3000**。云端部署请使用 HTTPS — HTTP 可能导致前端安全拦截。
-
-从源码构建的开发者应克隆仓库并从仓库根目录运行 `./install.sh`（或 `./install.sh --build`）。详见[部署指南](#-部署指南)。
+PipesHub 拥有覆盖 30+ 个系统的 40+ 个连接器，支持实时索引和定时索引。参见[连接器概览](https://docs.pipeshub.com/connectors/overview)。
 
 ### PipesHub 支持哪些 LLM 提供商？
 
-PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你的 VPC 中部署你偏好的模型。
+PipesHub 支持“自带模型”（Bring Your Own Model），你可以使用任意 LLM 提供商。将它部署在你的 VPC 中，并搭配你偏好的模型。
 
-### 技术栈是什么？
-
-PipesHub 由三部分组成：
-
-- **Web 应用**（Next.js）— 浏览器里的搜索、对话和管理。
-- **API**（Node.js）— 账号、权限、知识库和文件。
-- **Python 服务** — 连接器同步数据源；索引解析文档；查询带着引用作答。
-
-这些服务会调用 **你自带的 AI 模型**。**嵌入模型**把文本变成检索向量，**LLM** 写出带引用的回答。任意云厂商或本地模型（Ollama）都可以；默认是本地嵌入服务。
-
-数据在知识图谱（默认 Neo4j，或 ArangoDB）、向量库（Qdrant）和 MongoDB 里。Redis 是缓存。文件在磁盘或对象存储上。服务之间在本地用 Redis 传任务，更大规模可以用 Kafka。详见 [系统概览](https://docs.pipeshub.com/system-overview)。
-
-### 什么是知识图谱检索功能？
-
-PipesHub 使用基于图谱的检索来捕捉企业数据之间的关联关系。它使用 Neo4j 或 ArangoDB 作为图数据库，并结合 Qdrant 进行向量相似度搜索。
-
-### PipesHub 有 MCP 服务器吗？
-
-有。PipesHub 提供 MCP 服务器，可与任意兼容 MCP 的客户端集成。仓库地址：[pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)。
-
-### 有哪些可用的 SDK？
-
-PipesHub 提供以下 SDK：
-- **Python**：[pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
-- **TypeScript**：[pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
-- **Go**：[pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
-
-### 我可以在不编写代码的情况下构建 AI 智能体吗？
-
-可以。PipesHub 拥有无代码智能体构建器。你可以可视化地构建智能体，并跨企业工具执行动作，无需编写代码。
-
-### 多模态支持是什么？
-
-PipesHub 支持图像、图表和扫描文件的理解，以及基于语音的交互。它使用 Docling 和 PyMuPDF 进行文档解析，并使用 Azure Document Intelligence 或多模态 LLM（VLM）对扫描版 PDF 进行 OCR。
-
-### 如何排查部署问题？
-
-1. 确保云端部署已配置 HTTPS
-2. 检查 Docker compose 日志：`docker compose logs`
-3. 核对 env.template 中的环境变量
-4. 查阅 [docs.pipeshub.com](https://docs.pipeshub.com/) 获取详细指南
-
-### 在哪里可以获得帮助？
-
-- [Discord](https://discord.com/invite/K5RskzJBm2) —— 提问并获得帮助
-- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) —— 报告缺陷或提出功能需求
-- [PipesHub 文档](https://docs.pipeshub.com/) —— 阅读文档
-
+**更多问题：** 文件格式、技术栈、知识图谱、多模态支持和故障排查等问题，请参阅[完整 FAQ](../../FAQ.md)。
 
 <hr>
 <div align="center">
-<h3>⭐ 在 GitHub 上为我们点亮 Star！</h3>
+<h3>⭐ 在 GitHub 上给我们点个 Star！</h3>
 
-<p>这能帮助项目触达真正需要它的团队。</p>
+<p>这能帮助项目被更多需要它的团队看到。</p>
 
 <p>
 <a href="https://github.com/pipeshub-ai/pipeshub-ai">
@@ -283,8 +354,12 @@ PipesHub 支持图像、图表和扫描文件的理解，以及基于语音的�
 </p>
 
 <p>
-<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
-<img src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
+<a href="https://www.star-history.com/?repos=pipeshub-ai%2Fpipeshub-ai">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;theme=dark&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" width="600" />
+ </picture>
 </a>
 </p>
 

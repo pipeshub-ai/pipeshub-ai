@@ -8,7 +8,7 @@
 
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
-<h3>פלטפורמת ה-AI לסביבת העבודה, בקוד פתוח</h3>
+<h3>שכבת ההקשר בקוד פתוח לסוכני AI</h3>
 
 <p>
   <a href="https://www.pipeshub.com/">אתר</a> ·
@@ -32,9 +32,6 @@
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
     <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
   </a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
-    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai" alt="GitHub Repo stars">
-  </a>
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>
@@ -51,37 +48,137 @@
 
 <div dir="rtl">
 
-<h2 id="about-pipeshub">PipesHub — ניתן להסבר וניתן להרחבה</h2>
+<h2 id="about-pipeshub">תנו לסוכני ה-AI שלכם הבנה אמיתית של החברה שלכם</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> היא שכבת הרצה נטיבית ל-AI, בקוד פתוח וניתנת לאחסון עצמי, המחברת את הידע הארגוני, מספקת חיפוש ניתן להסבר עם ציטוטים, ומבצעת אוטומציה של תהליכי עבודה על פני המערכות שלך.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> הופכת את כל מה שהחברה שלכם יודעת לסביבת עבודה שמכבדת הרשאות. סוכני AI חוקרים אותה כמו שסוכני קוד חוקרים מאגר קוד. הם מחפשים בה, מריצים עליה `grep`, עוברים בין התיקיות שלה ובגרף הידע שלה, קוראים רק את מה שהם צריכים, ומצטטים את הבלוק המדויק שממנו הגיעה כל תשובה.
 
+חברו את Slack, Google Drive, GitHub, Microsoft 365, Jira, Notion, Postgres ועוד 25+ מערכות. השתמשו בצ'אט המובנה, במחקר המעמיק ובסוכנים, או העבירו את אותו הקשר ל-Claude Code, Cursor, Codex ולסוכנים שלכם דרך MCP וה-SDK. אחסון עצמי, Apache 2.0, ובחירה חופשית של מודל.
 
-## תכונות
+> [!TIP]
+> פריסה בפקודה אחת:
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install | bash
+> ```
 
-- 📝 **תשובות ניתנות להסבר:** PipesHub מספק תשובות מבוססות עם ציטוטים מדויקים ברמת הבלוק אל המסמכים המקוריים.
-- 🔒 **חיפוש מודע להרשאות:** אוכף בקרות גישה ברמת המקור, כך שמשתמשים רואים רק את מה שהם מורשים לו.
-- 🕸️ **אחזור מבוסס גרף ידע:** אחזור מבוסס גרפים שלוכד את הקשרים בין נתוני הארגון.
-- 🔌 **מחברים ארגוניים:** יותר מ-50 מחברים עם אינדוקס בזמן אמת ומתוזמן, מוכנים לשימוש מיד.
-- 🔍 **חיפוש מאוחד, מחקר מעמיק וסוכנים:** חיפוש, שאלות ותשובות, מחקר מעמיק, חיפוש באינטרנט וסוכני AI על שכבת הקשר אחת.
-- 📊 **פריטי תוצר והרצת קוד:** הפק דוחות, תרשימים ולוחות מחוונים בארגז חול הרצה מאובטח.
-- 🎙️ **תמיכה רב-מודלית:** הבנה של תמונות, דיאגרמות וקבצים סרוקים, וכן אינטראקציה קולית.
-- 🤖 **סוכנים ופעולות ללא קוד:** בנה סוכנים באופן ויזואלי ובצע פעולות על פני כלים ארגוניים.
-- 🧠 **הבא את המודל שלך, ניתן לאחסון עצמי מלא:** כל ספק LLM, מותקן בתוך ה-VPC שלך — הנתונים לעולם אינם עוזבים את התשתית שלך.
-- 🛠️ **מותאם למפתחים וניתן להרחבה:** ממשקי API, ערכות SDK, כלי MCP, מחברים מותאמים אישית ושירותים הניתנים להרחבה בנפרד.
+## למה שכבת הקשר?
+
+סוכנים נכשלים בדרך כלל על ידע ארגוני בגלל ההקשר שלהם, לא בגלל המודל. אחזור top-k של קטעים מוסר לסוכן קומץ שברים, ומאבד היכן כל אחד מהם נמצא, למה הוא מקשר, מי רשאי לראות אותו ומאיפה הוא הגיע.
+
+סוכני קוד השתפרו מאוד ברגע שיכלו להריץ `ls` ו-`grep` ולקרוא מאגר קוד, במקום לקבל קטעי קוד מודבקים. PipesHub נותנת לסוכנים את אותה יכולת על הנתונים של החברה שלכם.
+
+| | RAG על קטעי top-k | PipesHub |
+| --- | --- | --- |
+| **מה הסוכן רואה קודם** | כמה קטעי טקסט | השם, המיקום, המטא-דאטה והתקציר של כל רשומה, וגם הבלוקים שהתאימו |
+| **איך הוא מעמיק** | הוא לא יכול: אחזור אחד לכל שאלה | חיפוש היברידי, `grep`/`find` על רשומות, ניווט בתיקיות ושאילתות לגרף הידע, בלולאה |
+| **מבנה** | הולך לאיבוד בחיתוך לקטעים | כל מקור הופך ל-Blocks: סעיפים, טבלאות עם שורות ותאים, שרשורים, קוד, טבלאות SQL עם הסכמה שלהן |
+| **הרשאות** | לרוב בקירוב, בזמן האינדוקס | נבדקות מול ההרשאות של מערכת המקור עבור המשתמש המבקש, בכל קריאה לכלי |
+| **ציטוטים** | לפי קטע, אם בכלל | לפי בלוק: העמוד, תא הטבלה, השורה, השקופית או שורת הקוד, וציטוטים מומצאים מוסרים |
+
+## איך זה עובד
+
+```mermaid
+flowchart LR
+  subgraph Sources["40+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: search, grep, navigate, entities, fetch record"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
+כל מקור הופך ל-**Blocks** (בלוקים): ייצוג אחד ששומר על טבלאות, שרשורים וקוד בשלמותם, וזוכר את העמוד, התא או השורה המדויקים שמהם הגיע כל בלוק. כל מסמך נשמר כטקסט פשוט, כך שסוכנים יכולים להריץ `grep` על PDF, קובץ Word או מצגת בדיוק כמו על קובץ טקסט. ה-Blocks מאורגנים בשתי דרכים: לפי **מבנה התיקיות** של כל מערכת מקור, וב**גרף ידע** של אנשים, פרויקטים ולקוחות. סוכנים חוקרים את שניהם בעזרת **כלים שחושפים פרטים צעד אחר צעד**: חיפוש מציג קודם את השם, התקציר והקטעים התואמים של כל רשומה, והסוכן מעמיק (grep, דפדוף בתיקיות, מעקב אחרי ישויות, קריאת הרשומה המלאה) רק כשהוא צריך. **כל קריאה לכלי נבדקת מול ההרשאות של מערכת המקור** עבור האדם שבשמו הסוכן פועל.
+
+**[קראו איך שכבת ההקשר עובדת ←](../../context-layer.md)** המסמך מכסה את פורמט ה-Blocks, את ההיררכיה והגרף, כל כלי של הסוכן והקוד שבו הוא ממומש, אכיפת הרשאות, לולאת הסוכן והמגבלות הנוכחיות.
+
+## מה אפשר לבנות עם PipesHub
+
+שכבת הקשר אחת, הרבה מוצרים מעליה. השתמשו באפליקציות המובנות כמו שהן, או בנו משלכם דרך MCP וה-SDK.
+
+| מה בונים | מה PipesHub נותנת | מאיפה מתחילים |
+| --- | --- | --- |
+| **צינורות RAG מבוססי סוכנים** | כלי אחזור שסוכן קורא להם בלולאה (חיפוש היברידי, `grep`, ניווט, שאילתות ישויות, קריאת רשומה מלאה), עם בדיקות הרשאות וציטוטים ברמת הבלוק שכבר מוכנים | [ערכת התחלה ל-SDK](https://github.com/pipeshub-ai/examples/tree/main/sdk-starter) · [MCP](#שימוש-מתוך-claude-code-cursor-או-codex) |
+| **חיפוש ארגוני** | תיבת חיפוש אחת על פני 40+ מחברים, שמציגה לכל אדם רק את מה שמותר לו לראות, עם תשובות מצוטטות | מובנה · [דוגמה](https://github.com/pipeshub-ai/examples/tree/main/private-enterprise-search) |
+| **עוזר AI לסביבת העבודה** | צ'אט ומחקר מעמיק על הידע של החברה, וגם חיפוש ברשת וקלט קולי | מובנה |
+| **הקשר לסוכני קוד** | Claude Code, Cursor ו-Codex עונים מתוך מסמכי תכנון, כרטיסים, תקלות ושרשורי צ'אט, לא רק מהקוד | [דוגמה](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp) |
+| **סוכנים ובוני תהליכי עבודה ללא קוד** | בונה ויזואלי בגרירה ושחרור שמחבר את הידע של החברה לפעולות ב-Slack, Gmail, Jira, Confluence, GitHub, Linear, Notion, Salesforce, Zendesk, Freshdesk ועוד 20 כלים. או בנו מוצר תהליכי עבודה משלכם על אותו API, כך שכל שלב מקבל הקשר שמכבד הרשאות. | מובנה · [לבנות headless](#אפשר-להשתמש-ב-pipeshub-במצב-headless-בלי-הממשק-שלה) |
+| **קופיילוטים לתמיכת לקוחות** | תשובות מתוך כרטיסים קודמים, ספרי הפעלה ותיעוד (ServiceNow, Zammad, Jira, Confluence), עם פעולות בחזרה בכלי ניהול הכרטיסים | מובנה · SDK |
+| **מודיעין מכירות ולקוחות** | חשבונות, אנשי קשר ועסקאות מ-Salesforce בגרף הידע, שאפשר לחפש לצד המיילים, המסמכים והצ'אטים על אותם לקוחות | מובנה |
+| **שאלות על מסדי הנתונים שלכם** | טבלאות Postgres, MariaDB ו-Snowflake עוברות אינדוקס עם הסכמות והמפתחות הזרים שלהן, וגם ארגזי חול שמריצים SQL ו-Python לניתוח | מובנה |
+| **דוחות, גרפים ולוחות מחוונים** | סוכנים כותבים ומריצים קוד בארגז חול ומחזירים את התוצאה כארטיפקט שאפשר לשתף | מובנה |
+| **חיפוש בידע ההנדסי** | קוד, pull requests ו-commits מ-GitHub ומ-GitLab, מקושרים לכרטיסים ולמסמכים שסביבם | מובנה |
+| **האפליקציות שלכם על הידע של החברה** | SDK ל-Python, TypeScript ו-Go, "Sign in with PipesHub" כדי שכל משתמש יחפש בשמו, ו-API להעלאת מסמכים שאף מחבר לא מכסה | [דוגמאות](https://github.com/pipeshub-ai/examples) |
+| **אפליקציות משפטיות וחוזים (CLM)** | שאלו שאלות על חוזים ב-Drive, SharePoint, Box או בקבצים שהועלו. התשובות מצטטות את הסעיף או העמוד המדויקים, וכל אדם רואה רק את החוזים שמותר לו לראות. | [לבנות headless](#אפשר-להשתמש-ב-pipeshub-במצב-headless-בלי-הממשק-שלה) |
+| **AI פרטי, on-prem** | כל מה שלמעלה, באחסון עצמי, עם כל ספק LLM או מודלים מקומיים דרך Ollama, והנתונים נשארים בתשתית שלכם | [פריסה](#-מדריך-פריסה) |
+
+## שימוש מתוך Claude Code, Cursor או Codex
+
+**[תנו לעוזר הקוד שלכם גישה מאובטחת לידע של החברה ←](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+
+כעשר דקות, אחרי ש-PipesHub רצה והנתונים עברו אינדוקס. הנפיקו Personal Access Token (לא נדרשות הרשאות מנהל). חברו את העוזר שלכם: פקודה אחת ל-Claude Code, קובץ הגדרות אחד ל-Cursor או ל-Codex. ואז שאלו *"למה שונתה לוגיקת הניסיונות החוזרים ב-billing worker?"* העוזר עונה מתוך תחקיר התקלה, ה-pull request, שרשור הצ'אט ומסמך התכנון, כל אחד עם ציטוט, ורק אם מותר לכם לראות אותם.
+
+דרך MCP, עוזרים מקבלים כבר היום את כלי החיפוש, הצ'אט והרשומות של PipesHub. שאר כלי הסוכן (`grep`, `navigate`, שאילתות ישויות) יגיעו ל-MCP בהמשך.
+
+רוצים את אותו אחזור בתוך הקוד שלכם, או מאחורי תיבת חיפוש לצוות? [ערכת ההתחלה של ה-SDK ודוגמת החיפוש](https://github.com/pipeshub-ai/examples) מכסות את שני המקרים. בניתם משהו? [הראו לנו](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
 ## PipesHub בפעולה
+
+### ציטוטים
+<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
 
 ### מחברים
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Connector%20Setup%20and%20Query%20with%20Connectors.gif" alt="Connectors" width="100%"/>
 
-### ציטוטים
-<img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Citation%20through%20chat.gif" alt="Citations" width="100%"/>
+<details>
+<summary><b>הדגמות נוספות: כל הרשומות, חיפוש ידע</b></summary>
 
 ### כל הרשומות
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/All%20Records%20Demo.gif" alt="All Records" width="100%"/>
 
 ### חיפוש ידע
 <img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/main/gif/Knowledge%20Search%20Demo.gif" alt="Knowledge Search" width="100%"/>
+
+</details>
+
+## תכונות
+
+**הקשר לסוכנים**
+
+- 🗂️ **ניתן לחקירה, לא רק לחיפוש:** חיפוש היברידי, `grep` על כל מסמך (כולל PDF וקובצי Office), ניווט בתיקיות ושאילתות לגרף הידע, כולם ככלים לסוכן.
+- 🔒 **מודעות להרשאות בכל שלב:** כל קריאה לכלי נבדקת מול ההרשאות של מערכת המקור עבור האדם שבשמו הסוכן פועל.
+- 📝 **ציטוטים ברמת הבלוק:** התשובות מצטטות את העמוד, תא הטבלה, השורה, השקופית או שורת הקוד שמהם הגיעו.
+- 🧱 **נתונים מובנים, חצי-מובנים ולא-מובנים בשכבה אחת:** מסמכים, גיליונות, כרטיסים, שרשורי צ'אט, קוד וטבלאות SQL, כולם הופכים ל-Blocks.
+
+**מחובר למערכות שלכם**
+
+- 🔌 **40+ מחברים:** Google Workspace, Microsoft 365, Slack, Jira, Confluence, Notion, GitHub, GitLab, Salesforce, ServiceNow, Postgres, Snowflake ועוד, עם סנכרון בזמן אמת ולפי לוח זמנים.
+- 🕸️ **גרף ידע:** ישויות וקשרים שמחולצים בזמן האינדוקס ומשמשים בזמן המענה.
+- 🎙️ **רב-מודאלי:** תמונות, תרשימים וקבצים סרוקים, וגם קלט קולי.
+- 🧠 **המודל שלכם, באחסון עצמי מלא:** כל ספק LLM או מודל מקומי, בפריסה על התשתית שלכם.
+
+## PipesHub Cloud
+
+מעדיפים PipesHub מנוהל לגמרי, בלי להפעיל תשתית משלכם? PipesHub Cloud יגיע בקרוב.
+
+👉 **[הצטרפו לרשימת ההמתנה ל-Cloud](https://pipeshub.com/cloud-waitlist)** כדי לקבל גישה מוקדמת.
 
 ## מחברים
 
@@ -91,185 +188,160 @@
 
 ## 🚀 מדריך פריסה
 
-ניתן להריץ את PipesHub (פלטפורמת ה-AI לסביבת העבודה) מקומית או לפרוס אותה בענן באמצעות Docker Compose.
-**הערה**: אם אתה פורס את PipesHub בשרת ענן, ודא שאתה משתמש בנקודת קצה מסוג HTTPS. PipesHub אוכף בדיקות אבטחה מחמירות יותר, והדפדפנים יחסמו בקשות מסוימות כאשר היישום מוגש דרך HTTP.
-אפשר להשתמש בפרוקסי הפוך כמו Cloudflare, Nginx או Traefik כדי לסיים את ה-SSL/TLS ולספק תעודת HTTPS תקפה.
-אם אתה רואה מסך לבן לאחר פריסת PipesHub בעת גישה דרך HTTP, זו ככל הנראה הסיבה. צד הלקוח יסרב להיטען בשל בדיקות האבטחה המחמירות יותר.
+אפשר להריץ את PipesHub מקומית או לפרוס אותה על כל שרת בעזרת Docker Compose. המתקין האינטראקטיבי מטפל בכל ההגדרות, כולל סודות, מסד נתוני הגרף, מתווך ההודעות ובחירת תג האימג', ומייצר עבורכם קובץ `.env`.
+
+> **HTTPS בשרתי ענן:** אם אתם פורסים את PipesHub על שרת ענן, השתמשו בכתובת HTTPS. דפדפנים חוסמים בקשות מסוימות על HTTP רגיל. השתמשו ב-Cloudflare, Nginx או Traefik לסיום TLS. מסך לבן אחרי פריסה עם HTTP בלבד נגרם בדרך כלל בגלל המגבלה הזו.
 
 ---
 
-### 📦 פריסה לסביבת ייצור
+### ⚡ התחלה מהירה (מומלץ)
+
+נדרש [Docker](https://docs.docker.com/get-docker/) עם Compose v2. פקודה אחת:
 
 ```bash
-# Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the production deployment
-docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.prod.yml -p pipeshub-ai down
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
 
-### 📦 בנייה לפריסת מפתחים
+הפקודה מורידה את קובצי הפריסה של הגרסה האחרונה אל `./pipeshub`
+ומפעילה את המתקין האינטראקטיבי. כשהוא מסיים, פתחו את **http://localhost:3000**.
+
+> **מעדיפים לקרוא לפני שמריצים?** הורידו ובדקו את הסקריפט קודם:
+>
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install -o pipeshub-install.sh
+> less pipeshub-install.sh        # review it
+> bash pipeshub-install.sh
+> ```
+
+המתקין:
+- בודק את Docker, את ה-RAM ואת שטח הדיסק
+- שואל אם אתם רוצים פריסת **slim** או **full**
+- מאפשר לכם, אם תרצו, להתאים את מסד נתוני הגרף, מתווך ההודעות ומאגר ה-KV
+- מייצר סודות אקראיים וכותב קובץ `.env`
+- מושך את האימג'ים ומפעיל את המערכת
+- ממתין עד ש-PipesHub תקינה, מוודא שאפשר להגיע אליה ומדפיס את הכתובת
+
+### 🛠️ ממאגר משוכפל (למפתחים)
+
+כדי לבנות מקוד המקור, לתרום, או לנעול את המתקין לעותק המקומי שלכם:
 
 ```bash
-# Clone the repository
 git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+cd pipeshub-ai
 
-# 📁 Navigate to the deployment folder
-cd pipeshub-ai/deployment/docker-compose
-
-# Set Optional Environment Variables
-> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
-> _(Required for webhook notifications and real-time updates)_
-> Refer to env.template
-
-# 🚀 Start the local build deployment
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
-
-# 🛑 To stop the services
-docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
+# Same installer, run from the repo root
+./install.sh
 ```
 
-ה-`Dockerfile` הראשי מושך שכבות בנויות מראש מ-`pipeshubai/pipeshub-ai-base:python-deps` ומ-`pipeshubai/pipeshub-ai-base:runtime` (ראה [`Dockerfile.base`](../../../Dockerfile.base) בשורש המאגר לפקודות הבנייה/הדחיפה). כדי להשתמש בתגיות מקומיות במקום זאת, הגדר את `PYTHON_DEPS_IMAGE` ו-`RUNTIME_BASE_IMAGE` בסביבה או בארגומנטי הבנייה של compose.
+בניית אימג'ים מקומיים מקוד המקור אפשרית רק מהמאגר המשוכפל (`./install.sh --build`);
+המתקין בפקודה אחת שלמעלה תמיד משתמש באימג'ים מוכנים מראש.
 
-## שרת MCP
+> **אפשרויות מתקדמות:** דגלי המתקין (`--yes`, `--version`, `--reconfigure`, `--print-env-only`), משתני סביבה ל-CI, סוגי פריסה slim ו-full, שימוש ידני בפרופילים של Compose ובנייה מקומית מקוד המקור מתוארים ב-[אפשרויות פריסה מתקדמות](../../../deployment/docker-compose/ADVANCED_DEPLOYMENT.md).
 
-השתמש ב-PipesHub עם כל לקוח תואם MCP כדי להביא את ההקשר הארגוני שלך אל תהליכי עבודה של AI. ראה את ה-README להגדרה ושימוש.
+## לבנות על PipesHub: MCP ו-SDK
+
+חוויית החיפוש המובנית היא דרך אחת להשתמש ב-PipesHub. אותו הקשר מחובר
+ומסונן לפי הרשאות זמין גם לסוכנים ולאפליקציות שלכם,
+דרך MCP לכל לקוח תואם, או דרך ה-SDK כשאתם קוראים לו
+מהקוד שלכם.
+
+סוכן מתחבר בשם אדם מסוים ולא בשם האפליקציה, ולכן הוא
+מאחזר בדיוק את מה שאותו אדם רשאי לראות. הגישה נקבעת כשהשאילתה
+רצה, מול ההרשאות של מערכת המקור עצמה, ולא בקירוב
+בזמן הבנייה.
+
+מדריכים צעד אחר צעד לבנייה הנפוצה ביותר, כמו MCP לעוזר הקוד
+שלכם, חיפוש ארגוני פרטי וערכות התחלה ל-SDK, נמצאים
+ב-[**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples). חומרי
+העזר לכל אבן בניין נמצאים למטה.
+
+### שרת MCP
+
+השתמשו ב-PipesHub עם כל לקוח שתומך ב-MCP כדי להכניס את ההקשר הארגוני שלכם לתהליכי AI. ההגדרה והשימוש מתוארים ב-README.
 
 **מאגר:** [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/)
 
-## ערכות SDK
+משתמשים ב-[Omnigent](https://omnigent.ai)? ראו את [`integrations/omnigent/`](../../../integrations/omnigent/) לשלוש דרכי חיבור, מחיבור דרך ממשק הווב ועד ערכת חיבור מבוססת סקריפטים.
 
-PipesHub מספק ערכות SDK למפתחים ב-Python, ב-TypeScript וב-Go כדי לעזור לך לבצע אינטגרציה במהירות. ראה את ה-README של מאגר ה-SDK המתאים לפרטי ההגדרה והשימוש.
+### SDK
+
+PipesHub מספקת SDK למפתחים ב-Python, TypeScript ו-Go כדי לעזור לכם להשתלב במהירות. פרטי ההגדרה והשימוש נמצאים ב-README של מאגר ה-SDK המתאים.
 
 | שם | תיאור | קישור |
 |------|-------------|------|
-| **Python SDK** | ערכת SDK ב-Python עבור PipesHub | [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python) |
-| **TypeScript SDK** | ערכת SDK ב-TypeScript עבור PipesHub | [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) |
-| **Go SDK** | ערכת SDK ב-Go עבור PipesHub | [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go) |
+| **Python SDK** | Python SDK עבור PipesHub | [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python) |
+| **TypeScript SDK** | TypeScript SDK עבור PipesHub | [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) |
+| **Go SDK** | Go SDK עבור PipesHub | [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go) |
 
-> צריך SDK בשפה אחרת? פנה אלינו בכתובת developer@pipeshub.com
+> צריכים SDK בשפה אחרת? כתבו לנו ל-developer@pipeshub.com
 
 ## מפת דרכים
 
-<p>אנחנו מפתחים בגלוי. הנה מה שהושלם ומה צפוי בהמשך:</p>
+<p>אנחנו מפתחים בגלוי. הנה מה שכבר הושלם ומה מגיע בהמשך:</p>
 
 <ul>
-<li>✅ 🤖 <strong>סוכני AI לסביבת העבודה</strong>: בונה סוכנים ללא קוד מהשורה הראשונה</li>
-<li>✅ 🔗 תמיכת <strong>MCP (Model Context Protocol)</strong>, גם כשרת וגם כלקוח</li>
-<li>✅ 🧰 <strong>ערכות SDK למפתחים</strong></li>
-<li>✅ 🔍 <strong>חיפוש קוד</strong> על פני GitHub, GitLab ו-Bitbucket</li>
-<li>⬜ 👤 <strong>חיפוש מותאם אישית</strong> על בסיס צוות, תפקיד והיסטוריה</li>
-<li>✅ ☸️ פריסת <strong>Kubernetes לסביבת ייצור</strong> עם ברירות מחדל של זמינות גבוהה</li>
-<li>⬜ 📈 <strong>רלוונטיות מועצמת ב-PageRank</strong> על פני גרף הידע</li>
+<li>✅ 🤖 <strong>סוכני AI לסביבת העבודה</strong>: בונה סוכנים ללא קוד ברמה מלאה</li>
+<li>✅ 🔗 תמיכה ב-<strong>MCP (Model Context Protocol)</strong>, גם כשרת וגם כלקוח</li>
+<li>✅ 🧰 <strong>SDK למפתחים</strong></li>
+<li>✅ 🔍 <strong>חיפוש קוד</strong> ב-GitHub וב-GitLab</li>
+<li>⬜ 👤 <strong>חיפוש מותאם אישית</strong> לפי צוות, תפקיד והיסטוריה</li>
+<li>✅ ☸️ <strong>פריסת Kubernetes לייצור</strong> עם ברירות מחדל של זמינות גבוהה</li>
+<li>⬜ 📈 <strong>רלוונטיות משופרת בעזרת PageRank</strong> על פני גרף הידע</li>
 </ul>
-<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">צפה במפת הדרכים המלאה של המוצר ב-Notion</a></strong></p>
+<p>👉 <strong><a href="https://plum-myrtle-9f7.notion.site/Pipeshub-s-Product-Roadmap-33841c164f54803a9989fd0fdbfdb1ee">צפו במפת הדרכים המלאה של המוצר ב-Notion</a></strong></p>
 
 <hr>
 
-## 👥 תרומה
+## 👥 תרומה לפרויקט
 
-רוצה להצטרף לקהילת המפתחים שלנו? אנא עיין ב[מדריך התרומה](CONTRIBUTING.md) שלנו לפרטים נוספים על אופן הקמת סביבת הפיתוח, תקני הקוד שלנו ותהליך התרומה.
-<h3>לאן לפנות ולשם מה</h3>
+רוצים להצטרף לקהילת המפתחים שלנו? עיינו ב[מדריך התרומה](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) כדי ללמוד איך להקים את סביבת הפיתוח, מהם תקני הקוד שלנו ואיך עובד תהליך התרומה.
+<h3>לאן לפנות ובשביל מה</h3>
 
 <table>
 
 <tr><td>לשאול שאלה או לקבל עזרה</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
 <tr><td>לדווח על באג או לבקש תכונה</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
-<tr><td>לדווח על בעיית אבטחה</td><td><a href="SECURITY.md">דיווח על בעיית אבטחה</a></td></tr>
-<tr><td>לקרוא את התיעוד</td><td><a href="https://docs.pipeshub.com/">תיעוד Pipeshub</a></td></tr>
-</tbody>
+<tr><td>לדווח על בעיית אבטחה</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">דיווח על בעיית אבטחה</a></td></tr>
+<tr><td>לקרוא את התיעוד</td><td><a href="https://docs.pipeshub.com/">התיעוד של Pipeshub</a></td></tr>
+<tr><td>לראות מה השתנה בכל גרסה</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">יומן שינויים</a></td></tr>
 </table>
 
 ## שאלות נפוצות
 
 ### מה זה PipesHub?
 
-PipesHub היא שכבת הרצה נטיבית ל-AI, בקוד פתוח וניתנת לאחסון עצמי, המחברת את הידע הארגוני, מספקת חיפוש ניתן להסבר עם ציטוטים, ומבצעת אוטומציה של תהליכי עבודה על פני המערכות שלך. היא מספקת שכבת הקשר מאוחדת לחיפוש, שאלות ותשובות, מחקר מעמיק, חיפוש באינטרנט וסוכני AI.
+PipesHub היא שכבת ההקשר בקוד פתוח לסוכני AI. היא הופכת את הידע שמאוחסן במערכות העסקיות של החברה שלכם לסביבת עבודה שמכבדת הרשאות, שסוכנים יכולים לחפש בה, להריץ עליה `grep`, לנווט בה ולצטט ממנה.
+
+היא מחברת מערכות כמו Slack, Google Drive, GitHub, Microsoft 365 ו-Notion, ומנגישה את מה שהן מכילות בשתי דרכים: חיפוש שמכבד הרשאות, עם ציטוטים, לצוות שלכם, והקשר אמין לסוכני ה-AI שלכם דרך API, SDK ו-MCP. סוכנים מקבלים את אותה תצוגה מבוקרת של הידע הארגוני שאדם היה מקבל, עם אותן בקרות גישה, כך שהם יכולים לענות מנתוני החברה האמיתיים במקום לנחש בין כלים. אפשר להשתמש בחוויית החיפוש המובנית, או לבנות עליה סוכנים, תהליכי עבודה ואפליקציות משלכם.
+
+### אפשר להשתמש ב-PipesHub במצב headless, בלי הממשק שלה?
+
+כן. אפליקציית הווב של PipesHub משתמשת באותו API שאתם יכולים לקרוא לו בעצמכם, כך שכל מה שאתם עושים בממשק אפשר לעשות גם בקוד: לחבר מקורות, להעלות קבצים, לנהל משתמשים והרשאות, לחפש, לשוחח בצ'אט, ולבנות ולהריץ סוכנים.
+
+- **REST API:** [מפרט OpenAPI](../../../backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml) עם כ-300 נקודות קצה. אפשר לעיין בו בכתובת `/api/v1/docs` במופע שלכם.
+- **SDK:** [Python](https://github.com/pipeshub-ai/pipeshub-sdk-python), [TypeScript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript) ו-[Go](https://github.com/pipeshub-ai/pipeshub-sdk-go).
+- **MCP:** ל-Claude Code, Cursor, Codex ולקוחות MCP אחרים.
+
+בחרו איך הקוד שלכם מתחבר:
+- **Personal Access Token או OAuth:** פועל בשם אדם אחד ורואה רק את מה שהאדם הזה יכול לראות.
+- **חשבון שירות:** למשימות רקע, עם הרשאות משלו.
+- **אפליקציית OAuth:** מאפשרת לכל משתמש באפליקציה שלכם להתחבר בשמו ("Sign in with PipesHub").
+
+צוותים משתמשים בזה כדי לבנות מוצרים משלהם על PipesHub, כמו בוני תהליכי עבודה, כלים משפטיים ולניהול חוזים (CLM), קונסולות תמיכה וסוכנים פנימיים, בלי להציג את הממשק של PipesHub.
 
 ### במה PipesHub שונה מכלי AI אחרים לסביבת העבודה?
 
-PipesHub הוא קוד פתוח לחלוטין (Apache 2.0) וניתן לאחסון עצמי — הנתונים שלך לעולם אינם עוזבים את התשתית שלך. הוא כולל חיפוש מודע להרשאות שאוכף בקרות גישה ברמת המקור, ומספק תשובות ניתנות להסבר עם ציטוטים מדויקים ברמת הבלוק אל המסמכים המקוריים.
+רוב הכלים מוסרים למודל AI כמה קטעי טקסט שאוחזרו. PipesHub נותנת לסוכנים כלים לחקור את הידע של החברה שלכם כמו שסוכן קוד חוקר מאגר קוד: חיפוש היברידי, `grep` על רשומות, ניווט בתיקיות ושאילתות לגרף הידע, וכל אחד מהם נבדק מול ההרשאות של המשתמש המבקש במערכת המקור. כל מקור הופך ל-Blocks, כך שהתשובות מצטטות את העמוד, תא הטבלה, השורה או השקופית המדויקים. היא בקוד פתוח מלא (Apache 2.0) וניתנת לאחסון עצמי, כך שהנתונים שלכם לעולם לא יוצאים מהתשתית שלכם. ראו [למה שכבת הקשר?](#למה-שכבת-הקשר)
 
-### אילו מחברים PipesHub תומך בהם?
+### באילו מחברים PipesHub תומכת?
 
-ל-PipesHub יש יותר מ-50 מחברים ארגוניים עם אינדוקס בזמן אמת ומתוזמן. ראו את [סקירת המחברים](https://docs.pipeshub.com/connectors/overview).
+ל-PipesHub יש 40+ מחברים לכ-30+ מערכות, עם אינדוקס בזמן אמת ולפי לוח זמנים. ראו את [סקירת המחברים](https://docs.pipeshub.com/connectors/overview).
 
-### אילו פורמטי קבצים PipesHub יכול לאנדקס?
+### באילו ספקי LLM PipesHub תומכת?
 
-PDF (כולל סריקות), Microsoft Office (Word, Excel, PowerPoint), Google Docs/Sheets/Slides, Markdown, HTML, CSV, טקסט רגיל ותמונות. אפשר לאחסן שמע ווידאו, אך הם עדיין לא מאונדקסים. שירות האחסון מקבל רשימת MIME רחבה יותר — ראו [Supported MIME Types](https://docs.pipeshub.com/system-overview/storage).
+PipesHub פועלת בגישת "Bring Your Own Model": אפשר להשתמש בכל ספק LLM. פרסו ב-VPC שלכם עם המודלים שאתם מעדיפים.
 
-### כיצד אני פורס את PipesHub?
-
-```bash
-curl -fsSL https://get.pipeshub.com/install | bash
-```
-
-זה כותב את קובצי ה-Compose ל-`./pipeshub` ומפעיל את מתקין האינטראקטיבי. פתח את **http://localhost:3000** לאחר הסיום. השתמש ב-HTTPS לפריסות בענן — HTTP עלול לגרום לחסימות אבטחה בצד הלקוח.
-
-מפתחים הבונים מקוד מקור צריכים לשכפל את המאגר ולהפעיל את `./install.sh` (או `./install.sh --build`) משורש המאגר. ראו את [מדריך הפריסה](#-מדריך-פריסה).
-
-### אילו ספקי LLM PipesHub תומך בהם?
-
-PipesHub פועל לפי עקרון "הבא את המודל שלך" — אתה יכול להשתמש בכל ספק LLM. פרוס בתוך ה-VPC שלך עם המודלים המועדפים עליך.
-
-### מהי ערכת הטכנולוגיות?
-
-ל-PipesHub יש שלושה חלקים:
-
-- **אפליקציית ווב** (Next.js) — חיפוש, צ'אט וניהול בדפדפן.
-- **API** (Node.js) — חשבונות, הרשאות, מאגרי ידע וקבצים.
-- **שירותי Python** — מחברים מסנכרנים את המקורות שלך; האינדוקס מנתח מסמכים; השאילתה עונה עם ציטוטים.
-
-השירותים האלה קוראים ל**מודלי AI שאתה מביא**. **מודל הטמעות** הופך טקסט לווקטורים לחיפוש. **LLM** כותב את התשובה עם הציטוטים. אפשר להשתמש בכל ספק או במודל מקומי (Ollama); שרת הטמעות מקומי הוא ברירת המחדל.
-
-הנתונים נמצאים בגרף ידע (Neo4j כברירת מחדל, או ArangoDB), במאגר וקטורים (Qdrant) וב-MongoDB. Redis הוא המטמון. קבצים נשמרים בדיסק או באחסון אובייקטים. השירותים מעבירים עבודה זה לזה דרך Redis במחשב מקומי, או דרך Kafka בהתקנה גדולה יותר. ראו את [סקירת המערכת](https://docs.pipeshub.com/system-overview).
-
-### מהי תכונת האחזור מבוסס גרף הידע?
-
-PipesHub משתמש באחזור מבוסס גרפים שלוכד את הקשרים בין נתוני הארגון. הוא משתמש ב-Neo4j או ב-ArangoDB כמסדי נתונים גרפיים, בשילוב עם Qdrant לחיפוש בדמיון וקטורי.
-
-### האם ל-PipesHub יש שרת MCP?
-
-כן. PipesHub מספק שרת MCP לאינטגרציה עם כל לקוח תואם MCP. מאגר: [pipeshub-ai/mcp-server](https://github.com/pipeshub-ai/mcp-server/).
-
-### אילו ערכות SDK זמינות?
-
-PipesHub מספק ערכות SDK עבור:
-- **Python**: [pipeshub-ai/pipeshub-sdk-python](https://github.com/pipeshub-ai/pipeshub-sdk-python)
-- **TypeScript**: [pipeshub-ai/pipeshub-sdk-typescript](https://github.com/pipeshub-ai/pipeshub-sdk-typescript)
-- **Go**: [pipeshub-ai/pipeshub-sdk-go](https://github.com/pipeshub-ai/pipeshub-sdk-go)
-
-### האם אני יכול לבנות סוכני AI בלי לכתוב קוד?
-
-כן. ל-PipesHub יש בונה סוכנים ללא קוד. אתה יכול לבנות סוכנים באופן ויזואלי ולבצע פעולות על פני כלים ארגוניים מבלי לכתוב קוד.
-
-### מהי התמיכה הרב-מודלית?
-
-PipesHub תומך בהבנה של תמונות, דיאגרמות וקבצים סרוקים, וכן באינטראקציה קולית. הוא משתמש ב-Docling וב-PyMuPDF לניתוח מסמכים, וב-Azure Document Intelligence או במודל LLM רב-מודלי (VLM) לזיהוי תווים אופטי (OCR) של קובצי PDF סרוקים.
-
-### כיצד אני פותר בעיות פריסה?
-
-1. ודא ש-HTTPS מוגדר עבור פריסות בענן
-2. בדוק את יומני Docker compose: `docker compose logs`
-3. ודא את משתני הסביבה ב-env.template
-4. עיין ב-[docs.pipeshub.com](https://docs.pipeshub.com/) למדריכים מפורטים
-
-### היכן אני יכול לקבל עזרה?
-
-- [Discord](https://discord.com/invite/K5RskzJBm2) — שאל שאלות וקבל עזרה
-- [GitHub Issues](https://github.com/pipeshub-ai/pipeshub-ai/issues) — דווח על באגים או בקש תכונות
-- [תיעוד PipesHub](https://docs.pipeshub.com/) — קרא את התיעוד
+**שאלות נוספות:** פורמטי קבצים, מחסנית הטכנולוגיות, גרף הידע, תמיכה רב-מודאלית ופתרון תקלות מקבלים מענה ב[שאלות הנפוצות המלאות](../../FAQ.md).
 
 </div>
 
@@ -286,8 +358,12 @@ PipesHub תומך בהבנה של תמונות, דיאגרמות וקבצים ס
 </p>
 
 <p>
-<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
-<img src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
+<a href="https://www.star-history.com/?repos=pipeshub-ai%2Fpipeshub-ai">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;theme=dark&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" width="600" />
+ </picture>
 </a>
 </p>
 
