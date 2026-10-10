@@ -532,6 +532,28 @@ cases:
       - state: "The Northwind Traders renewal is now on track."
         expect: [missing, contradicted]
 
+  # A step still ahead leaves "on track" true; a condition that is not met takes it back.
+  - id: consistent-northwind-signature-due
+    about: on track, with the signature still to come
+    answer: "The Northwind renewal is on track; the signature is still due by 31 May."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: self-contradiction-northwind-only-if-cfo
+    about: on track only if a cancellation is reversed
+    answer: "The Northwind renewal is on track, but only if their CFO reverses the decision to cancel."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: contradicted
+
+  - id: self-contradiction-northwind-at-risk-until-fixed
+    about: on track, yet at risk until a fix that has not happened
+    answer: "The Northwind renewal is on track, but it stays at risk until the export failures are fixed, and they haven't been yet."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: contradicted
+
   # --- On-call handbook -------------------------------------------------------------
   - id: oncall-full
     about: both facts, different words
