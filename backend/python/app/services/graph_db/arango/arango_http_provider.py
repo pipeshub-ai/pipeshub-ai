@@ -5564,10 +5564,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN a
             )
 
-            // Then find user connected via userAppRelation with matching sourceUserId
+            // Then find user connected via userAppRelation with matching sourceUserId.
+            // People (external collaborators) hold membership edges too; only a
+            // users/ end is a user, as Neo4j's (u:User) match already requires.
             FOR edge IN {CollectionNames.USER_APP_RELATION.value}
                 FILTER edge._to == app._id
                 FILTER edge.sourceUserId == @source_user_id
+                FILTER IS_SAME_COLLECTION("{CollectionNames.USERS.value}", edge._from)
                 LET user = DOCUMENT(edge._from)
                 FILTER user != null
                 LIMIT 1

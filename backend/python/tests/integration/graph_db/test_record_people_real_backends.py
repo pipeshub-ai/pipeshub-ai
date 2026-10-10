@@ -505,3 +505,42 @@ async def test_two_open_syncs_naming_the_same_outsider_both_link_them(backend) -
                 "FOR e IN entityRelations FILTER e._from == @f RETURN e._to", {"f": f"records/{record.id}"},
             )
             assert rows == [f"person/{person_id}"]
+
+
+async def test_a_collaborator_membership_with_a_source_id_is_never_read_as_a_user(backend) -> None:
+    """People hold app membership edges too (external collaborators). A source-id
+    lookup must only ever return a member: a Person read as a User would link a
+    record to users/<person key>, a node that does not exist."""
+    from app.models.entities import Person
+
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    app = f"{org}-conn"
+    await provider.batch_upsert_nodes(
+        [{"id": app, "name": app, "type": "Jira", "appGroup": "Atlassian", "authType": "OAUTH", "scope": "team",
+          "orgId": org, "isActive": True, "createdAtTimestamp": 1, "updatedAtTimestamp": 1}],
+        collection=CollectionNames.APPS.value,
+    )
+    person = await provider.upsert_person_by_email(
+        Person(email=f"guest@{org}.test", org_id=org, full_name="Guest"), raise_on_error=True,
+    )
+    try:
+        await provider.ensure_app_membership(
+            person, CollectionNames.PEOPLE.value, app, is_external=True, source_user_id="src-guest",
+        )
+        await provider.ensure_app_membership(
+            f"{org}-ann", CollectionNames.USERS.value, app, is_external=False, source_user_id="src-ann",
+        )
+
+        assert await provider.get_user_by_source_id("src-guest", app) is None
+        member = await provider.get_user_by_source_id("src-ann", app)
+        assert member is not None and member.id == f"{org}-ann"
+    finally:
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        if not isinstance(provider, Neo4jProvider):
+            aql = provider.http_client.execute_aql
+            edges = CollectionNames.USER_APP_RELATION.value
+            await aql(f"FOR e IN {edges} FILTER e._to == @app REMOVE e IN {edges}", {"app": f"apps/{app}"})
+            await aql(f"REMOVE {{_key: @app}} IN {CollectionNames.APPS.value} OPTIONS {{ignoreErrors: true}}", {"app": app})
