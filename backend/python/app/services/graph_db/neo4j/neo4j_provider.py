@@ -2840,26 +2840,34 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record key by external ID failed: {str(e)}")
             return None
 
-    async def get_virtual_record_ids_shared_outside_connector(
+    async def get_virtual_record_holders(
         self,
-        connector_id: str,
+        virtual_record_ids: list[str],
+        org_id: str,
         transaction: str | None = None,
-    ) -> list[str]:
-        # coalesce on both sides: `null <> x` is null in Cypher, which WHERE
-        # reads as false and would hide records lacking either field.
+    ) -> dict[str, list[dict]]:
+        if not virtual_record_ids:
+            return {}
         query = """
-        MATCH (r:Record {connectorId: $connector_id})
-        WHERE r.virtualRecordId IS NOT NULL
-        WITH DISTINCT r.virtualRecordId AS vid
-        MATCH (o:Record {virtualRecordId: vid})
-        WHERE coalesce(o.connectorId, '') <> $connector_id
-          AND coalesce(o.isDeleted, false) = false
-        RETURN DISTINCT vid
+        UNWIND $vrids AS vid
+        MATCH (r:Record {virtualRecordId: vid})
+        WHERE r.orgId = $org_id
+        RETURN vid, r.id AS id, r.connectorId AS connectorId,
+               r.connectorName AS connectorName, r.recordGroupId AS recordGroupId,
+               r.recordName AS recordName, r.webUrl AS webUrl,
+               coalesce(r.isDeleted, false) AS isDeleted
         """
         results = await self.client.execute_query(
-            query, parameters={"connector_id": connector_id}, txn_id=transaction
+            query,
+            parameters={"vrids": list(dict.fromkeys(virtual_record_ids)), "org_id": org_id},
+            txn_id=transaction,
         )
-        return [row["vid"] for row in results or [] if row.get("vid")]
+        holders: dict[str, list[dict]] = {}
+        for row in results or []:
+            vid = row.pop("vid", None)
+            if vid and row.get("id"):
+                holders.setdefault(vid, []).append(row)
+        return holders
 
     async def get_records_by_virtual_record_id(
         self,

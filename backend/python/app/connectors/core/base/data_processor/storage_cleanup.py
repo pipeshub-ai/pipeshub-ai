@@ -6,12 +6,12 @@ The helper calls the Node.js storage service using the same scoped-JWT auth
 pattern as BlobStorage.
 """
 
-from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
 
-from app.config.constants.arangodb import CollectionNames, EventTypes, RecordTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     DefaultEndpoints,
@@ -19,8 +19,6 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.modules.transformers.blob_storage import BlobStorage
-from app.services.messaging.config import Topic
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_path import (
@@ -28,7 +26,31 @@ from app.utils.storage_path import (
     build_record_group_path as _build_record_group_path,
     build_record_group_prefix_from_chain,
 )
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Virtual records listed per page, and handovers per relocate call (Node's cap).
+VIRTUAL_RECORD_PAGE_SIZE = 500
+RELOCATE_BATCH_SIZE = 100
+_ROUTE_ABSENT = (HttpStatusCode.NOT_FOUND.value, 405)
+
+
+class StorageHandoverError(Exception):
+    """Shared content could not be handed over, so nothing may be deleted."""
+
+
+@dataclass
+class StorageReleaseResult:
+    completed: bool = False
+    listed: int = 0
+    handed_over: int = 0
+    failed: int = 0
+    deleted: int = 0
+    reason: str | None = None
+
+
+def choose_storage_owner(holders: list[dict]) -> dict:
+    """Live holders before trashed ones, then the smallest key, so every run
+    picks the same owner."""
+    return min(holders, key=lambda h: (bool(h.get("isDeleted")), str(h.get("id"))))
 
 
 class StorageCleanupHelper:
@@ -159,103 +181,181 @@ class StorageCleanupHelper:
     # Storage document operations
     # ------------------------------------------------------------------
 
-    async def find_shared_virtual_record_ids(self, connector_id: str) -> list[str] | None:
-        """VRIDs this connector shares with live records in other connectors.
+    async def release_connector_storage(
+        self, org_id: str, connector_id: str
+    ) -> StorageReleaseResult:
+        """Delete a deleted connector's storage, handing shared content over first.
 
         Deduplicated content is stored once, under whichever connector indexed
-        it first, so deleting this connector's storage can remove documents
-        other connectors' records read; ``repair_shared_records`` re-indexes
-        those afterwards. Must run before this connector's records leave the
-        graph -- afterwards nothing links it to those VRIDs. Returns None when
-        that cannot be answered; callers must then keep the storage, not guess.
+        it first, and records elsewhere read the same documents. Each virtual
+        record this connector's storage holds that a record in another
+        connector (live, else trashed) still has is moved under that record's
+        own path and re-tagged with its connector; the document id, and so the
+        mapping every holder reads, stays the same. Only once every handover
+        succeeded is the connector's storage deleted: on any failure nothing is
+        deleted and the result says why, so the caller can retry. Run after the
+        connector's records left the graph; sharing is read from storage and
+        the graph each time, so a retry repeats exactly the same work.
         """
+        result = StorageReleaseResult()
+        self.logger.info(
+            "Storage release started | org=%s connector=%s", org_id, connector_id
+        )
         try:
-            return await self.graph_provider.get_virtual_record_ids_shared_outside_connector(
-                connector_id
-            )
-        except Exception as e:
-            self.logger.error(
-                "Could not determine VRIDs connector %s shares with other connectors: %s",
-                connector_id, e,
-            )
-            return None
-
-    async def repair_shared_records(
-        self,
-        org_id: str,
-        shared_vrids: list[str],
-        publish: Callable[[str, dict], Awaitable[Any]],
-    ) -> int:
-        """Rebuild the stored content of shared VRIDs whose document is gone.
-
-        One surviving record per broken VRID is force re-indexed: every record
-        sharing the VRID reads the same mapping, and the storage write
-        re-points it at the new document, so one rebuild heals them all.
-        Deduplication does not reuse a twin whose content is missing
-        (``EventProcessor._check_duplicate_by_md5``), so the forced record is
-        indexed rather than skipped. Other records are left untouched.
-
-        Returns the number of re-index events published.
-        """
-        blob_storage = BlobStorage(self.logger, self.config_service, self.graph_provider)
-        published = 0
-        for vrid in shared_vrids:
-            # Per VRID, so one unreadable record cannot strand the rest.
-            try:
-                published += await self._reindex_one_holder(blob_storage, org_id, vrid, publish)
-            except Exception as e:
-                self.logger.error(
-                    "Could not re-index a record sharing VRID %s; re-index it manually: %s",
-                    vrid, e,
+            after: str | None = None
+            while True:
+                vrids, after = await self._list_connector_virtual_records(
+                    org_id, connector_id, after
                 )
-        if published:
-            self.logger.info(
-                "Re-indexing %d record(s) to rebuild shared content removed with a deleted connector",
-                published,
+                result.listed += len(vrids)
+                if vrids:
+                    moved, failed = await self._hand_over_shared(org_id, connector_id, vrids)
+                    result.handed_over += moved
+                    result.failed += failed
+                if not after:
+                    break
+        except Exception as e:
+            result.reason = f"handover could not run: {e}"
+            self.logger.error(
+                "Storage release: handover could not run; storage kept | org=%s connector=%s "
+                "listed=%d handed_over=%d: %s",
+                org_id, connector_id, result.listed, result.handed_over, e,
             )
-        return published
+            return result
 
-    async def _reindex_one_holder(
-        self,
-        blob_storage: BlobStorage,
-        org_id: str,
-        vrid: str,
-        publish: Callable[[str, dict], Awaitable[Any]],
-    ) -> int:
-        if await blob_storage.get_actual_content_path(org_id, vrid) is not None:
-            return 0
-        holders = await self.graph_provider.get_records_by_virtual_record_id(
-            vrid, raise_on_error=True
-        )
-        record = None
-        for key in holders:
-            record = await self.graph_provider.get_document(key, CollectionNames.RECORDS.value)
-            if record:
-                break
-        if not record:
+        if result.failed:
+            result.reason = f"{result.failed} shared virtual record(s) were not handed over"
             self.logger.warning(
-                "No live record found for shared VRID %s; nothing re-indexed", vrid
+                "Storage release: delete skipped, handover incomplete | org=%s connector=%s "
+                "listed=%d handed_over=%d failed=%d",
+                org_id, connector_id, result.listed, result.handed_over, result.failed,
+            )
+            return result
+
+        try:
+            result.deleted = await self.delete_connector_storage(org_id, connector_id)
+        except Exception as e:
+            result.reason = f"storage delete failed: {e}"
+            self.logger.error(
+                "Storage release: delete failed after handover | org=%s connector=%s "
+                "handed_over=%d: %s",
+                org_id, connector_id, result.handed_over, e,
+            )
+            return result
+
+        result.completed = True
+        self.logger.info(
+            "Storage release completed | org=%s connector=%s listed=%d handed_over=%d deleted=%d",
+            org_id, connector_id, result.listed, result.handed_over, result.deleted,
+        )
+        return result
+
+    async def _list_connector_virtual_records(
+        self, org_id: str, connector_id: str, after: str | None
+    ) -> tuple[list[str], str | None]:
+        headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(org_id)
+        url = (
+            f"{nodejs_endpoint}"
+            f"{Routes.STORAGE_CONNECTOR_VIRTUAL_RECORDS.value.format(connector_id=connector_id)}"
+        )
+        params: dict[str, str | int] = {"limit": VIRTUAL_RECORD_PAGE_SIZE}
+        if after:
+            params["after"] = after
+        session = await self._get_session()
+        async with session.get(url, headers=headers, params=params) as resp:
+            if resp.status != HttpStatusCode.SUCCESS.value:
+                raise StorageHandoverError(
+                    f"listing the connector's virtual records failed: {resp.status} "
+                    f"{(await resp.text())[:200]}"
+                )
+            body = await resp.json()
+        vrids = [v for v in body.get("virtualRecordIds") or [] if isinstance(v, str) and v]
+        nxt = body.get("next")
+        return vrids, nxt if isinstance(nxt, str) and nxt else None
+
+    async def _hand_over_shared(
+        self, org_id: str, connector_id: str, vrids: list[str]
+    ) -> tuple[int, int]:
+        """(handed over, failed) for one page of the connector's virtual records."""
+        holders = await self.graph_provider.get_virtual_record_holders(vrids, org_id)
+        moves: list[dict] = []
+        failed = 0
+        for vrid in vrids:
+            others = [
+                h for h in holders.get(vrid) or []
+                if h.get("id") and h.get("connectorId") and h["connectorId"] != connector_id
+            ]
+            if not others:
+                continue
+            owner = choose_storage_owner(others)
+            path = await self._owner_storage_path(owner)
+            if not path:
+                failed += 1
+                self.logger.warning(
+                    "Storage release: no storage path for holder %s of VRID %s | connector=%s",
+                    owner.get("id"), vrid, connector_id,
+                )
+                continue
+            move = {"virtualRecordId": vrid, "newPath": path, "connectorId": owner["connectorId"]}
+            if owner.get("recordGroupId"):
+                move["recordGroupId"] = owner["recordGroupId"]
+            moves.append(move)
+
+        moved = 0
+        for i in range(0, len(moves), RELOCATE_BATCH_SIZE):
+            batch = moves[i : i + RELOCATE_BATCH_SIZE]
+            done = await self._relocate(org_id, connector_id, batch)
+            moved += done
+            failed += len(batch) - done
+        return moved, failed
+
+    async def _owner_storage_path(self, owner: dict) -> str | None:
+        # No flat fallback: a failed path lookup is retried rather than filing
+        # the copy where the owner's connector scope cannot find it.
+        record = SimpleNamespace(
+            id=owner.get("id"),
+            connector_id=owner.get("connectorId"),
+            connector_name=owner.get("connectorName"),
+            record_group_id=owner.get("recordGroupId"),
+            record_name=owner.get("recordName"),
+            weburl=owner.get("webUrl"),
+        )
+        return await build_hierarchical_storage_path(
+            record, self.graph_provider, logger=self.logger
+        )
+
+    async def _relocate(self, org_id: str, connector_id: str, moves: list[dict]) -> int:
+        """How many of ``moves`` Node handed over (or found nothing to move for)."""
+        headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(org_id)
+        url = f"{nodejs_endpoint}{Routes.STORAGE_RELOCATE_RECORDS.value}"
+        session = await self._get_session()
+        try:
+            async with session.post(
+                url, json={"fromConnectorId": connector_id, "moves": moves}, headers=headers
+            ) as resp:
+                if resp.status in _ROUTE_ABSENT:
+                    # A storage service older than this one: nothing can be handed over.
+                    raise StorageHandoverError(
+                        f"the storage service has no relocate route ({resp.status})"
+                    )
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.warning(
+                        "Storage release: relocate failed | org=%s connector=%s moves=%d: %s %s",
+                        org_id, connector_id, len(moves), resp.status, (await resp.text())[:200],
+                    )
+                    return 0
+                body = await resp.json()
+        except StorageHandoverError:
+            raise
+        except Exception as e:
+            self.logger.warning(
+                "Storage release: relocate request failed | org=%s connector=%s moves=%d: %s",
+                org_id, connector_id, len(moves), e,
             )
             return 0
-        file_record = None
-        if record.get("recordType") == RecordTypes.FILE.value:
-            file_record = await self.graph_provider.get_document(
-                record.get("_key") or record.get("id"), CollectionNames.FILES.value
-            )
-        payload = await self.graph_provider._create_reindex_event_payload(record, file_record)
-        payload["forceReindex"] = True
-        sent = await publish(
-            Topic.RECORD_EVENTS.value,
-            {
-                "eventType": EventTypes.NEW_RECORD.value,
-                "timestamp": get_epoch_timestamp_in_ms(),
-                "payload": payload,
-            },
-        )
-        # Publishers report failure by returning False rather than raising.
-        if sent is False:
-            raise RuntimeError("re-index event was not published")
-        return 1
+        asked = {m["virtualRecordId"] for m in moves}
+        settled = asked & {*(body.get("moved") or []), *(body.get("missing") or [])}
+        return len(settled)
 
     async def delete_connector_storage(
         self, org_id: str, connector_id: str

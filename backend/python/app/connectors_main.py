@@ -871,6 +871,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.trash_purge_task = asyncio.create_task(
         run_trash_purge_loop(app_container, graph_provider), name="trash_purge"
     )
+    # Retries the storage release of connector/KB deletes that did not finish it.
+    from app.connectors.services.storage_release import run_storage_release_loop
+    app.state.storage_release_task = asyncio.create_task(
+        run_storage_release_loop(app_container, graph_provider), name="storage_release"
+    )
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
@@ -885,7 +890,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    for task_name in ("connector_metrics_task", "trash_purge_task"):
+    for task_name in ("connector_metrics_task", "trash_purge_task", "storage_release_task"):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()

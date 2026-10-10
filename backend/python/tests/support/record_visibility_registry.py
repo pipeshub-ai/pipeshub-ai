@@ -57,10 +57,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
-    "get_virtual_record_ids_shared_outside_connector": (
-        Rule.LIVE,
-        "content a connector delete rebuilds; only a live record elsewhere is re-indexed for it",
-    ),
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),
@@ -103,6 +99,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_existing_record_keys": (Rule.ALL, "upsert pre-check by key"),
     "page_records_for_vector_membership_backfill": (Rule.ALL, "backfill walks every stored record"),
     "get_virtual_record_ids_for_record_ids": (Rule.ALL, _BY_KEY),
+    "get_virtual_record_holders": (
+        Rule.ALL,
+        "a deleted connector's shared content is handed to a holder; a trashed one needs it for a restore",
+    ),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_record_relations_batch": (Rule.ALL, _STRUCTURE),

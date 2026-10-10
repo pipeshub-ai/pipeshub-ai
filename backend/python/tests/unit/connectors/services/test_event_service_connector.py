@@ -1218,7 +1218,11 @@ class TestHandleDelete:
         with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
-        assert calls == ["intent:/services/entityCleanup/pending/c1:org1", "graph-delete"]
+        assert calls[:3] == [
+            "intent:/services/entityCleanup/pending/c1:org1",
+            "intent:/services/storageRelease/pending/c1:org1",
+            "graph-delete",
+        ]
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service):
@@ -1292,8 +1296,9 @@ class TestConfigServiceFor:
         config_for.assert_called_once_with("org1")
         org_config.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
         service.app_container.config_service.return_value.delete_config.assert_not_awaited()
-        # The entity cleanup intent is service-wide: indexing reads it back.
-        service.app_container.config_service.return_value.set_config.assert_awaited_once()
+        # Cleanup intents are service-wide: the reconcilers read them back.
+        written = [c.args[0] for c in service.app_container.config_service.return_value.set_config.await_args_list]
+        assert written[:2] == ["/services/entityCleanup/pending/c1", "/services/storageRelease/pending/c1"]
 
 
 # ===========================================================================
