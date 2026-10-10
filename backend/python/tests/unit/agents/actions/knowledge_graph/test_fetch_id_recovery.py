@@ -16,10 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
-from app.agents.actions.knowledge_graph.ops.id_recovery import ids_in_text
 from app.agents.actions.knowledge_graph.views import (
-    own_id_lines,
-    render_navigation_view,
+    _row_line,
+    render_lookup_result_with_ids,
+    render_navigation_view_with_ids,
 )
 from app.modules.agents.qna.chat_state import remember_record_ids
 
@@ -245,9 +245,10 @@ class TestUnknownIdRecovery:
 
 
 def _view_with_a_cut_tail() -> tuple[Any, list[Any], str]:
-    """A rendered 200-row view whose last row, `linked`, the 25KB cap cuts,
-    while its id is still mentioned in kept text: the viewed record's
-    `* Linked Record ID:` line, a row's summary and a row's name."""
+    """A 200-row view whose last row, `linked`, the 25KB cap cuts, while kept
+    text still spells out its id: the viewed record's `* Linked Record ID:`
+    line, a row summary with `record_id=`, and a row name that even carries
+    the cut row's whole rendered line."""
     from app.agents.actions.knowledge_graph.models import (
         NavigationView,
         NodeRef,
@@ -255,6 +256,10 @@ def _view_with_a_cut_tail() -> tuple[Any, list[Any], str]:
     )
 
     linked = "ffffffff-1111-4222-8333-944445555666"
+    cut_row = NodeRow(
+        id=linked, name="Hidden", node_type="record", sub_type="TICKET",
+        is_record=True, has_children=False, detail=None,
+    )
     rows = [
         NodeRow(
             id=f"{i:08x}-1111-4222-8333-944445555666", name=f"Story {i}", node_type="record",
@@ -265,10 +270,8 @@ def _view_with_a_cut_tail() -> tuple[Any, list[Any], str]:
     ]
     rows[0].context_summary = f"Follows up on record_id={linked}"
     rows[1].name = f"Copy of record_id={linked}"
-    rows.append(NodeRow(
-        id=linked, name="Hidden title", node_type="record", sub_type="TICKET",
-        is_record=True, has_children=False, detail=None,
-    ))
+    rows[2].name = f"\n{_row_line(cut_row)}\n"
+    rows.append(cut_row)
     view = NavigationView(
         current=NodeRef(id=REAL, name="Call notes", node_type="record", sub_type="TICKET", is_record=True),
         breadcrumbs=[], rows=rows, related=[], pagination=None, web_url=None,
@@ -278,27 +281,59 @@ def _view_with_a_cut_tail() -> tuple[Any, list[Any], str]:
     return view, rows, linked
 
 
-class TestIdsInText:
-    def test_an_id_mentioned_outside_its_own_row_does_not_count(self) -> None:
-        """Not in another record's metadata, a summary, or a name that spells
-        out `record_id=`: only the row's own line shows its title."""
+class TestEmittedIds:
+    def test_an_id_spelled_out_by_other_rows_does_not_count_as_emitted(self) -> None:
+        """Only the row the renderer emitted counts, not a name or summary
+        that mentions its id, however exactly."""
         view, rows, linked = _view_with_a_cut_tail()
 
-        text = render_navigation_view(view, page=1)
-        kept = ids_in_text(own_id_lines(view), text)
+        text, emitted = render_navigation_view_with_ids(view, page=1)
 
-        assert f"record_id={linked}" in text and "Hidden title" not in text
-        assert linked not in kept
-        assert kept[:3] == [REAL, rows[0].id, rows[1].id]
+        assert len(rows[2].name) <= 80 and f"\n{_row_line(rows[-1])}\n" in text
+        assert linked not in emitted
+        assert emitted[:4] == [REAL, rows[0].id, rows[1].id, rows[2].id]
+        assert all(f"record_id={rid}" in text for rid in emitted[1:])
 
-    def test_shortened_ids_are_matched_by_their_printed_label(self) -> None:
+    def test_shortened_ids_are_reported_by_their_full_id(self) -> None:
         from app.utils.chat_helpers import RecordIdShortener
 
         view, rows, linked = _view_with_a_cut_tail()
-        shortener = RecordIdShortener()
 
-        text = render_navigation_view(view, page=1, shortener=shortener)
-        kept = ids_in_text(own_id_lines(view, shortener), text)
+        _, emitted = render_navigation_view_with_ids(view, page=1, shortener=RecordIdShortener())
 
-        assert kept[:3] == [REAL, rows[0].id, rows[1].id]
-        assert linked not in kept
+        assert emitted[:4] == [REAL, rows[0].id, rows[1].id, rows[2].id]
+        assert linked not in emitted
+
+    def test_an_untruncated_view_emits_every_row(self) -> None:
+        from app.agents.actions.knowledge_graph.models import NavigationView, NodeRow
+
+        rows = [
+            NodeRow(id=rid, name=name, node_type="record", sub_type="TICKET",
+                    is_record=True, has_children=False, detail=None)
+            for rid, name in ((REAL, "Call notes"), (OTHER, "Q3 roadmap"))
+        ]
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=rows, related=[], pagination=None,
+            web_url=None, indexing_status=None, connector=None,
+        )
+
+        assert render_navigation_view_with_ids(view, page=1)[1] == [REAL, OTHER]
+
+    def test_a_lookup_match_cut_by_the_cap_is_not_emitted(self) -> None:
+        from app.agents.actions.knowledge_graph.models import LookupMatch, LookupResult
+
+        def match(rid: str, block: str) -> LookupMatch:
+            return LookupMatch(
+                id=rid, name="x", record_type="TICKET", connector_name="JIRA", web_url=None,
+                indexing_status="COMPLETED", identifier_used=rid, context_block=block,
+            )
+
+        result = LookupResult(matches=[
+            match(REAL, f"Record ID: {REAL}\nName: Call notes\n* Linked Record ID: {OTHER}\n" + "y" * 30_000),
+            match(OTHER, f"Record ID: {OTHER}\nName: Q3 roadmap"),
+        ], not_found_identifiers=[], ambiguous=False, searched_connectors={})
+
+        text, emitted = render_lookup_result_with_ids(result)
+
+        assert OTHER in text and "Q3 roadmap" not in text
+        assert emitted == [REAL]

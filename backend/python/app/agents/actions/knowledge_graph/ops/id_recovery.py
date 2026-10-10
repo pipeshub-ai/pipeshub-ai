@@ -78,21 +78,6 @@ def _label(record_id: str, names: Mapping[str, str], shortener: Any) -> str:  # 
     return f"{shown_id} ({name})" if name else shown_id
 
 
-def ids_in_text(own_lines: Mapping[str, str], text: str) -> list[str]:
-    """The ids whose own line survived into `text`, in the order it shows them.
-
-    `own_lines` maps each id to the exact line its renderer prints for it
-    (`views.own_id_lines`). Renderers cut long output at a byte cap; a whole
-    line is required so a name or summary that mentions an id cannot stand
-    in for its row, whose title the model would then never have seen.
-    """
-    first_line: dict[str, int] = {}
-    for index, line in enumerate(text.split("\n")):
-        first_line.setdefault(line, index)
-    found = {rid: first_line[line] for rid, line in own_lines.items() if line in first_line}
-    return sorted(found, key=found.__getitem__)
-
-
 def unresolved_id_hint(
     unresolved: list[str],
     *,

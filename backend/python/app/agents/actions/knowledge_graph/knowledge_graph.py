@@ -36,11 +36,10 @@ from app.utils.chat_helpers import resolve_frontend_url
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
-from .ops.id_recovery import ids_in_text
 from .ops.scope import resolve_scope
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
-from .views import lookup_id_lines, own_id_lines, render_lookup_result, render_navigation_view
+from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -487,12 +486,11 @@ class KnowledgeGraph:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
-        text = render_navigation_view(view, page, record_id_shortener)
+        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener)
         fetchable = set(_record_ids_in_view(view))
-        own_lines = own_id_lines(view, record_id_shortener)
         remember_record_ids(
             state,
-            ids_in_text({rid: line for rid, line in own_lines.items() if rid in fetchable}, text),
+            [rid for rid in emitted if rid in fetchable],
             names={n.id: n.name for n in (*view.rows, *view.related, *([view.current] if view.current else []))},
         )
 
@@ -626,10 +624,10 @@ class KnowledgeGraph:
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text = render_lookup_result(result, record_id_shortener)
+        text, emitted = render_lookup_result_with_ids(result, record_id_shortener)
         remember_record_ids(
             state,
-            ids_in_text(lookup_id_lines(result, record_id_shortener), text),
+            emitted,
             names={m.id: m.name for m in result.matches},
         )
         # "Zero accessible results" is a legitimate lookup outcome, not a
