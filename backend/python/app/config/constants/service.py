@@ -60,6 +60,8 @@ class TokenScopes(Enum):
     CALLER_ROLE = "caller:role"
     DOCUMENT_PARSE = "document:parse"
     DOCUMENT_CLASSIFY = "document:classify"
+    # Node -> connectors: write verified profile email onto the graph user.
+    ENTITY_USER_WRITE = "entity:user:write"
 
 
 class OAuthScopes(str, Enum):

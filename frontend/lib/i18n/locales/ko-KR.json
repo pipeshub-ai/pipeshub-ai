@@ -133,7 +133,10 @@
     "errorFallback": "오류가 발생했습니다. 다시 시도해 주세요.",
     "askQuestionResumeFailed": "답변을 보내지 못했습니다. 다시 제출해 주세요.",
     "copyCode": "복사",
-    "copiedCode": "복사됨"
+    "copiedCode": "복사됨",
+    "remoteImageBlocked": "외부 이미지가 로드되지 않았습니다",
+    "remoteImageFrom": "{{host}}에서",
+    "remoteImageLoad": "이미지 불러오기"
   },
   "uploadProgress": {
     "uploadFailedDefault": "업로드 실패",

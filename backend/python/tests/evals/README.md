@@ -230,7 +230,10 @@ apart because the two kinds of claim need different answers:
 
 - A must-state claim with any conflicting sentence is `contradicted`: "You can
   spend up to $250 with no approval" does not count when the same answer says
-  "your manager must approve it, including the $250 purchase".
+  "your manager must approve it, including the $250 purchase". A step still
+  ahead is not a conflict with a claim about where something stands: "on track;
+  the signature is still due by 31 May" states "on track", while "on track, but
+  only if the CFO reverses the cancellation" takes it back.
 - A must-not-state claim stated anywhere in the answer fails, even if the
   answer takes it back later, as it did before the conflict list was added. If
   the judge calls such an answer `contradicted` but its evidence cites a
@@ -310,7 +313,7 @@ the `JUDGE_*` settings. The calibration summary and its JSON (`provider`,
 
 ### Calibration
 
-`answer_judge_calibration.yaml` holds 75 hand-labelled hard cases (90 claims):
+`answer_judge_calibration.yaml` holds 84 hand-labelled hard cases (99 claims):
 negation, "under" against "up to and including", the right amount on the
 wrong subject, time phrases ("will sign off on Monday"), hedging, a fact buried
 in a long answer, answers that state a fact and also something incompatible
@@ -320,7 +323,7 @@ instruction to the grader hidden in the answer, and numbers written in unusual
 ways ("$250-million", "$250 (million)", "$250 000", "250 %", "- $250",
 "10 - 15 days"). Most are around the expense
 policy's approval bands; the rest cover PR #482's review, the export fix, the
-on-call handbook, the exports launch and the holiday carry-over change.
+Northwind renewal, the on-call handbook, the exports launch and the holiday carry-over change.
 
 `run_judge_calibration.py` asks the judge about every case and compares its
 pass or fail on each claim with the label. It fails below 95% agreement and

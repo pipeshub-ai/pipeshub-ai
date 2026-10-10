@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import time
 import traceback
 import unicodedata
@@ -169,6 +170,16 @@ from app.services.graph_db.vector_membership_queries import (
 )
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
+from app.services.graph_db.user_email_identity import (
+    GraphUserEmailConflictError,
+    PERMISSION_ROLE_RANK,
+    STUB_EDGE_COLLECTIONS,
+    STUB_EDGE_IDENTITY_FIELDS,
+    VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    classify_email_peer,
+    connector_ids_of_users,
+    graph_user_key,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
@@ -4266,6 +4277,195 @@ class Neo4jProvider(IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    async def apply_verified_user_email(
+        self,
+        user_id: str,
+        org_id: str,
+        email: str,
+    ) -> dict | None:
+        keep = await self.get_user_by_user_id(user_id)
+        if not keep:
+            return None
+        keep_key = graph_user_key(keep)
+        if not keep_key:
+            return None
+
+        peers = await self._list_graph_users_by_email(email, org_id)
+        stub_keys: list[str] = []
+        for peer in peers:
+            kind = classify_email_peer(user_id, keep_key, peer)
+            if kind == "self":
+                continue
+            if kind == "login":
+                raise GraphUserEmailConflictError(
+                    "Email already belongs to another login user in the graph",
+                    conflicting_user_id=str(peer.get("userId") or ""),
+                )
+            peer_key = graph_user_key(peer)
+            if peer_key:
+                stub_keys.append(peer_key)
+
+        connector_ids = await connector_ids_of_users(self, stub_keys)
+        txn = await self.begin_transaction(
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+        )
+        try:
+            for stub_key in stub_keys:
+                await self._absorb_graph_user_stub(keep_key, stub_key, txn)
+            await self.batch_upsert_nodes(
+                [
+                    {
+                        "id": keep_key,
+                        "userId": user_id,
+                        "orgId": org_id,
+                        "email": email,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                ],
+                CollectionNames.USERS.value,
+                transaction=txn,
+            )
+            await self.commit_transaction(txn)
+        except Exception:
+            await self.rollback_transaction(txn)
+            raise
+        return {"email": email, "mergedStubKeys": stub_keys, "connectorIds": connector_ids}
+
+    async def _list_graph_users_by_email(self, email: str, org_id: str) -> list[dict]:
+        query = """
+        MATCH (u:User)
+        WHERE toLower(u.email) = toLower($email)
+          AND u.orgId = $org_id
+        RETURN u
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"email": email, "org_id": org_id},
+        )
+        users: list[dict] = []
+        for record in results or []:
+            node = record.get("u")
+            if node is not None:
+                users.append(
+                    self._neo4j_to_arango_node(dict(node), CollectionNames.USERS.value)
+                )
+        return users
+
+    async def _absorb_graph_user_stub(
+        self,
+        keep_key: str,
+        stub_key: str,
+        transaction: str | None,
+    ) -> None:
+        permission_rel = EDGE_COLLECTION_TO_RELATIONSHIP[CollectionNames.PERMISSION.value]
+        allowed_rels = sorted(
+            {
+                EDGE_COLLECTION_TO_RELATIONSHIP[collection]
+                for collection in STUB_EDGE_COLLECTIONS
+                if collection in EDGE_COLLECTION_TO_RELATIONSHIP
+            }
+        )
+        identity_fields = {
+            EDGE_COLLECTION_TO_RELATIONSHIP[collection]: fields
+            for collection, fields in STUB_EDGE_IDENTITY_FIELDS.items()
+            if collection in EDGE_COLLECTION_TO_RELATIONSHIP
+        }
+
+        unmoved = await self.client.execute_query(
+            """
+            MATCH (old:User {id: $stub_key})-[r]-()
+            WHERE NOT type(r) IN $allowed_rels
+            RETURN DISTINCT type(r) AS rel_type
+            """,
+            parameters={"stub_key": stub_key, "allowed_rels": allowed_rels},
+            txn_id=transaction,
+        )
+        for record in unmoved or []:
+            self.logger.warning(
+                "Not moving stub relationship type %s while merging user %s",
+                record.get("rel_type"),
+                stub_key,
+            )
+
+        params = {
+            "stub_key": stub_key,
+            "keep_key": keep_key,
+            "role_rank": PERMISSION_ROLE_RANK,
+        }
+        for rel_type in allowed_rels:
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", rel_type):
+                continue
+            for outgoing in (True, False):
+                await self.client.execute_query(
+                    self._move_stub_edges_query(
+                        rel_type,
+                        identity_fields.get(rel_type, ()),
+                        outgoing=outgoing,
+                        keeps_stronger_role=rel_type == permission_rel,
+                    ),
+                    parameters=params,
+                    txn_id=transaction,
+                )
+        await self.delete_nodes(
+            [stub_key],
+            CollectionNames.USERS.value,
+            transaction=transaction,
+        )
+
+    @staticmethod
+    def _move_stub_edges_query(
+        rel_type: str,
+        identity_fields: tuple[str, ...],
+        *,
+        outgoing: bool,
+        keeps_stronger_role: bool,
+    ) -> str:
+        """One set-based statement moving every stub edge of one type and direction.
+
+        Edges between the stub and the login are dropped with the stub. Stub
+        edges that share an identity collapse into one, and an edge the login
+        already has is kept; for PERMISSION the stronger role wins.
+        """
+        # An unset identity value is stored as '' because MERGE rejects null.
+        identity_columns = "".join(
+            f", coalesce(r.{field}, '') AS identity_{field}" for field in identity_fields
+        )
+        identity_names = "".join(f", identity_{field}" for field in identity_fields)
+        identity_map = (
+            " {" + ", ".join(f"{field}: identity_{field}" for field in identity_fields) + "}"
+            if identity_fields
+            else ""
+        )
+        old_edge = f"-[r:{rel_type}]->"
+        new_edge = f"-[nr:{rel_type}{identity_map}]->"
+        if outgoing:
+            match_pattern = f"(old:User {{id: $stub_key}}){old_edge}(n)"
+            merge_pattern = f"(keep){new_edge}(n)"
+        else:
+            match_pattern = f"(n){old_edge}(old:User {{id: $stub_key}})"
+            merge_pattern = f"(n){new_edge}(keep)"
+
+        rank = "coalesce($role_rank[toUpper(toString({}.role))], 0)"
+        order_by = f"ORDER BY {rank.format('r')} DESC" if keeps_stronger_role else ""
+        on_match = (
+            f"ON MATCH SET nr += CASE WHEN {rank.format('props')} > {rank.format('nr')} "
+            "THEN props ELSE {} END"
+            if keeps_stronger_role
+            else ""
+        )
+        return f"""
+        MATCH {match_pattern}
+        WHERE n <> old AND coalesce(n.id, '') <> $keep_key
+        WITH n, r{identity_columns}
+        {order_by}
+        WITH n{identity_names}, head(collect(properties(r))) AS props
+        MATCH (keep:User {{id: $keep_key}})
+        MERGE {merge_pattern}
+        ON CREATE SET nr = props
+        {on_match}
+        """
 
     async def get_graph_user_keys_by_mongo_user_ids(
         self,

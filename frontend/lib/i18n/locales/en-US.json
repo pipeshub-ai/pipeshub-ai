@@ -133,7 +133,10 @@
     "errorFallback": "An error occurred. Please try again.",
     "askQuestionResumeFailed": "Couldn't send your answers. Submit again to retry.",
     "copyCode": "Copy",
-    "copiedCode": "Copied"
+    "copiedCode": "Copied",
+    "remoteImageBlocked": "External image not loaded",
+    "remoteImageFrom": "from {{host}}",
+    "remoteImageLoad": "Load image"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",

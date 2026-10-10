@@ -53,7 +53,10 @@
     "errorFallback": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।",
     "askQuestionResumeFailed": "आपके उत्तर भेजे नहीं जा सके। फिर से कोशिश करने के लिए दोबारा सबमिट करें।",
     "copyCode": "कॉपी करें",
-    "copiedCode": "कॉपी हो गया"
+    "copiedCode": "कॉपी हो गया",
+    "remoteImageBlocked": "बाहरी छवि लोड नहीं की गई",
+    "remoteImageFrom": "{{host}} से",
+    "remoteImageLoad": "छवि लोड करें"
   },
   "uploadProgress": {
     "uploadFailedDefault": "अपलोड असफल",

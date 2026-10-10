@@ -218,6 +218,16 @@ from app.services.graph_db.taxonomy import (
     own_record_labels,
     subcategory_level,
 )
+from app.services.graph_db.user_email_identity import (
+    GraphUserEmailConflictError,
+    PERMISSION_ROLE_RANK,
+    STUB_EDGE_COLLECTIONS,
+    STUB_EDGE_IDENTITY_FIELDS,
+    VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    classify_email_peer,
+    connector_ids_of_users,
+    graph_user_key,
+)
 from app.services.graph_db.vector_membership_queries import (
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
@@ -5644,6 +5654,150 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    async def apply_verified_user_email(
+        self,
+        user_id: str,
+        org_id: str,
+        email: str,
+    ) -> dict | None:
+        keep = await self.get_user_by_user_id(user_id)
+        if not keep:
+            return None
+        keep_translated = self._translate_node_from_arango(keep) if "_key" in keep else keep
+        keep_key = graph_user_key(keep_translated) or keep.get("_key")
+        if not keep_key:
+            return None
+
+        peers = await self._list_graph_users_by_email(email, org_id)
+        stub_keys: list[str] = []
+        for peer in peers:
+            kind = classify_email_peer(user_id, keep_key, peer)
+            if kind == "self":
+                continue
+            if kind == "login":
+                raise GraphUserEmailConflictError(
+                    "Email already belongs to another login user in the graph",
+                    conflicting_user_id=str(peer.get("userId") or ""),
+                )
+            peer_key = graph_user_key(peer)
+            if peer_key:
+                stub_keys.append(peer_key)
+
+        connector_ids = await connector_ids_of_users(self, stub_keys)
+        txn = await self.begin_transaction(
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+        )
+        try:
+            for stub_key in stub_keys:
+                await self._absorb_graph_user_stub(keep_key, stub_key, txn)
+            await self.batch_upsert_nodes(
+                [
+                    {
+                        "id": keep_key,
+                        "userId": user_id,
+                        "orgId": org_id,
+                        "email": email,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                ],
+                CollectionNames.USERS.value,
+                transaction=txn,
+            )
+            await self.commit_transaction(txn)
+        except Exception:
+            await self.rollback_transaction(txn)
+            raise
+        return {"email": email, "mergedStubKeys": stub_keys, "connectorIds": connector_ids}
+
+    async def _list_graph_users_by_email(self, email: str, org_id: str) -> list[dict]:
+        query = f"""
+            FOR user IN {CollectionNames.USERS.value}
+                FILTER LOWER(user.email) == LOWER(@email)
+                FILTER user.orgId == @org_id
+                RETURN user
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            bind_vars={"email": email, "org_id": org_id},
+        )
+        return [self._translate_node_from_arango(user) for user in results or []]
+
+    async def _absorb_graph_user_stub(
+        self,
+        keep_key: str,
+        stub_key: str,
+        transaction: str | None,
+    ) -> None:
+        stub_id = f"{CollectionNames.USERS.value}/{stub_key}"
+        keep_id = f"{CollectionNames.USERS.value}/{keep_key}"
+        permission_collection = CollectionNames.PERMISSION.value
+        for collection in STUB_EDGE_COLLECTIONS:
+            if collection == permission_collection:
+                # The login keeps an edge it already has, so a stronger stub
+                # role has to be written onto it before the stub's edges go.
+                upgrade = f"""
+                FOR e IN {collection}
+                    FILTER e._from == @stub_id OR e._to == @stub_id
+                    LET newFrom = e._from == @stub_id ? @keep_id : e._from
+                    LET newTo = e._to == @stub_id ? @keep_id : e._to
+                    FILTER newFrom != newTo
+                    FOR other IN {collection}
+                        FILTER other._from == newFrom AND other._to == newTo
+                        FILTER NOT_NULL(@role_rank[UPPER(e.role)], 0) > NOT_NULL(@role_rank[UPPER(other.role)], 0)
+                        UPDATE other WITH UNSET(e, "_id", "_key", "_rev", "_from", "_to") IN {collection}
+                """
+                await self.http_client.execute_aql(
+                    upgrade,
+                    bind_vars={
+                        "stub_id": stub_id,
+                        "keep_id": keep_id,
+                        "role_rank": PERMISSION_ROLE_RANK,
+                    },
+                    txn_id=transaction,
+                )
+            identity_filter = "".join(
+                f" AND other.{field} == e.{field}"
+                for field in STUB_EDGE_IDENTITY_FIELDS.get(collection, ())
+            )
+            query = f"""
+            FOR e IN {collection}
+                FILTER e._from == @stub_id OR e._to == @stub_id
+                LET newFrom = e._from == @stub_id ? @keep_id : e._from
+                LET newTo = e._to == @stub_id ? @keep_id : e._to
+                FILTER newFrom != newTo
+                LET exists = FIRST(
+                    FOR other IN {collection}
+                        FILTER other._from == newFrom AND other._to == newTo{identity_filter}
+                        LIMIT 1
+                        RETURN 1
+                )
+                FILTER exists == null
+                INSERT MERGE(UNSET(e, "_id", "_key", "_rev"), {{_from: newFrom, _to: newTo}})
+                    INTO {collection}
+                RETURN 1
+            """
+            await self.http_client.execute_aql(
+                query,
+                bind_vars={"stub_id": stub_id, "keep_id": keep_id},
+                txn_id=transaction,
+            )
+            cleanup = f"""
+            FOR e IN {collection}
+                FILTER e._from == @stub_id OR e._to == @stub_id
+                REMOVE e IN {collection}
+            """
+            await self.http_client.execute_aql(
+                cleanup,
+                bind_vars={"stub_id": stub_id},
+                txn_id=transaction,
+            )
+        await self.delete_nodes(
+            [stub_key],
+            CollectionNames.USERS.value,
+            transaction=transaction,
+        )
 
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
