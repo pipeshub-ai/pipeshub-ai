@@ -1084,3 +1084,45 @@ class TestQueryTextStaysOutOfLogs:
             for call in method.call_args_list for arg in call.args
         )
         assert "jane" not in logged
+
+
+class TestRequestEntityFilter:
+    """The user's entity filter scopes the knowledge-graph content search too."""
+
+    def _state(self, retrieval) -> dict:
+        return {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": [], "entityFilters": {"amount": {"min": -800, "max": -700}}},
+        }
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_the_request_entity_filter_reaches_retrieval(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        await execute_search(self._state(retrieval), "refunds")
+        groups = retrieval.search_with_filters.await_args.kwargs["filter_groups"]
+        assert groups["entityFilters"] == {"amount": {"min": -800, "max": -700}}
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_refused_entity_filter_is_relayed_to_the_model(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {"status_code": 422, "message": "Narrow it."}
+        parsed = json.loads(await execute_search(self._state(retrieval), "refunds"))
+        assert (parsed["status"], parsed["status_code"], parsed["message"]) == ("error", 422, "Narrow it.")
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_grep_does_not_widen_a_search_under_the_request_entity_filter(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        grep = AsyncMock(return_value=[{"_key": "r9"}])
+        with patch("app.agents.actions.knowledge_graph.ops.search.run_pattern_match_with_llm_grep", grep):
+            await execute_search(self._state(retrieval), "refunds")
+        grep.assert_not_called()

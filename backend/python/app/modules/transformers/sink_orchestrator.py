@@ -52,6 +52,7 @@ class SinkOrchestrator(Transformer):
         # Canonicalises taxonomy names between classification and the graph
         # write; optional so the sink stays constructible without it.
         self.entity_resolver = entity_resolver
+        self.config_service = config_service
         self.logger = logger
         # Runs before the blob write below, which is the only reason it lives
         # here: a description generated later would never reach the stored
@@ -346,6 +347,29 @@ class SinkOrchestrator(Transformer):
                     )
                 )
 
+            from app.modules.named_entities.domain.kinds import spec_for
+
+            for row in await self.graph_provider.get_named_entities_for_record(str(record_key)) or []:
+                kind = row.get("kind")
+                spec = spec_for(kind) if kind else None
+                entity_id = row.get("_key") or row.get("id")
+                if not entity_id or spec is None or not spec.embeddable or spec.is_pii:
+                    continue
+                if row.get("orgId") and row.get("orgId") != org_id:
+                    continue
+                entities.append(
+                    EntityRecord(
+                        entity_id=str(entity_id),
+                        entity_type=EntityType.NAMED_ENTITY,
+                        name=str(row.get("name") or entity_id),
+                        org_id=org_id,
+                        kind=str(kind),
+                        connector_ids=connector_ids,
+                        record_group_ids=record_group_ids,
+                        type_category=EntityTypeCategory.PREDEFINED,
+                    )
+                )
+
             # A record and its group are written like on the index path:
             # their membership is replaced, never unioned.
             identities: list[EntityRecord] = []
@@ -520,6 +544,102 @@ class SinkOrchestrator(Transformer):
                     ctx.record.id,
                     exc,
                 )
+
+    async def extract_named_entities(self, ctx: TransformContext, *, client=None):
+        """Bounded extraction. A failure returns FAILED and does not raise."""
+        import time
+
+        from app.modules.named_entities.domain.models import NamedEntityExtraction
+        from app.modules.named_entities.stage import extract_named_entities
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+        from app.telemetry.modules.named_entity_metrics import observe_extract
+
+        started = time.perf_counter()
+        strategy = "none"
+        try:
+            enabled = await is_named_entity_extraction_enabled(self.config_service)
+            extraction = await extract_named_entities(
+                ctx, config_service=self.config_service, client=client, enabled=enabled
+            )
+            strategy = extraction.strategy
+            return extraction
+        except Exception as exc:
+            # Tracebacks from the model or extraction client can echo document text.
+            self.logger.warning(
+                "Named-entity extraction failed for record %s: %s", ctx.record.id, type(exc).__name__
+            )
+            return NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic")
+        finally:
+            observe_extract(strategy, time.perf_counter() - started)
+
+    async def reproject_named_entities(
+        self, ctx: TransformContext, *, retry_due: int | None = None, retry_attempts: int = 0,
+    ) -> str | None:
+        """Write the record's named entities again from the extraction its blob
+        holds: no model call. Returns the persist outcome, or None when the blob
+        holds no extraction. ``retry_due`` makes it a persist retry's write."""
+        from app.modules.named_entities.domain.models import read_stored_extraction
+
+        metadata = ctx.record.semantic_metadata
+        extraction = read_stored_extraction(getattr(metadata, "named_entities", None) if metadata else None)
+        if extraction is None:
+            return None
+        return await self.persist_named_entities(
+            ctx, extraction, retry_due=retry_due, retry_attempts=retry_attempts,
+        )
+
+    def attach_named_entities(self, ctx: TransformContext, extraction) -> None:
+        from app.modules.named_entities.stage import attach_named_entities
+
+        attach_named_entities(ctx.record, extraction)
+
+    async def persist_named_entities(
+        self, ctx: TransformContext, extraction, *, retry_due: int | None = None, retry_attempts: int = 0,
+    ) -> str:
+        """Never raises, and never fails the document's own indexing. A failed
+        write is recorded as a durable retry: the recovery pass writes the record's
+        stored extraction again when it is due (see named_entity_persist_retry)."""
+        from app.modules.named_entities.stage import persist_named_entities
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+
+        error = "persist_failed"
+        try:
+            enabled = await is_named_entity_extraction_enabled(self.config_service)
+            outcome = await persist_named_entities(
+                ctx,
+                extraction,
+                graph_provider=self.graph_provider,
+                graph_data_store=self.graphdb.graph_data_store,
+                entity_vector_store=self.entity_vector_store,
+                enabled=enabled,
+                retry_due=retry_due,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Named-entity persist failed for record %s: %s", ctx.record.id, type(exc).__name__
+            )
+            outcome, error = "failed", type(exc).__name__
+        if outcome == "failed":
+            await self._schedule_named_entity_retry(ctx.record, error, retry_attempts)
+        return outcome
+
+    async def _schedule_named_entity_retry(self, record, error: str, attempts_so_far: int = 0) -> None:
+        try:
+            attempts = await self.graph_provider.schedule_named_entity_persist_retry(
+                record.org_id, record.id, error, attempts_so_far,
+            )
+            self.logger.info("Named-entity persist for record %s queued for retry (failure %d)", record.id, attempts)
+        except Exception as exc:
+            # The record keeps its last good entities until it is next indexed.
+            self.logger.warning(
+                "Named-entity persist retry for record %s could not be recorded: %s", record.id, type(exc).__name__
+            )
+
+    async def enrich_named_entities(self, ctx: TransformContext, *, client=None) -> None:
+        """Extract, attach and persist. Safe to call on its own; never raises."""
+        extraction = await self.extract_named_entities(ctx, client=client)
+        self.attach_named_entities(ctx, extraction)
+        await self.persist_named_entities(ctx, extraction)
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:

@@ -45,6 +45,11 @@ class TaxonomyKind:
     entity_type: EntityType
     level: str | None = None
 
+    @property
+    def partition_key(self) -> str:
+        """Finer bucket than the collection. Subcategory levels never merge."""
+        return self.level or self.slot
+
 
 CATEGORY = TaxonomyKind("category", CollectionNames.CATEGORIES.value, EntityType.CATEGORY)
 SUBCATEGORY_1 = TaxonomyKind(

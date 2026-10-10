@@ -65,11 +65,31 @@ class TestKnowledgeGraphSearchEntitiesDelegation:
             new_callable=AsyncMock,
         ) as mock_exec:
             mock_exec.return_value = (True, '{"status": "success", "results": []}')
-            result = await tool.search_entities(query="legal", entity_types=["department"], top_k=5)
+            result = await tool.search_entities(
+                query="legal", entity_types=["department"], top_k=5, named_entity_kinds=["currency"],
+            )
         mock_exec.assert_awaited_once_with(
-            tool.state, query="legal", entity_types=["department"], top_k=5,
+            tool.state, query="legal", entity_types=["department"], top_k=5, named_entity_kinds=["currency"],
         )
         assert result == (True, '{"status": "success", "results": []}')
+
+
+@pytest.mark.asyncio
+class TestKnowledgeGraphFindRecordsByValueDelegation:
+    async def test_delegates_every_bound_to_ops_values(self) -> None:
+        tool = KnowledgeGraph(state={"org_id": "o1"})
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.values.execute_find_records_by_value",
+            new_callable=AsyncMock,
+        ) as mock_exec:
+            mock_exec.return_value = (True, '{"status": "success", "records": []}')
+            await tool.find_records_by_value(amount_min=5000, currency="USD", quantity_max=2.5, percent_min=0.2)
+        assert mock_exec.await_args.kwargs == {
+            "kinds": None, "name": None, "date_from": None, "date_to": None,
+            "amount_min": 5000, "amount_max": None, "currency": "USD",
+            "quantity_min": None, "quantity_max": 2.5, "dimension": None,
+            "percent_min": 0.2, "percent_max": None,
+        }
 
 
 @pytest.mark.asyncio

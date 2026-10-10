@@ -90,6 +90,17 @@ class DuplicateReconciler:
                     )
                     complete = False
                     continue
+                # Separate from the taxonomy copy, which skips mentionsEntity. A
+                # failure still lets the entity sync run, and keeps the reconcile
+                # pending so a retry copies the mentions; the copy is an upsert.
+                try:
+                    await self.graph.copy_named_entity_mentions(record_id, sibling_key)
+                except Exception as exc:
+                    self.logger.warning(
+                        "Named-entity mention copy to duplicate %s of record %s failed: %s",
+                        sibling_key, record_id, type(exc).__name__,
+                    )
+                    complete = False
                 if self.sink is not None and not await self.sink.sync_entities_for_duplicate(sibling_doc):
                     self.logger.warning(
                         "Entity sync for duplicate %s of record %s failed", sibling_key, record_id,

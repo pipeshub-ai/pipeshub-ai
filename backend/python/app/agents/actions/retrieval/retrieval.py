@@ -56,7 +56,14 @@ logger = logging.getLogger(__name__)
 # knowledge sources are configured simultaneously.
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
 
-_RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
+# 422: the request's entity filter was refused; its message tells how to narrow it.
+_RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 422, 500, 503})
+
+def _with_entity_filters(filter_groups: dict[str, Any], entity_filters: Any) -> dict[str, Any]:
+    if not entity_filters:
+        return filter_groups
+    return {**filter_groups, "entityFilters": entity_filters}
+
 
 # connector_id → human label, populated per-request by Retrieval.__init__.
 # Safe for concurrent requests: UUIDs are globally unique so the same ID
@@ -362,6 +369,8 @@ class Retrieval:
             else:
                 raw_filter_apps = list(agent_filters.get("apps") or [])
                 raw_filter_kbs = list(agent_filters.get("kb") or [])
+            # The user's entity filter scopes every search of the turn, as apps and kb do.
+            entity_filters = None if is_placeholder_agent else agent_filters.get("entityFilters")
 
             from app.agents.actions.knowledge_graph.ops.scope import _clean_kb
             base_scope = KnowledgeScope(
@@ -393,7 +402,7 @@ class Retrieval:
             logger_instance.debug(f"base_scope.app_ids: {sorted(base_scope.app_ids)}")
             logger_instance.debug(f"base_scope.kb_ids: {sorted(base_scope.kb_ids)}")
 
-            filter_groups = resolved_scope.to_filter_groups()
+            filter_groups = _with_entity_filters(resolved_scope.to_filter_groups(), entity_filters)
 
             # Use narrowed ids for fan-out (empty when fallback occurred)
             resolved_apps = list(narrowed_scope.app_ids) if narrowed_scope else []
@@ -406,8 +415,9 @@ class Retrieval:
             # a fail-soft no-op (returns []) when storage isn't local, no keywords
             # are extractable, or no app connectors are in scope. Started here
             # (before the semantic search below) so both run concurrently; awaited
-            # further down once semantic results are in hand.
-            if config_service is not None:
+            # further down once semantic results are in hand. Grep knows nothing of
+            # entity scope, so it does not run under the user's entity filter.
+            if config_service is not None and not entity_filters:
                 pattern_match_task = asyncio.create_task(
                     run_pattern_match_with_llm_grep(
                         query=search_query,
@@ -435,7 +445,7 @@ class Retrieval:
             per_source_fan_out = False
 
             async def _search_with_filter_groups(
-                source_filter_groups: dict[str, list[str]],
+                source_filter_groups: dict[str, Any],
             ) -> dict[str, Any] | None:
                 return await retrieval_service.search_with_filters(
                     queries=[search_query],
@@ -449,17 +459,19 @@ class Retrieval:
                 per_source_fan_out = True
                 search_tasks: list[Any] = []
                 for app_id in resolved_apps:
-                    search_tasks.append(_search_with_filter_groups(
+                    search_tasks.append(_search_with_filter_groups(_with_entity_filters(
                         resolved_scope.to_filter_groups_for_source(
                             app_id=app_id, placeholder_agent=is_placeholder_agent,
-                        )
-                    ))
+                        ),
+                        entity_filters,
+                    )))
                 for kb_id in resolved_kbs:
-                    search_tasks.append(_search_with_filter_groups(
+                    search_tasks.append(_search_with_filter_groups(_with_entity_filters(
                         resolved_scope.to_filter_groups_for_source(
                             kb_id=kb_id, placeholder_agent=is_placeholder_agent,
-                        )
-                    ))
+                        ),
+                        entity_filters,
+                    )))
 
                 raw_results = await asyncio.gather(*search_tasks, return_exceptions=True)
                 search_results: list[dict[str, Any]] = []

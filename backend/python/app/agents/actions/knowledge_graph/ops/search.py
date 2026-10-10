@@ -51,7 +51,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
-_RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
+# 422: the request's entity filter was refused; its message tells how to narrow it.
+_RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 422, 500, 503})
 
 # Returned when a search limited with source_ids finds nothing.
 NARROWED_SEARCH_EMPTY_MESSAGE = (
@@ -381,9 +382,13 @@ async def execute_search(
                 "result_count": 0,
             })
 
+        # The user's entity filter scopes every content search of the turn. It is
+        # not the tool's own entity filter below, and the retry without that one
+        # keeps it.
+        request_entity_filters = agent_filters.get("entityFilters")
         # Grep knows nothing of entity scope, so an entity-scoped search would
         # be widened by its hits; it runs only for unscoped-by-entity searches.
-        entity_scoped = bool(entity_filter_groups or record_scoped_entities)
+        entity_scoped = bool(entity_filter_groups or record_scoped_entities or request_entity_filters)
         if config_service is not None and not entity_scoped:
             pattern_match_task = asyncio.create_task(
                 run_pattern_match_with_llm_grep(
@@ -416,6 +421,8 @@ async def execute_search(
             filter_groups_for_call: dict[str, Any] = merge_filter_groups(fg, entity_fg)
             if strict_scope:
                 filter_groups_for_call[STRICT_SCOPE_FILTER_KEY] = True
+            if request_entity_filters:
+                filter_groups_for_call["entityFilters"] = request_entity_filters
             return await retrieval_service.search_with_filters(
                 queries=[query],
                 org_id=org_id,

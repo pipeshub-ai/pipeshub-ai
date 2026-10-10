@@ -3711,7 +3711,7 @@ class TestDeleteLocalFsEdges:
         swept = [c.args[1]["@edge_collection"] for c in connected_provider.http_client.execute_aql.await_args_list]
         assert sorted(swept) == sorted([
             "isOfType", "permission", "belongsTo",
-            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic",
+            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic", "mentionsEntity",
         ])
 
     async def test_exception_propagates(self, connected_provider):

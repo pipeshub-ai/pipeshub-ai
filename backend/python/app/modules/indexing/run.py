@@ -12,6 +12,11 @@ from app.exceptions.indexing_exceptions import (
 from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    VIRTUAL_RECORD_ID_FIELD,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
@@ -25,11 +30,6 @@ from app.services.vector_db.membership import (
 )
 from app.services.vector_db.membership import (
     sync_vector_membership as _sync_vector_membership,
-)
-from app.services.vector_db.const.const import (
-    CONNECTOR_IDS_FIELD,
-    RECORD_GROUP_IDS_FIELD,
-    VIRTUAL_RECORD_ID_FIELD,
 )
 from app.services.vector_db.models import VectorChunkPayload
 from app.services.vector_db.strategy import (

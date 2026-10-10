@@ -63,7 +63,7 @@ from app.agents.chat_modes.policy import (
     ChatModePolicy,
     resolve_chat_mode_policy,
 )
-from app.agents.chat_modes.prefetch import prefetch_retrieval
+from app.agents.chat_modes.prefetch import filter_notice_constraint, prefetch_retrieval
 from app.config.constants.service import config_node_constants
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
@@ -293,6 +293,8 @@ async def _run_no_tools_degradation(
     )
     ref_mapper = prefetch.citation_ref_mapper if prefetch else CitationRefMapper()
     context_text = prefetch.formatted_context if prefetch else ""
+    if prefetch and prefetch.filter_notice:
+        context_text = filter_notice_constraint(prefetch.filter_notice)
 
     messages = await _build_no_tools_messages(
         query=query_info.get("query", ""), system_prompts_config=system_prompts_config, context_text=context_text,
@@ -508,6 +510,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             )
 
             prefetch_result = await prefetch_task if prefetch_task is not None else None
+            if prefetch_result is not None and prefetch_result.filter_notice:
+                goal.constraints.append(filter_notice_constraint(prefetch_result.filter_notice))
             if prefetch_result is not None and not prefetch_result.is_empty:
                 context.tool_state["final_results"] = [
                     *context.tool_state.get("final_results", []), *prefetch_result.final_results,

@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from app.containers.extraction import ExtractionAppContainer, initialize_container
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.api.routes.extraction import router as extraction_router
+from app.utils.env_utils import env_int
 from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("extraction_main")
@@ -73,6 +74,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # DocumentExtraction is constructed with a no-op graph provider because
     # the extraction service API accepts pre-fetched departments directly.
+    app.state.entity_extraction_semaphore = asyncio.Semaphore(
+        env_int("MAX_CONCURRENT_ENTITY_EXTRACTIONS", 8, lo=1)
+    )
     app.state.document_extraction = DocumentExtraction(
         logger=app_logger,
         graph_provider=_NoOpGraphProvider(),

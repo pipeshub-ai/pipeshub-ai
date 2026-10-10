@@ -5096,7 +5096,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 50
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 60
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -7454,7 +7454,10 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 50
+        calls = connected_provider.http_client.ensure_persistent_index.await_args_list
+        assert len(calls) == 60
+        assert sum(1 for c in calls if c.args[0] == "namedEntities") == 3
+        assert sum(1 for c in calls if c.args[0] == "valueMentions") == 5
 
 
 # ---------------------------------------------------------------------------
@@ -14000,7 +14003,7 @@ class TestDeleteRecordWithType:
         swept = [c.args[2] for c in connected_provider.delete_edges_from.await_args_list]
         assert sorted(swept) == sorted([
             "recordRelations", "isOfType", "belongsTo",
-            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic",
+            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic", "mentionsEntity",
         ])
         assert connected_provider.delete_edges_to.call_count == 2
         assert connected_provider.delete_nodes.call_count == 3  # 2 type collections + 1 main record
@@ -15474,6 +15477,7 @@ class TestDeleteKbSpecificEdges:
         assert sorted(swept) == sorted({
             "isOfType", "recordRelations", "belongsTo", "permission",
             "belongsToCategory", "belongsToTopic", "belongsToLanguage", "belongsToDepartment",
+            "mentionsEntity",
         })
         assert all(c.args[1]["record_from"] == c.args[1]["record_to"] == "records/r1" for c in calls)
         assert all(c.kwargs["txn_id"] == "txn1" for c in calls)
@@ -18764,8 +18768,9 @@ class TestEnsureEdgeDefinitionsUpToDate:
         connected_provider.http_client.get_graph.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_edge_collection_not_in_existing_skipped(self, connected_provider):
-        """Should skip edge collections that don't exist in the graph."""
+    async def test_a_definition_the_graph_lacks_is_added(self, connected_provider):
+        """Deletes list edge collections from the graph, so a collection created
+        after the graph (mentionsEntity) has to join it or its edges outlive records."""
         connected_provider.http_client.get_graph = AsyncMock(return_value={
             "graph": {
                 "edgeDefinitions": [
@@ -18773,17 +18778,45 @@ class TestEnsureEdgeDefinitionsUpToDate:
                 ]
             }
         })
+        connected_provider.http_client.has_collection = AsyncMock(return_value=True)
         connected_provider.http_client.base_url = "http://localhost:8529"
         connected_provider.http_client.database = "test_db"
+        post_ctx = MagicMock()
+        post_ctx.__aenter__ = AsyncMock(return_value=MagicMock(status=202))
+        post_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=post_ctx)
+        connected_provider.http_client._get_session = AsyncMock(return_value=mock_session)
+
+        with patch("app.services.graph_db.arango.arango_http_provider.EDGE_DEFINITIONS", [
+            {
+                "edge_collection": "mentionsEntity",
+                "from_vertex_collections": ["records"],
+                "to_vertex_collections": ["namedEntities"],
+            }
+        ]):
+            await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
+
+        mock_session.put.assert_not_called()
+        mock_session.post.assert_called_once()
+        assert mock_session.post.call_args[0][0].endswith("/_api/gharial/knowledge_graph/edge")
+        assert mock_session.post.call_args.kwargs["json"] == {
+            "collection": "mentionsEntity", "from": ["records"], "to": ["namedEntities"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_definition_whose_collection_is_missing_is_not_added(self, connected_provider):
+        connected_provider.http_client.get_graph = AsyncMock(return_value={"graph": {"edgeDefinitions": []}})
+        connected_provider.http_client.has_collection = AsyncMock(return_value=False)
         mock_session = MagicMock()
         connected_provider.http_client._get_session = AsyncMock(return_value=mock_session)
-        
+
         with patch("app.services.graph_db.arango.arango_http_provider.EDGE_DEFINITIONS", [
             {"edge_collection": "new_edge", "to_vertex_collections": ["records"]}
         ]):
             await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
-        
-        mock_session.put.assert_not_called()
+
+        mock_session.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_desired_vertices_already_subset_no_update(self, connected_provider):
@@ -21291,8 +21324,10 @@ class TestDeleteLocalFsEdges:
     """Tests for _delete_local_fs_edges method."""
 
     @pytest.mark.asyncio
-    async def test_deletes_from_all_three_collections(self, connected_provider):
-        """Should delete edges from IS_OF_TYPE, PERMISSION, and BELONGS_TO collections."""
+    async def test_deletes_from_membership_and_enrichment_collections(self, connected_provider):
+        """Should delete edges from IS_OF_TYPE, PERMISSION, BELONGS_TO and every enrichment edge."""
+        from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
+
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         
         await connected_provider._delete_local_fs_edges("record123")
@@ -21311,6 +21346,21 @@ class TestDeleteLocalFsEdges:
         
         for call in connected_provider.http_client.execute_aql.call_args_list:
             assert call[1]["txn_id"] == "txn_456"
+
+    @pytest.mark.asyncio
+    async def test_enrichment_edges_of_the_record_are_removed(self, connected_provider):
+        """A hard delete left mentionsEntity and taxonomy edges pointing at no record."""
+        from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
+
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        await connected_provider._delete_local_fs_edges("record123")
+        by_collection = {
+            call[0][1]["@edge_collection"]: call for call in connected_provider.http_client.execute_aql.call_args_list
+        }
+        for edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+            call = by_collection[edge]
+            assert call[0][1]["record_from"] == "records/record123"
+            assert "edge._from == @record_from" in call[0][0]
 
     @pytest.mark.asyncio
     async def test_is_of_type_collection_uses_from_filter(self, connected_provider):
