@@ -16,6 +16,7 @@ Covers:
 
 import logging
 import asyncio
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1161,7 +1162,8 @@ class TestHandleDelete:
             })
         assert result is True
         service.graph_provider.batch_upsert_nodes.assert_not_awaited()
-        config_svc.delete_config.assert_not_awaited()
+        # Its credentials go, its storage release intent stays.
+        config_svc.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
 
     @pytest.mark.asyncio
     async def test_a_failure_after_the_graph_delete_committed_is_acked_without_a_revert(self, service):
@@ -1208,18 +1210,73 @@ class TestHandleDelete:
             })
             assert result is True
 
-    @pytest.mark.asyncio
-    async def test_config_delete_fails(self, service):
-        with current_coordinator() as mock_stm:
+    @staticmethod
+    def _config_store(*, delete_ok: bool, still_there: bool):
+        config_svc = AsyncMock()
+        config_svc.delete_config = AsyncMock(return_value=delete_ok)
+        config_svc.get_config = AsyncMock(
+            side_effect=lambda key, *a, **kw: {"auth": {}} if key.startswith("/services/connectors/") and still_there else None
+        )
+        return config_svc
+
+    async def _delete(self, service, config_svc, graph_result, *, fail_after_graph=False):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value=graph_result)
+        service.app_container.config_service.return_value = config_svc
+        failing = patch(
+            "app.connectors.services.event_service.build_connector_cleanup_events",
+            side_effect=RuntimeError("after the graph delete"),
+        ) if fail_after_graph else nullcontext()
+        with current_coordinator() as mock_stm, failing:
             mock_stm.cancel_sync = AsyncMock()
-            config_svc = AsyncMock()
-            config_svc.delete_config = AsyncMock(side_effect=Exception("etcd error"))
-            service.app_container.config_service.return_value = config_svc
-            # Should still succeed (config delete failure is non-fatal)
-            result = await service._handle_delete("gmail", {
-                "orgId": "org1", "connectorId": "c1"
-            })
-            assert result is True
+            return await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+    @pytest.mark.asyncio
+    async def test_credentials_that_could_not_be_deleted_are_retried(self, service):
+        config_svc = self._config_store(delete_ok=False, still_there=True)
+
+        assert await self._delete(service, config_svc, {"success": True}) is False
+
+        config_svc.delete_config.assert_any_await("/services/connectors/c1/config")
+
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_graph_delete_still_deletes_the_credentials(self, service):
+        config_svc = self._config_store(delete_ok=True, still_there=False)
+
+        assert await self._delete(service, config_svc, {"success": True}, fail_after_graph=True) is True
+
+        config_svc.delete_config.assert_any_await("/services/connectors/c1/config")
+
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_graph_delete_is_retried_while_credentials_remain(self, service):
+        config_svc = self._config_store(delete_ok=False, still_there=True)
+
+        assert await self._delete(service, config_svc, {"success": True}, fail_after_graph=True) is False
+
+    @pytest.mark.asyncio
+    async def test_a_redelivery_retries_the_credentials_the_first_attempt_left(self, service):
+        not_found = {"success": False, "error": "Connector instance c1 not found"}
+        failing = self._config_store(delete_ok=False, still_there=True)
+        assert await self._delete(service, failing, not_found) is False
+
+        working = self._config_store(delete_ok=True, still_there=False)
+        assert await self._delete(service, working, not_found) is True
+        working.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
+
+    @pytest.mark.asyncio
+    async def test_credentials_already_gone_count_as_deleted(self, service):
+        # Redis answers a delete of a missing key with False.
+        config_svc = self._config_store(delete_ok=False, still_there=False)
+        not_found = {"success": False, "error": "Connector instance c1 not found"}
+
+        assert await self._delete(service, config_svc, not_found) is True
+
+    @pytest.mark.asyncio
+    async def test_credentials_that_cannot_be_read_back_are_retried(self, service):
+        config_svc = self._config_store(delete_ok=False, still_there=False)
+        config_svc.get_config = AsyncMock(side_effect=RuntimeError("store down"))
+        not_found = {"success": False, "error": "Connector instance c1 not found"}
+
+        assert await self._delete(service, config_svc, not_found) is False
 
     @pytest.mark.asyncio
     async def test_entity_cleanup_is_published_with_the_graph_record_groups(self, service):
