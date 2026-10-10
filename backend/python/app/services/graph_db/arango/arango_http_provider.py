@@ -1286,7 +1286,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int = 500,
     ) -> list[str]:
         """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
-        if not org_id or not record_types:
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        if not org_id or not record_types or limit == 0:
             return []
         # The (orgId, _key) index gives the org's keys in order from the cursor
         # (the first page after ""), so a page stops at the limit; the planner
@@ -1303,7 +1305,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN record._key
             """,
             bind_vars={
-                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": max(1, limit),
+                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit,
             },
         )
         return [str(key) for key in rows or []]

@@ -519,9 +519,11 @@ class IGraphDBProvider(ABC):
     ) -> list[str]:
         """Ids of ``org_id``'s non-deleted records whose ``recordType`` is in
         ``record_types``, in key order, after ``after_key``, at most ``limit``.
-        For operator backfills that page through one org's records.
+        For operator backfills that page through one org's records. A zero
+        limit returns no ids.
 
         Raises:
+            ValueError: if ``limit`` is negative.
             Exception: on query failure.
         """
         pass

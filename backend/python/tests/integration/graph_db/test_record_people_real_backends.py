@@ -544,3 +544,17 @@ async def test_a_collaborator_membership_with_a_source_id_is_never_read_as_a_use
             edges = CollectionNames.USER_APP_RELATION.value
             await aql(f"FOR e IN {edges} FILTER e._to == @app REMOVE e IN {edges}", {"app": f"apps/{app}"})
             await aql(f"REMOVE {{_key: @app}} IN {CollectionNames.APPS.value} OPTIONS {{ignoreErrors: true}}", {"app": app})
+
+
+async def test_a_page_holds_exactly_the_requested_number_of_ids(backend) -> None:
+    """A zero page is empty: a backfill run with page_size=0 must stop, not walk
+    every record one id at a time."""
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    types = [RecordType.MAIL.value, RecordType.CASE.value]
+
+    assert await provider.page_record_ids_by_type(org, types, limit=0) == []
+    assert len(await provider.page_record_ids_by_type(org, types, limit=1)) == 1
+    with pytest.raises(ValueError, match="non-negative"):
+        await provider.page_record_ids_by_type(org, types, limit=-1)
