@@ -54,6 +54,7 @@ from helper.http.session_client import (  # noqa: E402
     SessionClient,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.rate_limit_window import wait_out_rate_limit  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
@@ -391,24 +392,29 @@ class TestOAuthProviderRateLimiting(OAuthProviderTestBase):
         """Burst token endpoint and validate any 429 error schema."""
         TOTAL = 1010
         rate_limited: list[requests.Response] = []
-        for _ in range(TOTAL):
-            resp = self.oauth.introspect(
-                token=self.access_token,
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-            )
-            if resp.status_code == 429:
-                rate_limited.append(resp)
-            if len(rate_limited) >= 3:
-                break
+        try:
+            for _ in range(TOTAL):
+                resp = self.oauth.introspect(
+                    token=self.access_token,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                )
+                if resp.status_code == 429:
+                    rate_limited.append(resp)
+                if len(rate_limited) >= 3:
+                    break
 
-        if not rate_limited:
-            pytest.skip(
-                f"No 429 responses from {TOTAL} sequential requests — "
-                f"rate limiter window may be fresh"
-            )
+            if not rate_limited:
+                pytest.skip(
+                    f"No 429 responses from {TOTAL} sequential requests — "
+                    f"rate limiter window may be fresh"
+                )
 
-        for resp in rate_limited:
-            assert_response_matches_openapi_operation(
-                resp.json(), "oauthIntrospect", status_code="429"
-            )
+            for resp in rate_limited:
+                assert_response_matches_openapi_operation(
+                    resp.json(), "oauthIntrospect", status_code="429"
+                )
+        finally:
+            # Introspect shares its per-IP count with /oauth2/token, which the
+            # MCP package suite needs a little later on this same worker.
+            wait_out_rate_limit(rate_limited[-1] if rate_limited else None)
