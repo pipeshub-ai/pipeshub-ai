@@ -4580,7 +4580,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not results:
                 return []
-            return [{field: row.get(field) for field in PAGE_RECORD_FIELDS} for row in results]
+            return [
+                {field: row.get(field) for field in PAGE_RECORD_FIELDS}
+                for row in results
+            ]
         except Exception as e:
             self.logger.error(
                 "Failed to page records for vector membership backfill "

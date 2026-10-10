@@ -96,6 +96,9 @@ class HolderReindex:
 
     published: bool = False
     record_key: str | None = None
+    # Holders of a VRID are not looked up by org, and older content was
+    # deduplicated across orgs.
+    org_id: str | None = None
 
     @property
     def under_way(self) -> bool:
@@ -419,14 +422,17 @@ class StorageCleanupHelper:
         manual re-index marks it, so the next caller (or the next process) sees
         it under way. With no live holder nothing is published (the mapping row
         is then the orphan sweeper's to drop). Raises when the event could not
-        be published.
+        be published, and when a holder could not be read: a holder read as
+        gone may be the one already being indexed.
         """
         holders = await self.graph_provider.get_records_by_virtual_record_id(
             vrid, raise_on_error=True
         )
         record = None
         for key in holders:
-            doc = await self.graph_provider.get_document(key, CollectionNames.RECORDS.value)
+            doc = await self.graph_provider.get_document(
+                key, CollectionNames.RECORDS.value, raise_on_error=True
+            )
             if indexing_under_way(doc):
                 return HolderReindex(record_key=key)
             record = record or doc
@@ -439,7 +445,7 @@ class StorageCleanupHelper:
         file_record = None
         if record.get("recordType") == RecordTypes.FILE.value:
             file_record = await self.graph_provider.get_document(
-                record_key, CollectionNames.FILES.value
+                record_key, CollectionNames.FILES.value, raise_on_error=True
             )
         payload = await self.graph_provider._create_reindex_event_payload(record, file_record)
         payload["forceReindex"] = True
@@ -466,7 +472,7 @@ class StorageCleanupHelper:
                 "Re-index of %s for VRID %s published but not marked QUEUED: %s",
                 record_key, vrid, e,
             )
-        return HolderReindex(published=True, record_key=record_key)
+        return HolderReindex(published=True, record_key=record_key, org_id=record.get("orgId"))
 
     async def find_missing_documents(self, org_id: str, document_ids: list[str]) -> list[str]:
         """The ids storage cannot serve for the org: absent or deleted, as download sees it.

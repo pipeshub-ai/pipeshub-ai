@@ -511,6 +511,13 @@ async def assert_handed_over(
         f"graph nodes {len(before.graph.handles)} -> {nodes_now}"
     ]
     changes += store_changes(before, after, moved={old: new})
+    # The counts under *new* cannot tell a move from a copy.
+    if old != new:
+        left = {
+            f"blob files {old}": await blob.count_under(old, vendor),
+            f"storage documents prefix:{old}": await mongo.count_documents_under_path(old),
+        }
+        changes += [f"{where}: {count} left where it was" for where, count in left.items() if count]
     assert not changes, f"{what} is not whole under {new!r}: " + "; ".join(changes)
 
 

@@ -265,3 +265,47 @@ class TestBatchKeyField:
 
         assert out["vr-9"]["record_doc_id"] == "d9"
         graph.get_document.assert_awaited_once_with("vr-9", COLLECTION)
+
+
+class TestStrictLookup:
+    """A caller that reads an absent id as "no mapping" must not get that for a failed read."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_batch_read_raises(self) -> None:
+        graph = MagicMock()
+        graph.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("503"))
+        graph.get_document = AsyncMock(return_value={"record_doc_id": "doc-1"})
+
+        with pytest.raises(RuntimeError):
+            await _make_blob_storage(graph).get_document_ids_by_virtual_record_ids(
+                ["vr-1"], raise_on_error=True
+            )
+
+        assert graph.get_nodes_by_field_in.await_args.kwargs["raise_on_error"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_fallback_read_raises(self) -> None:
+        graph = MagicMock()
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[])
+        graph.get_document = AsyncMock(
+            side_effect=[RuntimeError("503"), {"record_doc_id": "doc-2"}]
+        )
+
+        with pytest.raises(RuntimeError):
+            await _make_blob_storage(graph).get_document_ids_by_virtual_record_ids(
+                ["vr-1", "vr-2"], raise_on_error=True
+            )
+
+        assert all(c.kwargs["raise_on_error"] is True for c in graph.get_document.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_mapping_that_is_not_there_is_still_absent(self) -> None:
+        graph = MagicMock()
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[_node("vr-1", "doc-1")])
+        graph.get_document = AsyncMock(return_value=None)
+
+        out = await _make_blob_storage(graph).get_document_ids_by_virtual_record_ids(
+            ["vr-1", "vr-2"], raise_on_error=True
+        )
+
+        assert out == {"vr-1": {"record_doc_id": "doc-1", "fileSizeBytes": 100}}

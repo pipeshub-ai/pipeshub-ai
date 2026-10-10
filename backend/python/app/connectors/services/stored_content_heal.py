@@ -160,8 +160,10 @@ class StoredContentHeal(ConnectorSweep):
         capacity = await self._capacity()
         if capacity <= 0:
             return PageResult(waiting=True)
+        # A failed read raises rather than reading as "no mapping", so the
+        # page stays put and is tried again instead of being stamped done.
         lookups = await self.blob_store.get_document_ids_by_virtual_record_ids(
-            list(dict.fromkeys(vrid for _, vrid in candidates))
+            list(dict.fromkeys(vrid for _, vrid in candidates)), raise_on_error=True,
         )
         doc_of: dict[str, str] = {}
         docs_by_org: dict[str, set[str]] = {}
@@ -221,7 +223,9 @@ class StoredContentHeal(ConnectorSweep):
                 outcome = await self.storage.reindex_one_holder(vrid, self.publish)
                 if outcome.published:
                     healed += 1
-                    self._in_flight[outcome.record_key] = str(row.get("orgId") or org_ids[0])
+                    self._in_flight[outcome.record_key] = str(
+                        outcome.org_id or row.get("orgId") or org_ids[0]
+                    )
                 elif not outcome.under_way:
                     orphaned += 1
             except asyncio.CancelledError:

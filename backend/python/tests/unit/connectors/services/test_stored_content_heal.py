@@ -28,12 +28,14 @@ from app.connectors.services.stored_content_heal import (
 APPS = CollectionNames.APPS.value
 RECORDS = CollectionNames.RECORDS.value
 ORG = "65f000000000000000000001"
+OTHER_ORG = "65f000000000000000000002"
 
 
 class HealGraph:
     def __init__(self) -> None:
         self.apps: dict[str, dict[str, Any]] = {}
         self.records: dict[str, dict[str, Any]] = {}
+        self.unreadable: set[str] = set()
 
     async def get_all_documents(self, collection, transaction=None) -> list[dict[str, Any]]:
         assert collection == APPS
@@ -57,7 +59,14 @@ class HealGraph:
             for k in keys[:limit]
         ]
 
-    async def get_document(self, key, collection, transaction=None, **_kw) -> dict[str, Any] | None:
+    async def get_document(
+        self, key, collection, transaction=None, *, raise_on_error=False,
+    ) -> dict[str, Any] | None:
+        # As both providers do: a failed read answers None unless asked to raise.
+        if key in self.unreadable:
+            if raise_on_error:
+                raise RuntimeError("graph did not answer")
+            return None
         source = self.apps if collection == APPS else self.records if collection == RECORDS else {}
         doc = source.get(key)
         return {**copy.deepcopy(doc), "_key": key} if doc is not None else None
@@ -93,9 +102,15 @@ class FakeBlobStore:
     def __init__(self) -> None:
         self.mapping: dict[str, str] = {}
         self.lookups: list[list[str]] = []
+        self.unreadable = False
 
-    async def get_document_ids_by_virtual_record_ids(self, vrids) -> dict[str, dict]:
+    async def get_document_ids_by_virtual_record_ids(self, vrids, *, raise_on_error=False) -> dict[str, dict]:
         self.lookups.append(list(vrids))
+        # As the real lookup does: a failed read leaves the ids out unless asked to raise.
+        if self.unreadable:
+            if raise_on_error:
+                raise RuntimeError("graph did not answer")
+            return {}
         return {v: {"record_doc_id": self.mapping[v]} for v in vrids if v in self.mapping}
 
 
@@ -135,9 +150,10 @@ class World:
         self.graph.apps[key] = {"_key": key, "orgId": ORG}
 
     def record(self, key: str, connector: str, vrid: str | None, *, doc: str | None = None,
-               exists: bool = True, status: str = "COMPLETED", deleted: bool = False) -> None:
+               exists: bool = True, status: str = "COMPLETED", deleted: bool = False,
+               org: str = ORG) -> None:
         self.graph.records[key] = {
-            "connectorId": connector, "virtualRecordId": vrid, "orgId": ORG,
+            "connectorId": connector, "virtualRecordId": vrid, "orgId": org,
             "indexingStatus": status, "isDeleted": deleted, "recordType": "MAIL",
         }
         if vrid and doc:
@@ -270,6 +286,20 @@ class TestMissingContentIsRebuilt:
 
         assert world.reindexed() == ["a1"]
 
+    async def test_a_holder_in_another_org_is_tracked_there_until_it_is_indexed(self, world) -> None:
+        """Older content was deduplicated across orgs; tracked under the scanned
+        record's org, the holder reads as finished and the window overfills."""
+        world.record("a0", "conn-other-org", "v1", status="COMPLETED", org=OTHER_ORG)
+        world.record("a1", "conn-a", "v1", doc="d1", exists=False)
+        world.record("a2", "conn-a", "v2", doc="d2", exists=False)
+        heal = world.heal(max_in_flight=1)
+
+        assert await heal.tick() == "page"
+        assert world.reindexed() == ["a0"]
+
+        assert await heal.tick() == "waiting"
+        assert world.reindexed() == ["a0"]
+
     async def test_a_vrid_whose_holder_a_sync_is_indexing_is_left_to_it(self, world) -> None:
         world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
         world.record("b1", "conn-b", "v-lost", doc="d-lost", exists=False, status="IN_PROGRESS")
@@ -326,6 +356,50 @@ class TestCompatibilityAndFailures:
             await world.heal().tick()
 
         assert world.graph.apps["conn-a"].get(StoredContentHealState.STATE) is None
+
+    async def test_a_failed_mapping_read_leaves_the_page_to_run_again(self, world) -> None:
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+        world.blob.unreadable = True
+
+        with pytest.raises(RuntimeError):
+            await world.heal().tick()
+
+        app = world.graph.apps["conn-a"]
+        assert app.get(StoredContentHealState.STATE) is None
+        assert app.get(StoredContentHealState.AFTER_KEY) is None
+
+        world.blob.unreadable = False
+        await _run_until_idle(world.heal())
+
+        assert world.reindexed() == ["a1"]
+
+    async def test_a_holder_that_cannot_be_read_is_a_failure_not_an_orphan(self, world) -> None:
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+        world.graph.unreadable = {"a1"}
+        heal = world.heal()
+
+        assert await heal.tick() == "page"
+
+        app = world.graph.apps["conn-a"]
+        assert app[StoredContentHealState.FAILURES] == 1
+        assert app[StoredContentHealState.ORPHANED] == 0
+        assert app.get(StoredContentHealState.STATE) is None
+
+        world.graph.unreadable = set()
+        await _run_until_idle(heal)
+
+        assert world.reindexed() == ["a1"]
+        assert world.graph.apps["conn-a"][StoredContentHealState.EXHAUSTED] is False
+
+    async def test_a_queued_holder_that_cannot_be_read_gets_no_second_reindex(self, world) -> None:
+        world.record("a0", "conn-other", "v-lost", status="QUEUED")
+        world.record("a1", "conn-a", "v-lost", doc="d-lost", exists=False)
+        world.graph.unreadable = {"a0"}
+
+        assert await world.heal().tick() == "page"
+
+        assert world.events == []
+        assert world.graph.apps["conn-a"][StoredContentHealState.FAILURES] == 1
 
     async def test_a_failed_publish_is_retried_then_given_up_with_the_count_kept(self, world) -> None:
         from app.connectors.services.stored_content_heal import MAX_ATTEMPTS

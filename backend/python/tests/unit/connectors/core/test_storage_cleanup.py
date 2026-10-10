@@ -1031,12 +1031,21 @@ class TestBuildRecordGroupHierarchicalPrefix:
 
 class TestReindexOneHolder:
 
-    def _graph(self, holders_by_vrid, docs):
+    def _graph(self, holders_by_vrid, docs, unreadable=()):
         gp = _make_graph_provider()
         gp.get_records_by_virtual_record_id = AsyncMock(
             side_effect=lambda vrid, **_kw: holders_by_vrid.get(vrid, [])
         )
-        gp.get_document = AsyncMock(side_effect=lambda key, _collection: docs.get(key))
+
+        async def get_document(key, collection, *, raise_on_error=False):
+            # As both providers do: a failed read answers None unless asked to raise.
+            if (key, collection) in unreadable:
+                if raise_on_error:
+                    raise RuntimeError("graph did not answer")
+                return None
+            return docs.get(key)
+
+        gp.get_document = AsyncMock(side_effect=get_document)
         gp._create_reindex_event_payload = AsyncMock(
             side_effect=lambda record, file_record: {"recordId": record["_key"], "file": file_record}
         )
@@ -1125,6 +1134,50 @@ class TestReindexOneHolder:
                 "v1", AsyncMock(return_value=False),
             )
 
+
+    @pytest.mark.asyncio
+    async def test_a_holder_that_cannot_be_read_raises_instead_of_reading_as_gone(self):
+        """Read as gone, a QUEUED holder would be passed over for a second, concurrent re-index."""
+        gp = self._graph(
+            holders_by_vrid={"v1": ["r-busy", "r-done"]},
+            docs={
+                "r-busy": {"_key": "r-busy", "indexingStatus": "QUEUED"},
+                "r-done": {"_key": "r-done", "indexingStatus": "COMPLETED"},
+            },
+            unreadable={("r-busy", "records")},
+        )
+        publish = AsyncMock()
+
+        with pytest.raises(RuntimeError):
+            await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish)
+
+        publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_file_whose_file_node_cannot_be_read_is_not_published_without_it(self):
+        gp = self._graph(
+            holders_by_vrid={"v1": ["r1"]},
+            docs={"r1": {"_key": "r1", "recordType": "FILE"}},
+            unreadable={("r1", "files")},
+        )
+        publish = AsyncMock()
+
+        with pytest.raises(RuntimeError):
+            await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", publish)
+
+        publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_published_holders_org_is_reported(self):
+        """Holders are found across orgs, so the caller cannot assume its own."""
+        gp = self._graph(
+            holders_by_vrid={"v1": ["r1"]},
+            docs={"r1": {"_key": "r1", "orgId": "org-2"}},
+        )
+
+        outcome = await _make_cleanup(graph_provider=gp).reindex_one_holder("v1", AsyncMock())
+
+        assert outcome.published and outcome.org_id == "org-2"
 
 # ---------------------------------------------------------------------------
 # Asking storage which documents are gone
