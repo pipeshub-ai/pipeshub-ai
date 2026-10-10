@@ -238,6 +238,54 @@ class TestSlackAttachments:
         assert not ok
         MockUploader.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_file_that_was_not_sent_fails_the_tool_and_is_named(self):
+        """R1-03: a record outside the turn's limits is refused; the message is
+        already posted, so the answer says that and names the file not sent."""
+        from app.agents.actions.slack.config import SlackResponse
+
+        sl = self._build_slack()
+        sl.client.chat_post_message = AsyncMock()
+        sl._resolve_channel = AsyncMock(return_value="CHAN1")
+        sl._handle_slack_response = MagicMock(return_value=SlackResponse(success=True, data={"ts": "1234.5678"}))
+        outside = AttachmentFailure(ref="jira-1", error="outside the limits", error_type="RecordOutsideTurnError")
+        upload_result = MagicMock(record_id="rec1", filename="rec1.txt", success=True, error=None)
+
+        with (
+            patch(
+                "app.agents.actions.slack.slack.resolve_attachments",
+                new=AsyncMock(return_value=_bundle(resolved=[_resolved("rec1")], failures=[outside])),
+            ),
+            patch("app.agents.actions.slack.slack.SlackAttachmentUploader") as MockUploader,
+            patch("app.agents.actions.util.attachments.emit_attachment_audit"),
+        ):
+            MockUploader.return_value.upload = AsyncMock(return_value=[upload_result])
+
+            ok, body = await sl.send_message(
+                channel="general", message="Hi", attachment_record_ids=["rec1", "jira-1"]
+            )
+
+        assert not ok
+        error = json.loads(body)["error"]
+        assert "The message was posted; do not post it again." in error
+        assert "jira-1: outside the limits" in error and "rec1" not in error
+        MockUploader.return_value.upload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_an_upload_of_refused_records_alone_is_not_reported_as_done(self):
+        sl = self._build_slack()
+        sl._resolve_channel = AsyncMock(return_value="CHAN1")
+        outside = AttachmentFailure(ref="jira-1", error="outside the limits", error_type="RecordOutsideTurnError")
+
+        with patch(
+            "app.agents.actions.slack.slack.resolve_attachments",
+            new=AsyncMock(return_value=_bundle(failures=[outside])),
+        ):
+            ok, body = await sl.upload_file_to_channel(channel="general", attachment_record_ids=["jira-1"])
+
+        assert not ok
+        assert "jira-1: outside the limits" in json.loads(body)["error"]
+
 
 # ---------------------------------------------------------------------------
 # Gmail tests
@@ -278,6 +326,27 @@ class TestGmailAttachments:
         assert not ok
         payload = json.loads(body)
         assert "error" in payload
+
+    @pytest.mark.asyncio
+    async def test_one_refused_file_sends_nothing(self):
+        """R1-03: the mail used to go out without the refused file, which was only logged."""
+        gm = self._build_gmail()
+        outside = AttachmentFailure(ref="jira-1", error="outside the limits", error_type="RecordOutsideTurnError")
+
+        with (
+            patch(
+                "app.agents.actions.google.gmail.gmail.resolve_attachments",
+                new=AsyncMock(return_value=_bundle(resolved=[_resolved("rec1")], failures=[outside])),
+            ),
+            patch("app.agents.actions.util.attachments.emit_attachment_audit"),
+        ):
+            ok, body = await gm.send_email(
+                mail_to=["a@b.com"], mail_subject="Test", attachment_record_ids=["rec1", "jira-1"],
+            )
+
+        assert not ok
+        assert "jira-1: outside the limits" in json.loads(body)["error"]
+        gm.client.users_messages_send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_size_cap_raises_valueerror(self):

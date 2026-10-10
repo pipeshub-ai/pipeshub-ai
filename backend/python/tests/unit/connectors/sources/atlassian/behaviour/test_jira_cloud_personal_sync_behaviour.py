@@ -59,6 +59,8 @@ class FakeJiraSite:
         self.unsearchable_issues: set[str] = set()
         # In no project list, but still answered by id.
         self.unlisted_projects: set[str] = set()
+        # Visible to a Jira admin (action=view, the default) without Browse projects.
+        self.view_only_projects: set[str] = set()
         # Ids the incremental search (``updated > ...``) returns.
         self.changed_issues: set[str] = set()
         # Staged pages of a project's id listing, by page token; unset, every visible id comes in one page.
@@ -69,6 +71,7 @@ class FakeJiraSite:
         self.search_bodies: list[dict[str, Any]] = []
         api.on("GET", f"{JIRA}/myself", self._myself)
         api.on("GET", f"{JIRA}/project/search", self._project_search)
+        api.on("GET", f"{JIRA}/mypermissions", self._my_permissions)
         api.on("POST", f"{JIRA}/search/jql", self._search)
 
     def add_project(self, key: str, project_id: str) -> None:
@@ -106,12 +109,23 @@ class FakeJiraSite:
         return json_response({"accountId": "me", "emailAddress": "me@acme.com", "timeZone": "UTC"})
 
     def _project_search(self, request: httpx.Request) -> httpx.Response:
-        wanted = parse_qs(urlparse(str(request.url)).query).get("keys")
+        query = parse_qs(urlparse(str(request.url)).query)
+        wanted = query.get("keys")
+        browse_only = query.get("action") == ["browse"]
         listed = [
             p for key, p in self.projects.items()
             if self._visible_project(key) and key not in self.unlisted_projects and (not wanted or key in wanted)
+            and not (browse_only and key in self.view_only_projects)
         ]
         return json_response({"values": listed, "isLast": True, "total": len(listed)})
+
+    def _my_permissions(self, request: httpx.Request) -> httpx.Response:
+        project_id = parse_qs(urlparse(str(request.url)).query)["projectId"][0]
+        key = next(k for k, p in self.projects.items() if p["id"] == project_id)
+        can = self._visible_project(key) and key not in self.view_only_projects
+        return json_response({"permissions": {"BROWSE_PROJECTS": {
+            "id": "10", "key": "BROWSE_PROJECTS", "type": "PROJECT", "havePermission": can,
+        }}})
 
     def _project(self, key: str) -> httpx.Response:
         if key in self.project_answers:
@@ -517,3 +531,26 @@ class TestProjectsOutOfView:
         await connector.run_sync()
 
         assert site.project_reads("10000") == 0
+
+
+class TestProjectsTheAccountCannotBrowse:
+    """N4ATLASSIAN-07: a Jira admin is listed every project by default, browsable or not (TEK on the QA site)."""
+
+    async def test_a_project_the_account_can_only_administer_is_not_synced(self, site, db, checkpoints) -> None:
+        site.add_project("TEK", "10050")
+        site.view_only_projects.add("TEK")
+
+        await synced(db, checkpoints)
+
+        assert "10050" not in db.record_groups
+
+    async def test_a_stored_project_the_account_can_no_longer_browse_is_removed(self, site, db, checkpoints) -> None:
+        site.add_project("TEK", "10050")
+        connector, _ = await synced(db, checkpoints)
+        assert "10050" in db.record_groups
+
+        site.view_only_projects.add("TEK")
+        await connector.run_sync()
+
+        assert "10050" not in db.record_groups
+        assert tickets(db) == {"1", "2", "3", "5"}

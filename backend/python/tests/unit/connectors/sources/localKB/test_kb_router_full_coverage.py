@@ -414,34 +414,6 @@ class TestCreateNestedFolder:
         assert resp.status_code == 500
 
 
-class TestGetFolderContents:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(return_value={
-            "folder": {"id": "f1", "name": "F"},
-            "contents": [], "totalItems": 0
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 200
-
-    def test_failure(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(return_value={
-            "success": False, "code": 404, "reason": "Not found"
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 404
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 500
-
-
 class TestUpdateFolder:
     def test_success(self):
         app, kb_svc, _ = _make_app()

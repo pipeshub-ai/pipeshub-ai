@@ -62,6 +62,9 @@ class NavigationView(BaseModel):
     breadcrumbs: list[NodeRef]      # root → parent (not including current)
     rows: list[NodeRow]             # children / items to display
     related: list[NodeRow]          # cross-reference edges (non-containment)
+    # Set when the linked records could not be read, so an empty Related list
+    # is never taken for "nothing is linked".
+    related_unavailable: bool = False
     pagination: PaginationInfo | None
     web_url: str | None
     indexing_status: str | None

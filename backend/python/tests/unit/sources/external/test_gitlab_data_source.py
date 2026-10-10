@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -191,6 +193,59 @@ class TestListGroupProjects:
         )
         assert resp.success is True
         assert resp.data == projects
+
+
+class TestDirectMembers:
+    def test_project_members_reads_direct_members_only(self, data_source: GitLabDataSource, mock_sdk: MagicMock) -> None:
+        project = MagicMock()
+        project.members.list.return_value = [MagicMock(id=3)]
+        mock_sdk.projects.get.return_value = project
+
+        resp = data_source.list_project_members(42, get_all=True)
+
+        mock_sdk.projects.get.assert_called_once_with(42, lazy=True)
+        project.members.list.assert_called_once_with(get_all=True)
+        project.members_all.list.assert_not_called()
+        assert resp.success is True
+        assert [m.id for m in resp.data] == [3]
+
+    def test_group_members_reads_direct_members_only(self, data_source: GitLabDataSource, mock_sdk: MagicMock) -> None:
+        group = MagicMock()
+        group.members.list.return_value = [MagicMock(id=4)]
+        mock_sdk.groups.get.return_value = group
+
+        resp = data_source.list_group_members("eng/backend", get_all=True)
+
+        mock_sdk.groups.get.assert_called_once_with("eng/backend", lazy=True)
+        group.members.list.assert_called_once_with(get_all=True)
+        group.members_all.list.assert_not_called()
+        assert resp.success is True
+        assert [m.id for m in resp.data] == [4]
+
+    def test_member_read_failure_carries_the_status(self, data_source: GitLabDataSource, mock_sdk: MagicMock) -> None:
+        err = RuntimeError("forbidden")
+        err.response_code = 403  # type: ignore[attr-defined]
+        mock_sdk.groups.get.return_value.members.list.side_effect = err
+
+        resp = data_source.list_group_members("eng")
+
+        assert resp.success is False
+        assert resp.status_code == 403
+
+
+def test_every_data_source_method_the_gitlab_connectors_call_exists() -> None:
+    """A call site reads ``c.data_source.<name>`` before ``ds_call`` runs, so a missing
+    method raises AttributeError and aborts the sync instead of taking the failure path."""
+    root = Path(__file__).resolve().parents[4] / "app" / "connectors" / "sources"
+    names = {
+        name
+        for folder in ("gitlab", "gitlab_personal")
+        for path in (root / folder).glob("*.py")
+        for name in re.findall(r"\bdata_source\.([A-Za-z_]+)", path.read_text(encoding="utf-8"))
+    }
+    assert {"list_group_members", "list_project_members"} <= names
+    instance = GitLabDataSource(_make_wrapper_client(MagicMock(spec=["projects", "groups"])))
+    assert sorted(n for n in names if not hasattr(instance, n)) == []
 
 
 class TestUpdateProject:

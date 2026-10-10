@@ -25,11 +25,26 @@ const limitSchema = z.preprocess(
 
 const appOrKbIdSchema = z.string().min(1).max(200);
 
+/** Most ids a project may list, across every key: what one chat request may carry. */
+const PROJECT_SCOPE_MAX_IDS = 200;
+
+/**
+ * What a project may search: whole apps and collections (`apps`, `kb`), and
+ * record groups, folders or records with everything under them.
+ */
 const knowledgeScopeSchema = z
   .object({
     apps: z.array(appOrKbIdSchema).optional(),
     kb: z.array(appOrKbIdSchema).optional(),
+    recordGroups: z.array(appOrKbIdSchema).optional(),
+    records: z.array(appOrKbIdSchema).optional(),
   })
+  .refine(
+    (scope) =>
+      Object.values(scope).reduce((count, ids) => count + (ids?.length ?? 0), 0) <=
+      PROJECT_SCOPE_MAX_IDS,
+    { message: `A project may list at most ${PROJECT_SCOPE_MAX_IDS} sources` },
+  )
   .optional();
 
 /** Max tool fullNames a project can persist — mirrors PROJECT_MEMBERS_BATCH_MAX's role as a sanity bound, not a real product limit. */
@@ -38,10 +53,15 @@ const PROJECT_TOOLS_MAX = 200;
 const toolFullNameSchema = z.string().min(1).max(200);
 const toolsSchema = z.array(toolFullNameSchema).max(PROJECT_TOOLS_MAX).optional();
 
+/**
+ * One entry of the display mirror. The store requires id, name and node type,
+ * so an empty one is refused here rather than failing at save; the connector
+ * name is for the icon only and may be unknown.
+ */
 const appliedFilterNodeSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  nodeType: z.string(),
+  id: z.string().min(1, { message: 'Id is required.' }),
+  name: z.string().min(1, { message: 'Name is required.' }),
+  nodeType: z.string().min(1, { message: 'Node type is required.' }),
   connector: z.string(),
 });
 
@@ -49,6 +69,8 @@ const appliedFiltersSchema = z
   .object({
     apps: z.array(appliedFilterNodeSchema).optional(),
     kb: z.array(appliedFilterNodeSchema).optional(),
+    recordGroups: z.array(appliedFilterNodeSchema).optional(),
+    records: z.array(appliedFilterNodeSchema).optional(),
   })
   .optional();
 

@@ -202,7 +202,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     async def test_personal_scope_uses_creator_permission(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
@@ -211,8 +211,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].email == "creator@t.com"
-        assert permissions[0].type == PermissionType.OWNER
+        assert permissions == []
 
     async def test_personal_scope_no_creator_falls_back_to_org(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
@@ -220,7 +219,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     async def test_empty_list_no_op(self, connector):
         await connector._create_record_groups_for_containers([])

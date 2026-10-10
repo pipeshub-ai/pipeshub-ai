@@ -239,7 +239,13 @@ async def unshared_folder_scenario(
     tenant.share("f1", shared)
     connector = await ready_connector(db, checkpoints)
     await connector.run_sync()
-    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+    # The file keeps the list OneDrive returned. Matching the folder is not inheritance.
+    assert db.records["f1"].inherit_permissions is False
+    assert perms(db, "f1") == {
+        (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+        (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+    }
+    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "d1")
     tenant.share("d1", [user_grant("u-ana", "ana@acme.com", "owner")])
     cloud.on("GET", f"/v1.0/drives/{DRIVE}/items/d1/children", page([drive_item("f1", "plan.pdf", parent="d1")]))
     return connector
@@ -349,6 +355,30 @@ class TestRealClientsAndTokens:
         (note,) = await notes(connector)
         assert note["title"] == "OneDrive: missing API permissions"
         assert "User.Read.All" not in note["message"]
+
+
+class TestUserSync:
+    async def test_only_enabled_directory_users_keep_the_connector_gate(self, cloud, tenant, db, checkpoints) -> None:
+        """GATE-NEVER-REMOVED: a user disabled or deleted in the directory loses access."""
+        tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.users.append({"id": "u-old", "displayName": "Old", "mail": "old@acme.com",
+                             "userPrincipalName": "old@acme.com", "accountEnabled": False})
+        connector = await ready_connector(db, checkpoints)
+
+        await connector._sync_users()
+
+        assert db.app_user_listings == [(connector.connector_id, ["ana@acme.com"])]
+
+    async def test_a_disabled_account_is_not_gated_on_its_way_out(self, cloud, tenant, db, checkpoints) -> None:
+        """R1-13: writing the gate and removing it straight after churns it every sync."""
+        tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.users.append({"id": "u-old", "displayName": "Old", "mail": "old@acme.com",
+                             "userPrincipalName": "old@acme.com", "accountEnabled": False})
+        connector = await ready_connector(db, checkpoints)
+
+        await connector._sync_users()
+
+        assert [u.email for u in db.app_users] == ["ana@acme.com"]
 
 
 class TestDriveDeltaSync:
@@ -622,11 +652,10 @@ class TestSharing:
         assert perms(db, "f1") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", "eng@acme.com", PermissionType.WRITE),
-            (EntityType.ANYONE_WITH_LINK, "anyone_with_link", None, PermissionType.READ),
             (EntityType.ORG, "anyone_in_org", None, PermissionType.READ),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
             (EntityType.GROUP, "g-ops", None, PermissionType.READ),
-        }
+        }, "the anonymous link names nobody, so it is not stored as a grant"
         assert db.records["f1"].is_shared is True
 
     async def test_new_sharing_on_a_stored_file_replaces_its_access(self, cloud, tenant, db, checkpoints) -> None:
@@ -659,6 +688,7 @@ class TestSharing:
         assert db.permission_updates == []
         assert perms(db, "f1") == {(EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ)}
         assert db.records["f1"].record_name == "plan-v2.pdf"
+        assert connector.stored_access_kept, "a full sync must not sweep what it kept"
 
     async def test_a_new_file_whose_access_cannot_be_read_is_held_then_read_again_after_it_is_saved(self, cloud, tenant, db, checkpoints) -> None:
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
@@ -822,7 +852,10 @@ class TestSharing:
 
         for _ in range(4):
             await connector.run_sync()
-            assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+            assert perms(db, "f1") == {
+                (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+                (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+            }
         await connector.run_sync()
 
         assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}
@@ -845,10 +878,12 @@ class TestSharing:
 
         await connector.run_sync()
 
+        # A failed folder read must not replace the file's stored grants.
         assert perms(db, "f2") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
         }
+        assert db.records["f2"].inherit_permissions is False
         assert db.records["d1"].is_shared is True
         assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
 

@@ -170,7 +170,8 @@ async def _remove(graph: IGraphDBProvider, world: _World) -> None:
         CollectionNames.IS_OF_TYPE.value,
         CollectionNames.INHERIT_PERMISSIONS.value,
         CollectionNames.USER_APP_RELATION.value,
-        CollectionNames.RECORD_RELATIONS.value,
+        CollectionNames.NODE_RELATIONS.value,
+        CollectionNames.RECORD_LINKS.value,
     ):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -267,7 +268,8 @@ async def _seed(w: _World) -> None:
     await g.batch_upsert_nodes(
         [
             {"id": w.connector_id, "name": "Drive", "type": "Drive", "appGroup": "Google Workspace",
-             "scope": "team", "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now},
+             "scope": "team", "isActive": True, "orgId": w.org_id,
+             "createdAtTimestamp": now, "updatedAtTimestamp": now},
             {"id": w.kb_id, "name": "Collection", "type": "KB", "appGroup": "Local Storage",
              "scope": "personal", "isActive": True, "orgId": w.org_id,
              "createdAtTimestamp": now, "updatedAtTimestamp": now},
@@ -334,14 +336,21 @@ async def _seed(w: _World) -> None:
                 "to_id": w.ids[child], "to_collection": CollectionNames.RECORDS.value,
                 "relationshipType": kind, "createdAtTimestamp": now, "updatedAtTimestamp": now}
 
+    # Hierarchy and links are written through the one collection; the provider
+    # stores a link apart from the hierarchy.
     await g.batch_create_edges(
         [relation("kb_folder", "kb_child_live", "PARENT_CHILD"),
          relation("kb_folder", "kb_child_trashed", "PARENT_CHILD"),
          relation("ref_trash_q", "live", "PARENT_CHILD"),
          relation("ref_trash_q", "trashed", "PARENT_CHILD"),
          relation("live_failed", "live_shared", "LINKED_TO"),
-         relation("live_failed", "trashed_shared", "LINKED_TO")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+         relation("live_failed", "trashed_shared", "LINKED_TO")]
+        # The root items of the collection hang off its App.
+        + [{"from_id": w.kb_id, "from_collection": CollectionNames.APPS.value,
+            "to_id": w.ids[n], "to_collection": CollectionNames.RECORDS.value,
+            "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}
+           for n in ("kb_live", "kb_trashed", "kb_folder")],
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
     await g.batch_create_edges(
@@ -452,6 +461,7 @@ PARAM_PROBES = {
 # LIVE registry methods this file calls against the real graphs, by the test that does.
 # tests/unit/services/graph_db/test_record_visibility_registry.py requires every one.
 EXERCISED_HERE: dict[str, str] = {
+    "check_access": "test_access_check",
     "check_record_access_with_details": "test_access_check",
     "get_accessible_virtual_record_ids": "test_public_search_permission_map",
     "filter_accessible_virtual_record_ids": "test_search_permission_checks",
@@ -459,24 +469,21 @@ EXERCISED_HERE: dict[str, str] = {
     "get_records_by_record_group": "test_reindex_walks",
     "get_records_by_parent_record": "test_reindex_walks",
     "get_linked_records": "test_linked_records",
-    "get_records": "test_all_records_list",
-    "list_all_records": "test_all_records_list",
     "list_kb_records": "test_kb_listings",
     "get_kb_children": "test_kb_listings",
     "get_folder_children": "test_kb_listings",
     "get_connector_stats": "test_connector_stats",
+    "get_file_records_under_path": "test_path_lookup",
     "find_duplicate_records": "test_duplicates",
     "find_next_queued_duplicate": "test_next_queued_duplicate",
     "update_queued_duplicates_status": "test_queued_duplicate_status_is_not_copied_onto_the_trash",
     "get_failed_records_by_org": "test_failed_records",
-    "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
     "get_virtual_record_ids_shared_outside_connector": "test_content_shared_outside_a_deleted_connector",
-    "get_knowledge_hub_children": "test_knowledge_hub_browse",
-    "get_knowledge_hub_search": "test_knowledge_hub_search",
+    "get_knowledge_hub_connector_page_v3": "test_knowledge_hub_listing",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "get_file_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "filter_nodes_with_permission_role": "test_location_trail_stops_at_a_trashed_folder",
@@ -530,6 +537,10 @@ async def test_access_check(world: _World) -> None:
     g = world.graph
     assert await g.check_record_access_with_details(world.user_id, world.org_id, world.ids["kb_live"]) is not None
     assert await g.check_record_access_with_details(world.user_id, world.org_id, world.ids["kb_trashed"]) is None
+    asked = [world.ids[n] for n in ("kb_live", "kb_trashed", "kb_child_live", "kb_child_trashed")]
+    assert (await g.check_access(world.user_key, world.org_id, node_ids=asked)).node_ids == {
+        world.ids["kb_live"], world.ids["kb_child_live"],
+    }
 
 
 async def test_location_trail_stops_at_a_trashed_folder(world: _World) -> None:
@@ -546,7 +557,7 @@ async def test_location_trail_stops_at_a_trashed_folder(world: _World) -> None:
         [{"from_id": world.ids["trashed_failed"], "from_collection": CollectionNames.RECORDS.value,
           "to_id": world.ids["live_failed"], "to_collection": CollectionNames.RECORDS.value,
           "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     adjacency = await g.get_record_parent_adjacency([world.ids["live_failed"]], world.org_id)
     assert adjacency["nodes"][world.ids["trashed_failed"]]["name"] == "trashed_failed.pdf"
@@ -589,8 +600,6 @@ async def test_queued_duplicate_status_is_not_copied_onto_the_trash(world: _Worl
 async def test_failed_records(world: _World) -> None:
     g = world.graph
     assert _ids(await g.get_failed_records_by_org(world.org_id, world.connector_id)) == {world.ids["live_failed"]}
-    with_users = await g.get_failed_records_with_active_users(world.org_id, world.connector_id)
-    assert _ids([row["record"] for row in with_users]) == {world.ids["live_failed"]}
 
 
 async def test_weburl_lookup(world: _World) -> None:
@@ -660,23 +669,29 @@ async def test_content_shared_outside_a_deleted_connector(world: _World) -> None
     assert set(got) == {world.vrids["live"], world.vrids["live_failed"]}, got
 
 
-async def test_knowledge_hub_browse(world: _World) -> None:
-    got = await world.graph.get_knowledge_hub_children(
-        world.kb_id, "app", world.org_id, world.user_key, 0, 50, "name", "asc",
-    )
-    ids = {n.get("id") for n in got.get("nodes", [])}
-    assert ids == {world.ids["kb_live"], world.ids["kb_folder"]}, got
-    assert got["total"] == 2, got
+async def test_knowledge_hub_listing(world: _World) -> None:
+    """Browsing the collection, and its flatten: the search of the hub and the All Records list."""
+    g = world.graph
+    access = await g.get_knowledge_hub_access_v3(world.user_key, world.org_id)
 
+    async def page(app_id: str, *, flatten: bool) -> dict:
+        return await g.get_knowledge_hub_connector_page_v3(
+            app_id, world.org_id, access["grantee_ids"], access["gated_app_ids"],
+            grants_by_connector=access["by_connector"], limit=100, flatten=flatten,
+        )
 
-async def test_knowledge_hub_search(world: _World) -> None:
-    """Search expands every permission arm (direct, KB app, inherited), then hydrates the page."""
-    got = await world.graph.get_knowledge_hub_search(
-        world.org_id, world.user_key, 0, 100, "name", "asc",
-    )
-    ids = {n.get("id") for n in got.get("nodes", [])}
-    assert {world.ids["kb_live"], world.ids["live"]} <= ids, ids
-    assert not {world.ids[n] for n in ("kb_trashed", "kb_child_trashed", "trashed", "trashed_shared", "queued_trash")} & ids
+    browse = await page(world.kb_id, flatten=False)
+    assert {row["id"] for row in browse["rows"]} == {world.ids["kb_live"], world.ids["kb_folder"]}, browse
+    assert browse["total"] == 2, browse
+
+    flat = await page(world.kb_id, flatten=True)
+    ids = {row["id"] for row in flat["rows"]}
+    assert {world.ids[n] for n in ("kb_live", "kb_folder", "kb_child_live")} <= ids, flat
+    assert not {world.ids["kb_trashed"], world.ids["kb_child_trashed"]} & ids
+
+    connector = {row["id"] for row in (await page(world.connector_id, flatten=True))["rows"]}
+    assert world.ids["live"] in connector, connector
+    assert not {world.ids[n] for n in TRASHED_CONNECTOR} & connector
 
 
 async def test_public_search_permission_map(world: _World) -> None:
@@ -714,19 +729,6 @@ async def test_linked_records(world: _World) -> None:
     assert world.ids["live_shared"] in got and world.ids["trashed_shared"] not in got
 
 
-async def test_all_records_list(world: _World) -> None:
-    g = world.graph
-    args = (world.org_id, 0, 200, None, None, None, None, None, None, None, None, "recordName", "asc", "all")
-    live = {world.ids[n] for n in (*LIVE_CONNECTOR, "kb_live", "kb_child_live")}
-    trashed = {world.ids[n] for n in (*TRASHED_CONNECTOR, "kb_trashed", "kb_child_trashed")}
-    records, total, _ = await g.list_all_records(world.user_key, *args)
-    got = {r["id"] for r in records}
-    assert live <= got and not trashed & got and total == len(records)
-    records, _, _ = await g.get_records(world.user_key, *args)
-    got = {r["id"] for r in records}
-    assert live <= got and not trashed & got
-
-
 async def test_kb_listings(world: _World) -> None:
     g = world.graph
     kb_records, _, _ = await g.list_kb_records(
@@ -754,6 +756,15 @@ async def test_connector_stats(world: _World) -> None:
 # ---------------------------------------------------------------------------
 # ALL methods: still find the trashed record
 # ---------------------------------------------------------------------------
+
+
+async def test_path_lookup(world: _World) -> None:
+    g = world.graph
+    for name, path in (("live", "/dbx/a.pdf"), ("trashed", "/dbx/b.pdf")):
+        await g.update_node(world.ids[name], CollectionNames.RECORDS.value, {"externalGroupId": "ns-vis"})
+        await g.update_node(world.ids[name], CollectionNames.FILES.value, {"path": path})
+
+    assert _ids(await g.get_file_records_under_path(world.connector_id, "ns-vis", "/dbx")) == {world.ids["live"]}
 
 
 async def test_point_reads_return_the_trash_with_its_state(world: _World) -> None:
@@ -957,7 +968,7 @@ async def _attach(world: _World, parent: str, child: str) -> None:
         [{"from_id": world.ids[parent], "from_collection": records, "to_id": world.ids[child],
           "to_collection": records, "relationshipType": "ATTACHMENT",
           "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
 

@@ -20612,6 +20612,111 @@ class JiraDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def get_project_issue_security_scheme_v2(
+        self,
+        projectKeyOrId: str,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/project/{projectKeyOrId}/issuesecuritylevelscheme (Data Center / Server).
+
+        Same resource Cloud documents at ``/rest/api/3/.../issuesecuritylevelscheme``.
+        A 200 body with ``id`` is a scheme. 404 is not "no scheme".
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'projectKeyOrId': projectKeyOrId}
+        _query: Dict[str, Any] = {}
+        _body = None
+        rel_path = '/rest/api/2/project/{projectKeyOrId}/issuesecuritylevelscheme'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def search_projects_using_security_schemes_v2(
+        self,
+        startAt: Optional[str] = None,
+        maxResults: Optional[str] = None,
+        projectId: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/issuesecurityschemes/project (Data Center / Server).
+
+        Classic projects that use an issue security scheme. A completed 200 page
+        that omits ``projectId`` is the positive "no scheme" result. Older
+        servers that do not have this route answer 404, which is not "no scheme".
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if projectId is not None:
+            _query['projectId'] = projectId
+        _body = None
+        rel_path = '/rest/api/2/issuesecurityschemes/project'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_issue_security_level_members_v2(
+        self,
+        issueSecuritySchemeId: Union[int, str],
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/issuesecurityschemes/{id}/members (Data Center / Server).
+
+        Cloud documents this under ``/rest/api/3``. A server that does not
+        expose it returns 404; that is not an empty member list.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {'issueSecuritySchemeId': str(issueSecuritySchemeId)}
+        _query: Dict[str, Any] = {}
+        if startAt is not None:
+            _query['startAt'] = startAt
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if expand is not None:
+            _query['expand'] = expand
+        _body = None
+        rel_path = '/rest/api/2/issuesecurityschemes/{issueSecuritySchemeId}/members'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
     async def get_project_roles_v2(
         self,
         projectIdOrKey: str,
@@ -20845,6 +20950,41 @@ class JiraDataSource:
             _query['maxResults'] = maxResults
         _body = None
         rel_path = '/rest/api/2/user/search'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_user_v2(
+        self,
+        key: Optional[str] = None,
+        username: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/user (Data Center / Server): one user, active or not, by ``key`` or ``username``.
+
+        404 when no such user exists.
+
+        https://docs.atlassian.com/software/jira/docs/api/REST/9.17.0/#api/2/user-getUser
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if key is not None:
+            _query['key'] = key
+        if username is not None:
+            _query['username'] = username
+        _body = None
+        rel_path = '/rest/api/2/user'
         url = self.base_url + _safe_format_url(rel_path, _path)
         req = HTTPRequest(
             method='GET',

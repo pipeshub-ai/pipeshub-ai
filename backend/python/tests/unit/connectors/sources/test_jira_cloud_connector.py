@@ -3353,6 +3353,24 @@ class TestSyncUserGroupsCoverage:
         result = await connector._sync_user_groups([_make_app_user(email="user@example.com")])
         assert len(result["g1"]) == 0
 
+    @pytest.mark.asyncio
+    async def test_each_group_is_written_in_its_own_transaction(self):
+        # All groups of a large site in one transaction outlived its timeout and
+        # every group was rolled back.
+        connector = _make_connector()
+        connector._fetch_groups = AsyncMock(return_value=([
+            {"groupId": "g1", "name": "developers"},
+            {"groupId": "g2", "name": "designers"},
+            {"groupId": "g3", "name": "support"},
+        ], False))
+        connector._fetch_group_members = AsyncMock(return_value=([], True))
+
+        await connector._sync_user_groups([])
+
+        calls = connector.data_entities_processor.on_new_user_groups.await_args_list
+        assert [len(c.args[0]) for c in calls] == [1, 1, 1]
+        assert sorted(c.args[0][0][0].source_user_group_id for c in calls) == ["g1", "g2", "g3"]
+
 
 # ===========================================================================
 # Misc constants

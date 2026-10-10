@@ -4533,6 +4533,15 @@ components:
                 chain. A group with no parent is its own root, so this is null
                 only for records written before the field existed, or by
                 connectors that do not set it.
+            accessRule:
+              type: string
+              enum: [OPEN, STRICT, RESTRICTED]
+              description: |
+                How this record's own permissions combine with its ancestors'.
+                OPEN: an accessible parent, or a direct grant, is enough.
+                STRICT: every ancestor up to the connector must be accessible too.
+                RESTRICTED: strict, and a grant on the record itself is required.
+                Absent on records written before the field existed; read as OPEN.
             connectorId:
               type: string
             connectorName:
@@ -6139,6 +6148,26 @@ components:
               type: boolean
             hasPrev:
               type: boolean
+            nextCursor:
+              type: string
+              nullable: true
+              description: Cursor for the next page; null on the last page.
+            prevCursor:
+              type: string
+              nullable: true
+              description: Cursor for the previous page; null on the first page.
+            startIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the first item on this page, when known.
+            endIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the last item on this page, when known.
+            currentPageItems:
+              type: integer
+              nullable: true
+              description: Number of items on this page.
         filters:
           type: object
           required:
@@ -6545,27 +6574,72 @@ components:
       type: object
       additionalProperties: false
       description: |
-        App connector instance ids and knowledge-base / record-group ids that narrow retrieval
-        for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
-        For **agent** chat streams, send explicit id lists, or **omit** `filters` (and `tools`)
-        to let the service use the agent’s stored knowledge and tool configuration. Sending
-        `{ "apps": [], "kb": [] }` on an agent stream means **no** knowledge sources for that
-        turn (it is not “full org default”).
+        What retrieval is narrowed to for a turn: whole apps, and selections below app
+        level (record groups, folders, records). The keys are a union. For **org assistant**
+        chat streams, send explicit lists. For **agent** chat streams, send explicit id lists,
+        or **omit** `filters` (and `tools`) to let the service use the agent’s stored knowledge
+        and tool configuration. Sending `{ "apps": [], "kb": [] }` on an agent stream means
+        **no** knowledge sources for that turn (it is not “full org default”).
+
+        A selection below app level is the whole scope of the turn: with `recordGroups`,
+        `records` or `recordsExact` present, an absent or empty `apps` / `kb` means none of
+        them. A selected node that does not exist or that the caller cannot read contributes
+        nothing; when nothing valid remains the turn searches nothing. `/search` answers 404
+        for that; a chat turn is not failed, its search simply finds nothing.
+        At most 200 ids may be sent in one request, counted across all keys, and every id must
+        be a valid UUID. A key this schema does not list is ignored by the gateway rather than
+        refused.
+
+        A selection that covers more than the configured number of nodes (50,000 by default),
+        or that touches a source still being prepared for folder-level search, is refused:
+        `/search` and the non-streaming chat routes answer 422 with the message, and a chat
+        stream ends with an error frame (`RUN_ERROR`, or `error` on the legacy protocol)
+        whose `code` is `selection_too_large` or `selection_not_ready` and whose `message`
+        says what to change. No model call is made for such a turn. A chat turn with no
+        selection fails the same way when a saved agent's or a project's limit below app
+        level covers more than that number of nodes.
+
+        In a chat, the selection, the apps and collections picked whole, a saved agent's
+        knowledge and a project's sources also bound every agent tool that reaches a record by
+        id or by name, including the files a tool sends out (`attachment_record_ids`). Files
+        attached to the conversation and artifacts it produced stay usable.
       properties:
         apps:
           type: array
           items:
             type: string
           description: |
-            Connector instance ids to scope retrieval for this turn. Each element
-            must be a valid UUID (connector app id, KB app id, record-group id, etc.).
-            Gateway validation matches Zod `appOrKbIdSchema`.
+            Whole apps: connector instance ids and collection (knowledge base) ids.
+            Each element must be a valid UUID.
         kb:
           type: array
           items:
             type: string
           description: |
-            Knowledge-base app ids to scope retrieval for this turn.
+            Older name for collection ids; treated the same as `apps`.
+            Each element must be a valid UUID.
+        recordGroups:
+          type: array
+          items:
+            type: string
+          description: |
+            Record group ids (a drive, a space, a project). Each selects the group, the
+            groups nested in it and every record that belongs to them.
+            Each element must be a valid UUID.
+        records:
+          type: array
+          items:
+            type: string
+          description: |
+            Folder or record ids. Each selects the node and everything under it
+            (child items and attachments).
+            Each element must be a valid UUID.
+        recordsExact:
+          type: array
+          items:
+            type: string
+          description: |
+            Record ids selected alone, without what is under them.
             Each element must be a valid UUID.
 
     AppliedFilterNode:
@@ -6604,6 +6678,21 @@ components:
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
           description: Applied knowledge-base filter nodes
+        recordGroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied record-group filter nodes
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied folder and record filter nodes (each with everything under it)
+        recordsExact:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied record filter nodes selected alone
 
     ChatAttachmentRef:
       type: object
@@ -6612,6 +6701,13 @@ components:
         Reference to an attachment produced by `POST /conversations/attachments/upload`
         (or the equivalent agent route). Include in create/stream/message bodies
         so the turn is sent with uploaded files.
+
+        Each attachment, and each one in the history sent with the turn, is checked as the
+        caller. A chat upload is kept when the caller may read it; any other record only when
+        the caller may read it and it lies inside the chat's selection, the agent's knowledge
+        and the project's sources. A service-account caller keeps only uploads it made itself.
+        `recordId` and `virtualRecordId`, when both are sent, must name the same record. An
+        attachment that fails the check is left out of the turn, not refused.
       required:
         - recordId
       properties:
@@ -8457,6 +8553,19 @@ components:
           items:
             type: string
           description: Knowledge-base app ids scoping this project's default retrieval.
+        recordGroups:
+          type: array
+          items:
+            type: string
+          description: |
+            Record group ids (a Drive, a Confluence space, a Jira project and
+            so on). Each is searched with the groups nested in it. At most 200
+            ids across all four keys.
+        records:
+          type: array
+          items:
+            type: string
+          description: Folder or record ids. Each is searched with everything under it.
 
     ProjectAppliedFilters:
       type: object
@@ -8468,6 +8577,14 @@ components:
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
         kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        recordGroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        records:
           type: array
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
@@ -10168,24 +10285,52 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Indexed scope for a knowledge connector: record-group ids and
-        individual record ids. On GET, `filtersParsed` is this shape parsed
-        from the stored `filters` JSON string.
+        What a knowledge source is limited to. With both lists empty the agent
+        searches the whole source; otherwise it searches only the listed
+        record groups, folders and records, each with everything under it, and
+        a selection made in a chat must lie under them. On GET, `filtersParsed`
+        is this shape parsed from the stored `filters` JSON string.
+
+        On create and update, `filters` may be this object or its JSON text.
+        The two lists must hold valid UUIDs, at most 200 across both; a value
+        that cannot be read is refused with 400 rather than saved as "no
+        limit", and so is a limit that covers more nodes than one search may
+        (50,000 by default). A stored limit that cannot be read limits the
+        source to nothing, and one that has since grown past that number fails
+        each chat turn with `selection_too_large` before any model call.
       properties:
         recordGroups:
           type: array
           items:
             type: string
           description: >-
-            Deprecated/legacy: record-group ids for connector record-group
-            scoping (e.g. Confluence spaces, Jira projects). No longer set for
-            KB (Collection) entries — a KB is identified by its own
-            `connectorId`, not by an id in this list.
+            Record-group ids (e.g. Confluence spaces, Jira projects), each with
+            the groups nested in it. Not set for KB (Collection) entries — a KB
+            is identified by its own `connectorId`; an id equal to a source's
+            `connectorId` is ignored.
         records:
           type: array
           items:
             type: string
-          description: Individual record ids in scope.
+          description: Folder or record ids, each with everything under it.
+        nodes:
+          type: array
+          description: Names of the ids above, for display. Not used for search.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - nodeType
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              nodeType:
+                type: string
+                description: "`recordGroup`, `folder` or `record`."
 
     Toolset:
       type: object
@@ -13770,6 +13915,7 @@ components:
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+            - ENABLE_KH_SCOPE_LISTING: Serve the knowledge hub All records listing from per-connector scopes precomputed after each sync (default: false)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -14456,7 +14602,7 @@ components:
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
             ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
-            ENABLE_USER_CONTEXT.
+            ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -27011,11 +27157,21 @@ paths:
           in: query
           required: false
           description: |
-            Page number (1-indexed). Combined with `limit` to paginate results.
+            Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+            Prefer `cursor`: a page number is reached by reading the pages before it.
           schema:
             type: integer
             minimum: 1
             default: 1
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+            response. Send it with the same path, filters and sort as the request that returned
+            it; a cursor issued for another place, user or listing mode is refused with 400.
+          schema:
+            type: string
         - name: limit
           in: query
           required: false
@@ -27519,11 +27675,21 @@ paths:
           in: query
           required: false
           description: |
-            Page number (1-indexed). Combined with `limit` to paginate results.
+            Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+            Prefer `cursor`: a page number is reached by reading the pages before it.
           schema:
             type: integer
             minimum: 1
             default: 1
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+            response. Send it with the same path, filters and sort as the request that returned
+            it; a cursor issued for another place, user or listing mode is refused with 400.
+          schema:
+            type: string
         - name: limit
           in: query
           required: false
@@ -32086,11 +32252,21 @@ paths:
         Matching is meaning-based, so relevant results surface even when
         the wording differs from the query.
 
-        Use optional `filters` to narrow the scope:
+        Use optional `filters` to narrow the scope (see `Filters`):
 
-        - `filters.apps` — restrict to specific connector apps (for
-          example Google Drive or Confluence).
-        - `filters.kb` — restrict to specific knowledge bases.
+        - `filters.apps` — restrict to whole apps: connector instances
+          (for example Google Drive or Confluence) and collections.
+          `filters.kb` is the older name for collections and means the
+          same.
+        - `filters.recordGroups` — restrict to record groups (a drive, a
+          space, a project), each with the groups nested in it.
+        - `filters.records` — restrict to folders or records, each with
+          everything under it.
+        - `filters.recordsExact` — restrict to records alone, without
+          what is under them.
+
+        The keys are a union. With any of the last three present, an
+        absent or empty `apps` / `kb` means no whole app.
 
         The response returns a `searchId` for the persisted search along
         with ranked matches, each carrying a relevance score and the
@@ -32134,7 +32310,16 @@ paths:
         '404':
           description: |
             A referenced knowledge base or app filter could not be
-            resolved.
+            resolved, or nothing selected below app level exists or is
+            readable by the caller ("Nothing in your selection is
+            available to search").
+        '422':
+          description: |
+            The selection below app level cannot be searched as asked.
+            Either it covers more nodes than one search may (50,000 by
+            default), or it touches a source that is still being prepared
+            for folder-level search. The message says which and what to
+            change.
         '500':
           description: |
             Unexpected server error while executing the search, or the
@@ -41551,6 +41736,7 @@ paths:
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+        - ENABLE_KH_SCOPE_LISTING: Serve the knowledge hub All records listing from precomputed per-connector scopes (default: false)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []

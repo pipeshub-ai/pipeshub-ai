@@ -563,7 +563,9 @@
     "searchEmptyHint": "No se ha encontrado lo que busca. Pruebe a buscar otra cosa.",
     "adjustFiltersHint": "Seleccione otra fuente o ajuste los filtros",
     "addFromCollectionsHint": "Puede añadir los archivos o las carpetas de su empresa desde Colecciones",
-    "addFilesHint": "Añada sus archivos o carpetas"
+    "addFilesHint": "Añada sus archivos o carpetas",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "El chat admite hasta {{max}} elementos seleccionados. Desmarca algunos e inténtalo de nuevo."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -660,6 +662,12 @@
     "searchCollections": "Buscar conectores y colecciones",
     "loadingCollections": "Cargando colecciones…",
     "failedToLoadCollections": "Error al cargar colecciones",
+    "treeEmpty": "Aquí no hay nada",
+    "treeLoadFailed": "No se pudieron cargar estos elementos",
+    "treeRetry": "Reintentar",
+    "treeIncludedWith": "Incluido con {{name}}",
+    "treeExpand": "Mostrar el contenido de {{name}}",
+    "treeCollapse": "Ocultar el contenido de {{name}}",
     "noCollectionsAvailable": "No hay colecciones disponibles",
     "comingSoon": "Próximamente",
     "answer": "Respuesta",
@@ -1143,7 +1151,9 @@
       "webSearch": "Búsqueda web"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
-    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente."
+    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente.",
+    "selectedAlone": "{{name}} (solo este elemento)",
+    "noConnectorsFound": "No se encontraron conectores"
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -3945,7 +3955,10 @@
     "deprecatedToolsBanner_one": "{{count}} herramienta de este agente está obsoleta. Quítela: {{tools}}",
     "deprecatedToolsBanner_other": "{{count}} herramientas de este agente están obsoletas. Quítelas: {{tools}}",
     "mcpServerWithToolCount_many": "Servidor MCP con {{count}} de herramientas",
-    "deprecatedToolsBanner_many": "{{count}} de herramientas de este agente están obsoletas. Quítelas: {{tools}}"
+    "deprecatedToolsBanner_many": "{{count}} de herramientas de este agente están obsoletas. Quítelas: {{tools}}",
+    "limitSource": "Elegir qué busca {{name}}",
+    "limitSourceHint": "Deja marcada toda la fuente, o desmárcala y marca las carpetas y elementos en los que el agente puede buscar.",
+    "limitSourceCount": "Limitado a {{count}} seleccionados"
   },
   "recordView": {
     "sections": {

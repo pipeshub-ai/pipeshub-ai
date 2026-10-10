@@ -494,7 +494,7 @@ class FakeCheckpointStore:
         self.sync_points.pop(key, None)
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeCheckpointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
 
 

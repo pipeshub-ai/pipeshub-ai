@@ -60,7 +60,16 @@ import type {
   AppliedFilters,
   AttachmentRef,
 } from '@/chat/types';
-import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, buildAssistantApiFilters } from '@/chat/types';
+import type { ChatKnowledgeFilters } from '@/chat/types';
+import {
+  BELOW_APP_KEYS,
+  hasAnyFilter,
+  removeSelected,
+  sameSelection,
+  selectedIds,
+  selectedNodeKind,
+} from '@/chat/utils/tree-selection';
 import {
   SUPPORTED_FILE_TYPES,
   ACCEPTED_MIME_TYPES,
@@ -295,14 +304,13 @@ export function ChatInput({
   // "+" menu capability toggles — universal agent uses settings.agentCapabilities;
   // scoped custom agents use their own per-agent capabilities map.
   const setAgentCapabilities = useChatStore((s) => s.setAgentCapabilities);
-  const agentChatConnectors = useChatStore((s) => s.agentChatConnectors);
-  const agentChatKbIds = useChatStore((s) => s.agentChatKbIds);
   const agentHasWebSearch = useChatStore((s) => s.agentHasWebSearch);
   const scopedAgentCapabilities = useChatStore((s) =>
     agentId ? s.scopedAgentCapabilities[agentId] : undefined
   );
   const setScopedAgentCapabilities = useChatStore((s) => s.setScopedAgentCapabilities);
-  const agentHasInternalSearch = agentChatConnectors.length > 0 || agentChatKbIds.length > 0;
+  // Whole sources and the nodes a source is limited to both count as knowledge.
+  const agentHasInternalSearch = hasAnyFilter(agentKnowledgeDefaults);
   const scopedInternalSearch = scopedAgentCapabilities?.internalSearch ?? true;
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
@@ -433,7 +441,7 @@ export function ChatInput({
 
   const isSearchMode = settings.mode === 'search' && !isAgentChat;
   const canAcceptDrop = !isRegenerateMode && !isSearchMode && settings.queryMode !== 'web-search';
-  const selectedKbCount = (settings.filters?.apps?.length ?? 0) + (settings.filters?.kb?.length ?? 0);
+  const selectedKbCount = selectedIds(settings.filters).length;
   const agentResourcesCustomized =
     isAgentChat &&
     (agentKnowledgeScope !== null ||
@@ -520,6 +528,13 @@ export function ChatInput({
           kind: 'collection' as const,
           connectorType: node.connector ? resolveConnectorType(node.connector) : undefined,
         })),
+        ...BELOW_APP_KEYS.flatMap((bucket) =>
+          (regenAppliedFilters[bucket] ?? []).map((node) => ({
+            id: node.id,
+            name: bucket === 'recordsExact' ? t('chat.selectedAlone', { name: node.name }) : node.name,
+            kind: selectedNodeKind(bucket, node.nodeType),
+          }))
+        ),
       ];
     }
 
@@ -527,13 +542,24 @@ export function ChatInput({
       return [];
     }
 
-    const source = isAgentChat
+    const source: ChatKnowledgeFilters | null | undefined = isAgentChat
       ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
       : isProjectChat
         ? (projectKnowledgeScope ?? projectScope.knowledgeDefaults)
         : settings.filters;
     const hubApps = source?.apps ?? [];
     const groups = source?.kb ?? [];
+    const belowAppLevel = BELOW_APP_KEYS.flatMap((bucket) =>
+      (source?.[bucket] ?? []).map((id) => {
+        const meta = collectionMetaCache[id];
+        const name = collectionNamesCache[id] || meta?.name || id;
+        return {
+          id,
+          name: bucket === 'recordsExact' ? t('chat.selectedAlone', { name }) : name,
+          kind: selectedNodeKind(bucket, meta?.nodeType),
+        };
+      })
+    );
     return [
       ...hubApps.map((id) => {
         const meta = collectionMetaCache[id];
@@ -554,6 +580,7 @@ export function ChatInput({
           connectorType: meta?.connector ? resolveConnectorType(meta.connector) : undefined,
         };
       }),
+      ...belowAppLevel,
     ];
   }, [
     regenAppliedFilters,
@@ -567,6 +594,7 @@ export function ChatInput({
     settings.queryMode,
     collectionNamesCache,
     collectionMetaCache,
+    t,
   ]);
 
   const showSelectedCollectionsRow =
@@ -575,37 +603,13 @@ export function ChatInput({
   const handleRemoveCollection = useCallback(
     (id: string) => {
       if (isAgentChat) {
-        const eff = agentKnowledgeScope ?? agentKnowledgeDefaults;
-        const nextApps = eff.apps.filter((aid) => aid !== id);
-        const nextKb = eff.kb.filter((gid) => gid !== id);
-        // Normalize to null when result matches defaults (no customization applied)
-        const appsMatch =
-          new Set(nextApps).size === new Set(agentKnowledgeDefaults.apps).size &&
-          nextApps.every((x) => agentKnowledgeDefaults.apps.includes(x));
-        const kbMatch =
-          new Set(nextKb).size === new Set(agentKnowledgeDefaults.kb).size &&
-          nextKb.every((x) => agentKnowledgeDefaults.kb.includes(x));
-        setAgentKnowledgeScope(appsMatch && kbMatch ? null : { apps: nextApps, kb: nextKb });
+        const next = removeSelected(agentKnowledgeScope ?? agentKnowledgeDefaults, id);
+        // Back at the agent's own sources: nothing is narrowed any more.
+        setAgentKnowledgeScope(sameSelection(next, agentKnowledgeDefaults) ? null : next);
       } else if (isProjectChat) {
-        const eff = projectKnowledgeScope ?? projectScope.knowledgeDefaults;
-        setProjectKnowledgeScope({
-          apps: eff.apps.filter((aid) => aid !== id),
-          kb: eff.kb.filter((gid) => gid !== id),
-        });
+        setProjectKnowledgeScope(removeSelected(projectKnowledgeScope ?? projectScope.knowledgeDefaults, id));
       } else {
-        const hubApps = settings.filters?.apps ?? [];
-        const groups = settings.filters?.kb ?? [];
-        if (hubApps.includes(id)) {
-          setFilters({
-            ...settings.filters,
-            apps: hubApps.filter((aid) => aid !== id),
-          });
-        } else {
-          setFilters({
-            ...settings.filters,
-            kb: groups.filter((gid) => gid !== id),
-          });
-        }
+        setFilters(removeSelected(settings.filters, id));
       }
     },
     [
@@ -698,7 +702,13 @@ export function ChatInput({
       const modelOverride = regenModelOverride ?? undefined;
       const af = activeMessageAction.appliedFilters;
       const originalFilters = af
-        ? { apps: af.apps.map((a) => a.id), kb: af.kb.map((k) => k.id) }
+        ? buildAssistantApiFilters({
+            apps: af.apps.map((a) => a.id),
+            kb: af.kb.map((k) => k.id),
+            recordGroups: (af.recordGroups ?? []).map((g) => g.id),
+            records: (af.records ?? []).map((r) => r.id),
+            recordsExact: (af.recordsExact ?? []).map((r) => r.id),
+          })
         : undefined;
       setActiveMessageAction(null);
       setRegenModelOverride(null);
@@ -1914,15 +1924,8 @@ export function ChatInput({
           }}
         >
           <ConnectorsCollectionsPanel
-            apps={settings.filters?.apps ?? []}
-            kb={settings.filters?.kb ?? []}
-            onSelectionChange={(next) => {
-              setFilters({
-                ...settings.filters,
-                apps: next.apps,
-                kb: next.kb,
-              });
-            }}
+            selection={settings.filters}
+            onSelectionChange={setFilters}
             viewMode="inline"
             onToggleView={handleToggleView}
           />
@@ -2563,15 +2566,8 @@ export function ChatInput({
         <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
       ) : hubFilterQueryMode ? (
         <ConnectorsCollectionsPanel
-          apps={settings.filters?.apps ?? []}
-          kb={settings.filters?.kb ?? []}
-          onSelectionChange={(next) => {
-            setFilters({
-              ...settings.filters,
-              apps: next.apps,
-              kb: next.kb,
-            });
-          }}
+          selection={settings.filters}
+          onSelectionChange={setFilters}
           viewMode="overlay"
           onToggleView={handleToggleView}
         />

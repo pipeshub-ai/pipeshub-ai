@@ -165,7 +165,19 @@ async def test_users_and_groups_are_read_to_the_last_page(ws: Workspace) -> None
     assert {m.email for m in ws.records.user_groups["eng@example.com"][1]} == {
         ALICE, BOB, "extra0@example.com", "extra1@example.com", "extra2@example.com"
     }
-    assert set(ws.records.user_groups) == {"eng@example.com", "ops@example.com", "empty-ish@example.com"}
+    assert set(ws.records.user_groups) == {
+        "eng@example.com", "ops@example.com", "empty-ish@example.com", "domain:example.com"
+    }
+    assert {m.email for m in ws.records.user_groups["domain:example.com"][1]} == set(ws.records.app_users)
+
+
+async def test_an_archived_user_is_not_in_the_domain_group(ws: Workspace) -> None:
+    ws.world.add_user("former@example.com", archived=True)
+
+    await ws.sync()
+
+    assert "former@example.com" in ws.records.app_users
+    assert "former@example.com" not in {m.email for m in ws.records.user_groups["domain:example.com"][1]}
 
 
 async def test_a_failed_group_member_read_leaves_the_stored_group_alone(ws: Workspace) -> None:
@@ -229,7 +241,7 @@ async def test_user_group_domain_and_link_sharing_is_mapped(ws: Workspace) -> No
         {"type": "user", "role": "writer", "emailAddress": BOB},
         {"type": "user", "role": "commenter", "emailAddress": "outsider@other.org"},
         {"type": "group", "role": "reader", "emailAddress": "eng@example.com"},
-        {"type": "domain", "role": "reader", "domain": "example.com"},
+        {"type": "domain", "role": "reader", "domain": "example.com", "allowFileDiscovery": True},
     ])
     ws.world.add_item("linked", "open.txt", parent="root-alice", owner=ALICE, perms=[
         {"type": "user", "role": "writer", "emailAddress": BOB},
@@ -239,11 +251,40 @@ async def test_user_group_domain_and_link_sharing_is_mapped(ws: Workspace) -> No
     await ws.sync()
 
     grants = ws.grants("shared")
-    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE"), ("outsider@other.org", "USER", "COMMENT"), ("eng@example.com", "GROUP", "READ")} <= grants
-    assert [g for g in grants if g[1] == "DOMAIN"], grants
-    linked = ws.grants("linked")
-    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")} <= linked
-    assert {g[1] for g in linked} == {"USER", "ANYONE"}
+    assert {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE"), ("eng@example.com", "GROUP", "READ")} <= grants
+    assert ("outsider@other.org", "USER", "READ") in grants, "a commenter is stored as a reader"
+    assert {g[1] for g in grants} == {"USER", "GROUP"}, "domain sharing names nobody, so it is not stored as a grant"
+    assert ws.grants("linked") == {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")}, (
+        "link sharing names nobody, so it is not stored as a grant"
+    )
+
+
+async def test_a_share_with_the_workspace_domain_reaches_its_domain_group_and_a_link_or_partner_domain_no_one(
+    ws: Workspace,
+) -> None:
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.folder("dir", "Partners", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "reader", "domain": "partner.com"},
+    ])
+    ws.world.add_item("f-domain", "pricing.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "writer", "domain": "example.com", "allowFileDiscovery": True},
+    ])
+    ws.world.add_item("f-link", "roadmap.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "reader", "domain": "example.com", "allowFileDiscovery": False},
+    ])
+    ws.world.add_item("f-later", "notes.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    ws.world.share("f-later", {"type": "domain", "role": "reader", "domain": "example.com", "allowFileDiscovery": True})
+    await ws.sync()
+
+    assert ws.grants("dir") == {(ALICE, "USER", "OWNER")}, "a partner's domain must grant nothing"
+    expected = {
+        "f-domain": {(ALICE, "USER", "OWNER"), ("domain:example.com", "GROUP", "WRITE")},
+        "f-link": {(ALICE, "USER", "OWNER")},
+        "f-later": {(ALICE, "USER", "OWNER"), ("domain:example.com", "GROUP", "READ")},
+    }
+    for external_id, grants in expected.items():
+        assert ws.grants(external_id) == grants, external_id
 
 
 async def test_a_file_shared_with_a_colleague_is_filed_under_their_shared_with_me(ws: Workspace) -> None:
@@ -333,12 +374,6 @@ async def test_a_failed_shared_drive_page_does_not_save_the_drive_checkpoint(ws:
     assert {f"f{n}.txt" for n in range(4)} <= ws.names()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A failed permission read is treated as 'this file is shared with nobody', so the next "
-    "change to the file replaces its stored access with an empty list and people lose access "
-    "(the rule from #3521/#3528 is that a failed read keeps what is stored).",
-)
 async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -> None:
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
     await ws.sync()
@@ -350,6 +385,7 @@ async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -
 
     assert ws.records.records["shared"].record_name == "plan-v2.txt"
     assert (BOB, "USER", "READ") in ws.grants("shared")
+    assert "file shared" in (ws.connector.stored_access_kept or ""), "a full sync must not sweep what it kept"
 
 
 @pytest.mark.xfail(
@@ -437,6 +473,19 @@ async def test_a_folder_moved_to_the_trash_takes_its_files_along(ws: Workspace) 
     await ws.sync()
 
     assert "dir" not in ws.records.records
+    assert "inside" not in ws.records.records
+
+
+async def test_a_folder_already_in_our_trash_is_removed_when_the_source_trashes_it(ws: Workspace) -> None:
+    ws.world.folder("dir", "Projects", parent="root-alice", owner=ALICE)
+    ws.world.add_item("inside", "draft.txt", parent="dir", owner=ALICE)
+    await ws.sync()
+    ws.records.records["dir"].is_deleted = True
+
+    ws.world.trash("dir")
+    await ws.sync()
+
+    assert "dir" not in ws.records.records, "the delete must take a folder that is in the trash"
     assert "inside" not in ws.records.records
 
 

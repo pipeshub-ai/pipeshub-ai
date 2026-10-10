@@ -12,7 +12,7 @@ def _get_enum_values(enum_class: Type[Enum]) -> List[str]:
     return [item.value for item in enum_class]
 
 
-record_relations_schema = {
+node_relations_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -33,6 +33,31 @@ record_relations_schema = {
     },
     "level": "strict",
     "message": "Document does not match the file relations schema.",
+}
+
+# Links only: a hierarchy type can never land here.
+record_links_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "relationshipType": {
+                "type": "string",
+                "enum": [
+                    t for t in _get_enum_values(RecordRelations)
+                    if t not in (RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value)
+                ],
+            },
+            "constraintName": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["relationshipType"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the record links schema.",
 }
 
 entity_relations_schema = {

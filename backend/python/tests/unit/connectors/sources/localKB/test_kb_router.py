@@ -428,32 +428,13 @@ class TestCreateNestedFolder:
         assert resp.status_code == 500
 
 
-class TestGetFolderContents:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(return_value={
-            "folder": {"id": "f1", "name": "F"},
-            "contents": [], "totalItems": 0
-        })
+class TestLegacyFolderContentsRouteIsGone:
+    def test_the_route_no_longer_exists(self):
+        """Decision 89: no caller, broken on Neo4j, replaced by the knowledge hub."""
+        app, _, _ = _make_app()
         client = TestClient(app)
         resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 200
-
-    def test_failure(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(return_value={
-            "success": False, "code": 404, "reason": "Not found"
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 404
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 500
+        assert resp.status_code in (404, 405)
 
 
 class TestUpdateFolder:
@@ -644,6 +625,22 @@ class TestUploadRecordsToFolder:
         client = TestClient(app)
         resp = client.post("/api/v1/kb/kb1/folder/f1/upload", json=self._files_body())
         assert resp.status_code == 500
+
+
+class TestRemovedCreateRecordsRoutes:
+    """KB-48: these routes called service methods that no longer exist and answered 500."""
+
+    def test_post_kb_records_is_not_routed(self):
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/kb1/records", json={"records": [], "fileRecords": []})
+        assert resp.status_code == 405
+
+    def test_post_folder_records_is_not_routed(self):
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/kb1/folder/f1/records", json={"records": [], "fileRecords": []})
+        assert resp.status_code == 405
 
 
 class TestListKbRecords:
@@ -980,34 +977,6 @@ class TestDeleteRecordsInFolder:
         client = TestClient(app)
         resp = client.request("DELETE", "/api/v1/kb/kb1/folder/f1/records", json={"recordIds": ["r1"]})
         assert resp.status_code == 500
-
-
-class TestListAllRecords:
-    # NOTE: The literal "/records" route is shadowed by the "/{kb_id}" route
-    # in the current router definition order. As a result, GET /api/v1/kb/records
-    # is handled by get_knowledge_base(kb_id="records"). These tests mock that
-    # endpoint to avoid ResponseValidationError and verify the request succeeds.
-    _valid_kb_response = {
-        "id": "records", "name": "Records KB",
-        "createdAtTimestamp": 100, "updatedAtTimestamp": 100,
-        "createdBy": "user1",
-    }
-
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_knowledge_base = AsyncMock(return_value=self._valid_kb_response)
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/records")
-        assert resp.status_code == 200
-
-    def test_with_comma_separated_params(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_knowledge_base = AsyncMock(return_value=self._valid_kb_response)
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/records?record_types=FILE,WEBPAGE&origins=local&indexing_status=COMPLETED&permissions=OWNER&source=local")
-        assert resp.status_code == 200
-        # The /{kb_id} route is matched; query params are ignored by get_knowledge_base
-        kb_svc.get_knowledge_base.assert_called_once()
 
 
 class TestMoveRecord:
@@ -1444,34 +1413,6 @@ class TestCreateNestedFolderFullCoverage:
         kb_svc.create_nested_folder = AsyncMock(side_effect=RuntimeError("err"))
         client = TestClient(app)
         resp = client.post("/api/v1/kb/kb1/folder/p1/subfolder", json={"name": "Sub"})
-        assert resp.status_code == 500
-
-
-class TestGetFolderContentsFullCoverage:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(return_value={
-            "folder": {"id": "f1", "name": "F"},
-            "contents": [], "totalItems": 0
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 200
-
-    def test_failure(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(return_value={
-            "success": False, "code": 404, "reason": "Not found"
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
-        assert resp.status_code == 404
-
-    def test_unexpected_exception(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_folder_contents = AsyncMock(side_effect=RuntimeError("err"))
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/folder/f1/user/user1")
         assert resp.status_code == 500
 
 
@@ -1999,34 +1940,6 @@ class TestDeleteRecordsInFolderFullCoverage:
         client = TestClient(app)
         resp = client.request("DELETE", "/api/v1/kb/kb1/folder/f1/records", json={"recordIds": ["r1"]})
         assert resp.status_code == 500
-
-
-class TestListAllRecordsFullCoverage:
-    # NOTE: The literal "/records" route is shadowed by the "/{kb_id}" route
-    # in the current router definition order. As a result, GET /api/v1/kb/records
-    # is handled by get_knowledge_base(kb_id="records"). These tests mock that
-    # endpoint to avoid ResponseValidationError and verify the request succeeds.
-    _valid_kb_response = {
-        "id": "records", "name": "Records KB",
-        "createdAtTimestamp": 100, "updatedAtTimestamp": 100,
-        "createdBy": "user1",
-    }
-
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_knowledge_base = AsyncMock(return_value=self._valid_kb_response)
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/records")
-        assert resp.status_code == 200
-
-    def test_with_comma_separated_params(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.get_knowledge_base = AsyncMock(return_value=self._valid_kb_response)
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/records?record_types=FILE,WEBPAGE&origins=local&indexing_status=COMPLETED&permissions=OWNER&source=local")
-        assert resp.status_code == 200
-        # The /{kb_id} route is matched; query params are ignored by get_knowledge_base
-        kb_svc.get_knowledge_base.assert_called_once()
 
 
 class TestMoveRecordFullCoverage:

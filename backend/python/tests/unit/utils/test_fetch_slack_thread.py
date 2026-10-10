@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 # conftest.py may register a MagicMock for ``langchain_core`` when the package is
 # absent, which breaks ``@tool`` on fetch_slack_thread. Provide a minimal stub.
@@ -504,6 +505,17 @@ class TestUserCanAccessNode:
         assert await fst.user_can_access_node(graph, "r1", "ukey", "org1") is False
 
 
+def _allowing(graph, allowed=None):
+    """Graph mock whose batch access check admits ``allowed`` (default: all)."""
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+    graph.check_access = AsyncMock(
+        side_effect=lambda user_key, org_id, node_ids=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids) if allowed is None else frozenset(node_ids) & allowed,
+        ),
+    )
+    return graph
+
+
 @pytest.mark.asyncio
 class TestFetchThreadRecordsImplAccess:
     @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
@@ -559,7 +571,7 @@ class TestFetchThreadRecordsImplAccess:
             "connector_id": "c",
             "org_id": "org1",
         }
-        graph = AsyncMock()
+        graph = _allowing(AsyncMock())
         graph.get_records_by_record_group = AsyncMock(return_value=[])
         out = await fst._fetch_thread_records_impl(
             "rid",
@@ -624,15 +636,16 @@ class TestFetchThreadRecordsImpl:
             "connector_id": "c",
             "org_id": "org-from-record",
         }
-        graph = AsyncMock()
+        graph = _allowing(AsyncMock())
         graph.get_records_by_record_group = AsyncMock(return_value=[])
         out = await fst._fetch_thread_records_impl(
             "rid",
             {},
             graph_provider=graph,
             blob_store=None,
-            org_id="org",
+            org_id="org-from-record",
             config_service=None,
+            user_id="u1",
         )
         assert out["ok"] is False
         assert "config_service" in out["error"].lower()
@@ -645,7 +658,7 @@ class TestFetchThreadRecordsImpl:
             "connector_id": "c",
             "org_id": "org-from-record",
         }
-        graph = AsyncMock()
+        graph = _allowing(AsyncMock())
         graph.get_records_by_record_group = AsyncMock(return_value=[])
         mock_blob_cls.return_value = MagicMock()
         out = await fst._fetch_thread_records_impl(
@@ -653,8 +666,9 @@ class TestFetchThreadRecordsImpl:
             {},
             graph_provider=graph,
             blob_store=None,
-            org_id="org",
+            org_id="org-from-record",
             config_service=MagicMock(),
+            user_id="u1",
         )
         assert out["ok"] is True
         mock_blob_cls.assert_called_once()
@@ -679,6 +693,7 @@ class TestFetchThreadRecordsImpl:
             "record_group_id": "trg",
             "connector_id": "c",
             "external_record_group_id": "ext",
+            "org_id": "org",
         }
         graph = AsyncMock()
         graph.get_records_by_record_group = AsyncMock(side_effect=ValueError("boom"))
@@ -698,8 +713,9 @@ class TestFetchThreadRecordsImpl:
             "record_group_id": "trg",
             "connector_id": "c",
             "external_record_group_id": "e",
+            "org_id": "org",
         }
-        graph = AsyncMock()
+        graph = _allowing(AsyncMock())
         graph.get_records_by_record_group = AsyncMock(return_value=[])
         out = await fst._fetch_thread_records_impl(
             "rid",
@@ -707,6 +723,7 @@ class TestFetchThreadRecordsImpl:
             graph_provider=graph,
             blob_store=MagicMock(),
             org_id="org",
+            user_id="u1",
         )
         assert out["ok"] is True
         assert out["records"] == []
@@ -719,8 +736,9 @@ class TestFetchThreadRecordsImpl:
             "record_group_id": "trg",
             "connector_id": "c",
             "external_record_group_id": "ext-thread",
+            "org_id": "org",
         }
-        graph = AsyncMock()
+        graph = _allowing(AsyncMock())
         graph.get_records_by_record_group = AsyncMock(
             return_value=[
                 {"id": "r-later", "source_created_at": 200},
@@ -743,7 +761,8 @@ class TestFetchThreadRecordsImpl:
             vmap,
             graph_provider=graph,
             blob_store=MagicMock(),
-            org_id="org1",
+            org_id="org",
+            user_id="u1",
         )
         assert out["ok"] is True
         assert [r["id"] for r in out["records"]] == ["r-earlier", "r-later"]
@@ -759,8 +778,9 @@ class TestFetchThreadRecordsImpl:
             "record_group_id": "trg",
             "connector_id": "c",
             "external_record_group_id": None,
+            "org_id": "org",
         }
-        graph = AsyncMock()
+        graph = _allowing(AsyncMock())
         graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "ghost"}])
         mock_fetch.return_value = None
         out = await fst._fetch_thread_records_impl(
@@ -769,6 +789,7 @@ class TestFetchThreadRecordsImpl:
             graph_provider=graph,
             blob_store=MagicMock(),
             org_id="org",
+            user_id="u1",
         )
         assert out["ok"] is True
         assert out["records"] == []
@@ -780,8 +801,9 @@ class TestFetchThreadRecordsImpl:
         mock_resolve.return_value = {
             "record_group_id": "trg",
             "connector_id": "c",
+            "org_id": "org",
         }
-        graph = AsyncMock()
+        graph = _allowing(AsyncMock())
         graph.get_records_by_record_group = AsyncMock(
             return_value=[{"id": "a"}, {"id": "b"}]
         )
@@ -795,9 +817,63 @@ class TestFetchThreadRecordsImpl:
             graph_provider=graph,
             blob_store=MagicMock(),
             org_id="org",
+            user_id="u1",
         )
         assert out["ok"] is True
         assert len(out["records"]) == 2
+
+
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    async def test_a_record_of_another_org_is_not_a_thread(self, mock_resolve):
+        mock_resolve.return_value = {"record_group_id": "trg", "connector_id": "c", "org_id": "other-org"}
+        graph = _allowing(AsyncMock())
+        out = await fst._fetch_thread_records_impl(
+            "rid", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org", user_id="u1",
+        )
+        assert out["ok"] is False
+        assert "not part of a Slack thread" in out["error"]
+        graph.get_records_by_record_group.assert_not_called()
+
+    @patch.object(fst, "_fetch_record_by_id", new_callable=AsyncMock)
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    async def test_an_inaccessible_input_record_reads_as_not_a_thread(self, mock_resolve, mock_fetch):
+        mock_resolve.return_value = {"record_group_id": "trg", "connector_id": "c", "org_id": "org"}
+        graph = _allowing(AsyncMock(), allowed={"r1"})
+        graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "r1"}])
+        out = await fst._fetch_thread_records_impl(
+            "start", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org", user_id="u1",
+        )
+        assert out["ok"] is False
+        assert "not part of a Slack thread" in out["error"]
+        mock_fetch.assert_not_called()
+
+    @patch.object(fst, "_fetch_record_by_id", new_callable=AsyncMock)
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    async def test_only_accessible_thread_records_are_fetched(self, mock_resolve, mock_fetch):
+        mock_resolve.return_value = {"record_group_id": "trg", "connector_id": "c", "org_id": "org"}
+        graph = _allowing(AsyncMock(), allowed={"start", "r1"})
+        graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "r1"}, {"id": "r2"}])
+        mock_fetch.side_effect = lambda rid, **kwargs: {"id": rid}
+        out = await fst._fetch_thread_records_impl(
+            "start", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org", user_id="u1",
+        )
+        assert [r["id"] for r in out["records"]] == ["r1"]
+        assert out["skipped_record_ids"] == []
+        _, org = graph.check_access.await_args.args
+        ids = graph.check_access.await_args.kwargs["node_ids"]
+        assert org == "org" and set(ids) == {"start", "r1", "r2"}
+
+    @patch.object(fst, "_fetch_record_by_id", new_callable=AsyncMock)
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    async def test_no_user_sees_nothing(self, mock_resolve, mock_fetch):
+        mock_resolve.return_value = {"record_group_id": "trg", "connector_id": "c", "org_id": "org"}
+        graph = _allowing(AsyncMock())
+        graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "r1"}])
+        out = await fst._fetch_thread_records_impl(
+            "start", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org",
+        )
+        assert out["ok"] is False
+        mock_fetch.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -846,3 +922,64 @@ class TestCreateFetchSlackThreadTool:
         result = await tool_fn.ainvoke({"record_id": "r"})
         assert result["ok"] is False
         assert "Failed to fetch Slack thread" in result["error"]
+
+
+def _scoped_thread_graph() -> AsyncMock:
+    """Thread trg holds msg-1..msg-3 of app slack-app; kb-file is in collection kb.
+    ``check_access`` applies the scopes it is given."""
+    connector_of = {"msg-1": "slack-app", "msg-2": "slack-app", "msg-3": "slack-app", "kb-file": "kb"}
+    graph = AsyncMock()
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "ukey"})
+    graph.check_access = AsyncMock(side_effect=lambda user_key, org_id, node_ids=(), scopes=(), **_: AccessCheck(
+        node_ids=frozenset(node_ids),
+        node_ids_in_scope=frozenset(
+            i for i in node_ids
+            if all(s.admits({"id": i, "connectorId": connector_of.get(i), "groupIds": []}) for s in scopes)
+        ),
+    ))
+    graph.get_selection_nodes = AsyncMock(side_effect=lambda org_id, *, group_ids, record_ids, exact_record_ids, limit: {
+        "groups": [],
+        "records": [{"id": r, "vrid": f"v-{r}", "connectorId": connector_of.get(r)} for r in [*record_ids, *exact_record_ids]],
+    })
+    graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "msg-1"}, {"id": "msg-2"}, {"id": "msg-3"}])
+    return graph
+
+
+@pytest.mark.asyncio
+class TestFetchThreadRecordsUnderASelection:
+    """GS-06: the thread tool returned every readable message of a thread,
+    whatever the turn was limited to."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        import app.modules.retrieval.selection_scope as selection_scope
+
+        selection_scope._memo.clear()
+        with patch.object(fst, "resolve_user_key", AsyncMock(return_value="ukey")), \
+                patch.object(fst, "user_can_access_node", AsyncMock(return_value=True)), \
+                patch.object(fst, "_resolve_thread_record_group", AsyncMock(return_value={
+                    "record_group_id": "trg", "connector_id": "slack-app", "org_id": "org1",
+                })), \
+                patch.object(fst, "_fetch_record_by_id", AsyncMock(
+                    side_effect=lambda rid, **_: {"id": rid, "source_created_at": 0},
+                )):
+            yield
+        selection_scope._memo.clear()
+
+    async def _fetch(self, record_id, filters):
+        return await fst._fetch_thread_records_impl(
+            record_id, {}, graph_provider=_scoped_thread_graph(), blob_store=MagicMock(),
+            org_id="org1", user_id="u1", tool_state={"filters": filters},
+        )
+
+    async def test_a_message_outside_the_selection_is_not_found(self):
+        out = await self._fetch("msg-1", {"apps": [], "kb": [], "recordsExact": ["kb-file"]})
+        assert out["ok"] is False and "records" not in out
+
+    async def test_only_the_selected_messages_of_a_thread_are_returned(self):
+        out = await self._fetch("msg-1", {"apps": [], "kb": [], "recordsExact": ["msg-1", "msg-3"]})
+        assert [r["id"] for r in out["records"]] == ["msg-1", "msg-3"]
+
+    async def test_the_slack_app_picked_whole_returns_the_thread(self):
+        out = await self._fetch("msg-1", {"apps": ["slack-app"], "kb": []})
+        assert [r["id"] for r in out["records"]] == ["msg-1", "msg-2", "msg-3"]

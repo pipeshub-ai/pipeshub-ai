@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import pytest
-from drive_world import FOLDER, GDOC, DriveWorld
+from drive_world import GDOC, DriveWorld
 from fastapi.responses import StreamingResponse
 from google_behaviour_fakes import (
     ApiRequest,
@@ -22,6 +22,7 @@ from google_behaviour_fakes import (
 )
 from googleapiclient.errors import HttpError
 
+from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.google.common import datasource_refresh
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
@@ -924,7 +925,7 @@ async def test_folders_are_recorded_as_folders(drive: Harness) -> None:
 
     await drive.sync()
 
-    assert drive.records.records["d"].mime_type == FOLDER
+    assert drive.records.records["d"].mime_type == MimeTypes.FOLDER.value, "stored as text/directory, not Google's folder type"
     assert drive.records.records["d"].is_file is False
     assert drive.records.records["f"].parent_external_record_id == "d"
     assert drive.records.records["f"].extension == "txt"

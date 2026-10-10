@@ -479,35 +479,24 @@ class BoxConnector(BaseConnector):
                 is_shared=is_shared,
             )
 
-            # 1. Fetch explicit API permissions (Collaborators only)
-            api_permissions = await self._get_permissions(entry_id, entry_type)
+            # Collaborations created on an ancestor are not copied here: the child inherits them.
             # None means the collaborator list was only partly read: apply none of it, so stored access stays.
-            final_permissions_map = {p.external_id: p for p in api_permissions or []}
-
-            # 2. Inject Shared Link Permissions (Organization/Public)
-            # This handles files that are "Shared with Company" but users aren't invited explicitly
-            shared_link = entry.get('shared_link')
-            if shared_link:
-                access_level = shared_link.get('access')
-                if access_level == 'company':
-                    # Use Org ID to represent the whole company
-                    org_perm_id = f"ORG_{self.data_entities_processor.org_id}"
-                    final_permissions_map[org_perm_id] = Permission(
-                        external_id=org_perm_id,
-                        email="organization_wide_access",
+            api_permissions = await self._get_permissions(entry_id, entry_type)
+            permissions: list[Permission] | None = None
+            if api_permissions is None and existing_record is not None:
+                self.keep_stored_access(f"the collaborators of {entry_name} could not be read in full; it keeps its access")
+            if api_permissions is not None:
+                final_permissions_map = {p.external_id: p for p in api_permissions}
+                shared_link = entry.get('shared_link') or {}
+                if shared_link.get('access') == 'company':
+                    org_id = self.data_entities_processor.org_id
+                    final_permissions_map[org_id] = Permission(
+                        external_id=org_id,
                         type=PermissionType.READ,
-                        entity_type=EntityType.GROUP
+                        entity_type=EntityType.ORG,
                     )
-                elif access_level == 'open':
-                    public_perm_id = "PUBLIC"
-                    final_permissions_map[public_perm_id] = Permission(
-                        external_id=public_perm_id,
-                        email="public_access",
-                        type=PermissionType.READ,
-                        entity_type=EntityType.GROUP
-                    )
-
-            permissions = list(final_permissions_map.values())
+                permissions = list(final_permissions_map.values())
+                file_record.rewrite_permissions = True
 
             # Respect indexing filters for shared / shared_with_me (same as Drive)
             if self.indexing_filters:
@@ -559,8 +548,8 @@ class BoxConnector(BaseConnector):
                     is_deleted=False,
                     metadata_changed=is_content_modified,
                     content_changed=is_content_modified,
-                    permissions_changed=api_permissions is not None,
-                    new_permissions=permissions,
+                    permissions_changed=permissions is not None,
+                    new_permissions=permissions or [],
                     external_record_id=entry_id
                 )
             else:
@@ -572,7 +561,7 @@ class BoxConnector(BaseConnector):
                     metadata_changed=False,
                     content_changed=False,
                     permissions_changed=False,
-                    new_permissions=permissions,
+                    new_permissions=permissions or [],
                     external_record_id=entry_id
                 )
 
@@ -603,11 +592,9 @@ class BoxConnector(BaseConnector):
                     response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id, marker=marker)
 
                 if not response.success:
-                    if self._is_final_answer(response.error):
-                        self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id}: {response.error}")
-                        break
                     self.logger.warning(f"Could not read collaborators of {item_type} {item_id}: {response.error}")
-                    self._mark_read_incomplete(response.error)
+                    if not self._is_final_answer(response.error):
+                        self._mark_read_incomplete(response.error)
                     return None
 
                 data = self._to_dict(response.data)
@@ -617,7 +604,18 @@ class BoxConnector(BaseConnector):
                     break
 
             for collab in collaborations:
-                accessible_by = collab.get('accessible_by', {})
+                status = collab.get('status')
+                if status and status != 'accepted':
+                    continue
+                created_on = (collab.get('item') or {}).get('id')
+                if created_on and str(created_on) != str(item_id):
+                    continue
+                # An access-only invite does not waterfall; it stays on the nested file.
+                if item_type != 'file' and collab.get('is_access_only'):
+                    continue
+                accessible_by = collab.get('accessible_by') or {}
+                if not isinstance(accessible_by, dict):
+                    continue
                 role = collab.get('role', 'viewer')
 
                 # Map Box roles to our permission types
@@ -727,6 +725,7 @@ class BoxConnector(BaseConnector):
                     # Even a 403 counts: users not listed here are never walked, and incremental runs can't catch up.
                     self._read_complete = False
                     self._user_list_complete = False
+                    self.keep_stored_access("the Box user list could not be read; users it did not list keep their access")
                     break
 
                 data = self._to_dict(response.data)
@@ -763,6 +762,7 @@ class BoxConnector(BaseConnector):
             self.logger.error(f"Error syncing Box users: {e}", exc_info=True)
             self._mark_read_incomplete(e)
             self._user_list_complete = False
+            self.keep_stored_access("the Box user list could not be read; users it did not list keep their access")
             return []
 
     async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
@@ -917,6 +917,7 @@ class BoxConnector(BaseConnector):
                     memberships = await self._get_group_memberships(group_id)
                     if memberships is None:
                         # Saving the group replaces its stored members, so an unread list would remove them all.
+                        self.keep_stored_access(f"the members of group {group_name} could not be read; it keeps its members")
                         continue
 
                     group_member_users = []
@@ -1378,6 +1379,9 @@ class BoxConnector(BaseConnector):
                 if u.source_user_id
             }
             await self._backfill_shared_with_me_history(our_org_box_user_ids)
+            if not self._read_complete:
+                # A failed read skipped part of Box: what it skipped was not written again.
+                self.keep_stored_access("part of Box could not be read this run; what was not read keeps its access")
 
             if anchor and self._read_complete:
                 await self.box_cursor_sync_point.update_sync_point(key, anchor)

@@ -3019,7 +3019,7 @@ class TestProcessGmailMessageEdgeCases:
         result = await connector._process_gmail_message(
             "sender@example.com", message, "thread-1", None
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
 
 # ===========================================================================

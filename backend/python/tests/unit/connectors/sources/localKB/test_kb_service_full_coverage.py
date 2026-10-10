@@ -263,7 +263,7 @@ class TestListUserKnowledgeBases:
 class TestUpdateKnowledgeBase:
     @pytest.mark.asyncio
     async def test_success_with_all_allowed_roles(self, service):
-        for role in ["OWNER", "WRITER", "ORGANIZER"]:
+        for role in ["OWNER", "WRITER"]:
             service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
             service.graph_provider.get_user_kb_permission = AsyncMock(return_value=role)
             service.graph_provider.update_knowledge_base = AsyncMock(return_value=True)
@@ -512,50 +512,6 @@ class TestCreateNestedFolder:
         service.graph_provider._validate_folder_creation = AsyncMock(side_effect=Exception("err"))
 
         result = await service.create_nested_folder("kb1", "p1", "Sub", "user1", "org1")
-        assert result["success"] is False
-        assert result["code"] == 500
-
-
-class TestGetFolderContents:
-    @pytest.mark.asyncio
-    async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
-        service.graph_provider.get_folder_contents = AsyncMock(return_value={"files": [], "folders": []})
-
-        result = await service.get_folder_contents("kb1", "f1", "user1")
-        assert "files" in result
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.get_folder_contents("kb1", "f1", "user1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value=None)
-
-        result = await service.get_folder_contents("kb1", "f1", "user1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_folder_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
-        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=False)
-
-        result = await service.get_folder_contents("kb1", "f1", "user1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
-        result = await service.get_folder_contents("kb1", "f1", "user1")
         assert result["success"] is False
         assert result["code"] == 500
 
@@ -1481,66 +1437,6 @@ class TestListKbPermissions:
         assert result["success"] is False
         assert result["code"] == 500
 
-
-class TestListAllRecords:
-    @pytest.mark.asyncio
-    async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_all_records = AsyncMock(return_value=(
-            [{"id": "r1"}], 1, {"recordTypes": ["FILE"]}
-        ))
-
-        result = await service.list_all_records("user1", "org1")
-        assert result["records"] == [{"id": "r1"}]
-        assert result["pagination"]["totalCount"] == 1
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.list_all_records("user1", "org1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_invalid_sort_defaults(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_all_records = AsyncMock(return_value=([], 0, {}))
-
-        result = await service.list_all_records(
-            "user1", "org1", sort_by="INVALID", sort_order="INVALID"
-        )
-        assert "records" in result
-
-    @pytest.mark.asyncio
-    async def test_with_all_filters(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_all_records = AsyncMock(return_value=([], 0, {}))
-
-        result = await service.list_all_records(
-            "user1", "org1", search="test", record_types=["FILE"],
-            origins=["local"], connectors=["kb"], indexing_status=["COMPLETED"],
-            permissions=["OWNER"], date_from=100, date_to=200, source="local"
-        )
-        applied = result["filters"]["applied"]
-        assert "search" in applied
-        assert "recordTypes" in applied
-        assert "source" in applied
-        assert "dateRange" in applied
-
-    @pytest.mark.asyncio
-    async def test_source_all_not_in_filters(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_all_records = AsyncMock(return_value=([], 0, {}))
-
-        result = await service.list_all_records("user1", "org1", source="all")
-        assert "source" not in result["filters"]["applied"]
-
-    @pytest.mark.asyncio
-    async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
-        result = await service.list_all_records("user1", "org1")
-        assert result["records"] == []
-        assert "error" in result
 
 
 class TestListKbRecords:

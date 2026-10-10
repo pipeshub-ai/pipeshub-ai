@@ -32,18 +32,21 @@ def _arango_provider(apps, *, user=_UNSET, raises=None):
     if user is _UNSET:
         user = {"_key": "user-key"}
     provider.get_user_by_user_id = AsyncMock(return_value=user)
-    provider.get_user_apps = (
+    provider.get_gated_apps = (
         AsyncMock(side_effect=raises) if raises else AsyncMock(return_value=apps)
     )
     return provider
 
 
-def _neo4j_provider(apps, *, raises=None):
+def _neo4j_provider(apps, *, user=_UNSET, raises=None):
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock()
-    provider.get_user_apps = (
+    if user is _UNSET:
+        user = {"id": "user-key"}
+    provider.get_user_by_user_id = AsyncMock(return_value=user)
+    provider.get_gated_apps = (
         AsyncMock(side_effect=raises) if raises else AsyncMock(return_value=apps)
     )
     return provider
@@ -114,23 +117,41 @@ class TestBothBackendsAgree:
 
 
 class TestArangoUserResolution:
-    """Arango's get_user_apps takes the user document _key, not the userId."""
+    """Arango's gate takes the user document _key, not the userId, and the
+    request's org."""
 
     async def test_resolves_the_user_key_before_the_lookup(self):
         provider = _arango_provider(
             [{"_key": "a1", "type": "DRIVE"}], user={"_key": "doc-key-42"}
         )
         await provider.get_accessible_connector_types("external-user-id", "org")
-        provider.get_user_apps.assert_awaited_once_with("doc-key-42")
+        provider.get_gated_apps.assert_awaited_once_with("doc-key-42", "org")
 
     async def test_an_unknown_user_yields_nothing(self):
         provider = _arango_provider([], user=None)
         assert await provider.get_accessible_connector_types("nobody", "org") == []
-        provider.get_user_apps.assert_not_awaited()
+        provider.get_gated_apps.assert_not_awaited()
 
     async def test_a_user_without_a_key_yields_nothing(self):
         provider = _arango_provider([], user={"name": "no key here"})
         assert await provider.get_accessible_connector_types("u", "org") == []
+
+
+class TestNeo4jResolvesTheUserKey:
+    """Callers pass the external userId; the gate is keyed on the graph key.
+    Neo4j used to pass the userId straight through, which matched no user and
+    silently disabled narrowing."""
+
+    async def test_the_gate_is_asked_with_the_graph_key_and_the_org(self):
+        provider = _neo4j_provider([{"id": "a1", "type": "DRIVE"}], user={"id": "graph-key-7"})
+        assert await provider.get_accessible_connector_types("user-7", "org-1") == ["DRIVE"]
+        provider.get_user_by_user_id.assert_awaited_once_with("user-7")
+        provider.get_gated_apps.assert_awaited_once_with("graph-key-7", "org-1")
+
+    async def test_an_unknown_user_yields_nothing(self):
+        provider = _neo4j_provider([], user=None)
+        assert await provider.get_accessible_connector_types("ghost", "org-1") == []
+        provider.get_gated_apps.assert_not_awaited()
 
 
 class TestInterfaceContract:

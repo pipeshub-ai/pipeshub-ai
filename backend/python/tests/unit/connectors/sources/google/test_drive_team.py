@@ -303,7 +303,7 @@ class TestPermissionMapping:
         assert connector._map_drive_role_to_permission_type("fileOrganizer") == PermissionType.WRITE
 
     def test_commenter_role(self, connector):
-        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_reader_role(self, connector):
         assert connector._map_drive_role_to_permission_type("reader") == PermissionType.READ
@@ -322,13 +322,7 @@ class TestEntityTypeMapping:
         assert connector._map_drive_permission_type_to_entity_type("group") == EntityType.GROUP
 
     def test_domain_type(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
-
-    def test_anyone_type(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
-
-    def test_anyone_with_link_type(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
+        assert connector._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_unknown_type_defaults_to_user(self, connector):
         assert connector._map_drive_permission_type_to_entity_type("unknown") == EntityType.USER
@@ -485,6 +479,7 @@ class TestHandleDriveError:
             http_error, "Test Drive", "drive-1", "files"
         )
         assert should_continue is True
+        assert connector.stored_access_kept is None, "a drive the account cannot open is out of reach, not unread"
 
     async def test_generic_error_returns_true(self, connector):
         error = Exception("generic error")
@@ -492,6 +487,7 @@ class TestHandleDriveError:
             error, "Test Drive", "drive-1", "files"
         )
         assert should_continue is True
+        assert "drive-1" in (connector.stored_access_kept or ""), "N4GIT-01: an unread drive must not be swept"
 
 
 # ---------------------------------------------------------------------------

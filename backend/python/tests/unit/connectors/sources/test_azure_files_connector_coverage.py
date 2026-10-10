@@ -473,7 +473,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
@@ -484,7 +484,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.entity_type == EntityType.ORG for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_empty(self, connector):

@@ -68,6 +68,9 @@ from app.connectors.core.registry.folder_scope import remove_records_not_listed
 from app.connectors.services.trash_purge import Outcome, TrashPurger
 from app.connectors.sources.localKB.handlers import kb_service as kb_service_module
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
 from app.models.entities import (
     CodeFileRecord,
     FileRecord,
@@ -176,7 +179,8 @@ class _World:
             return rows[0]["n"]
         total = 0
         for collection in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                           CollectionNames.RECORD_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
+                           CollectionNames.NODE_RELATIONS.value,
+                           CollectionNames.RECORD_LINKS.value, CollectionNames.IS_OF_TYPE.value,
                            CollectionNames.INHERIT_PERMISSIONS.value):
             rows = await self.graph.http_client.execute_aql(
                 f"FOR e IN {collection} FILTER e._from == @id OR e._to == @id RETURN 1", {"id": f"{RECORDS}/{node}"}
@@ -196,10 +200,7 @@ class _World:
         search = await g.get_accessible_virtual_record_ids(user.user_id, self.org_id, raise_on_error=True)
         permitted = await g.filter_accessible_record_ids([record_id], user.user_id, self.org_id)
         hydrated = await g.get_records_by_record_ids([record_id], self.org_id)
-        listed, _, _ = await g.list_all_records(
-            user.key, self.org_id, 0, 500, None, None, None, None, None, None, None, None,
-            "recordName", "asc", "all",
-        )
+        listed = await self._all_records(user)
         return {
             # Search and chat retrieval: the virtual record ids a user may match.
             "search": search.get(self.vrid(name)) == record_id,
@@ -209,8 +210,22 @@ class _World:
             # The record-content resolver behind citations and agent reads.
             "citation": await self._citation_opens(user, record_id),
             "chat hydrate": record_id in {r.get("_key") or r.get("id") for r in hydrated or []},
-            "All Records": record_id in {r.get("id") for r in listed},
+            "All Records": record_id in listed,
         }
+
+    async def _all_records(self, user: _User) -> set[str]:
+        """The All Records list: the knowledge hub's global flatten, every page."""
+        hub, ids, cursor = KnowledgeHubService(logger, self.graph), set(), None
+        while True:
+            listing = await hub.get_nodes(
+                user_id=user.user_id, org_id=self.org_id, flattened=True, limit=200,
+                sort_by="name", sort_order="asc", cursor=cursor,
+            )
+            assert listing.success, listing.error
+            ids |= {item.id for item in listing.items}
+            if not listing.pagination.hasNext:
+                return ids
+            cursor = listing.pagination.nextCursor
 
     async def _citation_opens(self, user: _User, record_id: str) -> bool:
         record = await self.graph.get_record_by_id(record_id)
@@ -283,7 +298,7 @@ async def _add_uploads(w: _World, names: list[str], *, parent: str | None = "doc
         if parent:
             await w.graph.batch_create_edges(
                 [_edge(w.ids[parent], RECORDS, w.ids[n], RECORDS, relationshipType="PARENT_CHILD") for n in chunk],
-                collection=CollectionNames.RECORD_RELATIONS.value,
+                collection=CollectionNames.NODE_RELATIONS.value,
             )
 
 
@@ -350,7 +365,8 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                  CollectionNames.IS_OF_TYPE.value, CollectionNames.RECORD_RELATIONS.value,
+                  CollectionNames.IS_OF_TYPE.value, CollectionNames.NODE_RELATIONS.value,
+                  CollectionNames.RECORD_LINKS.value,
                   CollectionNames.INHERIT_PERMISSIONS.value, CollectionNames.USER_APP_RELATION.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -512,7 +528,7 @@ async def _seed_connector(w: _World, case: _ConnectorDelete) -> tuple[str, str]:
     await w.graph.batch_create_edges(
         [_edge(w.ids["parent"], RECORDS, w.ids["item"], RECORDS, relationshipType="PARENT_CHILD"),
          _edge(w.ids["item"], RECORDS, w.ids["attachment"], RECORDS, relationshipType="ATTACHMENT")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     if case.entry == "listing scan":
         group_id = f"rg-{uuid.uuid4().hex[:12]}"

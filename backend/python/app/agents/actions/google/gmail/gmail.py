@@ -271,7 +271,8 @@ class Gmail:
 
         Returns None when no record IDs are provided, so
         `transform_message_body` can skip the multipart path entirely.
-        Raises ValueError with a user-facing message on size-cap violations.
+        Raises ValueError with a user-facing message when any record cannot
+        be attached, or on size-cap violations.
         """
         from app.agents.actions.util.attachments import emit_attachment_audit
 
@@ -296,15 +297,12 @@ class Gmail:
                 error=failure.error,
             )
 
-        if bundle.failures and not bundle.resolved:
-            raise ValueError(
-                "Attachment resolution failed: "
-                + "; ".join(f"{f.ref}: {f.error}" for f in bundle.failures)
-            )
+        # Going on with the rest would deliver a mail that silently lacks a file
+        # the model asked for; it can retry without that one.
         if bundle.failures:
-            logger.warning(
-                "Gmail: some attachment_record_ids could not be resolved: %s",
-                [f.to_dict() for f in bundle.failures],
+            raise ValueError(
+                "Attachment resolution failed, so nothing was sent or saved: "
+                + "; ".join(f"{f.ref}: {f.error}" for f in bundle.failures)
             )
 
         for r in bundle.resolved:

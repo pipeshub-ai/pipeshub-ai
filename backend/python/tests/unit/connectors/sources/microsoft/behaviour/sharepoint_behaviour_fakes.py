@@ -1,8 +1,8 @@
 """Extra fakes for the SharePoint Online behaviour tests.
 
 Besides the Graph SDK, the connector calls SharePoint's own REST API with a
-bare ``httpx.AsyncClient`` (site groups) and ``aiohttp.ClientSession`` (site
-permissions), and builds a fresh ``ClientSecretCredential`` from
+bare ``httpx.AsyncClient`` (site groups, unique permissions) and
+``aiohttp.ClientSession`` (site permissions), and builds a fresh ``ClientSecretCredential`` from
 ``azure.identity.aio`` for every SharePoint token. All of those are pointed at
 the same ``MicrosoftCloudStub``; the connector module sees a copy of ``httpx``
 and ``aiohttp`` whose client classes use it, so nothing else is affected.
@@ -110,6 +110,7 @@ async def ready_connector(
     stub: MicrosoftCloudStub, db: FakeRecordsDb, checkpoints: FakeCheckpointStore
 ) -> SharePointConnector:
     stub.on("GET", "/v1.0/sites/root", site_payload())
+    db.edge_store = checkpoints
     connector = SharePointConnector(
         logging.getLogger("test.sharepoint"), db, checkpoints,
         FakeConfigService(CONNECTOR_ID, sharepoint_config()), CONNECTOR_ID, "team", "creator-1",
@@ -143,14 +144,18 @@ def root_item() -> dict[str, Any]:
 
 
 def file_item(item_id: str, name: str, *, etag: str = "e1", xor: str = "h1",
-              parent_id: str = ROOT_ITEM_ID, path: str = "/drive/root:") -> dict[str, Any]:
-    return {
+              parent_id: str = ROOT_ITEM_ID, path: str = "/drive/root:",
+              list_item_unique_id: str | None = None) -> dict[str, Any]:
+    item = {
         "id": item_id, "name": name, "eTag": etag, "cTag": f"c-{etag}", "size": 42,
         "webUrl": f"{SITE_URL}/Documents/{name}",
         "createdDateTime": CREATED, "lastModifiedDateTime": MODIFIED,
         "file": {"mimeType": "application/pdf", "hashes": {"quickXorHash": xor}},
         "parentReference": {"driveId": DRIVE_ID, "id": parent_id, "path": path},
     }
+    if list_item_unique_id:
+        item["sharepointIds"] = {"listItemUniqueId": list_item_unique_id}
+    return item
 
 
 def deleted_item(item_id: str) -> dict[str, Any]:
@@ -167,6 +172,87 @@ def group_grant(group_id: str, role: str = "read") -> dict[str, Any]:
 
 def link_grant(scope: str, link_type: str = "view") -> dict[str, Any]:
     return {"id": f"p-link-{scope}", "roles": ["read"], "link": {"scope": scope, "type": link_type}}
+
+
+def site_group_grant(group_id: str, name: str, role: str = "read") -> dict[str, Any]:
+    """A SharePoint site group as Graph lists it on a drive item: ``grantedToV2.siteGroup``."""
+    return {"id": f"p-sg-{group_id}", "roles": [role],
+            "grantedToV2": {"siteGroup": {"id": group_id, "displayName": name, "loginName": name}}}
+
+
+def m365_grant(group_id: str, name: str, role: str = "read", *, owners_claim: bool | None = None) -> dict[str, Any]:
+    """An M365 group grant; ``owners_claim`` adds the SharePoint claim Graph sends alongside (``_o`` for owners)."""
+    granted: dict[str, Any] = {"group": {"id": group_id, "displayName": name}}
+    if owners_claim is not None:
+        suffix = "_o" if owners_claim else ""
+        granted["siteUser"] = {"id": "9", "displayName": name,
+                               "loginName": f"c:0o.c|federateddirectoryclaimprovider|{group_id}{suffix}"}
+    return {"id": f"p-m365-{group_id}", "roles": [role], "grantedToV2": granted}
+
+
+def guid_etag(unique_id: str, version: int = 1) -> str:
+    """A drive item eTag, which carries the list item's UniqueId: ``"{GUID},n"``."""
+    return f'"{{{unique_id.upper()}}},{version}"'
+
+
+LIST_ID = "bae38f78-8067-48b8-814b-9dc0e7b47dca"
+WEB_REST = "/sites/eng/_api/web"
+LIBRARY_REST = f"{WEB_REST}/lists(guid'{LIST_ID}')"
+SITE_PAGES_REST = f"{WEB_REST}/lists/getbytitle('Site Pages')"
+
+ROLE_TYPE_KINDS = {"Limited Access": 1, "Read": 2, "Contribute": 3, "Design": 4, "Full Control": 5, "Edit": 6}
+
+
+def rest_body(payload: dict[str, Any]) -> dict[str, Any]:
+    return {"d": payload}
+
+
+def rest_results(*entries: dict[str, Any], next_url: str | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {"results": list(entries)}
+    if next_url:
+        body["__next"] = next_url
+    return {"d": body}
+
+
+def role_assignment(member: dict[str, Any], *role_names: str) -> dict[str, Any]:
+    bindings = [{"Name": name, "RoleTypeKind": ROLE_TYPE_KINDS.get(name, 0)} for name in role_names]
+    return {"Member": member, "RoleDefinitionBindings": {"results": bindings}}
+
+
+def sp_group(group_id: int, title: str) -> dict[str, Any]:
+    return {"PrincipalType": 8, "Id": group_id, "Title": title, "LoginName": title}
+
+
+def sp_user(user_id: int, email: str) -> dict[str, Any]:
+    return {"PrincipalType": 1, "Id": user_id, "Title": email, "Email": email,
+            "LoginName": f"i:0#.f|membership|{email}"}
+
+
+def unique_list_items(*items: tuple[int, str]) -> dict[str, Any]:
+    return rest_results(*[{"Id": item_id, "UniqueId": unique_id, "HasUniqueRoleAssignments": True}
+                          for item_id, unique_id in items])
+
+
+def serve_library_permissions(
+    stub: MicrosoftCloudStub, *, unique: bool = False, unique_items: tuple[tuple[int, str], ...] = (),
+    role_assignments: tuple[dict[str, Any], ...] = (), drive_id: str = DRIVE_ID,
+) -> None:
+    """The drive's SharePoint ids on Graph, and its list on SharePoint REST."""
+    stub.on("GET", f"/v1.0/drives/{drive_id}",
+            {"id": drive_id, "sharePointIds": {"listId": LIST_ID, "siteUrl": SITE_URL}})
+    stub.on("GET", LIBRARY_REST, rest_body({"Id": LIST_ID, "HasUniqueRoleAssignments": unique}))
+    stub.on("GET", f"{LIBRARY_REST}/items", unique_list_items(*unique_items))
+    stub.on("GET", f"{LIBRARY_REST}/roleassignments", rest_results(*role_assignments))
+
+
+def serve_site_pages_permissions(
+    stub: MicrosoftCloudStub, unique_items: tuple[tuple[int, str], ...] = (),
+    role_assignments_by_item: dict[int, tuple[dict[str, Any], ...]] | None = None,
+) -> None:
+    stub.on("GET", SITE_PAGES_REST, rest_body({"HasUniqueRoleAssignments": False}))
+    stub.on("GET", f"{SITE_PAGES_REST}/items", unique_list_items(*unique_items))
+    for item_id, assignments in (role_assignments_by_item or {}).items():
+        stub.on("GET", f"{SITE_PAGES_REST}/items({item_id})/roleassignments", rest_results(*assignments))
 
 
 def serve_item(stub: MicrosoftCloudStub, item_id: str, permissions: object, drive_id: str = DRIVE_ID) -> None:

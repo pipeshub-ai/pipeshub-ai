@@ -12,13 +12,18 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import HIERARCHY_RELATION_TYPES, CollectionNames
 from app.config.constants.neo4j import collection_to_label
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppMetadata, AppRole, Record
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 logger = logging.getLogger("test-graph-provider")
+
+
+def _relation_edge(relation_type: str) -> str:
+    """Hierarchy is on NODE_RELATION; every other relation type is a link."""
+    return "NODE_RELATION" if relation_type in HIERARCHY_RELATION_TYPES else "RECORD_LINK"
 
 
 def _app_role_from_arango(doc: dict, connector_id: str) -> AppRole:
@@ -181,12 +186,17 @@ class TestNeo4jProvider(Neo4jProvider):
         return int(result[0]["c"]) if result else 0
 
     async def count_parent_child_edges(self, connector_id: str) -> int:
-        """Count parent/child folder edges (RECORD_RELATION with relationshipType PARENT_CHILD)."""
+        """Count parent/child edges between records (NODE_RELATION with relationshipType PARENT_CHILD).
+
+        A record group holds its top-level records through the same edge; those
+        are not counted.
+        """
         if not self.client:
             raise RuntimeError("Provider not connected")
         result = await self.client.execute_query(
             """
-            MATCH (p {connectorId: $cid})-[r:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(c {connectorId: $cid})
+            MATCH (p {connectorId: $cid})-[r:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(c {connectorId: $cid})
+            WHERE NOT p:RecordGroup
             RETURN count(*) AS c
             """,
             {"cid": connector_id}
@@ -839,12 +849,13 @@ class TestNeo4jProvider(Neo4jProvider):
     async def count_record_relation_edges(
         self, connector_id: str, relation_type: str
     ) -> int:
-        """Count RECORD_RELATION edges of a specific relationshipType (PARENT_CHILD, ATTACHMENT, BLOCKS, etc.)."""
+        """Count record-to-record edges of a specific relationshipType (PARENT_CHILD, ATTACHMENT, BLOCKS, etc.)."""
         if not self.client:
             raise RuntimeError("Provider not connected")
         result = await self.client.execute_query(
-            """
-            MATCH (p {connectorId: $cid})-[r:RECORD_RELATION {relationshipType: $rtype}]->(c {connectorId: $cid})
+            f"""
+            MATCH (p {{connectorId: $cid}})-[r:{_relation_edge(relation_type)} {{relationshipType: $rtype}}]->(c {{connectorId: $cid}})
+            WHERE NOT p:RecordGroup
             RETURN count(*) AS c
             """,
             {"cid": connector_id, "rtype": relation_type},
@@ -900,7 +911,7 @@ class TestNeo4jProvider(Neo4jProvider):
     async def get_record_outgoing_relations(
         self, connector_id: str, external_record_id: str, relation_type: str
     ) -> List[str]:
-        """Return external ids of records reachable via outbound RECORD_RELATION of the given relationshipType.
+        """Return external ids of records reachable via an outbound edge of the given relationshipType.
 
         For parent_child / attachment edges, the connector emits ``parent -> child``
         (see ``create_record_relation(parent_id, record_id, ...)``), so this method
@@ -913,9 +924,9 @@ class TestNeo4jProvider(Neo4jProvider):
         # No :Record label filter — placeholder records and tickets share the same
         # connectorId+externalRecordId index but may carry different labels.
         result = await self.client.execute_query(
-            """
-            MATCH (r {connectorId: $cid, externalRecordId: $eid})
-            MATCH (r)-[:RECORD_RELATION {relationshipType: $rtype}]->(t)
+            f"""
+            MATCH (r {{connectorId: $cid, externalRecordId: $eid}})
+            MATCH (r)-[:{_relation_edge(relation_type)} {{relationshipType: $rtype}}]->(t)
             RETURN t.externalRecordId AS ext_id
             """,
             {"cid": connector_id, "eid": external_record_id, "rtype": relation_type},
@@ -925,7 +936,7 @@ class TestNeo4jProvider(Neo4jProvider):
     async def get_record_incoming_relations(
         self, connector_id: str, external_record_id: str, relation_type: str
     ) -> List[str]:
-        """Return external ids of records pointing TO this record via RECORD_RELATION of the given type.
+        """Return external ids of records pointing TO this record via an edge of the given type.
 
         Inverse of :meth:`get_record_outgoing_relations`. For parent_child / attachment
         edges, this returns the parent (since the connector stores the edge
@@ -934,9 +945,9 @@ class TestNeo4jProvider(Neo4jProvider):
         if not self.client:
             raise RuntimeError("Provider not connected")
         result = await self.client.execute_query(
-            """
-            MATCH (r {connectorId: $cid, externalRecordId: $eid})
-            MATCH (src)-[:RECORD_RELATION {relationshipType: $rtype}]->(r)
+            f"""
+            MATCH (r {{connectorId: $cid, externalRecordId: $eid}})
+            MATCH (src)-[:{_relation_edge(relation_type)} {{relationshipType: $rtype}}]->(r)
             RETURN src.externalRecordId AS ext_id
             """,
             {"cid": connector_id, "eid": external_record_id, "rtype": relation_type},
@@ -1036,7 +1047,8 @@ class TestNeo4jProvider(Neo4jProvider):
             return Record.from_arango_base_record(record_dict)
 
     _ARANGO_TO_NEO4J_EDGE: dict[str, str] = {
-        "recordRelations": "RECORD_RELATION",
+        "nodeRelations": "NODE_RELATION",
+        "recordLinks": "RECORD_LINK",
         "belongsTo": "BELONGS_TO",
         "inheritPermissions": "INHERIT_PERMISSIONS",
         "permission": "PERMISSION",

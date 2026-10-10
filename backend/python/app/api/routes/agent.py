@@ -45,8 +45,18 @@ from app.config.constants.service import OAuthScopes, TokenScopes, config_node_c
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
+    UnreadableSourceLimitError,
     admit_caller_project_collections,
+    read_source_limit,
     resolve_agent_filters,
+)
+from app.modules.retrieval.selection_scope import (
+    SelectionNotReadyError,
+    SelectionTooLargeError,
+    has_selection,
+    max_selection_nodes,
+    prepare_turn_scope,
+    selection_error,
 )
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
@@ -60,11 +70,15 @@ from app.modules.agents.qna.router import (
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    SELECTION_APPS_FILTER_KEY,
+    IGraphDBProvider,
+)
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (
+    keep_accessible_attachments,
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
 from app.utils.llm import LLM_MISSING_FOR_CHAT
@@ -180,6 +194,10 @@ class ChatQuery(BaseModel):
     # project-context.ts). Threaded into `filters["strictScope"]` below —
     # see `ChatQuery.strictScope` in chatbot.py for the full rationale.
     strictScope: bool = False
+    # Set by Node for a project-scoped chat whose turn selects below app level:
+    # the project's own sources (`{"apps": [...]}`), which the selected record
+    # groups, folders and records must lie in. Never taken from a client.
+    allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -771,6 +789,35 @@ def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
     return toolsets_with_tools
 
 
+async def _refuse_limit_over_the_cap(
+    knowledge_sources: dict[str, dict[str, Any]],
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    logger: Logger,
+) -> None:
+    """Refuse to save sources limited to more nodes than one turn may search:
+    every turn of such an agent would end in "too many records"."""
+    limits = [read_source_limit(source.get("filters")) for source in knowledge_sources.values()]
+    group_ids = [i for limit in limits for i in limit["recordGroups"]]
+    record_ids = [i for limit in limits for i in limit["records"]]
+    if not (group_ids or record_ids):
+        return
+    cap = max_selection_nodes()
+    try:
+        nodes = await graph_provider.get_selection_nodes(
+            org_id, group_ids=group_ids, record_ids=record_ids, exact_record_ids=[], limit=cap,
+        )
+    except Exception:
+        # The same cap is applied on every turn; a failed count must not block a save.
+        logger.warning("Could not size the knowledge limit of an agent in org %s", org_id, exc_info=True)
+        return
+    if len(nodes["groups"]) + len(nodes["records"]) > cap:
+        raise InvalidRequestError(
+            f"The folders and items this agent is limited to hold more than {cap:,} records, "
+            "too many to search at once. Limit it to fewer items, or use the whole source."
+        )
+
+
 def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse knowledge sources"""
     knowledge_sources = {}
@@ -787,11 +834,20 @@ def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, An
             continue
 
         filters = knowledge_data.get("filters", {})
+        try:
+            # A limit that cannot be read is refused: saved as "no filters" it
+            # would let the agent search the whole source.
+            read_source_limit(filters)
+        except UnreadableSourceLimitError as exc:
+            raise InvalidRequestError(
+                f"The filters of knowledge source '{connector_id}' cannot be read. "
+                "Give recordGroups and records as lists of ids, or leave them out "
+                "to use the whole source."
+            ) from exc
         if isinstance(filters, str):
-            try:
-                filters = json.loads(filters)
-            except json.JSONDecodeError:
-                filters = {}
+            filters = json.loads(filters) if filters.strip() else {}
+        if not isinstance(filters, dict):
+            filters = {}
 
         knowledge_sources[connector_id] = {
             "connectorId": connector_id,
@@ -799,6 +855,18 @@ def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, An
         }
 
     return knowledge_sources
+
+
+def _project_sources(allowed_filters: dict[str, Any] | None) -> dict[str, list[str]] | None:
+    """The project's sources, which Node sends with a turn that selects below
+    app level; None for a turn outside a project."""
+    if not isinstance(allowed_filters, dict):
+        return None
+    return {
+        key: [i for i in allowed_filters.get(key) or [] if isinstance(i, str)]
+        if isinstance(allowed_filters.get(key), list) else []
+        for key in ("apps", "recordGroups", "records")
+    }
 
 
 async def _resolve_turn_filters(
@@ -810,16 +878,26 @@ async def _resolve_turn_filters(
     caller_user_id: str,
     org_id: str,
     logger: Logger,
+    project_sources: dict[str, list[str]] | None = None,
+    retrieval_user_id: str | None = None,
+    searches_knowledge: bool = True,
 ) -> dict[str, Any]:
     """This turn's source filters, never wider than the agent's knowledge.
 
     Ids outside it are dropped, except the caller's own project collection
-    (see ``admit_caller_project_collections``).
+    (see ``admit_caller_project_collections``). A selection below app level
+    is resolved once here, as the identity the search runs as, and bounded by
+    a saved agent's sources and by the project's.
+
+    Raises:
+        SelectionTooLargeError, SelectionNotReadyError: the selection cannot
+            be searched as asked.
     """
+    is_universal_agent = agent_id == "agentIdPlaceholder"
     scope = resolve_agent_filters(
         agent_knowledge,
         requested_filters,
-        is_universal_agent=agent_id == "agentIdPlaceholder",
+        is_universal_agent=is_universal_agent,
     )
     filters = scope.filters
     dropped_kbs = list(scope.dropped_kb_ids)
@@ -833,6 +911,12 @@ async def _resolve_turn_filters(
         )
         filters["kb"] = [*filters["kb"], *admitted]
         dropped_kbs = [k for k in dropped_kbs if k not in admitted]
+    if scope.unreadable_source_ids:
+        logger.warning(
+            "Knowledge sources of agent %s (org %s) have a stored limit that cannot be read "
+            "and are not searched: %s",
+            agent_id, org_id, list(scope.unreadable_source_ids),
+        )
     # Info, not warning: a project chat on a saved agent routinely sends the
     # project's other sources, so a drop is normal traffic, not an attack signal.
     if scope.dropped_app_ids or dropped_kbs:
@@ -840,6 +924,17 @@ async def _resolve_turn_filters(
             "Dropped sources outside the agent's knowledge: agent=%s org=%s caller=%s "
             "apps=%s kb=%s",
             agent_id, org_id, caller_user_id, list(scope.dropped_app_ids), dropped_kbs,
+        )
+    # A turn with internal search switched off never uses the selection, so
+    # one that cannot be searched must not fail it.
+    if searches_knowledge:
+        agent_sources = None
+        if not is_universal_agent:
+            # The caller's project collection was admitted above.
+            agent_sources = {**scope.sources, "apps": [*scope.sources["apps"], *filters["kb"]]}
+        filters = await prepare_turn_scope(
+            graph_provider, retrieval_user_id or caller_user_id, org_id, filters,
+            agent_sources=agent_sources, project_sources=project_sources,
         )
     return filters
 
@@ -870,11 +965,14 @@ def _filter_knowledge_by_enabled_sources(
     if not apps_present and not kb_present:
         return agent_knowledge
 
-    enabled_apps = set(filters.get("apps") or [])
+    # A selection below app level keeps the sources it touches enabled: the
+    # tools that work per app (the source catalog, browsing) read this list.
+    touched = set(filters.get(SELECTION_APPS_FILTER_KEY) or [])
+    enabled_apps = set(filters.get("apps") or []) | touched
     enabled_kb = {
         cid for cid in (filters.get("kb") or [])
         if cid and cid != NO_KB_SELECTED_FILTER
-    }
+    } | touched
 
     result: list[dict[str, Any]] = []
     for k in agent_knowledge:
@@ -1986,6 +2084,7 @@ async def create_agent(request: Request) -> JSONResponse:
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
         mcp_servers_with_tools = _parse_mcp_servers(body.get("mcpServers", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        await _refuse_limit_over_the_cap(knowledge_sources, services["graph_provider"], org_key, logger)
         skill_names = _parse_skills(body.get("skills", []))
         web_search_attachment = _parse_web_search(body.get("webSearch"))
 
@@ -3054,6 +3153,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         if "knowledge" in body:
             # Parse knowledge sources first to validate before deletion
             knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+            await _refuse_limit_over_the_cap(
+                knowledge_sources, services["graph_provider"], user_context["orgId"], logger,
+            )
 
             graph_provider = services["graph_provider"]
             transaction_id = None
@@ -3862,15 +3964,27 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
-                filters = await _resolve_turn_filters(
-                    agent_id=agent_id,
-                    agent_knowledge=agent_knowledge,
-                    requested_filters=chat_query.filters,
-                    graph_provider=graph_provider,
-                    caller_user_id=user_context.get("userId", ""),
-                    org_id=org_key,
-                    logger=logger,
-                )
+                caps = _parse_agent_capabilities(chat_query.agentCapabilities)
+                try:
+                    filters = await _resolve_turn_filters(
+                        agent_id=agent_id,
+                        agent_knowledge=agent_knowledge,
+                        requested_filters=chat_query.filters,
+                        graph_provider=graph_provider,
+                        caller_user_id=user_context.get("userId", ""),
+                        org_id=org_key,
+                        logger=logger,
+                        project_sources=_project_sources(chat_query.allowedFilters),
+                        retrieval_user_id=enriched_user_info.get("userId"),
+                        searches_knowledge=caps.internal_search,
+                    )
+                except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+                    code, message = selection_error(
+                        exc,
+                        agent_limit=agent_id != "agentIdPlaceholder" and not has_selection(chat_query.filters),
+                    )
+                    yield _stream_error_frame(protocol, message, code=code)
+                    return
 
                 # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
                 # explicitly [] (user deselected all KB sources at runtime), the sentinel
@@ -3924,12 +4038,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 # Apply user-requested capability overrides (capabilities can only narrow,
                 # never expand beyond what the agent is configured with).
-                caps = _parse_agent_capabilities(chat_query.agentCapabilities)
                 if not caps.web_search:
                     web_search_provider = None
                     web_search_tool_config = None
                 if not caps.internal_search:
-                    filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
+                    # Strict: a tool that reaches a record by id reaches nothing.
+                    filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER], "strictScope": True}
                     agent_knowledge = []
 
                 # Universal Agent Mode (agentIdPlaceholder) is still Chat Assistant —
@@ -3942,12 +4056,32 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     else None
                 )
 
+                try:
+                    attachments, previous_conversations = await keep_accessible_attachments(
+                        graph_provider,
+                        org_id=user_context["orgId"],
+                        user_id=user_context["userId"],
+                        is_service_account=bool(
+                            (getattr(request.state, "user", None) or {}).get("isServiceAccount"),
+                        ),
+                        attachments=chat_query.attachments,
+                        previous_conversations=chat_query.previousConversations,
+                        logger=logger,
+                        filters=filters,
+                    )
+                except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+                    code, message = selection_error(
+                        exc,
+                        agent_limit=agent_id != "agentIdPlaceholder" and not has_selection(chat_query.filters),
+                    )
+                    yield _stream_error_frame(protocol, message, code=code)
+                    return
                 # Build query info
                 query_info = {
                     "query": chat_query.query,
                     "limit": chat_query.limit,
                     "messages": [],
-                    "previous_conversations": chat_query.previousConversations,
+                    "previous_conversations": previous_conversations,
                     "quickMode": chat_query.quickMode,
                     "chatMode": chat_query.chatMode,
                     "retrievalMode": chat_query.retrievalMode,
@@ -3972,7 +4106,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "modelKey": model_key,
                     "webSearch": web_search_provider,
                     "webSearchConfig": web_search_tool_config,
-                    "attachments": chat_query.attachments,
+                    "attachments": attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
                     "runId": chat_query.runId,
                 }

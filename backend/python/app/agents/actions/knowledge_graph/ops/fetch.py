@@ -12,6 +12,11 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.ops.scope import (
+    ids_within_scope,
+    turn_limits_records,
+)
+
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.context import AgentContext
@@ -85,6 +90,22 @@ def _unavailable_note(
     return "\n\nNote: " + "; ".join(lines)
 
 
+async def _ids_outside_scope(context: "AgentContext", record_ids: list[str]) -> list[str]:
+    """The ids the turn may not read: outside the selection below app level
+    (or the apps picked whole), or outside a saved agent's or a project's
+    sources. None for a turn limited by none of these."""
+    if not turn_limits_records(context.tool_state or {}):
+        return []
+    user = await context.graph_provider.get_user_by_user_id(user_id=context.user_id)
+    user_key = (user or {}).get("_key") or (user or {}).get("id")
+    if not user_key:
+        return list(record_ids)
+    inside = await ids_within_scope(
+        context.tool_state, context.graph_provider, user_key, context.org_id, record_ids,
+    )
+    return [record_id for record_id in record_ids if record_id not in inside]
+
+
 async def execute_fetch_record(
     *,
     context: "AgentContext",
@@ -153,7 +174,16 @@ async def execute_fetch_record(
         user_id=context.user_id,
     )
     try:
-        result = await structured_tool.coroutine(record_ids=record_ids, reason=reason)
+        # A record outside what the turn is limited to is answered like one
+        # that does not exist.
+        outside = await _ids_outside_scope(context, record_ids)
+        readable = [record_id for record_id in record_ids if record_id not in outside]
+        result = (
+            await structured_tool.coroutine(record_ids=readable, reason=reason)
+            if readable else {"ok": False, "not_available_ids": []}
+        )
+        if outside and isinstance(result, dict):
+            result["not_available_ids"] = [*(result.get("not_available_ids") or []), *outside]
     except Exception as exc:
         return ToolOutput(success=False, error=str(exc)), citation_ref_mapper
 

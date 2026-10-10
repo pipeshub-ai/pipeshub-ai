@@ -25,7 +25,11 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
-from app.agents.actions.knowledge_graph.ops.scope import resolve_scope
+from app.agents.actions.knowledge_graph.ops.scope import (
+    list_selected_nodes,
+    resolve_scope,
+    selection_browse_refusal,
+)
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
@@ -232,6 +236,19 @@ class KnowledgeHub:
                                "Valid types: 'kb', 'app', 'folder', 'recordGroup'.",
                 })
 
+            # The service checks that the user may read what it lists, not the
+            # turn's selection or a saved agent's or project's limits.
+            if parent_id:
+                user = await graph_provider.get_user_by_user_id(user_id=user_id)
+                user_key = ((user or {}).get("_key") or (user or {}).get("id")) or ""
+                refusal = await selection_browse_refusal(self.state, graph_provider, user_key, org_id, parent_id)
+                if refusal:
+                    return False, json.dumps({"status": "error", "message": refusal})
+            else:
+                selected = await list_selected_nodes(self.state, graph_provider, user_id, org_id)
+                if selected is not None:
+                    return True, json.dumps({"status": "success", "message": selected, "items": []})
+
             # Query must be 2-500 chars or None
             if query and len(query) < MIN_QUERY_LENGTH:
                 query = None
@@ -339,8 +356,9 @@ class KnowledgeHub:
                 node_types=node_types,
                 record_types=record_types,
                 connector_ids=use_connector_ids,
-                # The service treats an explicit False as "list, ignore the
-                # query", and an omitted flag plus connector_ids as a search.
+                # The service treats an explicit False as a listing (a query
+                # then only filters it by name), and an omitted flag plus
+                # connector_ids as a search.
                 # Unless the caller chose, search with a query and list without.
                 flattened=flattened if flattened is not None else (None if query else False),
                 record_group_ids=use_record_group_ids,

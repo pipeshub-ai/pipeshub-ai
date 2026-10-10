@@ -1,13 +1,17 @@
 import ipaddress
 import logging
 import os
+import time
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import gitlab
 import requests
+import urllib3.poolmanager
 from gitlab import Gitlab
 from pydantic import BaseModel, Field  # type: ignore
+from requests.adapters import HTTPAdapter
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
@@ -30,6 +34,22 @@ _GITLAB_MAX_RETRY_AFTER_ENV = "GITLAB_MAX_RETRY_AFTER_SECONDS"
 # that omit per_page (issues, MRs, notes, members, repo trees) get 100
 # instead of 20 — roughly 5× fewer HTTP round-trips across a full sync.
 _GITLAB_PER_PAGE = 100
+
+# A pooled keep-alive connection idle longer than this is reconnected, not
+# reused. Some network paths drop idle connections without telling either end
+# (observed from ~300 s idle in front of a self-managed GitLab); a request sent
+# down such a connection hangs until the read timeout.
+_POOL_IDLE_LIMIT_SECONDS = 60.0
+
+# python-gitlab retries connection errors and 5xx itself, but not a read
+# timeout, so a GET that timed out reading is retried here.
+_READ_TIMEOUT_RETRIES = 1
+_READ_TIMEOUT_RETRY_DELAY_SECONDS = 1.0
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD"})
+
+_transport_logger = logging.getLogger(__name__)
+
+_ABSENT_STATUSES = frozenset({403, 404})
 
 
 def _resolve_max_retry_after_seconds(logger: logging.Logger | None = None) -> int:
@@ -60,6 +80,13 @@ class GitLabResponse(BaseModel):
     # Preserved separately from `error`: stringifying the SDK exception loses
     # the status, and callers need 401 (re-auth) apart from 403, 404 and 5xx.
     status_code: int | None = None
+
+    @property
+    def read_failed(self) -> bool:
+        """Failed without GitLab answering that the object is missing or hidden
+        (404/403): a transport error, a timeout, 5xx, 429 or 401. Such a failure
+        says nothing about whether the object exists."""
+        return not self.success and self.status_code not in _ABSENT_STATUSES
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()
@@ -128,6 +155,73 @@ class _TokenSafeSession(requests.Session):
         super().rebuild_auth(prepared_request, response)
 
 
+class _IdleLimitedPoolMixin:
+    """Closes a pooled connection that sat idle past ``_POOL_IDLE_LIMIT_SECONDS``
+    before handing it out, so the request goes on a new connection.
+
+    urllib3's own check (``is_connection_dropped``) only sees a connection the
+    peer closed; a connection dropped silently on the path still looks alive.
+    """
+
+    def _get_conn(self, timeout: float | None = None) -> Any:
+        conn = super()._get_conn(timeout)  # type: ignore[misc]
+        idle_since = getattr(conn, "_pipeshub_idle_since", None)
+        if idle_since is not None and time.monotonic() - idle_since > _POOL_IDLE_LIMIT_SECONDS:
+            conn.close()
+        return conn
+
+    def _put_conn(self, conn: Any) -> None:
+        if conn is not None:
+            conn._pipeshub_idle_since = time.monotonic()
+        super()._put_conn(conn)  # type: ignore[misc]
+
+
+class _IdleLimitedHTTPConnectionPool(_IdleLimitedPoolMixin, HTTPConnectionPool):
+    pass
+
+
+class _IdleLimitedHTTPSConnectionPool(_IdleLimitedPoolMixin, HTTPSConnectionPool):
+    pass
+
+
+_IDLE_LIMITED_POOL_CLASSES = {
+    "http": _IdleLimitedHTTPConnectionPool,
+    "https": _IdleLimitedHTTPSConnectionPool,
+}
+
+
+class _GitLabTransportAdapter(HTTPAdapter):
+    """Never reuses a connection idle past the limit, and retries an idempotent
+    request that timed out reading."""
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        super().init_poolmanager(*args, **kwargs)
+        self.poolmanager.pool_classes_by_scheme = _IDLE_LIMITED_POOL_CLASSES
+
+    def proxy_manager_for(self, proxy: str, **proxy_kwargs: Any) -> Any:
+        manager = super().proxy_manager_for(proxy, **proxy_kwargs)
+        # A SOCKS manager has its own pool classes; only the plain ones are swapped.
+        if manager.pool_classes_by_scheme is urllib3.poolmanager.pool_classes_by_scheme:
+            manager.pool_classes_by_scheme = _IDLE_LIMITED_POOL_CLASSES
+        return manager
+
+    def send(self, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> requests.Response:
+        retries = _READ_TIMEOUT_RETRIES if request.method in _IDEMPOTENT_METHODS else 0
+        attempt = 0
+        while True:
+            try:
+                return super().send(request, *args, **kwargs)
+            except requests.exceptions.ReadTimeout as e:
+                if attempt >= retries:
+                    raise
+                attempt += 1
+                _transport_logger.warning(
+                    "GitLab %s %s timed out reading (%s); retrying on a new connection (%s/%s)",
+                    request.method, urlparse(request.url or "").path, e, attempt, retries,
+                )
+                time.sleep(_READ_TIMEOUT_RETRY_DELAY_SECONDS * attempt)
+
+
 def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
     """A session that never carries the GitLab token off its server or onto plain http.
 
@@ -143,6 +237,8 @@ def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
 
     session = _TokenSafeSession()
     session.hooks["response"].append(refuse_insecure_redirect)
+    session.mount("https://", _GitLabTransportAdapter())
+    session.mount("http://", _GitLabTransportAdapter())
     return session
 
 

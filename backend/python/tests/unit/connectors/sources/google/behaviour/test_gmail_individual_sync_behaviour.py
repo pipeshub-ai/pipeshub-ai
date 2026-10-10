@@ -31,7 +31,6 @@ from app.connectors.sources.google.gmail.individual.connector import (
     GoogleGmailIndividualConnector,
 )
 from app.models.entities import RecordType
-from app.models.permission import PermissionType
 
 CONNECTOR_ID = "gmail-personal-1"
 ME = "me@example.com"
@@ -115,10 +114,13 @@ async def test_full_sync_reads_every_thread_page_and_saves_the_history_id_taken_
     assert mail.mail_ids() == {"m0", "m1", "m2", "m3", "m4", "sent-1"}
     assert len(mail.http.calls("GET", "/gmail/v1/users/me/threads")) == 3
     assert mail.checkpoint() == history_before
-    assert [(p.email, p.type) for p in mail.records.permissions["m0"]] == [(ME, PermissionType.READ)]
-    assert [(p.email, p.type) for p in mail.records.permissions["sent-1"]] == [(ME, PermissionType.OWNER)]
+    assert mail.records.permissions["m0"] == []
+    assert mail.records.permissions["sent-1"] == []
+    assert mail.records.records["m0"].inherit_permissions is True
     assert mail.records.records["m0"].external_record_group_id == f"{ME}:INBOX"
     assert mail.records.records["sent-1"].external_record_group_id == f"{ME}:SENT"
+    assert mail.records.record_groups[f"{ME}:INBOX"].inherit_permissions is True
+    assert mail.records.record_group_permissions[f"{ME}:INBOX"] == []
     assert set(mail.records.record_groups) == {f"{ME}:INBOX", f"{ME}:SENT", f"{ME}:OTHERS"}
 
 
@@ -154,7 +156,8 @@ async def test_attachments_become_child_records_with_the_mails_access(mail: Harn
     assert drive_linked.record_name == "big-deck.pdf"
     assert drive_linked.parent_external_record_id == "with-att"
     for ext in ("with-att~1", "drive-file-1"):
-        assert [(p.email, p.type) for p in mail.records.permissions[ext]] == [(ME, PermissionType.READ)]
+        assert mail.records.permissions[ext] == []
+        assert mail.records.records[ext].inherit_permissions is True
 
 
 async def test_received_date_filter_limits_the_full_sync(mail: Harness) -> None:

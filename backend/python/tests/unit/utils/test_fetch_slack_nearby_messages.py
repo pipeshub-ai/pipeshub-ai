@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
 # conftest.py may register a MagicMock for ``langchain_core`` when the package is
 # absent, which breaks ``@tool`` on fetch_slack_nearby_messages. Provide a stub.
 _LC_SHIMMED = False
@@ -325,11 +327,22 @@ class TestResolveSlackWorkspaceInfo:
         assert team_id is None
 
 
-_ACCESS: dict[str, Any] = {
-    "graph_provider": MagicMock(),
-    "org_id": "org1",
-    "user_id": "user1",
-}
+def _graph(accessible: bool = True, group_org: str = "org-1") -> AsyncMock:
+    """Graph mock where channel C123 of conn-1 is an indexed group in ``group_org``."""
+    graph = AsyncMock()
+    graph.get_record_group_by_external_id = AsyncMock(
+        return_value=types.SimpleNamespace(id="rg-c123", org_id=group_org),
+    )
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+    graph.check_access = AsyncMock(
+        side_effect=lambda user_key, org_id, node_ids=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids) if accessible else frozenset(),
+        ),
+    )
+    return graph
+
+
+_ACCESS = {"org_id": "org-1", "user_id": "u1"}
 
 
 @pytest.mark.asyncio
@@ -349,6 +362,8 @@ class TestFetchNearbyMessagesImpl:
             "C123",
             "conn-1",
             config_service=None,
+            graph_provider=_graph(),
+            **_ACCESS,
         )
         assert out.ok is False
 
@@ -360,6 +375,7 @@ class TestFetchNearbyMessagesImpl:
             "C123",
             "",
             config_service=config,
+            graph_provider=_graph(),
             **_ACCESS,
         )
         assert out.ok is False
@@ -395,6 +411,7 @@ class TestFetchNearbyMessagesImpl:
                     "C123",
                     "conn-1",
                     config_service=config,
+                    graph_provider=_graph(),
                     **_ACCESS,
                 )
 
@@ -417,6 +434,7 @@ class TestFetchNearbyMessagesImpl:
             "  ",
             "conn-1",
             config_service=config,
+            graph_provider=_graph(),
             **_ACCESS,
         )
         assert out.ok is False
@@ -430,6 +448,7 @@ class TestFetchNearbyMessagesImpl:
             "C123",
             "conn-1",
             config_service=config,
+            graph_provider=_graph(),
             **_ACCESS,
         )
         assert out.ok is False
@@ -447,6 +466,7 @@ class TestFetchNearbyMessagesImpl:
                 "C123",
                 "conn-1",
                 config_service=config,
+                graph_provider=_graph(),
                 **_ACCESS,
             )
         assert out.ok is False
@@ -468,6 +488,7 @@ class TestFetchNearbyMessagesImpl:
                     "C123",
                     "conn-1",
                     config_service=config,
+                    graph_provider=_graph(),
                     **_ACCESS,
                 )
         assert out.ok is False
@@ -475,6 +496,7 @@ class TestFetchNearbyMessagesImpl:
 
     async def test_denied_channel_never_builds_slack_client(self):
         self.mock_access.return_value = False
+        graph = _graph()
         with patch.object(fsn, "SlackClient") as mock_client_cls:
             mock_client_cls.build_from_services = AsyncMock()
             out = await fsn._fetch_nearby_messages_impl(
@@ -483,17 +505,19 @@ class TestFetchNearbyMessagesImpl:
                 "C-private",
                 "someone-elses-connector",
                 config_service=MagicMock(),
+                graph_provider=graph,
                 **_ACCESS,
             )
         assert out.ok is False
         assert "don't have access" in out.error
         mock_client_cls.build_from_services.assert_not_awaited()
         self.mock_access.assert_awaited_once_with(
-            _ACCESS["graph_provider"],
+            graph,
             connector_id="someone-elses-connector",
             channel_id="C-private",
-            user_id="user1",
-            org_id="org1",
+            user_id="u1",
+            org_id="org-1",
+            tool_state=None,
         )
 
     async def test_missing_graph_provider(self):
@@ -525,13 +549,13 @@ class TestFetchNearbyMessagesImpl:
 
 @pytest.mark.asyncio
 class TestUserCanReadChannel:
-    async def _call(self, graph, user_id="user1"):
+    async def _call(self, graph, user_id="u1"):
         return await fsn._user_can_read_channel(
             graph,
             connector_id="conn-1",
             channel_id="C123",
             user_id=user_id,
-            org_id="org1",
+            org_id="org-1",
         )
 
     @patch("app.utils.fetch_slack_thread.user_can_access_node", new_callable=AsyncMock)
@@ -539,24 +563,31 @@ class TestUserCanReadChannel:
     async def test_checks_access_on_channel_record_group(self, mock_key, mock_access):
         mock_key.return_value = "ukey"
         mock_access.return_value = True
-        graph = AsyncMock()
-        graph.get_record_group_by_external_id = AsyncMock(return_value={"_key": "rg-1"})
+        graph = _graph()
+        graph.get_record_group_by_external_id = AsyncMock(
+            return_value={"_key": "rg-1", "orgId": "org-1"},
+        )
         assert await self._call(graph) is True
         graph.get_record_group_by_external_id.assert_awaited_once_with(
             connector_id="conn-1", external_id="C123",
         )
-        mock_access.assert_awaited_once_with(graph, "rg-1", "ukey", "org1")
+        mock_access.assert_awaited_once_with(graph, "rg-1", "ukey", "org-1")
+
+    @patch("app.utils.fetch_slack_thread.user_can_access_node", new_callable=AsyncMock)
+    @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
+    async def test_denied_when_batch_check_denies(self, mock_key, mock_access):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = True
+        assert await self._call(_graph(accessible=False)) is False
 
     @patch("app.utils.fetch_slack_thread.user_can_access_node", new_callable=AsyncMock)
     @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
     async def test_denied_when_user_lacks_access(self, mock_key, mock_access):
         mock_key.return_value = "ukey"
         mock_access.return_value = False
-        graph = AsyncMock()
-        graph.get_record_group_by_external_id = AsyncMock(
-            return_value=MagicMock(id="rg-1"),
-        )
+        graph = _graph()
         assert await self._call(graph) is False
+        graph.check_access.assert_not_called()
 
     @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
     async def test_denied_when_channel_not_indexed(self, mock_key):
@@ -578,6 +609,61 @@ class TestUserCanReadChannel:
         graph = AsyncMock()
         graph.get_record_group_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
         assert await self._call(graph) is False
+
+
+def _scoped_channel_graph() -> AsyncMock:
+    """Channel C123 is group rg-c123 of app slack-app; the message msg-1 is in it.
+    ``check_access`` applies the scopes it is given."""
+    graph = _graph()
+    connector_of = {"rg-c123": "slack-app", "msg-1": "slack-app", "page-1": "confluence-app"}
+    graph.check_access = AsyncMock(side_effect=lambda user_key, org_id, node_ids=(), scopes=(), **_: AccessCheck(
+        node_ids=frozenset(node_ids),
+        node_ids_in_scope=frozenset(
+            i for i in node_ids
+            if all(s.admits({"id": i, "connectorId": connector_of.get(i), "groupIds": []}) for s in scopes)
+        ),
+    ))
+    graph.get_selection_nodes = AsyncMock(side_effect=lambda org_id, *, group_ids, record_ids, exact_record_ids, limit: {
+        "groups": [{"id": g, "connectorId": connector_of.get(g)} for g in group_ids],
+        "records": [{"id": r, "vrid": f"v-{r}", "connectorId": connector_of.get(r)} for r in [*record_ids, *exact_record_ids]],
+    })
+    return graph
+
+
+@pytest.mark.asyncio
+class TestUserCanReadChannelUnderASelection:
+    """GS-06: the live channel history is only read when the turn reaches the channel."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_memo(self):
+        import app.modules.retrieval.selection_scope as selection_scope
+
+        selection_scope._memo.clear()
+        yield
+        selection_scope._memo.clear()
+
+    async def _call(self, filters):
+        with patch("app.utils.fetch_slack_thread.user_can_access_node", AsyncMock(return_value=True)), \
+                patch("app.utils.fetch_slack_thread.resolve_user_key", AsyncMock(return_value="ukey")):
+            return await fsn._user_can_read_channel(
+                _scoped_channel_graph(), connector_id="conn-1", channel_id="C123", user_id="u1",
+                org_id="org-1", tool_state={"filters": filters},
+            )
+
+    async def test_a_selection_without_slack_does_not_open_a_channel(self):
+        assert await self._call({"apps": [], "kb": [], "records": ["page-1"]}) is False
+
+    async def test_one_message_selected_alone_does_not_open_its_channel(self):
+        assert await self._call({"apps": [], "kb": [], "recordsExact": ["msg-1"]}) is False
+
+    async def test_the_channel_selected_opens_it(self):
+        assert await self._call({"apps": [], "kb": [], "recordGroups": ["rg-c123"]}) is True
+
+    async def test_the_slack_app_picked_whole_opens_it(self):
+        assert await self._call({"apps": ["slack-app"], "kb": []}) is True
+
+    async def test_a_turn_limited_by_nothing_opens_it(self):
+        assert await self._call({"apps": [], "kb": []}) is True
 
 
 @pytest.mark.asyncio
@@ -741,6 +827,59 @@ class TestFetchMessagesFromSlack:
         assert msg.reply_count == 2
         assert msg.thread_ts == "1699999999.000000"
         assert msg.weburl == "https://acme.slack.com/archives/C123/p1700000000000000"
+
+
+@pytest.mark.asyncio
+class TestNearbyMessagesChannelAccess:
+    """The model picks the connector and channel, and the read uses the
+    connector's credentials, so the user's access to the channel decides."""
+
+    async def _call(self, graph, **access):
+        with patch.object(fsn, "SlackClient") as mock_client_cls:
+            mock_client_cls.build_from_services = AsyncMock(return_value=MagicMock())
+            out = await fsn._fetch_nearby_messages_impl(
+                "2023-11-14T22:13:20Z", "before", "C123", "conn-1",
+                config_service=MagicMock(), graph_provider=graph, **access,
+            )
+        return out, mock_client_cls.build_from_services
+
+    async def test_a_channel_the_user_cannot_access_is_not_read(self):
+        out, build = await self._call(_graph(accessible=False), **_ACCESS)
+        assert out.ok is False and "don't have access" in out.error
+        build.assert_not_called()
+
+    async def test_a_channel_of_another_org_is_not_read(self):
+        graph = _graph(group_org="org-2")
+        out, build = await self._call(graph, **_ACCESS)
+        assert out.ok is False
+        build.assert_not_called()
+        graph.check_access.assert_not_called()
+
+    async def test_an_unindexed_channel_is_not_read(self):
+        graph = _graph()
+        graph.get_record_group_by_external_id = AsyncMock(return_value=None)
+        out, build = await self._call(graph, **_ACCESS)
+        assert out.ok is False
+        build.assert_not_called()
+
+    async def test_no_user_reads_nothing(self):
+        out, build = await self._call(_graph(), org_id="org-1")
+        assert out.ok is False
+        build.assert_not_called()
+
+    async def test_no_graph_reads_nothing(self):
+        out, build = await self._call(None, **_ACCESS)
+        assert out.ok is False and "graph_provider" in out.error
+        build.assert_not_called()
+
+    async def test_the_channel_group_is_what_gets_checked(self):
+        graph = _graph()
+        await self._call(graph, **_ACCESS)
+        graph.get_record_group_by_external_id.assert_awaited_once_with(
+            connector_id="conn-1", external_id="C123",
+        )
+        call = graph.check_access.await_args
+        assert call.args == ("user-key", "org-1") and list(call.kwargs["node_ids"]) == ["rg-c123"]
 
 
 @pytest.mark.asyncio

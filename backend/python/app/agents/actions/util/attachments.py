@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,12 @@ import aiohttp
 
 from app.agent_loop_lib.tools.base import ParameterType, ToolParameter
 from app.agents.actions.util.blob_staging import DEFAULT_MAX_STAGE_BYTES
+from app.modules.retrieval.selection_scope import (
+    SelectionNotReadyError,
+    SelectionTooLargeError,
+    has_selection,
+    selection_error,
+)
 from app.services.artifact_registry.models import Actor
 from app.services.record_content import (
     AttachmentFailure,
@@ -32,6 +39,7 @@ from app.services.record_content import (
     RecordContentError,
     RecordContentResolver,
     RecordNotFoundError,
+    RecordOutsideTurnError,
     RecordTooLargeError,
     ResolvedRecordContent,
 )
@@ -90,6 +98,27 @@ def attachment_record_ids_parameter(
     )
 
 
+async def _turn_limit(
+    state: Any, graph_provider: Any, org_id: str, user_id: str,
+) -> Callable[[str], Awaitable[bool]] | None:
+    """Whether a record lies inside what the chat turn is limited to, or None
+    when nothing limits it. The resolver only checks that the run-as identity
+    may read a record, and a service-account agent runs as its creator."""
+    from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope, turn_limits_records
+
+    if not turn_limits_records(state):
+        return None
+    user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    user_key = (user or {}).get("_key") or (user or {}).get("id")
+
+    async def within(record_id: str) -> bool:
+        return bool(user_key) and record_id in await ids_within_scope(
+            state, graph_provider, user_key, org_id, [record_id],
+        )
+
+    return within
+
+
 @dataclass
 class AttachmentBundle:
     """Result of `resolve_attachments`: successes + per-record failures."""
@@ -123,7 +152,8 @@ async def resolve_attachments(
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_single_bytes: int | None = None,
 ) -> AttachmentBundle:
-    """Resolve a list of record-ID refs to bytes, enforcing caps and ACL.
+    """Resolve a list of record-ID refs to bytes, enforcing caps, ACL and the
+    turn's limits (see `ids_within_scope`).
 
     Pulls context (`org_id`, `user_id`, `config_service`, `graph_provider`,
     `conversation_id`) off `ChatState`. Deduplicates refs, resolves them
@@ -199,6 +229,16 @@ async def resolve_attachments(
         return bundle
 
     actor = Actor(org_id=org_id, user_id=user_id)
+    try:
+        within_turn = await _turn_limit(state, graph_provider, org_id, user_id)
+    except Exception as exc:
+        logger.exception("Could not read the turn's limits for attachments")
+        bundle.failures.append(AttachmentFailure(
+            ref="*",
+            error=f"Could not check which records this conversation may use: {exc}",
+            error_type=type(exc).__name__,
+        ))
+        return bundle
 
     # Build the artifact registry only when blob_store is available — it is
     # optional for tests and runtime contexts without it.
@@ -216,6 +256,8 @@ async def resolve_attachments(
         artifact_registry=artifact_registry,
     )
 
+    # Without a selection, a limit too large to resolve is the saved agent's own.
+    agent_limit = not state.get("is_placeholder_agent") and not has_selection(state.get("filters"))
     per_ref_max = max_single_bytes or max_total_bytes
     sem = asyncio.Semaphore(_MAX_CONCURRENT)
 
@@ -230,11 +272,17 @@ async def resolve_attachments(
                     conversation_id=conversation_id,
                     max_bytes=per_ref_max,
                     session=session,
+                    within_turn=within_turn,
                 )
             except RecordNotFoundError as exc:
                 return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordNotFoundError")
             except RecordAccessDeniedError as exc:
                 return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordAccessDeniedError")
+            except RecordOutsideTurnError as exc:
+                return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordOutsideTurnError")
+            except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+                code, message = selection_error(exc, agent_limit=agent_limit)
+                return AttachmentFailure(ref=ref, error=message, error_type=code)
             except RecordTooLargeError as exc:
                 return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordTooLargeError")
             except RecordContentError as exc:

@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import CollectionNames
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
 from app.utils.image_admission import (
@@ -16,7 +18,16 @@ from app.utils.image_admission import (
     ImageOrigin,
     admission_from_state,
 )
-from app.utils.record_access import caller_can_read_virtual_record
+from app.utils.record_access import (
+    caller_can_read_virtual_record,
+    is_chat_attachment,
+    org_permission_grants,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
@@ -25,6 +36,137 @@ _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
     "data:image/jpg",
     "data:image/webp",
 )
+
+
+async def keep_accessible_attachments(
+    graph_provider: "IGraphDBProvider",
+    *,
+    org_id: str,
+    user_id: str | None,
+    is_service_account: bool,
+    attachments: list[dict[str, Any]],
+    previous_conversations: list[dict[str, Any]],
+    logger: logging.Logger,
+    filters: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """This turn's attachments and the history's, without those the caller may
+    not read or the turn may not reach.
+
+    Both ids come from the client, and the resolvers and ``fetch_record`` read
+    an attachment as whoever the turn runs as (a service-account agent's
+    creator), so each is checked here as the caller: its ``recordId`` and
+    ``virtualRecordId`` must name one live record of this org that the caller
+    may read. A file uploaded to a chat is part of the question; any other
+    record must also lie inside what ``filters`` limit the turn to. A service
+    account has no User node: it keeps only the uploads it made itself (every
+    service-account upload is granted to the whole org).
+
+    Raises:
+        PermissionVerificationUnavailableError: the graph could not answer.
+            Answering as if nothing were attached would hide the outage.
+    """
+    history = [a for conv in previous_conversations or [] for a in conv.get("attachments") or []]
+    asked = [a for a in [*(attachments or []), *history] if isinstance(a, dict)]
+    if not asked:
+        return attachments, previous_conversations
+
+    candidates = await _attachment_candidates(graph_provider, org_id, asked)
+    candidate_ids = {row["id"] for rows in candidates.values() for row in rows}
+    uploads = {row["id"] for rows in candidates.values() for row in rows if is_chat_attachment(row, org_id)}
+    if is_service_account:
+        allowed = {
+            rid for rid in uploads
+            if user_id and await org_permission_grants(graph_provider, org_id, rid, logger, uploaded_by=user_id)
+        }
+    else:
+        allowed = await _caller_may_attach(
+            graph_provider, org_id, user_id, candidate_ids - uploads, uploads, filters,
+        )
+
+    def keep(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        return [
+            a for a in items or []
+            if isinstance(a, dict) and any(row["id"] in allowed for row in candidates[_attachment_key(a)])
+        ]
+
+    dropped = [
+        a.get("recordId") or a.get("virtualRecordId")
+        for a in asked
+        if not any(row["id"] in allowed for row in candidates[_attachment_key(a)])
+    ]
+    if dropped:
+        logger.warning(
+            "Dropped %d attachment(s) the caller may not read or that lie outside the turn's sources: %s",
+            len(dropped), dropped,
+        )
+    return keep(attachments), [
+        {**conv, "attachments": keep(conv["attachments"])} if conv.get("attachments") else conv
+        for conv in previous_conversations or []
+    ]
+
+
+def _attachment_key(attachment: dict[str, Any]) -> tuple[str, str]:
+    return attachment.get("recordId") or "", attachment.get("virtualRecordId") or ""
+
+
+async def _attachment_candidates(
+    graph_provider: "IGraphDBProvider", org_id: str, asked: list[dict[str, Any]],
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """The records each attachment may name: the one its ``recordId`` names
+    when that record carries its ``virtualRecordId`` (if given), else every
+    record carrying the latter."""
+    fields = ["id", "_key", "orgId", "origin", "connectorId", "virtualRecordId"]
+    record_ids = sorted({a["recordId"] for a in asked if a.get("recordId")})
+    bare_vrids = sorted({a["virtualRecordId"] for a in asked if a.get("virtualRecordId") and not a.get("recordId")})
+    try:
+        rows = [
+            *(await graph_provider.get_nodes_by_field_in(
+                CollectionNames.RECORDS.value, "id", record_ids, return_fields=fields, raise_on_error=True,
+            ) if record_ids else []),
+            *(await graph_provider.get_nodes_by_field_in(
+                CollectionNames.RECORDS.value, "virtualRecordId", bare_vrids, return_fields=fields,
+                raise_on_error=True,
+            ) if bare_vrids else []),
+        ]
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError(str(exc)) from exc
+    rows = [
+        {**row, "id": row.get("id") or row.get("_key")}
+        for row in rows or []
+        if (row.get("id") or row.get("_key")) and row.get("orgId") == org_id
+    ]
+    candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for a in asked:
+        record_id, vrid = _attachment_key(a)
+        candidates[(record_id, vrid)] = [
+            r for r in rows
+            if (r["id"] == record_id and (not vrid or r.get("virtualRecordId") == vrid))
+            or (not record_id and vrid and r.get("virtualRecordId") == vrid)
+        ]
+    return candidates
+
+
+async def _caller_may_attach(
+    graph_provider: "IGraphDBProvider",
+    org_id: str,
+    user_id: str | None,
+    record_ids: set[str],
+    upload_ids: set[str],
+    filters: Mapping[str, Any] | None,
+) -> set[str]:
+    """Of the records, those the caller may attach: an upload they may read,
+    and any other record they may read inside the turn's sources."""
+    from app.modules.retrieval.selection_scope import resolve_record_scopes
+
+    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    user_key = (user_doc or {}).get("id") or (user_doc or {}).get("_key")
+    if not user_key or not (record_ids or upload_ids):
+        return set()
+    scopes = await resolve_record_scopes(graph_provider, user_key, org_id, filters) if record_ids else None
+    access = await graph_provider.check_access(
+        user_key, org_id, node_ids=[*record_ids, *upload_ids], scopes=scopes or (),
+    )
+    return (access.node_ids & upload_ids) | (access.node_ids_in_scope & record_ids)
 
 
 async def resolve_attachments(

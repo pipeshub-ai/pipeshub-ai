@@ -178,10 +178,10 @@ class TestSharingAndPermissions:
         perms = {p.external_id: p for p in db.permissions["file-1"].values()}
         assert perms[BOB].type == PermissionType.WRITE
         assert perms["g-eng"].entity_type == EntityType.GROUP
-        assert perms["ORG_org-1"].entity_type == EntityType.GROUP
+        assert perms["org-1"].entity_type == EntityType.ORG
         assert db.records["file-1"].is_shared is True
-        assert db.access("file-2") == {"PUBLIC"}
-        assert {"PUBLIC", "ORG_org-1", "g-eng"} <= set(db.user_groups)
+        assert "PUBLIC" not in db.access("file-2")
+        assert "g-eng" in db.user_groups
 
     async def test_a_shared_folder_keeps_its_owner_and_place_in_the_owners_tree(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -362,6 +362,7 @@ class TestSharingAndPermissions:
 
         assert len(box_api.calls("GET", "/2.0/files/file-1/collaborations")) == 1 + 5
         assert db.access("file-1") == {BOB_EMAIL}
+        assert 'plan.pdf' in (connector.stored_access_kept or ""), "a full sync must not sweep what it kept"
 
     async def test_a_forbidden_collaborator_read_is_not_retried(self, box_api, db, checkpoints, sdk_sleeps) -> None:
         enterprise(box_api, db)
@@ -470,6 +471,7 @@ class TestGroups:
         await connector.run_sync()
 
         assert db.group_members["g-eng"] == [ALICE_EMAIL, BOB_EMAIL]
+        assert 'group Engineering' in (connector.stored_access_kept or ""), "a full sync must not sweep what it kept"
 
     async def test_a_failed_group_listing_deletes_no_stored_group(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -482,6 +484,7 @@ class TestGroups:
         await connector.run_sync()
 
         assert db.deleted_groups == []
+        assert 'part of Box could not be read' in (connector.stored_access_kept or ""), "N4GIT-01: a skipped part must not be swept"
         assert "g-eng" in db.user_groups
 
     async def test_a_failed_group_listing_leaves_no_cursor_and_the_next_run_grants_the_group(self, box_api, db, checkpoints) -> None:
@@ -827,7 +830,7 @@ class TestDatabaseFailuresDuringAFullSync:
         db.fail_group_write_for.clear()
         await connector.run_sync()
 
-        assert "ORG_org-1" in db.access("file-a")
+        assert "org-1" in db.access("file-a")
 
     async def test_a_share_whose_collaborator_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

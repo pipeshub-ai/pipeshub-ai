@@ -128,6 +128,22 @@ _PARTIAL_LIST_MESSAGE = "Slack stopped answering part-way through, so this is on
 _PARTIAL_LIST_RETRY = "Try again in a moment to get the rest."
 
 
+def _not_sent_note(not_sent: list[str]) -> Optional[str]:
+    return "These attachments were not sent: " + "; ".join(not_sent) if not_sent else None
+
+
+def _with_unsent_attachments(posted: SlackResponse, not_sent: Optional[str]) -> Tuple[bool, str]:
+    """The tool's answer once its message is posted: a failure naming the files
+    that did not go, so it is never read as if they had."""
+    if not not_sent:
+        return (posted.success, posted.to_json())
+    failed = SlackResponse(
+        success=False, data=posted.data,
+        error=f"The message was posted; do not post it again. {not_sent}",
+    )
+    return (failed.success, failed.to_json())
+
+
 def _partial_list_message(failed: Any = None) -> str:  # noqa: ANN401
     """The partial-list warning plus the failed page's own guidance (reconnect, wait N seconds, ...)."""
     guidance = getattr(failed, "message", None) or _PARTIAL_LIST_RETRY
@@ -1050,23 +1066,25 @@ class Slack:
         channel_id: str,
         thread_ts: Optional[str] = None,
         initial_comment: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[str]:
         """Resolve PipesHub records and upload them to Slack as files.
 
-        Failures are logged but do not raise — the parent tool has already
-        posted its primary message and any partial upload is still useful.
+        Returns which files were not sent and why, or None. The parent tool
+        has already posted its primary message and the files that did go
+        are still useful, so this does not raise; the caller reports it.
         """
         from app.agents.actions.util.attachment_upload import AttachmentTarget
         from app.agents.actions.util.attachments import emit_attachment_audit
 
         bundle = await resolve_attachments(self.chat_state, attachment_record_ids)
+        not_sent = [f"{f.ref}: {f.error}" for f in bundle.failures]
         if bundle.failures:
             logger.warning(
                 "Slack attachment resolution failures: %s",
                 [f.to_dict() for f in bundle.failures],
             )
         if not bundle.resolved:
-            return
+            return _not_sent_note(not_sent)
 
         uploader = SlackAttachmentUploader(client=self.client)
         target = AttachmentTarget(
@@ -1096,6 +1114,8 @@ class Slack:
             )
             if not r.success:
                 logger.warning("Slack file upload failed for %s: %s", r.filename, r.error)
+                not_sent.append(f"{r.filename}: {r.error}")
+        return _not_sent_note(not_sent)
 
     async def _resolve_channel(self, channel: str) -> str:
         """Resolve a channel name (e.g., '#testing' or 'testing') to a channel ID (e.g., 'C1234567890').
@@ -1247,11 +1267,12 @@ class Slack:
 
             if attachment_record_ids:
                 thread_ts = (slack_response.data or {}).get("ts")
-                await self._upload_attachments_to_slack(
+                not_sent = await self._upload_attachments_to_slack(
                     attachment_record_ids=attachment_record_ids,
                     channel_id=chan,
                     thread_ts=thread_ts,
                 )
+                return _with_unsent_attachments(slack_response, not_sent)
 
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1908,11 +1929,12 @@ class Slack:
 
             if attachment_record_ids:
                 thread_ts = (message_slack_response.data or {}).get("ts")
-                await self._upload_attachments_to_slack(
+                not_sent = await self._upload_attachments_to_slack(
                     attachment_record_ids=attachment_record_ids,
                     channel_id=channel_id,
                     thread_ts=thread_ts,
                 )
+                return _with_unsent_attachments(message_slack_response, not_sent)
 
             return (message_slack_response.success, message_slack_response.to_json())
 
@@ -2085,11 +2107,12 @@ class Slack:
 
             if attachment_record_ids:
                 reply_ts = (slack_response.data or {}).get("ts") or thread_ts
-                await self._upload_attachments_to_slack(
+                not_sent = await self._upload_attachments_to_slack(
                     attachment_record_ids=attachment_record_ids,
                     channel_id=chan,
                     thread_ts=reply_ts,
                 )
+                return _with_unsent_attachments(slack_response, not_sent)
 
             return (slack_response.success, slack_response.to_json())
 
@@ -3467,8 +3490,9 @@ class Slack:
                 if not last_response.success:
                     return (last_response.success, last_response.to_json())
 
+            not_sent = None
             if attachment_record_ids:
-                await self._upload_attachments_to_slack(
+                not_sent = await self._upload_attachments_to_slack(
                     attachment_record_ids=attachment_record_ids,
                     channel_id=chan,
                     initial_comment=initial_comment if not file_content else None,
@@ -3477,9 +3501,11 @@ class Slack:
             if last_response is None:
                 if not attachment_record_ids:
                     return (False, SlackResponse(success=False, error="Provide file_content+filename or attachment_record_ids.").to_json())
+                if not_sent:
+                    return (False, SlackResponse(success=False, error=not_sent).to_json())
                 last_response = SlackResponse(success=True, data={"message": "Attachments uploaded"})
 
-            return (last_response.success, last_response.to_json())
+            return _with_unsent_attachments(last_response, not_sent)
         except Exception as e:
             if "not_in_channel" in str(e):
                 err = SlackResponse(success=False, error="not_in_channel")

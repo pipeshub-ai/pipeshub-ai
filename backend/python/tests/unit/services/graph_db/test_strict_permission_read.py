@@ -68,6 +68,7 @@ class TestOneSourceFailing:
         provider = _neo4j()
         provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key-1"})
         provider.get_user_apps = AsyncMock(return_value=[{"id": "conn-1", "type": "DRIVE"}])
+        provider.get_gated_apps = provider.get_user_apps
 
         assert await provider.get_accessible_virtual_record_ids("user-1", "org-1") == {}
         with pytest.raises(GraphDown):
@@ -96,6 +97,7 @@ class TestTheCacheNeverKeepsAFailure:
         provider = _neo4j(cache)
         provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key-1"})
         provider.get_user_apps = AsyncMock(return_value=[{"id": "conn-1", "type": "DRIVE"}])
+        provider.get_gated_apps = provider.get_user_apps
         provider._get_accessible_kb_ids = AsyncMock(return_value=[])
 
         if strict:

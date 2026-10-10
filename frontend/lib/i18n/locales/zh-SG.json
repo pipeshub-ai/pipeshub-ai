@@ -641,7 +641,9 @@
     "searchEmptyHint": "未找到您要查找的内容。请尝试搜索其他内容。",
     "adjustFiltersHint": "请选择其他来源或调整筛选条件",
     "addFromCollectionsHint": "您可以从合集中添加公司的文件或文件夹",
-    "addFilesHint": "添加您的文件或文件夹"
+    "addFilesHint": "添加您的文件或文件夹",
+    "chatWithSelection": "聊天",
+    "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -738,6 +740,12 @@
     "searchCollections": "搜索连接器和收藏集",
     "loadingCollections": "正在加载收藏集…",
     "failedToLoadCollections": "加载收藏集失败",
+    "treeEmpty": "这里没有内容",
+    "treeLoadFailed": "无法加载这些项目",
+    "treeRetry": "重试",
+    "treeIncludedWith": "已包含在 {{name}} 中",
+    "treeExpand": "显示 {{name}} 中的内容",
+    "treeCollapse": "隐藏 {{name}} 中的内容",
     "noCollectionsAvailable": "没有可用的收藏集",
     "comingSoon": "即将推出",
     "answer": "回答",
@@ -1211,7 +1219,9 @@
       "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
-    "mobileProfileComingSoon": "移动端个人资料页面即将推出。"
+    "mobileProfileComingSoon": "移动端个人资料页面即将推出。",
+    "selectedAlone": "{{name}}（仅此项目）",
+    "noConnectorsFound": "未找到连接器"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -3989,7 +3999,10 @@
     "toolsetOAuthServerError": "认证失败。请重试或联系您的管理员。",
     "attached": "已附加",
     "mcpServerWithToolCount_other": "包含 {{count}} 个工具的 MCP 服务器",
-    "deprecatedToolsBanner_other": "此智能体上有 {{count}} 个工具已弃用。请移除它们：{{tools}}"
+    "deprecatedToolsBanner_other": "此智能体上有 {{count}} 个工具已弃用。请移除它们：{{tools}}",
+    "limitSource": "选择 {{name}} 的搜索范围",
+    "limitSourceHint": "保持勾选整个来源，或取消勾选后勾选智能体可以搜索的文件夹和项目。",
+    "limitSourceCount": "仅限所选的 {{count}} 项"
   },
   "recordView": {
     "sections": {

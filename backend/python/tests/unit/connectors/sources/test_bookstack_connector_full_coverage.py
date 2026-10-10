@@ -832,7 +832,8 @@ class TestCreateRecordGroupWithPermissions:
             item, "book", {}, None
         )
         assert result is not None
-        assert result[1] == []
+        # Unknown, not empty: the processor keeps the stored grants (RG-5).
+        assert result[1] is None
 
 
 class TestParseBookstackPermissions:
@@ -840,16 +841,27 @@ class TestParseBookstackPermissions:
     async def test_with_owner(self, connector):
         connector.data_source = AsyncMock()
         connector.data_source.get_user = AsyncMock(
-            return_value=_make_response(data={"email": "owner@test.com"})
+            return_value=_make_response(data={"email": "owner@test.com", "roles": [{"id": 5}]})
         )
         data = {
             "owner": {"id": 1},
             "role_permissions": [],
-            "fallback_permissions": {},
+            "fallback_permissions": {"inheriting": True},
         }
-        result = await connector._parse_bookstack_permissions(data, {}, "book")
+        # Ownership counts only through the owner's role permission to view their own items.
+        result = await connector._parse_bookstack_permissions(data, {5: {"permissions": ["book-view-own"]}}, "book")
         assert len(result) == 1
         assert result[0].type == PermissionType.OWNER
+
+    @pytest.mark.asyncio
+    async def test_owner_without_view_own_gets_nothing_of_their_own(self, connector):
+        connector.data_source = AsyncMock()
+        connector.data_source.get_user = AsyncMock(
+            return_value=_make_response(data={"email": "owner@test.com", "roles": [{"id": 5}]})
+        )
+        data = {"owner": {"id": 1}, "role_permissions": [], "fallback_permissions": {}}
+        result = await connector._parse_bookstack_permissions(data, {5: {"permissions": ["book-view-own"]}}, "book")
+        assert len(result) == 0
 
     @pytest.mark.asyncio
     async def test_owner_no_email(self, connector):

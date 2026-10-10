@@ -24,7 +24,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
   order 9  TC-UPDATE-001      — dedicated connector: create + edit + revision (by id) + delete
   order 10 TC-JIRA-HIER-001   — Epic↔child and Task↔sub-task PARENT_CHILD
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
-  order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_RELATION
+  order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_LINK
   order 13 TC-JIRA-ATTACH-001 — attachment FILE record
   order 14 TC-JIRA-BLOCKS-001 — streamed application/blocks expected snapshot
   order 15 TC-BROWSE-001      — BROWSE_PROJECTS scheme → PERMISSION→RecordGroup
@@ -763,7 +763,7 @@ class TestJiraValidation:
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-LINKS-001: outward issuelinks on the link-source ticket → mapped RECORD_RELATION edges."""
+        """TC-JIRA-LINKS-001: outward issuelinks on the link-source ticket → mapped RECORD_LINK edges."""
         connector_id = jira_connector["connector_id"]
         source_key = jira_connector.get("link_source_issue_key")
         if not source_key:

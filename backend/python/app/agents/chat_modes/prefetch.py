@@ -34,6 +34,7 @@ from app.utils.chat_helpers import (
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Sequence
 
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -93,6 +94,7 @@ async def prefetch_retrieval(
     force: bool = False,
     ref_mapper: CitationRefMapper | None = None,
     image_budget: ImageBudget | None = None,
+    attachment_vrids: Sequence[str] = (),
 ) -> PrefetchResult | None:
     """Runs upfront retrieval for the current query.
 
@@ -159,6 +161,7 @@ async def prefetch_retrieval(
     )
     await enrich_virtual_record_id_to_result_with_fk_children(
         virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results,
+        user_id=user_id,
     )
     if flattened_results and graph_provider:
         await enrich_records_with_graph_context(
@@ -170,6 +173,8 @@ async def prefetch_retrieval(
             org_id=org_id,
             config_service=getattr(blob_store, "config_service", None),
             user_id=user_id,
+            filters=filters,
+            ignore_kb_ids=attachment_vrids,
         )
 
     final_results = sorted(flattened_results, key=flattened_result_sort_key)

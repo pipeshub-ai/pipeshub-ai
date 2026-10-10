@@ -362,7 +362,7 @@ class TestProcessGmailMessage:
         )
         assert result is not None
         # Sender gets OWNER permission
-        assert any(p.type == PermissionType.OWNER for p in result.new_permissions)
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_message_without_id(self, connector):
@@ -409,7 +409,7 @@ class TestProcessGmailMessage:
             "user@test.com", msg, "thread-1", None
         )
         assert result is not None
-        assert any(p.type == PermissionType.READ for p in result.new_permissions)
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_no_subject_defaults(self, connector):

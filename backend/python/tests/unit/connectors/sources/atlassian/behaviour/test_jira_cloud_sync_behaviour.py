@@ -301,6 +301,13 @@ class SiteDb(CloudRecordsDb):
         super().__init__()
         self.active_users = [type("U", (), {"email": "ana@acme.com"})()]
         self.app_roles: dict[str, list[Any]] = {}
+        self.gates_removed_as_deactivated: list[list[str]] = []
+
+    async def remove_app_users_deactivated_at_source(self, connector_id: str, users: list[Any]) -> int:
+        self.gates_removed_as_deactivated.append(sorted(u.email for u in users))
+        gone = {u.email for u in users}
+        self.app_users = [u for u in self.app_users if u.email not in gone]
+        return len(users)
 
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
@@ -366,6 +373,60 @@ def saved_members(db: SiteDb, group_id: str) -> list[str]:
     return [[u.email for u in members] for g, members in db.user_groups if g.source_user_group_id == group_id][-1]
 
 
+class TestGatesOfUsersJiraReportsDeactivated:
+    """R2-03: a user Jira lists as deactivated loses the connector gate, so no grant the
+    run kept (issue security it could not read, a whole-connector keep) still reaches them."""
+
+    @staticmethod
+    def _bo(api: AtlassianApiStub, *, active: bool, account_id: str = "acc-bo") -> None:
+        people = [
+            {"accountId": "acc-ana", "accountType": "atlassian", "active": True, "emailAddress": "ana@acme.com", "displayName": "Ana"},
+            {"accountId": account_id, "accountType": "atlassian", "active": active, "emailAddress": "bo@acme.com", "displayName": "Bo"},
+        ]
+        api.on("GET", f"{JIRA}/users/search", lambda r: json_response(people if AtlassianApiStub.query(r).get("startAt") == "0" else []))
+
+    async def test_a_user_jira_deactivates_loses_the_gate(self, api, site_db, checkpoints, search) -> None:
+        stub_site(api)
+        self._bo(api, active=True)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert "bo@acme.com" in {u.email for u in site_db.app_users}
+
+        self._bo(api, active=False)
+        await connector.run_sync()
+
+        assert site_db.gates_removed_as_deactivated == [["bo@acme.com"]]
+        assert {u.email for u in site_db.app_users} == {"ana@acme.com"}
+
+    async def test_a_deactivated_account_whose_email_another_account_holds_keeps_the_gate(
+        self, api, site_db, checkpoints, search,
+    ) -> None:
+        stub_site(api)
+        self._bo(api, active=True)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        people = [
+            {"accountId": "acc-bo", "accountType": "atlassian", "active": False, "emailAddress": "bo@acme.com", "displayName": "Bo"},
+            {"accountId": "acc-bo-2", "accountType": "atlassian", "active": True, "emailAddress": "bo@acme.com", "displayName": "Bo"},
+        ]
+        api.on("GET", f"{JIRA}/users/search", lambda r: json_response(people if AtlassianApiStub.query(r).get("startAt") == "0" else []))
+        await connector.run_sync()
+
+        assert site_db.gates_removed_as_deactivated == []
+
+    async def test_a_user_jira_no_longer_lists_keeps_the_gate_until_the_sweep(self, api, site_db, checkpoints, search) -> None:
+        stub_site(api)
+        self._bo(api, active=True)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        stub_site(api)
+        await connector.run_sync()
+
+        assert site_db.gates_removed_as_deactivated == []
+
+
 class TestAccessControlSafety:
     async def test_a_failed_permission_scheme_read_does_not_wipe_the_project_acl(self, api, site_db, checkpoints, search) -> None:
         stub_site(api)
@@ -410,6 +471,7 @@ class TestAccessControlSafety:
 
         assert "10000" not in site_db.record_group_permissions, "no empty access list is written"
         assert "1" in tickets(site_db)
+        assert 'project ENG' in (connector.stored_access_kept or ""), "a full sync must not sweep what it kept"
 
     async def test_a_failed_member_read_keeps_the_group_and_the_roles_that_include_it(self, api, site_db, checkpoints, search) -> None:
         stub_site(api)

@@ -434,9 +434,19 @@ class ImageGenerator:
             ArtifactNotFoundError,
         )
 
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ARTIFACT_OF_ANOTHER_CONVERSATION,
+            artifact_within_turn,
+            turn_limits_records,
+        )
+
         registry = ArtifactRegistryService(graph_provider, blob_store)
         actor = Actor(org_id=org_id, user_id=user_id)
         try:
+            if turn_limits_records(self.chat_state or {}):
+                source = await registry.resolve(actor=actor, ref=record_id)
+                if not artifact_within_turn(self.chat_state, source.conversation_id):
+                    return None, None, self._result(False, {"success": False, "error": ARTIFACT_OF_ANOTHER_CONVERSATION})
             image_bytes = await registry.get_content(actor=actor, artifact_id=record_id)
         except ArtifactNotFoundError:
             return None, None, self._result(False, {

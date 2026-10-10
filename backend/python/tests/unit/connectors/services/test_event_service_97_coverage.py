@@ -58,6 +58,7 @@ def mock_graph_provider():
     gp.get_document = AsyncMock(return_value=None)
     gp.delete_sync_points_by_connector_id = AsyncMock(return_value=(5, True))
     gp.delete_connector_sync_edges = AsyncMock(return_value=(3, True))
+    gp.mark_connector_sync_edges = AsyncMock(return_value=(3, True))
     gp.delete_connector_instance = AsyncMock(return_value={
         "success": True, "virtual_record_ids": [], "deleted_records_count": 0
     })
@@ -160,26 +161,25 @@ class TestFullSyncSyncPointDeletionFailure:
             })
             assert result is True
             service.logger.warning.assert_any_call(
-                "Continuing with sync despite sync point deletion failure"
+                "Continuing with sync despite sync point deletion failure; stale edges stay"
             )
+            service.graph_provider.mark_connector_sync_edges.assert_not_awaited()
 
 
 # ===========================================================================
-# Lines 270-272: sync edge deletion raises exception
+# Tagging the edges for the sweep fails: the sync still runs
 # ===========================================================================
 
-class TestFullSyncEdgeDeletionException:
-    """Cover the except block for delete_connector_sync_edges."""
+class TestFullSyncEdgeTagFailure:
+    """A failed tag leaves the stored edges as they are and the sync runs."""
 
     @pytest.mark.asyncio
-    async def test_sync_edges_delete_exception(self, service):
-        """Lines 271-272: sync edge deletion raises exception => error logged."""
+    async def test_sync_edges_tag_exception(self, service):
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
 
-        # Sync edges deletion raises an exception
-        service.graph_provider.delete_connector_sync_edges = AsyncMock(
-            side_effect=Exception("edge deletion error")
+        service.graph_provider.mark_connector_sync_edges = AsyncMock(
+            side_effect=Exception("edge tag error")
         )
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
@@ -193,13 +193,11 @@ class TestFullSyncEdgeDeletionException:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_sync_edges_delete_returns_false(self, service):
-        """Lines 269-270: sync edge deletion returns success=False => warning logged."""
+    async def test_sync_edges_tag_returns_false(self, service):
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
 
-        # Sync edges returns failure
-        service.graph_provider.delete_connector_sync_edges = AsyncMock(
+        service.graph_provider.mark_connector_sync_edges = AsyncMock(
             return_value=(0, False)
         )
 

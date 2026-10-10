@@ -10,6 +10,7 @@ import aiohttp  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     EventTypes,
@@ -1321,10 +1322,7 @@ class RecordEventHandler(BaseEventService):
             # downstream streaming would either 404 or no-op. Mark them
             # COMPLETED (same pattern as the "already indexed" short-
             # circuit above) so subsequent reindex events are no-ops.
-            is_folder_mime = mime_type in (
-                MimeTypes.FOLDER.value,
-                MimeTypes.GOOGLE_DRIVE_FOLDER.value,
-            )
+            is_folder_mime = mime_type in FOLDER_MIME_TYPES
             is_folder_record = record.get("isFile") is False
             if is_folder_mime or is_folder_record:
                 self.logger.debug(

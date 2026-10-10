@@ -2717,8 +2717,8 @@ class TestConvertToPermissions:
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        # An anonymous link names no grantee, so it yields no permission.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link(self):
@@ -2793,7 +2793,9 @@ class TestConvertToPermissions:
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm_bad, perm_good])
-        assert len(result) == 1
+        # The bad permission must not abort the batch. Neither input yields a
+        # permission: one raises, and an anonymous link names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_empty_permissions(self):

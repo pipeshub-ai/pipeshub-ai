@@ -25,6 +25,13 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.service import config_node_constants
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.retrieval.selection_scope import (
+    SelectionScope,
+    allowed_filters,
+    has_selection,
+    resolve_request_scopes,
+    selection_app_ids,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
@@ -507,7 +514,12 @@ async def resolve_connector_ids_for_search(
       so they are valid connector paths for grep.
     - Empty scope under ``strictScope`` (project chat) → search nothing.
     - No filters (chatbot "search all" mode) → get all org app IDs.
+    - A selection below app level → the apps it touches; ``merge_pattern_match_results``
+      then drops every hit outside the selection.
     """
+    touched = selection_app_ids(filters)
+    if touched is not None:
+        return touched
     scope = requested_scope_ids(filters)
     if scope is not None:
         return list(scope)
@@ -1328,6 +1340,15 @@ async def merge_pattern_match_results(
 
     scope = requested_scope_ids(filters)
     try:
+        scopes: list[SelectionScope] = []
+        if has_selection(filters) or allowed_filters(filters):
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user_key = (user.get("_key") or user.get("id")) if user else None
+            if not user_key:
+                return []
+            selection, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filters)
+            if selection is not None:
+                scope = tuple(selection.connector_ids)
         accessible_vrids = await graph_provider.filter_accessible_virtual_record_ids(
             [r["virtual_record_id"] for r in new_records],
             user_id,
@@ -1335,6 +1356,7 @@ async def merge_pattern_match_results(
             trusted_app_ids=trusted_app_ids,
             trusted_group_ids=trusted_group_ids,
             scope_connector_ids=frozenset(scope) if scope is not None else None,
+            scopes=scopes,
         ) or {}
     except Exception:
         # Fail closed: semantic results still answer the turn.

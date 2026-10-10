@@ -142,6 +142,36 @@ describe('buildProjectChatScope', () => {
     expect(scope.knowledgeDefaults).toEqual({ apps: ['app-1', 'app-2'], kb: ['kb-1'] });
   });
 
+  it('lists what the project selects below app level as rows of their own', () => {
+    const limited = {
+      _id: 'proj-2',
+      knowledgeScope: { apps: ['app-1'], kb: [], recordGroups: ['group-1'], records: ['folder-1', 'file-9'] },
+      appliedFilters: {
+        apps: [{ id: 'app-1', name: 'Slack', nodeType: 'app', connector: 'SLACK' }],
+        recordGroups: [{ id: 'group-1', name: 'Project PT', nodeType: 'recordGroup', connector: 'Jira' }],
+        records: [{ id: 'folder-1', name: 'Specs', nodeType: 'folder', connector: 'KB' }],
+      },
+      tools: [],
+    } as never;
+
+    const scope = buildProjectChatScope(limited, catalog);
+
+    expect(scope.connectors).toEqual([
+      { id: 'app-1', label: 'Slack', connectorKind: 'SLACK' },
+      { id: 'group-1', label: 'Project PT', connectorKind: 'Jira', nodeType: 'recordGroup' },
+      { id: 'file-9', label: 'file-9', connectorKind: '', nodeType: 'folder' },
+    ]);
+    expect(scope.knowledgeCollectionRows).toEqual([
+      { id: 'folder-1', name: 'Specs', sourceType: 'KB', nodeType: 'folder' },
+    ]);
+    expect(scope.knowledgeDefaults).toEqual({
+      apps: ['app-1'],
+      kb: [],
+      recordGroups: ['group-1'],
+      records: ['folder-1', 'file-9'],
+    });
+  });
+
   it('restricts the catalog to project.tools, tolerating legacy prefixed entries', () => {
     const scope = buildProjectChatScope(project, catalog);
     expect(scope.toolGroups.map((g) => g.fullNames)).toEqual([['i1:slack.send'], ['i2:jira.create']]);

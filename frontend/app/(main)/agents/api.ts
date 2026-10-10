@@ -259,20 +259,77 @@ export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): 
 }
 
 /** Connector instance ids (non–knowledge-base) from the agent graph `knowledge[]` entry. */
+/** A node a knowledge source is limited to, as a row of the agent chat panel. */
+export interface AgentKnowledgeNode {
+  id: string;
+  name: string;
+  nodeType: string;
+}
+
+/**
+ * The record groups, folders and records a knowledge source is limited to
+ * (`filters.recordGroups` / `filters.records`), named from the `nodes` the
+ * builder saves beside them. Empty for a source used as a whole.
+ */
+export function agentKnowledgeNodes(entry: KnowledgeGraphEntry): {
+  recordGroups: AgentKnowledgeNode[];
+  records: AgentKnowledgeNode[];
+} {
+  const stored = entry.filtersParsed ?? entry.filters;
+  let filters: Record<string, unknown> = {};
+  if (typeof stored === 'string') {
+    try {
+      filters = (JSON.parse(stored) as Record<string, unknown>) ?? {};
+    } catch {
+      filters = {};
+    }
+  } else if (stored && typeof stored === 'object') {
+    filters = stored as Record<string, unknown>;
+  }
+  const sourceId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
+  const named = new Map<string, AgentKnowledgeNode>();
+  for (const node of Array.isArray(filters.nodes) ? filters.nodes : []) {
+    if (node && typeof node === 'object' && typeof (node as AgentKnowledgeNode).id === 'string') {
+      named.set((node as AgentKnowledgeNode).id, node as AgentKnowledgeNode);
+    }
+  }
+  const nodesOf = (key: 'recordGroups' | 'records', fallbackType: string): AgentKnowledgeNode[] =>
+    (Array.isArray(filters[key]) ? (filters[key] as unknown[]) : [])
+      // Agents saved before each collection became its own source listed the collection here.
+      .filter((id): id is string => typeof id === 'string' && id.trim().length > 0 && id !== sourceId)
+      .map((id) => ({
+        id,
+        name: named.get(id)?.name || id,
+        nodeType: named.get(id)?.nodeType || fallbackType,
+      }));
+  return { recordGroups: nodesOf('recordGroups', 'recordGroup'), records: nodesOf('records', 'folder') };
+}
+
+function isLimitedKnowledgeEntry(entry: KnowledgeGraphEntry): boolean {
+  const nodes = agentKnowledgeNodes(entry);
+  return nodes.recordGroups.length > 0 || nodes.records.length > 0;
+}
+
 export function extractAgentKnowledgeDefaults(
   agent: AgentDetail | null | undefined
-): { apps: string[]; kb: string[] } {
+): { apps: string[]; kb: string[]; recordGroups: string[]; records: string[] } {
   const apps: string[] = [];
   const kb: string[] = [];
+  const recordGroups: string[] = [];
+  const records: string[] = [];
   const raw = agent?.knowledge;
-  if (!Array.isArray(raw)) return { apps, kb };
+  if (!Array.isArray(raw)) return { apps, kb, recordGroups, records };
 
   for (const entry of raw) {
     if (!isKnowledgeGraphEntry(entry)) continue;
     const connectorId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
     if (!connectorId) continue;
 
-    if (isKbKnowledgeEntry(entry)) {
+    const nodes = agentKnowledgeNodes(entry);
+    if (nodes.recordGroups.length > 0 || nodes.records.length > 0) {
+      recordGroups.push(...nodes.recordGroups.map((node) => node.id));
+      records.push(...nodes.records.map((node) => node.id));
+    } else if (isKbKnowledgeEntry(entry)) {
       kb.push(connectorId);
     } else {
       apps.push(connectorId);
@@ -282,14 +339,19 @@ export function extractAgentKnowledgeDefaults(
   return {
     apps: Array.from(new Set(apps)),
     kb: Array.from(new Set(kb)),
+    recordGroups: Array.from(new Set(recordGroups)),
+    records: Array.from(new Set(records)),
   };
 }
 
-/** App connector rows (instance ids + labels) for agent chat UI — excludes KB-backed sources. */
+/**
+ * App connector rows (instance ids + labels) for agent chat UI — excludes KB-backed sources.
+ * A connector limited to some record groups, folders or records is listed as those nodes.
+ */
 export function extractAgentKnowledgeConnectors(
   agent: AgentDetail | null | undefined
-): Array<{ id: string; label: string; connectorKind: string }> {
-  const rows: Array<{ id: string; label: string; connectorKind: string }> = [];
+): Array<{ id: string; label: string; connectorKind: string; nodeType?: string }> {
+  const rows: Array<{ id: string; label: string; connectorKind: string; nodeType?: string }> = [];
   const seen = new Set<string>();
   const raw = agent?.knowledge;
   if (!Array.isArray(raw)) return rows;
@@ -314,6 +376,13 @@ export function extractAgentKnowledgeConnectors(
       (typeof entry.type === 'string' && entry.type.trim()) ||
       (typeof entry.name === 'string' && entry.name.trim()) ||
       label;
+    if (isLimitedKnowledgeEntry(entry)) {
+      const nodes = agentKnowledgeNodes(entry);
+      for (const node of [...nodes.recordGroups, ...nodes.records]) {
+        rows.push({ id: node.id, label: node.name, connectorKind, nodeType: node.nodeType });
+      }
+      continue;
+    }
     rows.push({ id: connectorId, label, connectorKind });
   }
   return rows;
@@ -325,6 +394,8 @@ export interface AgentKnowledgeCollectionRow {
   name: string;
   /** Knowledge graph `type` (e.g. `KB`, `Jira`, `Confluence`) — drives row artwork. */
   sourceType?: string;
+  /** Set on a folder or record a collection is limited to; absent for a whole collection. */
+  nodeType?: string;
 }
 
 /**
@@ -359,6 +430,13 @@ export function extractAgentKnowledgeCollectionRows(
         ? entry.type.trim()
         : undefined;
 
+    if (isLimitedKnowledgeEntry(entry)) {
+      const nodes = agentKnowledgeNodes(entry);
+      for (const node of [...nodes.recordGroups, ...nodes.records]) {
+        rows.push({ id: node.id, name: node.name, sourceType, nodeType: node.nodeType });
+      }
+      continue;
+    }
     rows.push({ id: connectorId, name, sourceType });
   }
   return rows;
@@ -657,15 +735,16 @@ export const AgentsApi = {
    * Supports pagination, search, and sorting.
    */
   async getKnowledgeHubAppNodes(params?: {
-    page?: number;
+    cursor?: string | null;
     limit?: number;
     q?: string;
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
     flattened?: boolean;
-  }): Promise<{ nodes: KnowledgeHubAppNode[]; hasNext: boolean }> {
+  }): Promise<{ nodes: KnowledgeHubAppNode[]; nextCursor: string | null }> {
     const query: Record<string, string | number | boolean> = {};
-    query.page = params?.page ?? 1;
+    // Only ever hand back a cursor the server issued; inventing one is a 400.
+    if (params?.cursor) query.cursor = params.cursor;
     query.limit = params?.limit ?? 100;
     query.sortBy = params?.sortBy ?? 'updatedAt';
     query.sortOrder = params?.sortOrder ?? 'desc';
@@ -685,7 +764,7 @@ export const AgentsApi = {
 
     return {
       nodes: items,
-      hasNext: data?.pagination?.hasNext ?? false,
+      nextCursor: data?.pagination?.nextCursor ?? null,
     };
   },
 
@@ -695,18 +774,22 @@ export const AgentsApi = {
    */
   async getAllKnowledgeHubAppNodes(): Promise<KnowledgeHubAppNode[]> {
     const all: KnowledgeHubAppNode[] = [];
-    let page = 1;
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
     for (;;) {
       // Pass flattened=false to get only root connector apps, not all nested documents
-      const { nodes, hasNext } = await this.getKnowledgeHubAppNodes({ 
-        page, 
+      const { nodes, nextCursor } = await this.getKnowledgeHubAppNodes({
+        cursor,
         limit: 100,
-        flattened: false 
+        flattened: false,
       });
       all.push(...nodes);
-      if (!hasNext) break;
-      page += 1;
-      if (page > 100) break;
+      // The absent cursor is the end of the result, so no page cap is needed.
+      // The repeat guard only defends against a server echoing a cursor back
+      // instead of advancing, which would otherwise spin forever.
+      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
     return all;
   },

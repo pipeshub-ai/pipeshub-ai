@@ -5,15 +5,13 @@ Lines 9500-21755: page tokens, edge checks, failed records, organization,
 knowledge hub, knowledge base CRUD, duplicate detection, move record,
 teams, users, agents, agent templates, and AQL builder helpers.
 """
-import json
 import logging
-import time
 import unicodedata
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
 
@@ -170,26 +168,6 @@ class TestCheckEdgeExists:
 # ===========================================================================
 # Failed Records (lines 9691-9755)
 # ===========================================================================
-
-class TestGetFailedRecordsWithActiveUsers:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"record": {}, "users": []}])
-        result = await connected_provider.get_failed_records_with_active_users("org1", "conn1")
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_empty(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=None)
-        result = await connected_provider.get_failed_records_with_active_users("org1", "conn1")
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_failed_records_with_active_users("org1", "conn1")
-        assert result == []
-
 
 class TestGetFailedRecordsByOrg:
     @pytest.mark.asyncio
@@ -617,9 +595,8 @@ class TestListUserKnowledgeBases:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        kbs, count, filters = await connected_provider.list_user_knowledge_bases("u1", "org1", 0, 10)
-        assert kbs == []
-        assert count == 0
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.list_user_knowledge_bases("u1", "org1", 0, 10)
 
 
 # ===========================================================================
@@ -981,91 +958,13 @@ class TestValidateFolderExistsInKb:
 # Knowledge Hub Root Nodes (lines 13682-13786)
 # ===========================================================================
 
-class TestGetKnowledgeHubRootNodes:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [{"id": "a1"}], "total": 1}]
-        )
-        result = await connected_provider.get_knowledge_hub_root_nodes(
-            "u1", "org1", ["a1"], 0, 10, "name", "ASC", only_containers=False
-        )
-        assert result["total"] == 1
-
-    @pytest.mark.asyncio
-    async def test_empty(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.get_knowledge_hub_root_nodes(
-            "u1", "org1", [], 0, 10, "name", "ASC", only_containers=False
-        )
-        assert result == {"nodes": [], "total": 0}
-
-
 # ===========================================================================
 # Knowledge Hub Children (lines 13788-13880)
 # ===========================================================================
 
-class TestGetKnowledgeHubChildren:
-    @pytest.mark.asyncio
-    async def test_app_parent(self, connected_provider):
-        connected_provider._get_app_children_subquery = MagicMock(return_value=("LET raw_children = []", {}))
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0}]
-        )
-        result = await connected_provider.get_knowledge_hub_children(
-            "a1", "app", "org1", "u1", 0, 10, "name", "ASC"
-        )
-        assert result["total"] == 0
-
-    @pytest.mark.asyncio
-    async def test_record_group_parent(self, connected_provider):
-        connected_provider._get_record_group_children_split = AsyncMock(
-            return_value={"nodes": [], "total": 0}
-        )
-        result = await connected_provider.get_knowledge_hub_children(
-            "rg1", "recordGroup", "org1", "u1", 0, 10, "name", "ASC"
-        )
-        assert result["total"] == 0
-
-    @pytest.mark.asyncio
-    async def test_unknown_type(self, connected_provider):
-        result = await connected_provider.get_knowledge_hub_children(
-            "x1", "unknown", "org1", "u1", 0, 10, "name", "ASC"
-        )
-        assert result == {"nodes": [], "total": 0}
-
-    @pytest.mark.asyncio
-    async def test_folder_parent(self, connected_provider):
-        connected_provider._get_record_children_subquery = MagicMock(return_value=("LET raw_children = []", {}))
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0}]
-        )
-        result = await connected_provider.get_knowledge_hub_children(
-            "f1", "folder", "org1", "u1", 0, 10, "name", "ASC"
-        )
-        assert result["total"] == 0
-
-
 # ===========================================================================
 # Knowledge Hub Static Helpers (lines 13883-13997)
 # ===========================================================================
-
-class TestKnowledgeHubOriginFilterLines:
-    def test_collection_only(self):
-        lines = ArangoHTTPProvider._knowledge_hub_origin_filter_lines(["COLLECTION"], "r")
-        assert any("KB" in l for l in lines)
-
-    def test_connector_only(self):
-        lines = ArangoHTTPProvider._knowledge_hub_origin_filter_lines(["CONNECTOR"], "r")
-        assert any("!=" in l for l in lines)
-
-    def test_both(self):
-        lines = ArangoHTTPProvider._knowledge_hub_origin_filter_lines(["COLLECTION", "CONNECTOR"], "r")
-        assert lines == []
-
-    def test_none(self):
-        assert ArangoHTTPProvider._knowledge_hub_origin_filter_lines(None, "r") == []
-
 
 class TestKnowledgeHubTimestampExprs:
     def test_rg_created(self):
@@ -1085,170 +984,9 @@ class TestKnowledgeHubTimestampExprs:
         assert "sourceLastModifiedTimestamp" in expr
 
 
-class TestBuildKnowledgeHubSeedPrefilterAql:
-    def test_returns_empty(self):
-        assert ArangoHTTPProvider._build_knowledge_hub_seed_prefilter_aql() == ""
-
-
-class TestNeedsKnowledgeHubFolderDetection:
-    def test_none(self):
-        assert ArangoHTTPProvider._needs_knowledge_hub_folder_detection(None) is True
-
-    def test_folder(self):
-        assert ArangoHTTPProvider._needs_knowledge_hub_folder_detection(["folder"]) is True
-
-    def test_record(self):
-        assert ArangoHTTPProvider._needs_knowledge_hub_folder_detection(["record"]) is True
-
-    def test_app_only(self):
-        assert ArangoHTTPProvider._needs_knowledge_hub_folder_detection(["app"]) is False
-
-
-class TestInlineFilterExprFromLines:
-    def test_empty(self):
-        assert ArangoHTTPProvider._inline_filter_expr_from_lines("") == ""
-
-    def test_single(self):
-        result = ArangoHTTPProvider._inline_filter_expr_from_lines("FILTER x == 1")
-        assert result == "x == 1"
-
-    def test_multiple(self):
-        result = ArangoHTTPProvider._inline_filter_expr_from_lines("FILTER a == 1\nFILTER b == 2")
-        assert "a == 1" in result
-        assert "b == 2" in result
-
-
 # ===========================================================================
 # Traversal / AQL Builder Helpers (lines 13953-14100)
 # ===========================================================================
-
-class TestBuildKnowledgeHubTraversalDocumentPrefilterAql:
-    def test_empty(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=False, search_query=None, origins=None,
-            connector_ids=None, record_types=None, indexing_status=None, size=None
-        )
-        assert result == ""
-
-    def test_search(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=False, search_query="test", origins=None,
-            connector_ids=None, record_types=None, indexing_status=None, size=None
-        )
-        assert "recordName" in result
-
-    def test_rg_search(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=True, search_query="test", origins=None,
-            connector_ids=None, record_types=None, indexing_status=None, size=None
-        )
-        assert "groupName" in result
-
-    def test_size_filter(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=False, search_query=None, origins=None,
-            connector_ids=None, record_types=None, indexing_status=None,
-            size={"gte": 100, "lte": 1000}
-        )
-        assert "sizeInBytes" in result
-
-    def test_record_types(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=False, search_query=None, origins=None,
-            connector_ids=None, record_types=["FILE"], indexing_status=None, size=None
-        )
-        assert "recordType" in result
-
-    def test_connector_ids(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=False, search_query=None, origins=None,
-            connector_ids=["c1"], record_types=None, indexing_status=None, size=None
-        )
-        assert "connectorId" in result
-
-    def test_indexing_status(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=False, search_query=None, origins=None,
-            connector_ids=None, record_types=None, indexing_status=["COMPLETED"], size=None
-        )
-        assert "indexingStatus" in result
-
-    def test_origins_collection(self, provider):
-        result = provider._build_knowledge_hub_traversal_document_prefilter_aql(
-            "r", is_record_group=False, search_query=None, origins=["COLLECTION"],
-            connector_ids=None, record_types=None, indexing_status=None, size=None
-        )
-        assert "KB" in result
-
-
-class TestBuildKnowledgeHubDirectRecordPrefilterAql:
-    def test_empty(self, provider):
-        result = provider._build_knowledge_hub_direct_record_prefilter_aql(
-            "r", search_query=None, origins=None, connector_ids=None,
-            record_types=None, indexing_status=None, created_at=None, updated_at=None, size=None
-        )
-        assert result == ""
-
-    def test_all_filters(self, provider):
-        result = provider._build_knowledge_hub_direct_record_prefilter_aql(
-            "r", search_query="test", origins=["COLLECTION"], connector_ids=["c1"],
-            record_types=["FILE"], indexing_status=["COMPLETED"],
-            created_at={"gte": 100, "lte": 200},
-            updated_at={"gte": 300, "lte": 400},
-            size={"gte": 10, "lte": 100}
-        )
-        assert "recordName" in result
-        assert "connectorId" in result
-        assert "recordType" in result
-        assert "sizeInBytes" in result
-
-
-class TestBuildKnowledgeHubInheritedAccessFilterAql:
-    def test_returns_aql(self, provider):
-        aql = provider._build_knowledge_hub_inherited_access_filter_aql()
-        assert "is_rg" in aql
-        assert "is_record" in aql
-
-
-class TestBuildKnowledgeHubInheritedDocumentPrefilterAql:
-    def test_empty(self, provider):
-        result = provider._build_knowledge_hub_inherited_document_prefilter_aql(
-            search_query=None, origins=None, connector_ids=None,
-            record_types=None, indexing_status=None, size=None
-        )
-        assert result == ""
-
-    def test_with_search(self, provider):
-        result = provider._build_knowledge_hub_inherited_document_prefilter_aql(
-            search_query="test", origins=None, connector_ids=None,
-            record_types=None, indexing_status=None, size=None
-        )
-        assert "is_rg" in result
-
-
-class TestBuildKnowledgeHubMinimalRgNodesAql:
-    def test_basic(self, provider):
-        aql = provider._build_knowledge_hub_minimal_rg_nodes_aql(only_containers=False)
-        assert "rg_nodes" in aql
-
-    def test_only_containers(self, provider):
-        aql = provider._build_knowledge_hub_minimal_rg_nodes_aql(only_containers=True)
-        assert "has_children" in aql
-
-
-class TestBuildKnowledgeHubMinimalRecordNodesAql:
-    def test_basic(self, provider):
-        aql = provider._build_knowledge_hub_minimal_record_nodes_aql(only_containers=False, detect_folder=False)
-        assert "record_nodes" in aql
-
-    def test_detect_folder(self, provider):
-        aql = provider._build_knowledge_hub_minimal_record_nodes_aql(only_containers=False, detect_folder=True)
-        assert "is_folder" in aql
-
-    def test_only_containers(self, provider):
-        aql = provider._build_knowledge_hub_minimal_record_nodes_aql(only_containers=True, detect_folder=False)
-        assert "has_children" in aql
-
 
 # ===========================================================================
 # Knowledge Hub Breadcrumbs (lines 14812-14979)
@@ -1260,11 +998,8 @@ class TestGetKnowledgeHubBreadcrumbs:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=[
             [{"id": "n1", "name": "Node1", "nodeType": "app", "parentId": None}],
         ])
-        connected_provider.filter_nodes_with_permission_role = AsyncMock(
-            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
-        )
-        connected_provider.get_knowledge_hub_node_access = AsyncMock(
-            side_effect=lambda node_id, **k: {"id": node_id}
+        connected_provider.check_access = AsyncMock(
+            side_effect=lambda user_key, org_id, *, node_ids=(), **k: AccessCheck(node_ids=frozenset(node_ids))
         )
         crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1", "u1", "org1")
         assert len(crumbs) == 1
@@ -1276,11 +1011,8 @@ class TestGetKnowledgeHubBreadcrumbs:
             [{"id": "n2", "name": "Child", "nodeType": "record", "parentId": "n1"}],
             [{"id": "n1", "name": "Parent", "nodeType": "app", "parentId": None}],
         ])
-        connected_provider.filter_nodes_with_permission_role = AsyncMock(
-            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
-        )
-        connected_provider.get_knowledge_hub_node_access = AsyncMock(
-            side_effect=lambda node_id, **k: {"id": node_id}
+        connected_provider.check_access = AsyncMock(
+            side_effect=lambda user_key, org_id, *, node_ids=(), **k: AccessCheck(node_ids=frozenset(node_ids))
         )
         crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n2", "u1", "org1")
         assert len(crumbs) == 2
@@ -1289,11 +1021,8 @@ class TestGetKnowledgeHubBreadcrumbs:
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
-        connected_provider.filter_nodes_with_permission_role = AsyncMock(
-            side_effect=lambda nodes, *a, **k: {n["id"] for n in nodes}
-        )
-        connected_provider.get_knowledge_hub_node_access = AsyncMock(
-            side_effect=lambda node_id, **k: {"id": node_id}
+        connected_provider.check_access = AsyncMock(
+            side_effect=lambda user_key, org_id, *, node_ids=(), **k: AccessCheck(node_ids=frozenset(node_ids))
         )
         crumbs = await connected_provider.get_knowledge_hub_breadcrumbs("n1", "u1", "org1")
         assert crumbs == []
@@ -1302,28 +1031,6 @@ class TestGetKnowledgeHubBreadcrumbs:
 # ===========================================================================
 # Filter Nodes With Permission Role (lines 14981-15064)
 # ===========================================================================
-
-class TestFilterNodesWithPermissionRole:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[["r1", "rg1"]])
-        nodes = [{"id": "r1", "type": "record"}, {"id": "rg1", "type": "recordGroup"}]
-        result = await connected_provider.filter_nodes_with_permission_role(nodes, "u1", "org1")
-        assert "r1" in result
-        assert "rg1" in result
-
-    @pytest.mark.asyncio
-    async def test_empty_nodes(self, connected_provider):
-        result = await connected_provider.filter_nodes_with_permission_role([], "u1", "org1")
-        assert result == set()
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        nodes = [{"id": "r1", "type": "record"}]
-        result = await connected_provider.filter_nodes_with_permission_role(nodes, "u1", "org1")
-        assert result == set()
-
 
 # ===========================================================================
 # Get Record Parent Adjacency (lines 15066-15202)
@@ -1357,15 +1064,16 @@ class TestGetRecordParentAdjacency:
 class TestGetUserAppIds:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
-        connected_provider.get_user_apps = AsyncMock(return_value=[
-            {"_key": "a1"}, {"_key": "a2"}
-        ])
+        """The user-app relation, direct or through a team: an extension hook,
+        not the gate, as on Neo4j."""
+        connected_provider.execute_query = AsyncMock(return_value=["a1", "a2"])
         result = await connected_provider.get_user_app_ids("u1")
         assert result == ["a1", "a2"]
+        assert connected_provider.execute_query.await_args.kwargs["bind_vars"] == {"user_from": "users/u1"}
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
-        connected_provider.get_user_apps = AsyncMock(side_effect=Exception("fail"))
+        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_user_app_ids("u1")
         assert result == []
 
@@ -1434,22 +1142,6 @@ class TestGetKnowledgeHubContextPermissions:
 # Get Knowledge Hub Node Info (lines 15394-15429)
 # ===========================================================================
 
-class TestGetKnowledgeHubNodeInfo:
-    @pytest.mark.asyncio
-    async def test_found(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"id": "n1", "name": "Node", "nodeType": "app"}]
-        )
-        result = await connected_provider.get_knowledge_hub_node_info("n1", [])
-        assert result["id"] == "n1"
-
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
-        result = await connected_provider.get_knowledge_hub_node_info("n1", [])
-        assert result is None
-
-
 # ===========================================================================
 # Get Knowledge Hub Node Access (lines 15431-15555)
 # ===========================================================================
@@ -1457,23 +1149,30 @@ class TestGetKnowledgeHubNodeInfo:
 class TestGetKnowledgeHubNodeAccess:
     @pytest.mark.asyncio
     async def test_found(self, connected_provider):
+        connected_provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"n1"})))
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"id": "n1", "nodeType": "record", "userRole": "OWNER"}]
+            return_value=[{"result": {"id": "n1", "nodeType": "record"}, "kbId": "kb1"}]
         )
+        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         result = await connected_provider.get_knowledge_hub_node_access("n1", "u1", "org1", [])
         assert result["userRole"] == "OWNER"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
+        connected_provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"n1"})))
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[None])
         result = await connected_provider.get_knowledge_hub_node_access("n1", "u1", "org1", [])
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_a_failed_check_raises(self, connected_provider):
+        """The check runs first; a graph that cannot answer it is not a node
+        that does not exist."""
+        from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_knowledge_hub_node_access("n1", "u1", "org1", [])
-        assert result is None
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await connected_provider.get_knowledge_hub_node_access("n1", "u1", "org1", [])
 
 
 # ===========================================================================
@@ -1484,14 +1183,15 @@ class TestGetLinkedRecords:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[[{"id": "r2", "name": "Linked"}]]
+            return_value=[{"id": "r2", "name": "Linked"}, {"id": "r3", "name": "Hidden"}]
         )
+        connected_provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"r2"})))
         result = await connected_provider.get_linked_records("r1", "org1", "u1", ["RELATED"])
-        assert len(result) == 1
+        assert [r["id"] for r in result] == ["r2"]
 
     @pytest.mark.asyncio
     async def test_empty(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[[]])
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         result = await connected_provider.get_linked_records("r1", "org1", "u1", ["RELATED"])
         assert result == []
 
@@ -1529,7 +1229,7 @@ class TestGetKnowledgeHubParentNode:
 class TestGetKnowledgeHubFilterOptions:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
-        connected_provider.get_user_apps = AsyncMock(return_value=[
+        connected_provider.get_gated_apps = AsyncMock(return_value=[
             {"_key": "a1", "name": "Drive", "type": "DRIVE"},
             {"_key": "a2", "name": "KB", "type": "KB"},
         ])
@@ -1539,7 +1239,7 @@ class TestGetKnowledgeHubFilterOptions:
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
-        connected_provider.get_user_apps = AsyncMock(side_effect=Exception("fail"))
+        connected_provider.get_gated_apps = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.get_knowledge_hub_filter_options("u1", "org1")
         assert result == {"apps": []}
 
@@ -1601,83 +1301,9 @@ class TestGetConnectorStats:
 # Subquery Builders (lines 16397-17121)
 # ===========================================================================
 
-class TestGetAppChildrenSubquery:
-    def test_returns_query_and_vars(self, provider):
-        sub_query, bind_vars = provider._get_app_children_subquery("a1", "org1", "u1")
-        assert "app" in sub_query.lower()
-        assert bind_vars["app_id"] == "a1"
-
-
-class TestGetRecordChildrenSubquery:
-    def test_returns_query_and_vars(self, provider):
-        sub_query, bind_vars = provider._get_record_children_subquery("r1", "org1", "u1")
-        assert "record" in sub_query.lower()
-        assert bind_vars["record_doc_id"] == "records/r1"
-
-
 # ===========================================================================
 # Knowledge Hub Filter Conditions Builder (lines 17123-17230)
 # ===========================================================================
-
-class TestBuildKnowledgeHubFilterConditions:
-    def test_empty(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions()
-        assert "(node.isPlaceholder != true)" in conditions
-
-    def test_search(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(search_query="test")
-        assert "search_query" in params
-
-    def test_node_types(self, provider):
-        conditions, _ = provider._build_knowledge_hub_filter_conditions(node_types=["folder", "record"])
-        joined = " ".join(conditions)
-        assert "folder" in joined
-
-    def test_record_types(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(record_types=["FILE"])
-        assert "record_types" in params
-
-    def test_indexing_status(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(indexing_status=["COMPLETED"])
-        assert "indexing_status" in params
-
-    def test_created_at(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(
-            created_at={"gte": 1000, "lte": 2000}
-        )
-        assert "created_at_gte" in params
-        assert "created_at_lte" in params
-
-    def test_updated_at(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(
-            updated_at={"gte": 1000}
-        )
-        assert "updated_at_gte" in params
-
-    def test_size(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(
-            size={"gte": 100, "lte": 1000}
-        )
-        assert "size_gte" in params
-        assert "size_lte" in params
-
-    def test_origins(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(origins=["COLLECTION"])
-        assert "origins" in params
-
-    def test_connector_ids(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(connector_ids=["c1"])
-        assert "connector_ids" in params
-
-    def test_only_containers(self, provider):
-        conditions, _ = provider._build_knowledge_hub_filter_conditions(only_containers=True)
-        joined = " ".join(conditions)
-        assert "hasChildren" in joined
-
-    def test_record_group_ids(self, provider):
-        conditions, params = provider._build_knowledge_hub_filter_conditions(record_group_ids=["rg1"])
-        assert "record_group_ids" in params
-
 
 # ===========================================================================
 # Permission Role AQL Builders (lines 17232-17711)
@@ -1711,59 +1337,9 @@ class TestGetPermissionRoleAql:
 # Scope Filters (lines 17713-17832)
 # ===========================================================================
 
-class TestBuildScopeFilters:
-    def test_no_parent(self, provider):
-        result = provider._build_scope_filters(None, None)
-        assert result == ("", "", "true", "true")
-
-    def test_app_parent(self, provider):
-        rg, rec, rg_i, rec_i = provider._build_scope_filters("a1", "app")
-        assert "connectorId" in rg
-        assert "connectorId" in rec
-
-    def test_kb_parent(self, provider):
-        rg, rec, rg_i, rec_i = provider._build_scope_filters("kb1", "kb")
-        assert "parentId" in rg
-
-    def test_record_parent(self, provider):
-        rg, rec, rg_i, rec_i = provider._build_scope_filters("r1", "record", parent_connector_id="c1")
-        assert "parent_connector_id" in rg
-
-    def test_unknown_parent(self, provider):
-        result = provider._build_scope_filters("x", "banana")
-        assert result == ("", "", "true", "true")
-
-    def test_with_record_group_ids_no_parent(self, provider):
-        rg, rec, rg_i, rec_i = provider._build_scope_filters(None, None, record_group_ids=["rg1"])
-        assert "record_group_ids" in rg
-
-
 # ===========================================================================
 # Children Intersection AQL (lines 17834-17965)
 # ===========================================================================
-
-class TestBuildChildrenIntersectionAql:
-    def test_kb(self, provider):
-        aql = provider._build_children_intersection_aql("kb1", "kb")
-        assert "final_accessible_rgs" in aql
-        assert "final_accessible_records" in aql
-
-    def test_record(self, provider):
-        aql = provider._build_children_intersection_aql("r1", "record")
-        assert "final_accessible_records" in aql
-
-    def test_app_depth_1(self, provider):
-        aql = provider._build_children_intersection_aql("a1", "app", depth=1)
-        assert "final_accessible_records" in aql
-
-    def test_app_depth_3(self, provider):
-        aql = provider._build_children_intersection_aql("a1", "app", depth=3)
-        assert "child_record_ids" in aql
-
-    def test_default(self, provider):
-        aql = provider._build_children_intersection_aql("x1", "other")
-        assert "final_accessible_rgs = accessible_rgs" in aql
-
 
 # ===========================================================================
 # Move Record Methods (lines 17967-18155)

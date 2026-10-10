@@ -6,9 +6,10 @@ plumbing so the personal variant:
   * Never lists Jira users, groups, application roles, or project permission
     schemes (no ``/rest/api/3/users``, ``/group``, ``/applicationrole``,
     ``/project/{key}/permissionscheme`` calls).
-  * Routes every project ``RecordGroup`` ACL through the shared internal
-    ``ConnectorGroup`` (see ``BaseConnector.ensure_connector_group_permission``)
-    so the connector creator — and only the creator — has read access.
+  * Gives every project an inherit edge to the app and no grant of its own.
+    The creator passes the connector gate (the user-app link written by
+    ``ensure_connector_group_permission``), and issues and attachments
+    already inherit from the project.
 
 All issue fetching / ADF parsing / attachment handling / streaming / reindexing
 logic is inherited unchanged from the workspace connector.
@@ -236,6 +237,10 @@ def _excludes(project_keys_operator: FilterOperatorType | None) -> bool:
 class JiraCloudPersonalConnector(JiraConnector):
     """Personal Jira Cloud: creator-only permissions, no user/group/role/scheme API calls."""
 
+    # The account's own projects are the ones it can browse; the project is all
+    # this connector's access control rests on.
+    PROJECT_SEARCH_ACTION = "browse"
+
     def __init__(
         self,
         logger: Logger,
@@ -304,11 +309,9 @@ class JiraCloudPersonalConnector(JiraConnector):
                     self.connector_id,
                 )
 
-            # Upsert the pseudo ConnectorGroup (creator becomes a member) and cache
-            # the GROUP permission for use on every project record group below.
-            # Routing access via this internal group lets new users be added later
-            # without rewriting per-project ACLs.
-            await self.ensure_connector_group_permission()
+            # The creator's user-app link is the gate. Projects inherit from the
+            # app, so this does not stamp a grant on them.
+            await self.ensure_creator_user_app_relation()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,
@@ -503,7 +506,10 @@ class JiraCloudPersonalConnector(JiraConnector):
             lambda ds: ds.get_project(projectIdOrKey=project_id),
             ctx=f"checking project {project_key}",
         )
-        if response.status not in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value):
+        gone = response.status in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value) or (
+            response.status == HttpStatusCode.OK.value and await self._cannot_browse(project_id, project_key)
+        )
+        if not gone:
             self.logger.info(
                 "Project %s is not in Jira's project list, but Jira did not say it is gone (HTTP %s); "
                 "nothing removed",
@@ -528,13 +534,25 @@ class JiraCloudPersonalConnector(JiraConnector):
         if not await self.data_entities_processor.on_record_group_deleted(project_id, self.connector_id):
             self.logger.warning("Could not remove the emptied project %s; retrying next sync", project_key)
 
+    async def _cannot_browse(self, project_id: str, project_key: str) -> bool:
+        """Whether Jira says the account lacks Browse projects; a Jira admin can open a project it cannot browse."""
+        response = await self._call_with_retry(
+            lambda ds: ds.get_my_permissions(projectId=project_id, permissions="BROWSE_PROJECTS"),
+            ctx=f"checking Browse projects on {project_key}",
+        )
+        if response.status != HttpStatusCode.OK.value:
+            return False
+        body = self._safe_json_parse(response, f"my permissions on {project_key}")
+        browse = ((body or {}).get("permissions") or {}).get("BROWSE_PROJECTS") or {}
+        return browse.get("havePermission") is False
+
     async def _fetch_projects(
         self,
         project_keys: Optional[list[str]] = None,
         project_keys_operator: Optional[FilterOperatorType] = None,
         jira_users: Optional[list[AppUser]] = None,
     ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
-        """List projects via paginated ``search_projects``; grant ConnectorGroup READ only.
+        """List projects. Each one inherits from the app and carries no grant.
 
         Reuses the parent's ``_list_projects_with_filter`` helper for the actual
         listing + pagination + client-side exclusion. Skips
@@ -548,13 +566,10 @@ class JiraCloudPersonalConnector(JiraConnector):
             project_keys, project_keys_operator
         )
 
-        group_permission = self._connector_group_permission
-        if group_permission is None:
-            # Idempotent — returns the cached permission if already created upstream.
-            group_permission = await self.ensure_connector_group_permission()
-        project_permissions: list[Permission] = (
-            [group_permission] if group_permission else []
-        )
+        # Keeps the creator's user-app link. The returned group permission is
+        # not written on the project: an empty list clears one an older sync stored.
+        if self.creator_email:
+            await self.ensure_creator_user_app_relation()
 
         record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for project in projects:
@@ -572,15 +587,10 @@ class JiraCloudPersonalConnector(JiraConnector):
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
                 web_url=project.get("url"),
+                inherit_permissions=True,
             )
 
-            record_groups.append((record_group, list(project_permissions)))
-
-            if project_permissions:
-                self.logger.debug(
-                    "Project %s: granted access via ConnectorGroup",
-                    project_key,
-                )
+            record_groups.append((record_group, []))
 
         return record_groups, projects
 

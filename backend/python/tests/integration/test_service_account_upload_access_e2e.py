@@ -36,6 +36,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.record_access import (
     caller_can_read_virtual_record,
+    org_permission_grants,
     service_account_upload_permission_edges,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -177,15 +178,26 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
 
 async def test_a_service_account_upload_is_granted_and_readable(env: _Env) -> None:
     edges = service_account_upload_permission_edges(
-        env.org_id, [env.record_id], get_epoch_timestamp_in_ms(),
+        env.org_id, [env.record_id], get_epoch_timestamp_in_ms(), uploaded_by="svc-caller",
     )
     # Raises when the store refuses the edge, which is how the upload failed on ArangoDB.
     await env.graph.batch_create_edges(edges, collection=CollectionNames.PERMISSION.value)
 
     assert await caller_can_read_virtual_record(
-        env.graph, user_id=None, org_id=env.org_id, virtual_record_id=env.virtual_id,
+        env.graph, user_id="svc-caller", org_id=env.org_id, virtual_record_id=env.virtual_id,
         logger=logger, is_service_account=True,
     ), "the service account cannot read its own upload"
+    # R2-07: history replay checks with this too, so another bot user cannot name the upload.
+    assert not await caller_can_read_virtual_record(
+        env.graph, user_id="another-caller", org_id=env.org_id, virtual_record_id=env.virtual_id,
+        logger=logger, is_service_account=True,
+    ), "another service-account caller reads the upload"
+
+    # R1-21: the grant names its uploader, which keep_accessible_attachments matches on.
+    for uploader, expected in (("svc-caller", True), ("another-caller", False)):
+        assert await org_permission_grants(
+            env.graph, env.org_id, env.record_id, logger, uploaded_by=uploader,
+        ) is expected, uploader
 
     member = await env.graph.check_record_access_with_details(f"uid-{env.member_key}", env.org_id, env.record_id)
     assert member is not None, "a member of the org cannot open the service account's upload"

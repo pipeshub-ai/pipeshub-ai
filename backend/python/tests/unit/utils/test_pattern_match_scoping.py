@@ -343,6 +343,29 @@ async def test_failed_scoped_grep_falls_back_to_full_grep(tmp_path):
     assert tool.find_records.await_args.kwargs["command"] == 'grep -rci "x" .'
 
 
+class TestConnectorsOfASelection:
+    @pytest.mark.asyncio
+    async def test_a_selection_greps_only_the_apps_it_touches(self):
+        from app.utils.pattern_match import resolve_connector_ids_for_search
+
+        graph = MagicMock()
+        graph.get_org_apps = AsyncMock(return_value=[{"_key": "every-app"}])
+        connectors = await resolve_connector_ids_for_search(graph, "o", {
+            "apps": ["app-whole"], "kb": [], "records": ["folder-1"], "selectionApps": ["app-touched"],
+        })
+        assert connectors == ["app-whole", "app-touched"]
+        graph.get_org_apps.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_selection_that_touches_nothing_greps_nothing(self):
+        from app.utils.pattern_match import resolve_connector_ids_for_search
+
+        graph = MagicMock()
+        graph.get_org_apps = AsyncMock(return_value=[{"_key": "every-app"}])
+        assert await resolve_connector_ids_for_search(graph, "o", {"records": ["gone"]}) == []
+        graph.get_org_apps.assert_not_awaited()
+
+
 class TestMergeAdjudication:
     """merge_pattern_match_results adjudicates exactly as semantic search does."""
 
@@ -367,6 +390,44 @@ class TestMergeAdjudication:
         )
 
     @pytest.mark.asyncio
+    async def test_a_selection_below_app_level_bounds_what_is_cited(self):
+        """Grep reads the whole app; only a hit inside the selection may be cited."""
+        from app.modules.retrieval import selection_scope
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        selection_scope._memo.clear()
+        graph = self._graph()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"folder-1"})))
+        graph.get_selection_nodes = AsyncMock(return_value={
+            "groups": [], "records": [{"id": "r1", "vrid": "v1", "connectorId": "app-1"}],
+        })
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+
+        await self._merge(
+            graph, [{"virtual_record_id": "v1"}, {"virtual_record_id": "v2"}],
+            filters={"apps": [], "kb": [], "records": ["folder-1"], "allowedApps": ["app-1"]},
+        )
+
+        call = graph.filter_accessible_virtual_record_ids.await_args.kwargs
+        assert call["scope_connector_ids"] == frozenset({"app-1"})
+        selection, allowed = call["scopes"]
+        assert selection.admits({"id": "r1"}) and not selection.admits({"id": "r2", "connectorId": "app-1"})
+        assert allowed.admits({"id": "x", "connectorId": "app-1"})
+        selection_scope._memo.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_selection_without_a_resolvable_user_cites_nothing(self):
+        graph = self._graph()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+
+        assert await self._merge(
+            graph, [{"virtual_record_id": "v1"}], filters={"records": ["folder-1"]},
+        ) == []
+        graph.filter_accessible_virtual_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_uses_trusted_containers_and_request_scope(self):
         graph = self._graph(trusted_apps={"app-1"}, trusted_groups={"rg-1"})
         graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
@@ -380,6 +441,7 @@ class TestMergeAdjudication:
             trusted_app_ids=frozenset({"app-1"}),
             trusted_group_ids=frozenset({"rg-1"}),
             scope_connector_ids=frozenset({"app-1"}),
+            scopes=[],
         )
         assert [r["virtual_record_id"] for r in results] == ["v1"]
 

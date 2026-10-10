@@ -28,6 +28,7 @@ import {
 import { i18n } from '@/lib/i18n';
 import { toast } from '@/lib/store/toast-store';
 import { showNoModelToast } from './utils/no-model-toast';
+import { hasAnyFilter } from './utils/tree-selection';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
   buildAssistantApiFilters,
@@ -42,6 +43,7 @@ import {
   type SSEAskUserQuestionEvent,
   type PendingAskUserQuestion,
   type MessagePart,
+  type ChatKnowledgeFilters,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
@@ -556,7 +558,7 @@ export async function streamMessageForSlot(
         {
           role: 'user' as const,
           content: [{ type: 'text' as const, text: query }],
-          ...(request.filters && (request.filters.apps.length > 0 || request.filters.kb.length > 0)
+          ...(hasAnyFilter(request.filters)
             ? {
                 metadata: {
                   custom: {
@@ -1191,7 +1193,7 @@ export async function streamRegenerateForSlot(
   slotId: string,
   messageId: string,
   modelOverride?: ModelOverride,
-  originalFilters?: { apps: string[]; kb: string[] }
+  originalFilters?: ChatKnowledgeFilters
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];

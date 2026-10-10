@@ -1,8 +1,9 @@
 """DELETE /api/v1/records/{record_id} driven through the real Neo4j and ArangoDB
-providers over a fake driver. The access check is not stubbed, so the tests pin
-what it returns for each kind of stored record, that synced records are refused
-with no destructive statement reaching the database, and that knowledge-base
-uploads are deleted only for a write role in the caller's org.
+providers over a fake driver that answers their statements from one small graph
+(``_Graph``). The access check is not stubbed, so the tests pin what it returns
+for each kind of stored record, that synced records are refused with no
+destructive statement reaching the database, and that knowledge-base uploads are
+deleted only for a write role in the caller's org.
 """
 
 import inspect
@@ -62,14 +63,82 @@ JIRA_TICKET = _record(origin="CONNECTOR", connectorName="JIRA", recordType="TICK
 LEGACY_NO_ORIGIN = _record(connectorName="DRIVE", connectorId="conn-1")
 LEGACY_NEITHER = _record(connectorId="conn-1")
 
-KB_ACCESS = [{"type": "KNOWLEDGE_BASE", "source": KB_APP, "role": "WRITER", "folder": None}]
+KB_ACCESS = [{"type": "KNOWLEDGE_BASE", "source": KB_APP, "folder": None}]
 DIRECT_ACCESS = [{"type": "DIRECT", "source": USER, "role": "OWNER"}]
 KB_CONTEXT = {"kb_id": "kb-1", "kb_name": "Handbook", "org_id": ORG_A}
+CONNECTOR_APP = {"id": "conn-1", "_key": "conn-1", "name": "Drive", "orgId": ORG_A, "type": "DRIVE"}
+APPS = {app["id"]: app for app in (CONNECTOR_APP, KB_APP)}
+GRANTEES = [USER["id"], ORG_A]
 
 
-class _Neo4jDriver:
+class _Graph:
+    """What the graph holds in one scenario, read by both fake drivers.
+
+    The caller belongs to ORG_A and may enter the connector conn-1. ``record`` is the
+    one stored record, with nothing above it in the hierarchy, so a statement that
+    walks up from it finds nothing. ``access`` lists how the caller reaches it: a
+    DIRECT path is the caller's own grant on the record, a KNOWLEDGE_BASE path a
+    grant on the Collection kb-1 that lets the caller enter it. ``kb_context`` is
+    the Collection the record belongs to. ``kb_role`` is the role on the caller's
+    own grant on the Collection; None when the grant is their organization's,
+    which carries no role.
+    """
+
     def __init__(self, record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> None:
-        self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
+        self.record, self.kb_context, self.kb_role = record, kb_context, kb_role
+        paths = {path["type"]: path for path in access or []}
+        self.direct_role = (paths.get("DIRECT") or {}).get("role")
+        self.enters_kb = "KNOWLEDGE_BASE" in paths or kb_role is not None
+
+    def gated_apps(self, org_id: str) -> list[str]:
+        held = [CONNECTOR_APP["id"]] + ([KB_APP["id"]] if self.enters_kb else [])
+        return [app_id for app_id in held if APPS[app_id]["orgId"] == org_id]
+
+    def granted_by(self, grantees: list[str]) -> bool:
+        return self.direct_role is not None and USER["id"] in grantees
+
+    def admits(self, org_id: str, gated_apps: list[str], seeded: bool, grantees: list[str]) -> bool:
+        """The access rule for a record with no hierarchy parent. ``seeded``: the
+        statement found a grant on the record inside its connector."""
+        record = self.record
+        if not record or record.get("orgId") != org_id:
+            return False
+        app = APPS.get(record.get("connectorId"))
+        if app is None:
+            return record.get("origin") not in (None, "CONNECTOR") and self.granted_by(grantees)
+        if app["id"] not in gated_apps:
+            return False
+        belongs = app["type"] == "KB" and (self.kb_context or {}).get("kb_id") == app["id"]
+        return belongs or seeded
+
+    def paths(self, user_apps: list[str]) -> list[dict]:
+        """The caller's own grants, as the details statement names them."""
+        record = self.record or {}
+        found: list[dict] = []
+        if self.direct_role is not None and (
+            record.get("origin") != "CONNECTOR" or record.get("connectorId") in user_apps
+        ):
+            found.append({"type": "DIRECT", "source": USER, "role": self.direct_role})
+        if self.kb_context and self.kb_role is not None:
+            found.append({"type": "KNOWLEDGE_BASE", "source": KB_APP, "role": self.kb_role, "folder": None})
+        return found
+
+    def deletable_root(self, record_ids: list[str], connector_id: str) -> dict | None:
+        record = self.record
+        if record and RECORD_ID in record_ids and record.get("connectorId") == connector_id:
+            return record
+        return None
+
+    def uploads_under(self, roots: list[str], connector_id: str, upload: str) -> list[dict]:
+        record = self.deletable_root(roots, connector_id)
+        if not record or record.get("origin") != upload:
+            return []
+        return [{"origin": upload, "externalRecordId": record.get("externalRecordId"), "isFile": None}]
+
+
+class _Driver:
+    def __init__(self, record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> None:
+        self.graph = _Graph(record, access, kb_context, kb_role)
         self.attachments: dict[str, dict] = {}
         # attachment id -> the record its ATTACHMENT edge comes from (RECORD_ID unless set)
         self.attachment_parents: dict[str, str] = {}
@@ -78,9 +147,10 @@ class _Neo4jDriver:
         # Each statement commits on its own, as with NEO4J_EXPLICIT_TRANSACTIONS off.
         self.deleted: set[str] = set()
         self.transactions: list[tuple[str, str]] = []
+        self.record_role: str | None = None
         self.statements: list[tuple[str, dict]] = []
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str], **_: Any) -> str:
         self.transactions.append(("begin", "txn-1"))
         return "txn-1"
 
@@ -90,41 +160,74 @@ class _Neo4jDriver:
     async def abort_transaction(self, txn_id: str) -> None:
         self.transactions.append(("abort", txn_id))
 
-    async def execute_query(self, query: str, parameters: dict | None = None, txn_id: str | None = None) -> list:
-        self.statements.append((query, parameters or {}))
-        parameters = parameters or {}
+
+class _Neo4jDriver(_Driver):
+    async def execute_query(
+        self, query: str, parameters: dict | None = None, txn_id: str | None = None, **_: Any,
+    ) -> list:
+        params = parameters or {}
+        self.statements.append((query, params))
+        graph = self.graph
         if "DETACH DELETE" in query:
-            keys = set(parameters.get("record_ids") or []) | {parameters.get("record_key")} - {None}
+            keys = set(params.get("record_ids") or []) | {params.get("record_key")} - {None}
             if self.fail_deleting in keys:
                 raise RuntimeError("lock wait timeout")
             self.deleted |= keys
+            if RECORD_ID in keys:
+                graph.record = None
             return []
         if "relationshipType = 'ATTACHMENT'" in query:
             # Filters only on what the query names, as the database would.
-            by_parent = "(:Record {id: $record_id})-[e:RECORD_RELATION]->(a:Record)" in query
+            by_parent = "(:Record {id: $record_id})-[e:NODE_RELATION]->(a:Record)" in query
             by_org = "a.orgId = $org_id" in query
             return [
                 {"id": key} for key, a in self.attachments.items()
-                if (not by_parent or self.attachment_parents.get(key, RECORD_ID) == parameters.get("record_id"))
-                and (not by_org or a.get("orgId") == parameters.get("org_id"))
+                if (not by_parent or self.attachment_parents.get(key, RECORD_ID) == params.get("record_id"))
+                and (not by_org or a.get("orgId") == params.get("org_id"))
             ]
-        if parameters.get("key") in self.attachments and "DELETE" not in query:
-            if parameters["key"] == self.fail_reading:
+        if params.get("key") in self.attachments and "DELETE" not in query:
+            if params["key"] == self.fail_reading:
                 raise RuntimeError("connection reset")
-            return [{"n": {"id": parameters["key"], **self.attachments[parameters["key"]]}}] if "n:Record" in query else []
+            return [{"n": {"id": params["key"], **self.attachments[params["key"]]}}] if "n:Record" in query else []
         if "MATCH (u:User {userId: $user_id})" in query:
             return [{"u": dict(USER)}]
+        if "RETURN granteeIds AS grantees, gatedApps" in query:
+            return [{"grantees": list(GRANTEES), "gatedApps": graph.gated_apps(params["org_id"])}]
+        if "kh_linked AS grantees" in query:
+            return [{"grantees": list(GRANTEES)}]
+        if "AS items" in query:
+            lists, record = params["kh_lists"], graph.record or {}
+            seeded = graph.granted_by(lists["kh_grantees"]) and record.get("connectorId") == params["kh_conn"]
+            if RECORD_ID not in lists["kh_ids"] or not graph.admits(
+                params["org_id"], lists["gatedAppIds"], seeded, lists["granteeIds"],
+            ):
+                return [{"items": []}]
+            return [{"items": [{
+                "id": RECORD_ID, "vrid": record.get("virtualRecordId"), "connectorId": record.get("connectorId"),
+                "indexingStatus": record.get("indexingStatus"), "isInternal": False,
+            }]}]
         if "RETURN allAccess" in query:
-            return [{"allAccess": self.access}] if self.access else []
+            paths = graph.paths(params["user_apps_ids"])
+            return [{"allAccess": paths}] if paths else []
         if "AS metadata" in query:
             return [{"metadata": {"departments": [], "categories": [], "topics": [], "languages": []}}]
         if "AS kb_context" in query:
-            return [{"kb_context": self.kb_context}] if self.kb_context else []
+            return [{"kb_context": graph.kb_context}] if graph.kb_context else []
         if "RETURN role AS role" in query:
-            return [{"role": self.kb_role}] if self.kb_role else []
+            return [{"role": graph.kb_role}] if graph.kb_role else []
+        if "AS isFile" in query:
+            return graph.uploads_under(params["roots"], params["connector_id"], params["upload"])
+        if "AS inventory" in query:
+            root = graph.deletable_root(params["record_ids"], params["connector_id"])
+            # The walk takes a record's attachments with it.
+            attached = [{"record": {"id": key, **a}, "type_doc": None} for key, a in self.attachments.items()]
+            return [{"inventory": {
+                "valid_root_keys": [RECORD_ID] if root else [],
+                "records_with_type": [{"record": {"id": RECORD_ID, **root}, "type_doc": None}, *attached] if root else [],
+            }}]
         label = re.search(r"MATCH \(n:(\w+) \{id: \$key\}\)", query)
-        if label and "DELETE" not in query and label.group(1) == "Record" and self.record is not None:
-            return [{"n": {"id": RECORD_ID, **self.record}}]
+        if label and "DELETE" not in query and label.group(1) == "Record" and graph.record is not None:
+            return [{"n": {"id": RECORD_ID, **graph.record}}]
         return []
 
     @property
@@ -132,29 +235,60 @@ class _Neo4jDriver:
         return [q for q, _ in self.statements if re.search(r"\bDELETE\b", q)]
 
 
-class _ArangoDriver:
-    def __init__(self, record: dict | None, access: list | None, kb_context: dict | None, kb_role: str | None) -> None:
-        self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
-        self.record_role: str | None = None
-        self.statements: list[tuple[str, dict]] = []
-
+class _ArangoDriver(_Driver):
     async def get_document(self, collection: str, key: str, txn_id: str | None = None, **_: Any) -> dict | None:
-        if collection == "records" and self.record is not None:
-            return {"_key": RECORD_ID, "_id": f"records/{RECORD_ID}", **self.record}
+        if collection == "records" and self.graph.record is not None:
+            return {"_key": RECORD_ID, "_id": f"records/{RECORD_ID}", **self.graph.record}
         return None
 
     async def execute_aql(self, query: str, bind_vars: dict | None = None, txn_id: str | None = None, **_: Any) -> list:
-        self.statements.append((query, bind_vars or {}))
+        bind = bind_vars or {}
+        self.statements.append((query, bind))
+        graph = self.graph
+        record = graph.record or {}
         if "directAccessPermissionEdge" in query:
-            return [self.access if self.access else None]
+            return [graph.paths(bind["user_apps_ids"]) or None]
         if "FILTER user.userId == @user_id" in query:
             return [dict(USER)]
+        if "linked_grants" in query:
+            granted = graph.granted_by(GRANTEES) and record.get("connectorId") is not None
+            return [{
+                "grantees": list(GRANTEES),
+                "gatedApps": graph.gated_apps(bind["org_id"]),
+                "grants": [{"id": RECORD_ID, "connectorId": record["connectorId"]}] if granted else [],
+            }]
+        if "kh_targets" in query:
+            if RECORD_ID not in bind["kh_ids"] or record.get("orgId") != bind["org_id"]:
+                return []
+            ok = graph.admits(
+                bind["org_id"], bind["gated_app_ids"], RECORD_ID in bind["granted"], bind["grantee_ids"],
+            )
+            walk = not ok and record.get("connectorId") in APPS and record["connectorId"] in bind["gated_app_ids"]
+            if not (ok or walk):
+                return []
+            return [{
+                "id": RECORD_ID, "vrid": record.get("virtualRecordId"), "connectorId": record.get("connectorId"),
+                "indexingStatus": record.get("indexingStatus"), "isInternal": False, "ok": ok, "walk": walk,
+            }]
         if "LET departments" in query:
             return [{"departments": [], "categories": [], "topics": [], "languages": []}]
         if "kb_candidate" in query:
-            return [self.kb_context]
+            return [graph.kb_context]
         if "all_roles" in query:
-            return [self.kb_role]
+            return [graph.kb_role]
+        if "isFile: t.isFile" in query:
+            return graph.uploads_under(bind["roots"], bind["connector_id"], bind["upload"])
+        if "valid_root_keys" in query:
+            root = graph.deletable_root(bind["record_ids"], bind["connector_id"])
+            stored = {"_key": RECORD_ID, "_id": f"records/{RECORD_ID}", **root} if root else None
+            return [{
+                "valid_root_keys": [RECORD_ID] if root else [],
+                "records_with_type": [{"record": stored, "type_target": None}] if root else [],
+                "guard_edges": [],
+            }]
+        if "REMOVE doc IN @@records" in query and graph.record is not None and RECORD_ID in bind["keys"]:
+            graph.record = None
+            return [1]
         if "RETURN edge.role" in query:
             return [self.record_role] if self.record_role else []
         return []
@@ -200,7 +334,6 @@ def _neo4j(record: dict | None, access: list | None, kb_context: dict | None, kb
     provider = Neo4jProvider(MagicMock(), MagicMock())
     driver = _Neo4jDriver(record, access, kb_context, kb_role)
     provider.client = driver
-    provider._get_user_app_ids = AsyncMock(return_value=["conn-1"])
     provider.get_user_by_user_id = AsyncMock(return_value=dict(USER))
     return provider, driver
 
@@ -238,7 +371,11 @@ async def _delete(provider: Any, kafka: AsyncMock, org_id: str = ORG_A) -> dict:
          "gmail", "jira", "legacy-no-origin", "legacy-neither"],
 )
 async def test_access_result_carries_the_stored_origin_and_connector_name(backend: Any, record: dict) -> None:
-    provider, _ = backend(record, DIRECT_ACCESS, None, None)
+    # A Collection's record is reached through the Collection; a grant on the record alone does not open it.
+    if record["connectorId"] == KB_APP["id"]:
+        provider, _ = backend(record, KB_ACCESS, KB_CONTEXT, "READER")
+    else:
+        provider, _ = backend(record, DIRECT_ACCESS, None, None)
 
     result = await provider.check_record_access_with_details(user_id="user-a", org_id=ORG_A, record_id=RECORD_ID)
 
@@ -258,6 +395,19 @@ async def test_access_result_is_none_without_an_access_path_or_without_the_recor
 
     provider, _ = backend(None, DIRECT_ACCESS, None, None)
     assert await provider.check_record_access_with_details("user-a", ORG_A, RECORD_ID) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_grant_on_a_record_does_not_open_a_collection_the_caller_cannot_enter(backend: Any) -> None:
+    provider, driver = backend(KB_FILE, DIRECT_ACCESS, KB_CONTEXT, None)
+    assert await provider.check_record_access_with_details("user-a", ORG_A, RECORD_ID) is None
+
+    with pytest.raises(HTTPException) as exc:
+        await _delete(provider, AsyncMock())
+
+    assert exc.value.status_code == 404
+    assert driver.destructive == []
 
 
 @pytest.mark.asyncio
@@ -286,7 +436,7 @@ async def test_synced_record_is_refused_whatever_the_callers_role(backend: Any, 
 @pytest.mark.parametrize(
     "record", [KB_FILE, KB_FOLDER, KB_LEGACY_NO_CONNECTOR_NAME], ids=["kb-file", "kb-folder", "kb-legacy"]
 )
-@pytest.mark.parametrize("kb_role", ["OWNER", "WRITER", "FILEORGANIZER"])
+@pytest.mark.parametrize("kb_role", ["OWNER", "WRITER"])
 async def test_kb_upload_is_deleted_for_a_writer(backend: Any, record: dict, kb_role: str) -> None:
     provider, driver = backend(record, KB_ACCESS, KB_CONTEXT, kb_role)
     kafka = AsyncMock()
@@ -295,6 +445,7 @@ async def test_kb_upload_is_deleted_for_a_writer(backend: Any, record: dict, kb_
 
     assert result["success"] is True
     assert driver.destructive, "nothing was deleted from the graph"
+    assert driver.graph.record is None, "the record is still in the graph"
     kafka.publish_event.assert_awaited_once()
     topic, event = kafka.publish_event.await_args.args
     assert topic == "record-events"
@@ -315,8 +466,11 @@ async def test_arango_kb_upload_delete_clears_every_edge_collection_of_the_graph
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", BACKENDS)
-@pytest.mark.parametrize("kb_role", ["READER", "COMMENTER", None, "reader", "writer", "ORGANIZER", ""])
+@pytest.mark.parametrize(
+    "kb_role", ["READER", "COMMENTER", None, "reader", "writer", "ORGANIZER", "FILEORGANIZER", ""]
+)
 async def test_kb_upload_is_refused_without_a_write_role(backend: Any, kb_role: str | None) -> None:
+    """ORGANIZER and FILEORGANIZER are retired: a stored grant that carries one reads as READER."""
     provider, driver = backend(KB_FILE, KB_ACCESS, KB_CONTEXT, kb_role)
     kafka = AsyncMock()
 
@@ -325,6 +479,7 @@ async def test_kb_upload_is_refused_without_a_write_role(backend: Any, kb_role: 
 
     assert exc.value.status_code == 403
     assert driver.destructive == []
+    assert driver.graph.record is not None
     kafka.publish_event.assert_not_awaited()
 
 
@@ -346,8 +501,9 @@ async def test_upload_outside_a_kb_is_404_and_left_in_place(backend: Any, record
 
 
 @pytest.mark.asyncio
-async def test_neo4j_kb_delete_invalidates_the_kb_records_cache() -> None:
-    provider, _ = _neo4j(KB_FILE, KB_ACCESS, KB_CONTEXT, "OWNER")
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_kb_delete_invalidates_the_kb_records_cache(backend: Any) -> None:
+    provider, _ = backend(KB_FILE, KB_ACCESS, KB_CONTEXT, "OWNER")
 
     with patch.object(router_mod, "notify_kb_records_changed", new_callable=AsyncMock) as notify:
         await _delete(provider, AsyncMock())
@@ -384,6 +540,10 @@ async def test_other_orgs_kb_record_is_404_even_when_an_access_path_exists(backe
     assert driver.destructive == []
     kafka.publish_event.assert_not_awaited()
 
+    refused = await provider.delete_record(RECORD_ID, "user-a", ORG_A)
+    assert (refused["success"], refused["code"]) == (False, 404)
+    assert driver.destructive == []
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -411,6 +571,10 @@ async def test_kb_record_without_org_id_is_not_deletable(backend: Any) -> None:
         await _delete(provider, AsyncMock())
 
     assert exc.value.status_code == 404
+    assert driver.destructive == []
+
+    refused = await provider.delete_record(RECORD_ID, "user-a", ORG_A)
+    assert (refused["success"], refused["code"]) == (False, 404)
     assert driver.destructive == []
 
 
@@ -549,7 +713,10 @@ async def test_connector_mail_delete_that_fails_part_way_rolls_back_and_publishe
     with pytest.raises(Exception, match="Deletion failed"):
         await processor.delete_record_by_external_id("conn-1", "ext-1", "user-a")
 
-    assert driver.transactions == [("begin", "txn-1"), ("abort", "txn-1")]
+    # The lookup's transaction commits; the delete's is the one that aborts.
+    assert driver.transactions == [
+        ("begin", "txn-1"), ("commit", "txn-1"), ("begin", "txn-1"), ("abort", "txn-1"),
+    ]
     assert driver.deleted == set()
     processor.messaging_producer.send_message.assert_not_awaited()
     processor.messaging_producer.send_messages.assert_not_awaited()

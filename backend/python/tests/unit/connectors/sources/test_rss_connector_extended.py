@@ -343,7 +343,7 @@ class TestProcessEntry:
         record, perms = result
         assert record.record_name == "Article"
         assert record.mime_type == MimeTypes.PLAIN_TEXT.value
-        assert len(perms) == 1
+        assert perms == []
 
     async def test_entry_with_html_summary(self):
         conn = _make_connector()
@@ -421,7 +421,8 @@ class TestCreateRecordGroup:
         call_args = conn.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = call_args[0]
         assert rg.group_type == RecordGroupType.RSS_FEED
-        assert perms[0].entity_type == EntityType.ORG
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     async def test_error_raises(self):
         conn = _make_connector()

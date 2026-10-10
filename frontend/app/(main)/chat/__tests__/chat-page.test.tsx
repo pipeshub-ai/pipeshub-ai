@@ -320,6 +320,36 @@ describe('Chat page — new chat', () => {
     expect(state.collectionNamesCache['kb-1']).toBe('Plans');
     expect(usePendingChatStore.getState().pending).toBeNull();
   });
+
+  it('opens scoped to the rows handed over from All Records, replacing the selection and sending nothing', async () => {
+    useChatStore.getState().setFilters({ apps: ['jira-1'], kb: [] });
+    usePendingChatStore.getState().setPending({
+      message: '',
+      pageContext: {
+        selectedNodes: [
+          { id: 'folder-a', name: 'A', nodeType: 'folder', connector: 'KB' },
+          { id: 'rec-b1', name: 'b1.md', nodeType: 'record', connector: 'KB' },
+          { id: 'group-pt', name: 'PT', nodeType: 'recordGroup', connector: 'Jira' },
+          { id: 'kb-alpha', name: 'GS-Alpha', nodeType: 'app', connector: 'KB' },
+        ],
+      },
+      referrerPage: '/knowledge-base',
+    });
+
+    renderPage();
+
+    await waitFor(() => expect(usePendingChatStore.getState().pending).toBeNull());
+    const state = useChatStore.getState();
+    expect(state.settings.filters).toEqual({
+      apps: ['kb-alpha'],
+      kb: [],
+      recordGroups: ['group-pt'],
+      records: ['folder-a', 'rec-b1'],
+    });
+    expect(state.collectionNamesCache).toMatchObject({ 'folder-a': 'A', 'rec-b1': 'b1.md', 'group-pt': 'PT' });
+    expect(state.collectionMetaCache['rec-b1']).toMatchObject({ nodeType: 'record' });
+    expect(append).not.toHaveBeenCalled();
+  });
 });
 
 describe('Chat page — opening a conversation', () => {
@@ -438,7 +468,7 @@ describe('Chat page — opening a conversation', () => {
     expect(fetchConversation).toHaveBeenCalledTimes(5);
   });
 
-  it('restores the collections the last question was scoped to', async () => {
+  it('restores what the last question was scoped to, at every level of the hierarchy', async () => {
     fetchConversation.mockResolvedValue(
       conversationDetail({
         messages: [
@@ -447,10 +477,13 @@ describe('Chat page — opening a conversation', () => {
             content: 'What changed?',
             appliedFilters: {
               apps: [
-                { id: 'legacy-kb-root', name: 'Collections', nodeType: 'app', connector: 'KB' },
+                { id: 'knowledgeBase_org-1', name: 'Collections', nodeType: 'app', connector: 'KB' },
                 { id: 'drive-1', name: 'Drive', nodeType: 'app', connector: 'DRIVE' },
+                { id: 'kb-3', name: 'Policies', nodeType: 'app', connector: 'KB' },
               ],
               kb: [{ id: 'kb-9', name: 'Handbook', nodeType: 'recordGroup', connector: 'KB' }],
+              recordGroups: [{ id: 'space-1', name: 'Engineering', nodeType: 'recordGroup', connector: 'CONFLUENCE' }],
+              records: [{ id: 'folder-1', name: 'Specs', nodeType: 'folder', connector: 'DRIVE' }],
             },
           }),
           apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'Two policies.' }),
@@ -462,8 +495,20 @@ describe('Chat page — opening a conversation', () => {
 
     await screen.findByText('Two policies.');
     const { settings, collectionNamesCache } = useChatStore.getState();
-    expect(settings.filters).toEqual({ apps: ['drive-1'], kb: ['kb-9'] });
-    expect(collectionNamesCache).toMatchObject({ 'drive-1': 'Drive', 'kb-9': 'Handbook' });
+    expect(settings.filters).toEqual({
+      apps: ['drive-1', 'kb-3', 'kb-9'],
+      kb: [],
+      recordGroups: ['space-1'],
+      records: ['folder-1'],
+    });
+    expect(collectionNamesCache).toMatchObject({
+      'drive-1': 'Drive',
+      'kb-3': 'Policies',
+      'kb-9': 'Handbook',
+      'space-1': 'Engineering',
+      'folder-1': 'Specs',
+    });
+    expect(collectionNamesCache).not.toHaveProperty('knowledgeBase_org-1');
   });
 
   it("hides the composer on a conversation someone shared with the user", async () => {

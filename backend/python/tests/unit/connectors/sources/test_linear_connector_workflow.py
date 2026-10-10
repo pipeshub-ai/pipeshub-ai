@@ -58,6 +58,7 @@ def _make_connector():
         MagicMock(email="bob@test.com"),
     ])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()

@@ -16,6 +16,8 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
 )
 from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbItem
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType, Status, TicketRecord
 
 
@@ -212,9 +214,12 @@ class TestNavigateDeniedNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="denied-node")
 
-        # Denied and missing must produce identical-looking output
-        assert success  # the tool itself succeeds, the result is empty
-        assert "Record ID:" not in text
+        # It used to answer as an empty root: "no connected apps or no access".
+        assert not success
+        assert text == (
+            "Node 'denied-node' was not found, or you do not have access to it. "
+            "Call navigate without node_id to list what you can open."
+        )
 
 
 class TestNavigateMissingNode:
@@ -234,8 +239,9 @@ class TestNavigateMissingNode:
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="does-not-exist")
 
-        assert success
-        assert "Record ID:" not in text
+        # Denied and missing produce the same answer.
+        assert not success
+        assert text.startswith("Node 'does-not-exist' was not found, or you do not have access to it.")
 
 
 class TestNavigateRecordWithChildren:
@@ -253,10 +259,8 @@ class TestNavigateRecordWithChildren:
             "webUrl": "https://example.atlassian.net/browse/PA-1787",
             "indexingStatus": "COMPLETED",
         })
-        graph_provider.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[
-            {"id": "app1", "name": "Jira", "nodeType": "app", "subType": "JIRA"},
-            {"id": "rg1", "name": "Payments", "nodeType": "recordGroup", "subType": "PROJECT"},
-        ])
+        graph_provider.get_knowledge_hub_breadcrumbs = AsyncMock(side_effect=AssertionError(
+            "the raw hierarchy names ancestors the user cannot open"))
         graph_provider.get_linked_records = AsyncMock(return_value=[
             {
                 "id": "rel1",
@@ -272,13 +276,21 @@ class TestNavigateRecordWithChildren:
 
         child_item = _make_node_item("child1", "PA-1801 Fix retry", "record", "TICKET", has_children=True)
         mock_resp = _make_knowledge_hub_response(items=[child_item], total=1)
+        mock_resp.breadcrumbs = [
+            BreadcrumbItem(id="app1", name="Jira", nodeType="app", subType="JIRA"),
+            BreadcrumbItem(id="rg1", name="Payments", nodeType="recordGroup", subType="PROJECT"),
+            BreadcrumbItem(id="rec1", name="PA-1787 Payment outage", nodeType="record", subType="TICKET"),
+        ]
+        get_nodes = AsyncMock(return_value=mock_resp)
 
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
-            new=AsyncMock(return_value=mock_resp),
+            new=get_nodes,
         ):
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="rec1")
+        # The placement trail the listing computes for this user.
+        assert get_nodes.await_args.kwargs["include"] == ["breadcrumbs"]
 
         assert success
         assert f"Record ID: {_short_id_for(state, 'rec1')}" in text
@@ -287,6 +299,84 @@ class TestNavigateRecordWithChildren:
         assert f"record_id={_short_id_for(state, 'child1')}" in text
         assert "Related:" in text
         assert f"record_id={_short_id_for(state, 'rel1')}" in text
+
+    @pytest.mark.asyncio
+    async def test_linked_records_outside_the_selection_are_not_named(self):
+        """GS-09: under `records:[PT-54]`, Related named [PT-46] and [PT-43], linked
+        to it but outside the selection."""
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        connector_of = {"rec1": "conn-jira", "linked-in": "conn-jira", "linked-out": "conn-jira"}
+        selected = {"rec1", "linked-in"}
+
+        async def check_access(_user_key, _org, *, node_ids=(), scopes=(), **_):
+            return AccessCheck(
+                node_ids=frozenset(node_ids),
+                node_ids_in_scope=frozenset(
+                    i for i in node_ids
+                    if all(s.admits({"id": i, "connectorId": connector_of.get(i), "groupIds": []}) for s in scopes)
+                ),
+            )
+
+        state = _make_state(filters={
+            "apps": [], "kb": [], "records": ["rec1"], "selectionApps": ["conn-jira"], "strictScope": True,
+        })
+        graph_provider = state["graph_provider"]
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        graph_provider.check_access = AsyncMock(side_effect=check_access)
+        graph_provider.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": [
+            {"id": i, "vrid": f"v-{i}", "connectorId": "conn-jira"} for i in sorted(selected)
+        ]})
+        graph_provider.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1", "name": "[PT-54] Test initiative", "nodeType": "record", "subType": "TICKET",
+        })
+        graph_provider.get_linked_records = AsyncMock(return_value=[
+            {"id": rid, "name": name, "recordType": "TICKET", "connectorName": "JIRA",
+             "relationshipType": "LINKED_TO", "hasChildren": False, "indexingStatus": "COMPLETED"}
+            for rid, name in (("linked-in", "[PT-50] inside"), ("linked-out", "[PT-46] outside"))
+        ])
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=[], total=0)),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="rec1")
+
+        assert success
+        assert "[PT-50] inside" in text
+        assert "[PT-46] outside" not in text
+
+    @staticmethod
+    async def _navigate_with_linked_failure(error: Exception):
+        state = _make_state()
+        graph_provider = state["graph_provider"]
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        graph_provider.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1", "name": "PA-1787 Payment outage", "nodeType": "record", "subType": "TICKET",
+        })
+        graph_provider.get_linked_records = AsyncMock(side_effect=error)
+        child_item = _make_node_item("child1", "PA-1801 Fix retry", "record", "TICKET")
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=[child_item], total=1)),
+        ):
+            return await KnowledgeGraph(state=state).navigate(node_id="rec1")
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_linked_record_access_fails_the_call(self):
+        success, text = await self._navigate_with_linked_failure(
+            PermissionVerificationUnavailableError("graph down")
+        )
+        assert not success
+        assert "PA-1801" not in text
+
+    @pytest.mark.asyncio
+    async def test_other_linked_record_failures_are_said_not_hidden(self):
+        """It used to drop the Related section, which reads as "nothing is linked"."""
+        success, text = await self._navigate_with_linked_failure(RuntimeError("boom"))
+        assert success
+        assert "PA-1801" in text
+        assert "Related: the linked records could not be read just now" in text
 
 
 class TestNavigateExposesRecordMetadata:

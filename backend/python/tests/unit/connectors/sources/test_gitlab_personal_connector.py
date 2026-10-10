@@ -31,6 +31,7 @@ from app.connectors.sources.gitlab_personal.common.apps import GitLabPersonalApp
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 from app.models.entities import AppUser, AppUserGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.gitlab.gitlab import GitLabResponse
 
 
 # ---------------------------------------------------------------------------
@@ -89,20 +90,12 @@ def _make_connector(
     return connector
 
 
-def _ok(data) -> MagicMock:
-    res = MagicMock()
-    res.success = True
-    res.data = data
-    res.error = None
-    return res
+def _ok(data) -> GitLabResponse:
+    return GitLabResponse(success=True, data=data)
 
 
-def _fail(error: str = "boom") -> MagicMock:
-    res = MagicMock()
-    res.success = False
-    res.data = None
-    res.error = error
-    return res
+def _fail(error: str = "boom", status_code: int | None = 404) -> GitLabResponse:
+    return GitLabResponse(success=False, error=error, status_code=status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -362,11 +355,18 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
     async def test_noop_when_group_permission_unresolved(self) -> None:
         connector = _make_connector(creator_email=None)
         connector.data_source = MagicMock()
-        # No ensure_connector_group_permission call — cache stays None.
+        connector.runtime = MagicMock()
+        connector.runtime.ds_call = AsyncMock(return_value=_fail("no group"))
 
         await connector.projects._ensure_gitlab_group_record_groups(["org/eng"])
 
-        connector.data_entities_processor.on_new_record_groups.assert_not_called()
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        rg, perms = args[0][0]
+        assert rg.external_group_id == "org/eng"
+        assert rg.parent_external_group_id == "org"
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_emits_group_permission_not_user_permission(self) -> None:
@@ -391,13 +391,11 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         rg, perms = args[0][0]
         assert rg.name == "Engineering"
         assert rg.external_group_id == "org/eng"
+        assert rg.parent_external_group_id == "org"
         assert rg.group_type == RecordGroupType.PROJECT.value
         assert rg.web_url == "https://gitlab.example.com/org/eng"
-        # The whole point of this PR: one GROUP edge per record group, no
-        # per-member fan-out and no direct USER edge to the creator.
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.GROUP
-        assert perms[0].external_id == "internal-gl-personal-1"
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_falls_back_to_path_when_get_group_fails(self) -> None:
@@ -420,8 +418,24 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         # downstream syncs (issues/MRs/code) have a parent RG to attach to.
         assert rg.name == "missing/grp"
         assert rg.external_group_id == "missing/grp"
+        assert rg.parent_external_group_id == "missing"
         assert rg.web_url is None
-        assert perms[0].entity_type == EntityType.GROUP
+        assert rg.inherit_permissions is True
+        assert perms == []
+
+    @pytest.mark.asyncio
+    async def test_a_group_that_could_not_be_read_is_not_rewritten_from_its_path(self) -> None:
+        """A timeout is not "group gone": the stored name and web URL stay (N4GIT-01)."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.runtime = MagicMock()
+        connector.runtime.ds_call = AsyncMock(
+            return_value=_fail("Read timed out. (read timeout=60)", status_code=None)
+        )
+
+        await connector.projects._ensure_gitlab_group_record_groups(["org/eng"])
+
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_processes_every_group_in_input(self) -> None:
@@ -480,6 +494,8 @@ class TestPersonalCreatorFallback:
         project = MagicMock()
         project.id = 99
         project.path_with_namespace = "org/eng/be"
+        project.name = "be"
+        project.web_url = "https://gitlab.example.com/org/eng/be"
         project.namespace = None
 
         await connector.projects._apply_creator_fallback_for_project(project)
@@ -499,10 +515,9 @@ class TestPersonalCreatorFallback:
             "99-merge-requests",
             "99-code-repository",
         }
-        for _rg, perms in record_groups_payload:
-            assert len(perms) == 1
-            assert perms[0].entity_type == EntityType.GROUP
-            assert perms[0].external_id == "internal-gl-personal-1"
+        for rg, perms in record_groups_payload:
+            assert rg.inherit_permissions is True
+            assert perms == []
 
     @pytest.mark.asyncio
     async def test_skips_when_permission_unresolved(self) -> None:
@@ -512,13 +527,16 @@ class TestPersonalCreatorFallback:
         project = MagicMock()
         project.id = 99
         project.path_with_namespace = "org/eng/be"
+        project.name = "be"
+        project.web_url = "https://gitlab.example.com/org/eng/be"
 
         await connector.projects._apply_creator_fallback_for_project(project)
 
-        # Without a resolved permission we must not create the record
-        # groups with empty principals — they would be invisible to
-        # every user, which is worse than skipping this sync run.
-        connector.data_entities_processor.on_new_record_groups.assert_not_called()
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        args, _ = connector.data_entities_processor.on_new_record_groups.call_args
+        for rg, perms in args[0]:
+            assert rg.inherit_permissions is True
+            assert perms == []
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +583,7 @@ class TestPersonalRunSync:
             connector.creator_email = "creator@example.com"
 
         connector._resolve_creator_identity = AsyncMock(side_effect=fake_resolve)
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -577,7 +595,7 @@ class TestPersonalRunSync:
         # email does not get masked by the previous run's stale GROUP perm.
         # The freshly resolved email then drives a new ensure_* call.
         connector._resolve_creator_identity.assert_awaited_once()
-        connector.ensure_connector_group_permission.assert_awaited_once()
+        connector.ensure_creator_user_app_relation.assert_awaited_once()
         connector.projects.sync_all_projects.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -587,7 +605,7 @@ class TestPersonalRunSync:
         connector.runtime.refresh_token_if_needed = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock()
         connector._resolve_creator_identity = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -598,7 +616,7 @@ class TestPersonalRunSync:
         # No creator → no useful group member → skip the upsert entirely.
         # The sync still proceeds so callers see records (without ACLs)
         # and can decide what to do at the indexing layer.
-        connector.ensure_connector_group_permission.assert_not_called()
+        connector.ensure_creator_user_app_relation.assert_not_called()
         connector.projects.sync_all_projects.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -608,7 +626,7 @@ class TestPersonalRunSync:
         connector.runtime.refresh_token_if_needed = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock()
         connector._resolve_creator_identity = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -617,7 +635,7 @@ class TestPersonalRunSync:
             await connector.run_sync()
 
         connector._resolve_creator_identity.assert_not_called()
-        connector.ensure_connector_group_permission.assert_awaited_once()
+        connector.ensure_creator_user_app_relation.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_loads_filters_with_gitlabpersonal_key(self) -> None:
@@ -625,7 +643,7 @@ class TestPersonalRunSync:
         connector.runtime = MagicMock()
         connector.runtime.refresh_token_if_needed = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
 
         with patch(
             "app.connectors.sources.gitlab_personal.connector.load_connector_filters",
@@ -645,7 +663,7 @@ class TestPersonalRunSync:
         connector = _make_connector()
         connector.runtime = MagicMock()
         connector.runtime.refresh_token_if_needed = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
         connector.projects.sync_all_projects = AsyncMock(
             side_effect=RuntimeError("api down")
         )

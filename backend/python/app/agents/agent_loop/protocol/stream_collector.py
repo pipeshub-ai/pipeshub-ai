@@ -33,6 +33,9 @@ _ERROR_CODE_STATUS: dict[str, int] = {
     "request_failed": 400,
     "request_too_large": 413,
     "content_filter": 422,
+    # The selection cannot be searched as asked; the message says what to change.
+    "selection_too_large": 422,
+    "selection_not_ready": 422,
     # The AI model's settings need an admin's fix; retrying the request cannot help.
     "auth_error": 424,
     "model_not_found": 424,

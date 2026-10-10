@@ -2,47 +2,36 @@ import type { NodeType } from '../types';
 
 type HubPagination = {
   hasNext: boolean;
-  page: number;
+  nextCursor?: string | null;
 };
 
 export type SidebarNodeChildrenPaginationMeta = {
   hasNext: boolean;
-  nextPage: number;
+  /** Where the next "load more" resumes; null when there is nothing more. */
+  nextCursor: string | null;
   nodeType: NodeType;
+  /** Pages the list holds, so a reload can re-read the same rows by cursor. */
+  pagesLoaded: number;
 };
 
-/** After loading page `requestedPage`, compute meta for the next request. */
-export function sidebarNodeChildrenMetaAfterPage(
-  pagination: HubPagination | undefined,
-  itemsLength: number,
-  pageLimit: number,
-  requestedPage: number,
-  nodeType: NodeType
-): SidebarNodeChildrenPaginationMeta {
-  if (pagination) {
-    return {
-      hasNext: pagination.hasNext,
-      nextPage: pagination.hasNext ? pagination.page + 1 : pagination.page,
-      nodeType,
-    };
-  }
-  const fullPage = itemsLength >= pageLimit;
-  return {
-    hasNext: fullPage,
-    nextPage: fullPage ? requestedPage + 1 : requestedPage,
-    nodeType,
-  };
-}
-
 /**
- * First-page sidebar cursor (same rules as {@link sidebarNodeChildrenMetaAfterPage} with
- * `requestedPage === 1`).
+ * Sidebar "load more" state from a response.
+ *
+ * Only forward paging exists here — the tree appends, it never goes back — so a
+ * single `nextCursor` is the whole state. Without one there is no way to ask
+ * for more, so `hasNext` is false regardless of what the flag said: offering a
+ * "load more" that cannot be satisfied is worse than not offering it.
  */
 export function sidebarNodeChildrenMetaFromResponse(
   pagination: HubPagination | undefined,
-  itemsLength: number,
-  pageLimit: number,
-  nodeType: NodeType
+  nodeType: NodeType,
+  pagesLoaded = 1,
 ): SidebarNodeChildrenPaginationMeta {
-  return sidebarNodeChildrenMetaAfterPage(pagination, itemsLength, pageLimit, 1, nodeType);
+  const nextCursor = pagination?.nextCursor ?? null;
+  return {
+    hasNext: Boolean(pagination?.hasNext && nextCursor),
+    nextCursor,
+    nodeType,
+    pagesLoaded,
+  };
 }

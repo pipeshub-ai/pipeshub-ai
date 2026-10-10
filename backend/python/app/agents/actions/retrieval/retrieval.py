@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope
+from app.agents.actions.knowledge_graph.ops.scope import (
+    KnowledgeScope,
+    attachment_ids,
+    search_scope,
+)
 from app.agents.actions.util.tool_summaries import (
     as_text,
     bullet_list,
@@ -354,20 +358,7 @@ class Retrieval:
             # the exception: their filters are synthetic, so fall back to the
             # full configured sources.
             is_placeholder_agent = self.state.get("is_placeholder_agent", False)
-            agent_filters = self.state.get("filters", {}) or {}
-
-            if is_placeholder_agent:
-                raw_filter_apps: list[str] = list(self.state.get("apps") or [])
-                raw_filter_kbs: list[str] = list(self.state.get("kb") or [])
-            else:
-                raw_filter_apps = list(agent_filters.get("apps") or [])
-                raw_filter_kbs = list(agent_filters.get("kb") or [])
-
-            from app.agents.actions.knowledge_graph.ops.scope import _clean_kb
-            base_scope = KnowledgeScope(
-                app_ids=tuple(raw_filter_apps),
-                kb_ids=_clean_kb(raw_filter_kbs),
-            )
+            base_scope = search_scope(self.state)
 
             explicit_ids = bool(connector_ids)
 
@@ -585,6 +576,8 @@ class Retrieval:
                     org_id=org_id,
                     config_service=config_service,
                     user_id=user_id,
+                    filters=self.state.get("filters"),
+                    ignore_kb_ids=attachment_ids(self.state)[1],
                 )
 
             final_results = search_results if not flattened_results else flattened_results

@@ -12,9 +12,8 @@ hidden record group holding a file shared with an external collaborator, and a
 collection (KB) with one root file. Every "legacy" file has no size on its
 record and 4096 on its file node.
 
-Runs in backend-matrix on both graph jobs; the cases whose old query on one
-backend already read the right field run on the other backend only. Environment:
-NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
+Runs in backend-matrix on both graph jobs. Environment: NEO4J_IT_URI,
+NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -98,7 +98,7 @@ async def _remove(w: _World) -> None:
         )
     for edges in (
         CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value, CollectionNames.IS_OF_TYPE.value,
-        CollectionNames.USER_APP_RELATION.value, CollectionNames.RECORD_RELATIONS.value,
+        CollectionNames.USER_APP_RELATION.value, CollectionNames.NODE_RELATIONS.value,
     ):
         await w.graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -152,7 +152,7 @@ async def _seed(w: _World) -> None:
     )
     assert await g.batch_upsert_nodes(
         [{"id": w.app_id, "name": "Google Drive", "type": Connectors.GOOGLE_DRIVE.value,
-          "appGroup": "Google Workspace", "scope": "team", "isActive": True, **stamps},
+          "appGroup": "Google Workspace", "scope": "team", "isActive": True, "orgId": w.org_id, **stamps},
          {"id": w.kb_id, "name": "Collection", "type": Connectors.KNOWLEDGE_BASE.value,
           "appGroup": "Local Storage", "scope": "personal", "isActive": True, "orgId": w.org_id, **stamps}],
         collection=apps,
@@ -175,15 +175,23 @@ async def _seed(w: _World) -> None:
                 **stamps, **extra}
 
     belongs = [edge(w.ids[name], rg, w.app_id, apps) for name in GROUPS]
-    for name, (container, _, _, _) in RECORDS.items():
+    # The hierarchy browse walks: a group off its App, a record off its folder,
+    # else off its group, a collection's root file off the collection.
+    hierarchy = [edge(w.app_id, apps, w.ids[name], rg) for name in GROUPS]
+    for name, (container, parent, _, _) in RECORDS.items():
         belongs.append(
-            edge(w.ids[name], rec, w.kb_id, apps) if container == "kb"
+            edge(w.ids[name], rec, w.kb_id, apps, entityType="KB") if container == "kb"
             else edge(w.ids[name], rec, w.ids[container], rg)
+        )
+        hierarchy.append(
+            edge(w.ids[parent], rec, w.ids[name], rec) if parent
+            else edge(w.kb_id, apps, w.ids[name], rec) if container == "kb"
+            else edge(w.ids[container], rg, w.ids[name], rec)
         )
     assert await g.batch_create_edges(belongs, collection=CollectionNames.BELONGS_TO.value)
     assert await g.batch_create_edges(
-        [edge(w.ids["folder"], rec, w.ids["in_folder"], rec, relationshipType="PARENT_CHILD")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        [{**e, "relationshipType": "PARENT_CHILD"} for e in hierarchy],
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
     owner_sees = [n for n in RECORDS if RECORDS[n][0] != "hidden_group"]
@@ -227,11 +235,18 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         yield w
 
 
-async def _sizes(w: _World, parent: str, parent_type: str, user: str = "owner") -> dict[str, int | None]:
-    got = await w.graph.get_knowledge_hub_children(
-        parent, parent_type, w.org_id, w.ids[user], 0, 100, "name", "ASC",
+async def _listed(w: _World, parent: str, parent_type: str, user: str = "owner", **query: object) -> list:
+    listing = await KnowledgeHubService(logger, w.graph).get_nodes(
+        user_id=f"uid-{w.ids[user]}", org_id=w.org_id, parent_id=parent, parent_type=parent_type,
+        **{"limit": 100, "sort_by": "name", "sort_order": "asc", **query},
     )
-    return {w.name_of(n["id"]): n.get("sizeInBytes") for n in got["nodes"] if n["nodeType"] != "folder"}
+    assert listing.success, listing.error
+    return listing.items
+
+
+async def _sizes(w: _World, parent: str, parent_type: str, user: str = "owner") -> dict[str, int | None]:
+    nodes = await _listed(w, parent, parent_type, user)
+    return {w.name_of(n.id): n.sizeInBytes for n in nodes if n.nodeType != "folder"}
 
 
 async def test_a_record_group_lists_a_files_size_from_its_file_node(world: _World) -> None:
@@ -248,26 +263,20 @@ async def test_a_folder_lists_a_files_size_from_its_file_node(world: _World) -> 
     assert await _sizes(world, world.ids["folder"], "folder") == {"in_folder": LEGACY_SIZE}
 
 
-# ArangoDB's collection root and hoist already read sizeInBytes (the hoist is
-# #3795's); only Neo4j's read the unwritten field.
-@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
 async def test_a_collection_root_lists_a_files_size_from_its_file_node(world: _World) -> None:
     assert await _sizes(world, world.kb_id, "app") == {"kb_legacy": LEGACY_SIZE}
 
 
-@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
 async def test_a_file_hoisted_for_an_external_collaborator_keeps_its_file_node_size(world: _World) -> None:
     assert await _sizes(world, world.app_id, "app", user="external") == {"hoisted_legacy": LEGACY_SIZE}
 
 
-# Neo4j's search already reads sizeInBytes.
-@pytest.mark.parametrize("world", ["arango"], indirect=True)
 async def test_search_sorts_and_reports_a_files_size_from_its_file_node(world: _World) -> None:
-    """Phase 1 sorts on the minimal node's size; phase 2 hydrates the size that is shown."""
-    got = await world.graph.get_knowledge_hub_search(
-        world.org_id, world.ids["owner"], 0, 100, "sizeInBytes", "ASC",
-        node_types=["record"], parent_id=world.ids["group"], parent_type="recordGroup",
+    """A file with a size of its own sorts ahead of the files without one; each is shown its size."""
+    nodes = await _listed(
+        world, world.ids["group"], "recordGroup", flattened=True, node_types=["record"],
+        sort_by="size", sort_order="asc",
     )
-    listed = [(world.name_of(n["id"]), n.get("sizeInBytes")) for n in got["nodes"]]
+    listed = [(world.name_of(n.id), n.sizeInBytes) for n in nodes]
     assert listed[:1] == [("own_size", OWN_SIZE)], f"a file without a size sorted first: {listed}"
     assert dict(listed) == {"own_size": OWN_SIZE, "legacy": LEGACY_SIZE, "in_folder": LEGACY_SIZE}, listed

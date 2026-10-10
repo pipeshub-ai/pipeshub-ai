@@ -7,7 +7,7 @@ import uuid
 # from datetime import datetime
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import AsyncGenerator, Dict, List, NamedTuple, NoReturn, Optional, Tuple, Union
 
 from aiolimiter import AsyncLimiter
 from dropbox.exceptions import ApiError
@@ -71,6 +71,12 @@ from app.connectors.core.constants import (
     IconPaths,
 )
 # App-specific Dropbox client imports
+from app.connectors.sources.dropbox.access import (
+    NO_CONTENT_LEVELS,
+    DropboxGrants,
+    grant_for_access_level,
+    member_is_direct,
+)
 from app.connectors.sources.dropbox.common.apps import DropboxApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
@@ -102,6 +108,19 @@ from app.connectors.core.base.error.stream_errors import (
 from app.utils.streaming import create_stream_record_response, stream_content
 
 # from dropbox.team import GroupSelector
+
+# The graph's inherit walk stops at the same depth (get_users_with_permission_to_node).
+_MAX_INHERIT_HOPS = 9
+
+
+class _DeletionUnconfirmed(Exception):
+    """A record one member no longer finds may still be there for others, and they could not be asked."""
+
+
+class _Holder(NamedTuple):
+    member_id: str
+    email: str
+    entry: Union[FileMetadata, FolderMetadata]
 
 
 class GroupAccessRemovalError(Exception):
@@ -311,6 +330,9 @@ class DropboxConnector(BaseConnector):
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+        self._team_member_emails: set[str] = set()
+        self._team_member_ids_by_email: dict[str, str] = {}
+        self._external_emails: set[str] = set()
 
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
@@ -390,36 +412,10 @@ class DropboxConnector(BaseConnector):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return
 
-            # 1. Handle Deleted Items (Deletion from db not implemented yet)
+            # 1. A deleted entry carries no id, only the path it was listed at.
             if isinstance(entry, DeletedMetadata):
-                pass
-                # return None
-                # self.logger.info(f"Item at path '{entry.path_lower}' has been deleted.")
-
-
-                # async with self.data_store_provider.transaction() as tx_store:
-                #     record = await tx_store.get_record_by_path(
-                #         connector_id=self.connector_id,
-                #         path=entry.path_lower,
-                #     )
-
-                # print("GOING TO RUN ON_RECORD_DELETED 1: ", record["_key"], record["name"])
-                # await self.data_entities_processor.on_record_deleted(
-                #     record_id=record["_key"]
-                # )
-
-
-                # return RecordUpdate(
-                #     record=None,
-                #     external_record_id=entry.id,
-                #     is_new=False,
-                #     is_updated=False,
-                #     is_deleted=True,
-                #     metadata_changed=False,
-                #     content_changed=False,
-                #     permissions_changed=False
-                # )
-
+                await self._delete_records_at_path(entry.path_lower, user_id, record_group_id, is_person_folder)
+                return None
 
             # 2. Get existing record from the database
             existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -606,6 +602,8 @@ class DropboxConnector(BaseConnector):
                     team_member_id=user_id,
                     shared_folder_id=shared_folder_id
                 )
+                covered_emails = getattr(new_permissions, "covered_emails", set())
+                user_is_covered = bool(user_email and user_email in covered_emails)
 
                 is_shared = False
                 if new_permissions:
@@ -625,8 +623,9 @@ class DropboxConnector(BaseConnector):
 
                 # If no explicit permissions were found (e.g., personal file),
                 # add the owner's permission
-                if not new_permissions:
-                    #in case of personal file/folder, add owner permission
+                if not new_permissions and not user_is_covered:
+                    # A private item has no member list. An item whose members are all
+                    # inherited keeps an empty list and follows its parent.
                     new_permissions = [
                         Permission(
                             external_id=user_id,
@@ -635,8 +634,7 @@ class DropboxConnector(BaseConnector):
                             entity_type=EntityType.USER
                         )
                     ]
-                else:
-                    #in all other cases atleast add user permission
+                elif new_permissions and not user_is_covered:
                     user_already_has_permission = any(
                         perm.email == user_email
                         for perm in new_permissions
@@ -662,6 +660,7 @@ class DropboxConnector(BaseConnector):
                         entity_type=EntityType.USER
                     )
                 ]
+            self._track_external_collaborators(new_permissions)
 
             # Compare permissions if record exists
             old_permissions = []
@@ -670,11 +669,11 @@ class DropboxConnector(BaseConnector):
                 # we'll leave this empty. When you implement it, you can fetch them here:
                 # old_permissions = await tx_store.get_permissions_for_record(existing_record.id) or []
 
-                # For now, if there's an existing record and we have new permissions,
-                # we'll assume permissions might have changed
-                if new_permissions:
-                    permissions_changed = True
-                    is_updated = True
+                # An empty direct list is a real ACL. Leaving permissions_changed
+                # false would keep members the file no longer names.
+                file_record.rewrite_permissions = True
+                permissions_changed = True
+                is_updated = True
 
             return RecordUpdate(
                 record=file_record,
@@ -690,7 +689,170 @@ class DropboxConnector(BaseConnector):
             )
         except Exception as ex:
             self.logger.error(f"Error processing Dropbox entry {getattr(entry, 'id', entry.path_lower)}: {ex}", exc_info=True)
+            self.keep_stored_access(f"entry {getattr(entry, 'id', entry.path_lower)} could not be processed: {ex}")
             return None
+
+    async def _delete_records_at_path(
+        self, path_lower: str, user_id: str, record_group_id: str, is_person_folder: bool
+    ) -> None:
+        """Delete the records stored at a deleted path and below it, deepest first.
+
+        Dropbox lists a deleted folder once, not each of its descendants. A move
+        also lists the old path as deleted, so an item that still answers to its
+        id is left for the entry at its new path.
+
+        A listing is one member's view (files/list_folder), so a member who leaves
+        or is removed from a shared folder sees it listed as deleted and no longer
+        finds its items. Such an item is deleted only when no other member it is
+        shared with finds it either."""
+        async with self.data_store_provider.transaction() as tx_store:
+            records = await tx_store.get_file_records_under_path(self.connector_id, record_group_id, path_lower)
+
+        team_folder_id = record_group_id if not is_person_folder else None
+        gone_for_member: List[Record] = []
+        for record in records:
+            metadata = await self.data_source.files_get_metadata(
+                record.external_record_id,
+                team_member_id=user_id,
+                team_folder_id=team_folder_id,
+            )
+            if metadata.success and not isinstance(metadata.data, DeletedMetadata):
+                self.logger.info(f"Kept {record.external_record_id}: listed deleted at {path_lower}, still at the source")
+                continue
+            if not metadata.success and "not_found" not in str(metadata.error):
+                self.logger.warning(
+                    f"Not deleting {record.external_record_id} listed deleted at {path_lower}: "
+                    f"the source could not confirm it ({metadata.error})"
+                )
+                continue
+            gone_for_member.append(record)
+        if not gone_for_member:
+            return
+
+        try:
+            holder = await self._other_member_holding(gone_for_member[-1], user_id, team_folder_id)
+        except _DeletionUnconfirmed as unconfirmed:
+            self.logger.warning(
+                f"Not deleting {len(gone_for_member)} record(s) listed deleted at {path_lower} for "
+                f"{user_id}: {unconfirmed}"
+            )
+            return
+        if holder is None:
+            for record in gone_for_member:
+                await self.data_entities_processor.on_record_deleted(record_id=record.id)
+            return
+        await self._resync_as_holder(gone_for_member, path_lower, user_id, holder, team_folder_id)
+
+    async def _other_member_holding(
+        self, record: Record, member_id: str, team_folder_id: Optional[str]
+    ) -> Optional[_Holder]:
+        """Another team member who still finds the record at the source.
+
+        Asks the team members the graph grants the record, directly, through a
+        Dropbox group, or through a record it inherits from. People outside the
+        team are not synced, so they keep nothing. Raises _DeletionUnconfirmed when
+        a member or a group's member list cannot be read.
+        """
+        if not self._team_member_ids_by_email:
+            raise _DeletionUnconfirmed("the team member list is not loaded")
+        try:
+            users = await self.data_entities_processor.get_users_with_permission_to_node(
+                record.id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            group_ids = await self._groups_granted_along(record)
+        except Exception as e:
+            raise _DeletionUnconfirmed(f"the people it is shared with could not be read ({e})") from e
+
+        askable: Dict[str, str] = {}
+        for user in users:
+            email = (user.email or "").lower()
+            if email in self._team_member_ids_by_email:
+                askable[self._team_member_ids_by_email[email]] = email
+        for group_id in sorted(group_ids):
+            try:
+                members = await self._fetch_group_members(group_id, group_id, raise_on_partial=True)
+            except Exception as e:
+                raise _DeletionUnconfirmed(f"the members of group {group_id} could not be read ({e})") from e
+            for member in members:
+                askable[member.profile.team_member_id] = (member.profile.email or "").lower()
+        askable.pop(member_id, None)
+
+        for other_id, email in askable.items():
+            answer = await self.data_source.files_get_metadata(
+                record.external_record_id, team_member_id=other_id, team_folder_id=team_folder_id,
+            )
+            if answer.success and not isinstance(answer.data, DeletedMetadata):
+                return _Holder(other_id, email, answer.data)
+            if not answer.success and "not_found" not in str(answer.error):
+                raise _DeletionUnconfirmed(f"{email} could not be asked ({answer.error})")
+        return None
+
+    async def _groups_granted_along(self, record: Record) -> set[str]:
+        """Dropbox groups granted on the record or on a stored record above it."""
+        group_ids: set[str] = set()
+        current: Optional[Record] = record
+        for _ in range(_MAX_INHERIT_HOPS):
+            if current is None:
+                break
+            groups = await self.data_entities_processor.get_groups_with_permission_to_node(
+                current.id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            group_ids.update(g.source_user_group_id for g in groups if g.source_user_group_id)
+            if not current.parent_external_record_id:
+                break
+            current = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, current.parent_external_record_id
+            )
+        return group_ids
+
+    async def _resync_as_holder(
+        self, records: List[Record], path_lower: str, member_id: str, holder: _Holder,
+        team_folder_id: Optional[str],
+    ) -> None:
+        """Sync the records a member lost again, top down, as a member who has them sees them.
+
+        That moves them out of the member's folder and rewrites their grants without
+        the member. What no other member finds is deleted."""
+        self.logger.info(
+            f"{len(records)} record(s) listed deleted at {path_lower} are still shared with {holder.email}; "
+            "syncing them as that member sees them"
+        )
+        gone: List[Record] = []
+        for record in reversed(records):
+            answer = await self.data_source.files_get_metadata(
+                record.external_record_id, team_member_id=holder.member_id, team_folder_id=team_folder_id,
+            )
+            if not answer.success and "not_found" not in str(answer.error):
+                self.logger.warning(
+                    f"Kept {record.external_record_id} where it was: {holder.email} could not be asked ({answer.error})"
+                )
+                continue
+            if answer.success and not isinstance(answer.data, DeletedMetadata):
+                entry = answer.data
+            else:
+                try:
+                    other = await self._other_member_holding(record, member_id, team_folder_id)
+                except _DeletionUnconfirmed as unconfirmed:
+                    self.logger.warning(f"Kept {record.external_record_id} where it was: {unconfirmed}")
+                    continue
+                if other is None:
+                    gone.append(record)
+                    continue
+                holder, entry = other, other.entry
+            if entry.path_lower is None:
+                self.logger.warning(f"Kept {record.external_record_id} where it was: {holder.email} has it unmounted")
+                continue
+            update = await self._process_dropbox_entry(
+                entry, holder.member_id, holder.email, team_folder_id or holder.member_id, team_folder_id is None,
+            )
+            if update is None:
+                self.logger.warning(f"Kept {record.external_record_id} where it was: it could not be synced again")
+                continue
+            update.is_updated = True
+            update.metadata_changed = True
+            await self._handle_record_updates(update)
+        for record in reversed(gone):
+            await self.data_entities_processor.on_record_deleted(record_id=record.id)
 
     async def _process_dropbox_items_generator(
         self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str, record_group_id: str, is_person_folder: bool,
@@ -722,6 +884,7 @@ class DropboxConnector(BaseConnector):
                 await asyncio.sleep(0)
             except Exception as e:
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
+                self.keep_stored_access(f"an entry could not be processed: {e}")
                 continue
 
     def _pass_date_filters(
@@ -891,6 +1054,16 @@ class DropboxConnector(BaseConnector):
 
         return modified_after, modified_before, created_after, created_before
 
+    def _grant_for(self, access_level: Optional[str], item_id: str) -> Optional[PermissionType]:
+        """A level that opens nothing grants nothing. So does one this code does not
+        know: reading it as view access would open content Dropbox may not."""
+        grant = grant_for_access_level(access_level)
+        if grant is None and access_level not in NO_CONTENT_LEVELS:
+            self.logger.warning(
+                f"No grant for a member of {item_id}: unknown Dropbox access level {access_level!r}"
+            )
+        return grant
+
     async def _convert_dropbox_permissions_to_permissions(
         self,
         file_or_folder_id: str,
@@ -912,6 +1085,7 @@ class DropboxConnector(BaseConnector):
             List of Permission objects
         """
         permissions = []
+        covered_emails: set[str] = set()
 
         try:
             # Fetch members based on type
@@ -935,18 +1109,8 @@ class DropboxConnector(BaseConnector):
                 self.logger.debug(f"Could not fetch permissions for {file_or_folder_id}: {members_result.error}")
                 return []
 
-            # Map Dropbox AccessLevel to PermissionType
-            access_level_map = {
-                'owner': PermissionType.OWNER,
-                'editor': PermissionType.WRITE,
-                'viewer': PermissionType.READ,
-            }
-
             if hasattr(members_result.data, 'users') and members_result.data.users:
                 for user_membership in members_result.data.users:
-                    access_type_tag = user_membership.access_type._tag
-                    permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
-
                     user_info = user_membership.user
 
                     # Get email and check validity
@@ -955,6 +1119,13 @@ class DropboxConnector(BaseConnector):
                     # Skip users without email or with email ending in '#'
                     if not email or email.endswith('#'):
                         self.logger.debug(f"Skipping user {user_info.account_id} with invalid email: {email}")
+                        continue
+
+                    covered_emails.add(email)
+                    if is_file and not member_is_direct(getattr(user_membership, "is_inherited", None)):
+                        continue
+                    permission_type = self._grant_for(user_membership.access_type._tag, file_or_folder_id)
+                    if permission_type is None:
                         continue
 
                     permissions.append(Permission(
@@ -967,8 +1138,11 @@ class DropboxConnector(BaseConnector):
             # Process group permissions
             if hasattr(members_result.data, 'groups') and members_result.data.groups:
                 for group_membership in members_result.data.groups:
-                    access_type_tag = group_membership.access_type._tag
-                    permission_type = access_level_map.get(access_type_tag, PermissionType.READ)
+                    if is_file and not member_is_direct(getattr(group_membership, "is_inherited", None)):
+                        continue
+                    permission_type = self._grant_for(group_membership.access_type._tag, file_or_folder_id)
+                    if permission_type is None:
+                        continue
 
                     group_info = group_membership.group
                     permissions.append(Permission(
@@ -978,10 +1152,29 @@ class DropboxConnector(BaseConnector):
                         entity_type=EntityType.GROUP
                     ))
 
+            if is_file and hasattr(members_result.data, "invitees"):
+                for invitee_membership in members_result.data.invitees or []:
+                    if not member_is_direct(getattr(invitee_membership, "is_inherited", None)):
+                        continue
+                    invitee = getattr(invitee_membership, "invitee", None)
+                    email = getattr(invitee, "email", None)
+                    if not email or str(email).endswith("#"):
+                        continue
+                    access_type = getattr(invitee_membership, "access_type", None)
+                    permission_type = self._grant_for(getattr(access_type, "_tag", None), file_or_folder_id)
+                    if permission_type is None:
+                        continue
+                    permissions.append(Permission(
+                        external_id=email,
+                        email=email,
+                        type=permission_type,
+                        entity_type=EntityType.USER,
+                    ))
+
         except Exception as e:
             self.logger.debug(f"Error converting Dropbox permissions for {file_or_folder_id}: {e}")
 
-        return permissions
+        return DropboxGrants(permissions, covered_emails=covered_emails)
 
 
     # Update the _permissions_equal method (fix the comparison logic)
@@ -1145,6 +1338,8 @@ class DropboxConnector(BaseConnector):
 
             self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
 
+            await self._sync_unmounted_shared_folder_groups(users_to_sync)
+
             # Process users in concurrent batches
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
                 batch = users_to_sync[i:i + self.max_concurrent_batches]
@@ -1156,7 +1351,10 @@ class DropboxConnector(BaseConnector):
                     for user in batch
                 ]
 
-                await asyncio.gather(*sync_tasks, return_exceptions=True)
+                results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+                for user, result in zip(batch, results):
+                    if isinstance(result, BaseException):
+                        self.keep_stored_access(f"the Dropbox of {user.email} could not be synced: {result}")
 
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)
@@ -1196,6 +1394,7 @@ class DropboxConnector(BaseConnector):
                     folders_to_sync.append(folder.shared_folder_id)
             else:
                 self.logger.warning(f"Could not list shared folders for user {user_email}: {shared_folders.error}")
+                self.keep_stored_access(f"the shared folders of {user_email} could not be listed")
 
             # Loop through each folder (personal + shared) and run a separate sync
             for folder_id in folders_to_sync:
@@ -1258,6 +1457,7 @@ class DropboxConnector(BaseConnector):
 
                         if not result.success:
                             self.logger.error(f"[{sync_log_name}] Dropbox API call failed: {result.error}")
+                            self.keep_stored_access(f"the {sync_log_name} could not be listed: {result.error}")
                             # Stop syncing this folder on API error
                             has_more = False
                             continue # Skip to the next 'while' iteration (which will exit)
@@ -1319,6 +1519,7 @@ class DropboxConnector(BaseConnector):
                             raise # Re-raise other critical API errors
                     except Exception as loop_ex:
                         self.logger.error(f"Error in 'while has_more' loop for {sync_log_name}: {loop_ex}", exc_info=True)
+                        self.keep_stored_access(f"the {sync_log_name} could not be listed in full: {loop_ex}")
                         has_more = False # Stop this 'while' loop to be safe
 
                 self.logger.info(f"Completed sync loop for: {sync_log_name}")
@@ -1363,10 +1564,62 @@ class DropboxConnector(BaseConnector):
                     await self.data_entities_processor.on_record_content_update(record_update.record)
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            self.keep_stored_access(f"an update of {record_update.external_record_id} could not be saved: {e}")
+
+    def _track_external_collaborators(self, permissions: List[Permission]) -> None:
+        """Note user grants to people outside the Dropbox team. They are no App
+        user, so nothing gates them in to what the grant lets them read.
+
+        An empty team list means user sync produced nothing, and treating every
+        grantee as external would flag the whole team."""
+        if not self._team_member_emails:
+            return
+        for permission in permissions:
+            if permission.entity_type != EntityType.USER or not permission.email:
+                continue
+            email = permission.email.lower()
+            if email not in self._team_member_emails:
+                self._external_emails.add(email)
+
+    async def _flush_external_app_users(self) -> None:
+        """Non-fatal: the next run derives the same set from the grants again."""
+        if not self._external_emails:
+            return
+        emails = sorted(self._external_emails)
+        try:
+            await self.data_entities_processor.on_external_app_users(emails, self.connector_id)
+            self.logger.info("Granted app membership to %d external collaborator(s)", len(emails))
+        except Exception as e:
+            self.logger.error(f"Failed to grant app membership to external collaborators: {e}", exc_info=True)
+
+    async def _reap_external_app_users(self) -> None:
+        try:
+            await self.data_entities_processor.reap_external_app_users(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Failed to reap external app memberships: {e}", exc_info=True)
+
+    async def _list_team_members(self) -> list:
+        """Every page of team/members/list. A partial list is not returned: the team
+        list decides who is gated, who loses the gate and who is an outside collaborator."""
+        response = await self.data_source.team_members_list()
+        if not response.success:
+            raise RuntimeError(f"Could not list the Dropbox team members: {response.error}")
+        members = list(response.data.members)
+        while response.data.has_more is True:
+            response = await self.data_source.team_members_list_continue(response.data.cursor)
+            if not response.success:
+                raise RuntimeError(
+                    f"Could not list the Dropbox team members past the first {len(members)}: {response.error}"
+                )
+            members.extend(response.data.members)
+        return members
 
     def get_app_users(self, users: DropboxResponse) -> List[AppUser]:
+        return self._app_users_from_members(users.data.members)
+
+    def _app_users_from_members(self, members: list) -> List[AppUser]:
         app_users: List[AppUser] = []
-        for member in users.data.members:
+        for member in members:
             profile = member.profile
             app_users.append(
                 AppUser(
@@ -1392,8 +1645,12 @@ class DropboxConnector(BaseConnector):
 
             # Step 1: fetch and sync all users
             self.logger.info("Syncing users...")
-            users = await self.data_source.team_members_list()
-            app_users = self.get_app_users(users)
+            app_users = self._app_users_from_members(await self._list_team_members())
+            self._team_member_ids_by_email = {
+                user.email.lower(): user.source_user_id for user in app_users if user.email
+            }
+            self._team_member_emails = set(self._team_member_ids_by_email)
+            self._external_emails = set()
 
             # Step 1.5: Initialize cursor for member events
             member_sync_key = generate_record_sync_point_key("member_events", "team_events", "global")
@@ -1460,6 +1717,11 @@ class DropboxConnector(BaseConnector):
             else:
                 self.logger.info("Running an INCREMENTAL sync for sharing events...")
                 await self._sync_sharing_changes_with_cursor(sharing_sync_key, sharing_sync_point.get('cursor'))
+
+            # After every grant of this run is written: membership is given to
+            # principals that already exist, and judged against current grants.
+            await self._flush_external_app_users()
+            await self._reap_external_app_users()
 
             self.logger.info("Dropbox full sync completed.")
         except Exception as ex:
@@ -1694,6 +1956,7 @@ class DropboxConnector(BaseConnector):
                     groups_response = await self.data_source.team_groups_list_continue(cursor)
                     if not groups_response.success:
                         self.logger.error(f"Error fetching more groups: {groups_response.error}")
+                        self.keep_stored_access(f"the groups past the first {len(all_groups_list)} could not be listed")
                         break  # Stop pagination on error
                     all_groups_list.extend(groups_response.data.groups)
                     cursor = groups_response.data.cursor
@@ -1723,6 +1986,7 @@ class DropboxConnector(BaseConnector):
 
                 except Exception as e:
                     self.logger.error(f"❌ Failed to process group {group.group_name}: {e}", exc_info=True)
+                    self.keep_stored_access(f"the members of group {group.group_id} could not be read: {e}")
                     continue  # Skip this group and move to the next
 
             # --- 4. Send the ENTIRE batch to the processor ONCE (outside the loop) ---
@@ -2315,6 +2579,87 @@ class DropboxConnector(BaseConnector):
 
         return folder_id, folder_name
 
+    async def _fetch_shared_folder_permissions(
+        self,
+        folder_id: str,
+        folder_name: str,
+        team_member_id: str,
+        *,
+        as_admin: bool = False,
+    ) -> Optional[List[Permission]]:
+        """The folder's member list as grants, or None when it could not be read."""
+        folder_members = await self.data_source.sharing_list_folder_members(
+            shared_folder_id=folder_id,
+            team_member_id=team_member_id,
+            as_admin=as_admin
+        )
+
+        if not folder_members.success:
+            self.logger.warning(
+                f"Failed to fetch members for folder '{folder_name}': {folder_members.error}"
+            )
+            return None
+
+        all_users_list = list(folder_members.data.users or [])
+        all_groups_list = list(folder_members.data.groups or [])
+
+        cursor = folder_members.data.cursor
+        has_more = getattr(folder_members.data, 'has_more', False)
+
+        while has_more:
+            self.logger.debug(f"Fetching more members for folder '{folder_name}'...")
+
+            members_continue = await self.data_source.sharing_list_folder_members_continue(
+                cursor=cursor,
+                team_member_id=team_member_id,
+                as_admin=as_admin
+            )
+
+            if not members_continue.success:
+                # A partial list saved as the folder's members would drop the unread ones.
+                self.logger.warning(
+                    f"Failed to fetch more members for folder '{folder_name}': {members_continue.error}"
+                )
+                return None
+
+            all_users_list.extend(members_continue.data.users or [])
+            all_groups_list.extend(members_continue.data.groups or [])
+
+            cursor = members_continue.data.cursor
+            has_more = getattr(members_continue.data, 'has_more', False)
+
+        self.logger.info(
+            f"Fetched {len(all_users_list)} users and {len(all_groups_list)} groups "
+            f"for folder '{folder_name}'"
+        )
+
+        permissions_list = []
+
+        for user_info in all_users_list:
+            permission_type = self._grant_for(user_info.access_type._tag, folder_id)
+            if permission_type is None:
+                continue
+
+            permissions_list.append(Permission(
+                email=user_info.user.email,
+                type=permission_type,
+                entity_type=EntityType.USER
+            ))
+
+        for group_info in all_groups_list:
+            permission_type = self._grant_for(group_info.access_type._tag, folder_id)
+            if permission_type is None:
+                continue
+
+            permissions_list.append(Permission(
+                external_id=group_info.group.group_id,
+                type=permission_type,
+                entity_type=EntityType.GROUP
+            ))
+
+        self._track_external_collaborators(permissions_list)
+        return permissions_list
+
     async def _create_and_sync_single_record_group(
         self,
         folder_id: str,
@@ -2331,61 +2676,13 @@ class DropboxConnector(BaseConnector):
             team_admin_user: AppUser with team_admin role for API calls
         """
         try:
-            # Fetch folder members with pagination
-            all_users_list = []
-            all_groups_list = []
-
-            folder_members = await self.data_source.sharing_list_folder_members(
-                shared_folder_id=folder_id,
-                team_member_id=team_admin_user.source_user_id,
-                as_admin=True
+            permissions_list = await self._fetch_shared_folder_permissions(
+                folder_id, folder_name, team_admin_user.source_user_id, as_admin=True
             )
-
-            if not folder_members.success:
-                self.logger.warning(
-                    f"Failed to fetch members for folder '{folder_name}': {folder_members.error}"
-                )
+            if permissions_list is None:
+                self.keep_stored_access(f"the members of team folder {folder_id} could not be read")
                 return
 
-            # Collect members from first page
-            if folder_members.data.users:
-                all_users_list.extend(folder_members.data.users)
-            if folder_members.data.groups:
-                all_groups_list.extend(folder_members.data.groups)
-
-            # Handle pagination
-            cursor = folder_members.data.cursor
-            has_more = getattr(folder_members.data, 'has_more', False)
-
-            while has_more:
-                self.logger.debug(f"Fetching more members for folder '{folder_name}'...")
-
-                members_continue = await self.data_source.sharing_list_folder_members_continue(
-                    cursor=cursor,
-                    team_member_id=team_admin_user.source_user_id,
-                    as_admin=True
-                )
-
-                if not members_continue.success:
-                    self.logger.error(
-                        f"Error during member pagination for folder '{folder_name}': {members_continue.error}"
-                    )
-                    break
-
-                if members_continue.data.users:
-                    all_users_list.extend(members_continue.data.users)
-                if members_continue.data.groups:
-                    all_groups_list.extend(members_continue.data.groups)
-
-                cursor = members_continue.data.cursor
-                has_more = getattr(members_continue.data, 'has_more', False)
-
-            self.logger.info(
-                f"Fetched {len(all_users_list)} users and {len(all_groups_list)} groups "
-                f"for folder '{folder_name}'"
-            )
-
-            # Create record group
             record_group = RecordGroup(
                 name=folder_name,
                 org_id=self.data_entities_processor.org_id,
@@ -2395,37 +2692,6 @@ class DropboxConnector(BaseConnector):
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
             )
-
-            # Create permissions
-            dropbox_to_permission_type = {
-                'owner': PermissionType.OWNER,
-                'editor': PermissionType.WRITE,
-                'viewer': PermissionType.READ,
-            }
-
-            permissions_list = []
-
-            for user_info in all_users_list:
-                access_level_tag = user_info.access_type._tag
-                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
-
-                user_permission = Permission(
-                    email=user_info.user.email,
-                    type=permission_type,
-                    entity_type=EntityType.USER
-                )
-                permissions_list.append(user_permission)
-
-            for group_info in all_groups_list:
-                access_level_tag = group_info.access_type._tag
-                permission_type = dropbox_to_permission_type.get(access_level_tag, PermissionType.READ)
-
-                group_permission = Permission(
-                    external_id=group_info.group.group_id,
-                    type=permission_type,
-                    entity_type=EntityType.GROUP
-                )
-                permissions_list.append(group_permission)
 
             # Submit to processor
             await self.data_entities_processor.on_new_record_groups([(record_group, permissions_list)])
@@ -2438,6 +2704,51 @@ class DropboxConnector(BaseConnector):
             )
             raise
 
+    async def _sync_unmounted_shared_folder_groups(self, users: List[AppUser]) -> None:
+        """A shared folder missing from a member's Dropbox is synced as its own
+        namespace, and its top-level files hang off the group named by that
+        namespace. Those files list only members inherited from the folder, so
+        the group must carry the folder's members or nobody can read them.
+
+        Team folders get their group from sync_record_groups, and a mounted
+        folder's files sit under its folder record."""
+        folders: Dict[str, Tuple[object, str]] = {}
+        team_folder_ids: set[str] = set()
+        for user in users:
+            result = await self.data_source.sharing_list_folders(team_member_id=user.source_user_id)
+            if not result.success:
+                self.logger.warning(f"Could not list shared folders for user {user.email}: {result.error}")
+                self.keep_stored_access(f"the shared folders of {user.email} could not be listed")
+                continue
+            for folder in result.data.entries:
+                if folder.is_team_folder:
+                    team_folder_ids.add(folder.shared_folder_id)
+                elif folder.path_lower is None:
+                    folders.setdefault(folder.shared_folder_id, (folder, user.source_user_id))
+
+        record_groups = []
+        for folder_id, (folder, member_id) in folders.items():
+            parent_id = folder.parent_shared_folder_id
+            permissions = await self._fetch_shared_folder_permissions(folder_id, folder.name, member_id)
+            if permissions is None:
+                self.keep_stored_access(f"the members of shared folder {folder_id} could not be read")
+            record_groups.append((
+                RecordGroup(
+                    name=folder.name,
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=folder_id,
+                    parent_external_group_id=parent_id if parent_id in team_folder_ids or parent_id in folders else None,
+                    description="Shared Folder",
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.DRIVE,
+                    web_url=getattr(folder, "preview_url", None),
+                ),
+                permissions,
+            ))
+
+        if record_groups:
+            await self.data_entities_processor.on_new_record_groups(record_groups)
 
     async def sync_record_groups(self, users: List[AppUser]) -> None:
         """Sync all team folders as record groups."""
@@ -2450,6 +2761,7 @@ class DropboxConnector(BaseConnector):
 
         if not team_admin_user:
             self.logger.error("No team admin user found. Cannot sync record groups.")
+            self.keep_stored_access("no team admin to read the team folders with")
             return
 
         self.logger.info(f"Using team admin user: {team_admin_user.email} (ID: {team_admin_user.source_user_id})")
@@ -2461,6 +2773,7 @@ class DropboxConnector(BaseConnector):
 
         if not team_folders_response.success:
             self.logger.error(f"Failed to fetch team folders: {team_folders_response.error}")
+            self.keep_stored_access(f"the team folders could not be listed: {team_folders_response.error}")
             return
 
         all_team_folders.extend(team_folders_response.data.team_folders)
@@ -2475,6 +2788,7 @@ class DropboxConnector(BaseConnector):
 
             if not folders_continue.success:
                 self.logger.error(f"Error during team folder pagination: {folders_continue.error}")
+                self.keep_stored_access(f"the team folders past the first {len(all_team_folders)} could not be listed")
                 break
 
             all_team_folders.extend(folders_continue.data.team_folders)
@@ -2496,6 +2810,7 @@ class DropboxConnector(BaseConnector):
                 )
             except Exception as e:
                 self.logger.error(f"Failed to sync folder '{folder.name}': {e}", exc_info=True)
+                self.keep_stored_access(f"team folder {folder.team_folder_id} could not be synced: {e}")
                 continue
 
     async def sync_personal_record_groups(self, users: List[AppUser]) -> None:

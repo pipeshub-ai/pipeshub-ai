@@ -43,6 +43,11 @@ class RecordAccessDeniedError(RecordContentError):
     """
 
 
+class RecordOutsideTurnError(RecordContentError):
+    """The actor may read the record, but it lies outside what the chat turn
+    is limited to: the selection, a saved agent's knowledge, a project's sources."""
+
+
 class RecordTooLargeError(RecordContentError):
     """Record content exceeds the caller's byte budget."""
 

@@ -56,6 +56,7 @@ def _make_mock_deps():
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-sp-1"
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
@@ -1612,6 +1613,7 @@ class TestProcessSiteDrives:
         connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[drive]))
         connector._pass_drive_key_filters = MagicMock(return_value=True)
         connector._normalize_document_library_url = MagicMock(return_value="/docs")
+        connector._get_library_access = AsyncMock(return_value=(True, []))
 
         # Mock _process_drive_delta to yield items
         async def fake_delta(*args, **kwargs):
@@ -2207,9 +2209,9 @@ class TestSharePointConvertToPermissions:
         link.type = "read"
         perm.link = link
 
+        # An anonymous link names no grantee, so it yields no permission.
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link(self):
@@ -2280,7 +2282,9 @@ class TestGetItemPermissions:
         connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[perm_obj]))
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
-        assert len(result) == 1
+        # The call succeeds; the one anonymous-link permission yields nothing,
+        # since it names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_get_item_permissions_error_returns_empty(self):

@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.sources.client.gitlab.gitlab import GitLabResponse
+
 # ---------------------------------------------------------------------------
 # Connector mock factory
 # ---------------------------------------------------------------------------
@@ -160,22 +162,12 @@ def branch_res(sha: str = "newhead00") -> MagicMock:
     return res
 
 
-def paged_res(data: list) -> MagicMock:
-    """Return a successful paged_list mock response."""
-    res = MagicMock()
-    res.success = True
-    res.data = data
-    res.error = None
-    return res
+def paged_res(data: list) -> GitLabResponse:
+    """Return a successful paged_list / ds_call response."""
+    return GitLabResponse(success=True, data=data)
 
 
-def failed_res(error: str = "error", status_code: int | None = None) -> MagicMock:
-    """Return a failed paged_list / ds_call mock response."""
-    res = MagicMock()
-    res.success = False
-    res.data = None
-    res.error = error
-    # Real GitLabResponse carries the source's HTTP status; the streaming paths
-    # map it, so a MagicMock auto-attribute here would silently mean "unknown".
-    res.status_code = status_code
-    return res
+def failed_res(error: str = "error", status_code: int | None = None) -> GitLabResponse:
+    """Return a failed paged_list / ds_call response. Without a status it is a
+    read failure (transport error); 403/404 mean GitLab answered "absent"."""
+    return GitLabResponse(success=False, error=error, status_code=status_code)

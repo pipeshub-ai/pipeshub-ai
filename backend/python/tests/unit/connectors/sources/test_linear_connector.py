@@ -68,6 +68,7 @@ def _make_connector():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -351,6 +352,61 @@ class TestLinearConnectorUsers:
             users = await connector._fetch_users()
             assert len(users) == 2
 
+    @pytest.mark.asyncio
+    async def test_fetch_users_marks_guests(self):
+        """LINEAR-01: a guest reads only their own teams, so the sync must know who is one."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        mock_ds = MagicMock()
+        mock_ds.users = AsyncMock(
+            return_value=_mock_users_response(
+                [
+                    {"id": "u1", "email": "member@test.com", "name": "M", "active": True, "guest": False},
+                    {"id": "u2", "email": "guest@test.com", "name": "G", "active": True, "guest": True},
+                    {"id": "u3", "email": "old@test.com", "name": "O", "active": True},
+                ],
+                has_next=False,
+            )
+        )
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock
+        ) as mock_fresh:
+            mock_fresh.return_value = mock_ds
+            users = await connector._fetch_users()
+
+        assert {u.email: u.is_guest for u in users} == {
+            "member@test.com": False, "guest@test.com": True, "old@test.com": False,
+        }
+
+    def test_user_query_requests_the_guest_flag(self):
+        from app.sources.client.linear.graphql_op import LinearGraphQLOperations
+        assert "guest" in LinearGraphQLOperations.FRAGMENTS["UserFields"].split()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_withdraws_access_from_users_gone_from_linear(self):
+        """GATE-NEVER-REMOVED: the user list is complete, so it decides who keeps the gate."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        listed = [AppUser(app_name=Connectors.LINEAR, connector_id="linear-conn-1",
+                          source_user_id="u1", email="a@test.com", full_name="A")]
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[MagicMock()])
+        connector.data_entities_processor.remove_app_users_absent_from_source = AsyncMock(return_value=0)
+        connector._register_authenticated_identity = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.linear.connector.load_connector_filters",
+            new_callable=AsyncMock, return_value=({}, {}),
+        ), patch.object(connector, "_fetch_users", AsyncMock(return_value=listed)), patch.object(
+            connector, "_fetch_teams", AsyncMock(side_effect=RuntimeError("stop after users")),
+        ):
+            with pytest.raises(RuntimeError, match="stop after users"):
+                await connector.run_sync()
+
+        connector.data_entities_processor.remove_app_users_absent_from_source.assert_awaited_once_with(
+            "linear-conn-1", listed,
+        )
+
 
 # ===================================================================
 # LinearConnector - Team Fetching
@@ -421,6 +477,33 @@ class TestLinearConnectorTeams:
             user_groups, record_groups = await connector._fetch_teams()
             _, perms = record_groups[0]
             assert perms[0].entity_type == EntityType.GROUP
+
+    @pytest.mark.asyncio
+    async def test_a_public_team_also_grants_its_members(self):
+        """LINEAR-01: the org grant skips guests, so a guest member of a public team
+        reads it through the team's own group."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.organization_url_key = "test-org"
+        mock_ds = MagicMock()
+        mock_ds.teams = AsyncMock(
+            return_value=_mock_teams_response(
+                [{"id": "team-pub", "name": "Public", "key": "PUB", "description": "", "private": False,
+                  "visibility": "public", "parent": None, "members": {"nodes": []}}],
+                has_next=False,
+            )
+        )
+
+        with patch.object(
+            connector, "_get_fresh_datasource", new_callable=AsyncMock
+        ) as mock_fresh:
+            mock_fresh.return_value = mock_ds
+            _, record_groups = await connector._fetch_teams()
+
+        _, perms = record_groups[0]
+        assert {(p.entity_type, p.external_id) for p in perms} == {
+            (EntityType.ORG, None), (EntityType.GROUP, "team-pub"),
+        }
 
     @pytest.mark.asyncio
     async def test_fetch_teams_with_parent(self):
@@ -540,6 +623,7 @@ def _make_connector_cov():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -2517,6 +2601,7 @@ def _make_connector_fullcov():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -4294,10 +4379,12 @@ class TestMarkRecordDeleted:
         connector._tx_store.get_records_by_parent = AsyncMock(
             side_effect=[[child], []]
         )
-        connector._tx_store.delete_records_and_relations = AsyncMock()
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await connector._mark_record_and_children_deleted("ext-parent", "issue")
-        assert connector._tx_store.delete_records_and_relations.call_count == 2
+        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["parent-id", "child-id"], connector.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
 
 
 # ===================================================================

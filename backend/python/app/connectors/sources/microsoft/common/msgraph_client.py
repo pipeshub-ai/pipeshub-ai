@@ -24,6 +24,11 @@ from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 from app.models.entities import AppUser, FileRecord
 from app.models.permission import Permission, PermissionType
 
+GUEST_USER_TYPE = "Guest"
+# Not hierarchicalsharing: that reports only the root of a sharing change, and every item stores its own
+# grants, so its descendants would keep a revoked grant.
+SHAREPOINT_DELTA_PREFER = "deltashowsharingchanges"
+
 
 # Map Microsoft Graph roles to permission type
 def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
@@ -226,7 +231,7 @@ class MSGraphClient:
             async with self.rate_limiter:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
                     select=['id', 'displayName', 'userPrincipalName', 'accountEnabled',
-                            'mail', 'jobTitle', 'department', 'surname']
+                            'mail', 'jobTitle', 'department', 'surname', 'userType']
                 )
 
                 request_configuration = RequestConfiguration(
@@ -258,6 +263,7 @@ class MSGraphClient:
                     is_active=user.account_enabled,
                     title=user.job_title,
                     source_created_at=user.created_date_time.timestamp() if user.created_date_time else None,
+                    is_guest=user.user_type == GUEST_USER_TYPE,
                 ))
 
             return user_list
@@ -358,6 +364,8 @@ class MSGraphClient:
                 ri.http_method = Method.GET
                 ri.url = url  # absolute URL
                 ri.headers.add("Accept", "application/json")
+                # Without it an item whose sharing alone changed is left out of the delta.
+                ri.headers.add("Prefer", SHAREPOINT_DELTA_PREFER)
 
                 error_mapping: Dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,

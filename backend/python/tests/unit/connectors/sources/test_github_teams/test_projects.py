@@ -15,6 +15,7 @@ import pytest
 
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.connectors.sources.github_teams.projects import (
+    GitHubReadError,
     CollaboratorsUnavailable,
     ProjectsSync,
     _dedupe_highest_permissions,
@@ -213,6 +214,8 @@ class TestPermissionsWithoutCollaborators:
 
         assert sync._permissions_without_collaborators(repo, self._err(500)) is None
         assert sync._permissions_without_collaborators(repo, RuntimeError("API down")) is None
+        # Kept, so a full sync must not sweep them.
+        assert c.keep_stored_access.call_count == 2
 
 
 class TestVisibilityPermissions:
@@ -587,11 +590,41 @@ class TestSyncAllReposAndResolution:
         c.users._resolve_target_orgs = AsyncMock(return_value=([], False))
         assert await ProjectsSync(c)._resolve_repos_with_filters() == []
 
-    async def test_org_list_failure_skips_that_org(self) -> None:
+    async def test_an_org_whose_repos_could_not_be_listed_fails_the_sync(self) -> None:
+        """Read as "no repos", a full sync would sweep the org's access (N4GIT-01)."""
         c = make_mock_connector()
         c.users._resolve_target_orgs = AsyncMock(return_value=(["acme"], True))
-        c.runtime.ds_call.side_effect = _dispatch(c, {"list_org_repos": failed_response("403")})
+        c.runtime.ds_call.side_effect = _dispatch(c, {"list_org_repos": failed_response("403", status_code=403)})
+        with pytest.raises(GitHubReadError, match="acme"):
+            await ProjectsSync(c)._resolve_repos_with_filters()
+
+    async def test_an_org_github_says_is_gone_is_skipped(self) -> None:
+        c = make_mock_connector()
+        c.users._resolve_target_orgs = AsyncMock(return_value=(["acme"], True))
+        c.runtime.ds_call.side_effect = _dispatch(c, {"list_org_repos": failed_response("404", status_code=404)})
         assert await ProjectsSync(c)._resolve_repos_with_filters() == []
+
+    async def test_a_repo_in_filter_that_could_not_be_read_fails_the_sync(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = {
+            SyncFilterKey.REPO_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["acme/widgets"], operator_value=FilterOperator.IN,
+            )
+        }
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo": failed_response("Read timed out")})
+        with pytest.raises(GitHubReadError, match="acme/widgets"):
+            await ProjectsSync(c)._resolve_repos_with_filters()
+
+    async def test_a_repo_that_fails_to_sync_keeps_stored_access(self) -> None:
+        c = make_mock_connector()
+        sync = ProjectsSync(c)
+        sync._resolve_repos_with_filters = AsyncMock(return_value=[make_repo(repo_id=1)])
+        sync._sync_repo = AsyncMock(side_effect=RuntimeError("boom"))
+        sync._flush_org_record_groups = AsyncMock()
+
+        await sync.sync_all_repos()
+
+        c.keep_stored_access.assert_called_once()
 
 
 class TestCollaboratorEdgeCases:

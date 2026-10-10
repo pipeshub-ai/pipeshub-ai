@@ -58,14 +58,29 @@ export function buildProjectChatScope(project: ProjectDetail, catalog: ToolCatal
   const appliedApps = project.appliedFilters?.apps ?? [];
   const appliedKb = project.appliedFilters?.kb ?? [];
 
-  const connectors = apps.map((id) => {
+  const connectors: ProjectChatScope['connectors'] = apps.map((id) => {
     const node = appliedApps.find((n) => n.id === id);
     return { id, label: node?.name ?? id, connectorKind: node?.connector ?? '' };
   });
-  const knowledgeCollectionRows = kb.map((id) => {
+  const knowledgeCollectionRows: ProjectChatScope['knowledgeCollectionRows'] = kb.map((id) => {
     const node = appliedKb.find((n) => n.id === id);
     return { id, name: node?.name ?? id, sourceType: node?.connector || undefined };
   });
+  // A record group, folder or record the project lists is a row of its own,
+  // beside the connectors or the collections it belongs to.
+  const belowApps = { recordGroups: 'recordGroup', records: 'folder' } as const;
+  for (const key of ['recordGroups', 'records'] as const) {
+    for (const id of project.knowledgeScope?.[key] ?? []) {
+      const node = project.appliedFilters?.[key]?.find((n) => n.id === id);
+      const name = node?.name ?? id;
+      const nodeType = node?.nodeType || belowApps[key];
+      if ((node?.connector ?? '').trim().toUpperCase() === 'KB') {
+        knowledgeCollectionRows.push({ id, name, sourceType: 'KB', nodeType });
+      } else {
+        connectors.push({ id, label: name, connectorKind: node?.connector ?? '', nodeType });
+      }
+    }
+  }
 
   const allowedBare = new Set((project.tools ?? []).map(bareToolFullName));
   const toolGroups = restrictGroupsToBareNames(catalog.toolGroups, allowedBare);
@@ -75,7 +90,12 @@ export function buildProjectChatScope(project: ProjectDetail, catalog: ToolCatal
     projectId: project._id,
     connectors,
     knowledgeCollectionRows,
-    knowledgeDefaults: { apps, kb },
+    knowledgeDefaults: {
+      apps,
+      kb,
+      ...(project.knowledgeScope?.recordGroups?.length ? { recordGroups: project.knowledgeScope.recordGroups } : {}),
+      ...(project.knowledgeScope?.records?.length ? { records: project.knowledgeScope.records } : {}),
+    },
     toolGroups,
     mcpGroups,
     toolCatalogFullNames: [...toolGroups, ...mcpGroups].flatMap((g) => g.fullNames),

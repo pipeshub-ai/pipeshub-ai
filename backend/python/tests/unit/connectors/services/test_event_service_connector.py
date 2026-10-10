@@ -16,7 +16,7 @@ Covers:
 
 import logging
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -25,6 +25,7 @@ from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
     current,
@@ -52,6 +53,7 @@ def mock_graph_provider():
     gp.get_document = AsyncMock(return_value=None)
     gp.delete_sync_points_by_connector_id = AsyncMock(return_value=(5, True))
     gp.delete_connector_sync_edges = AsyncMock(return_value=(3, True))
+    gp.mark_connector_sync_edges = AsyncMock(return_value=(3, True))
     gp.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": [], "deleted_records_count": 0})
     gp.get_records_by_parent_record = AsyncMock(return_value=[])
     gp.get_records_by_record_group = AsyncMock(return_value=[])
@@ -613,9 +615,10 @@ class TestHandleStartSync:
             service.graph_provider.delete_sync_points_by_connector_id.assert_awaited_once_with(
                 connector_id="c1"
             )
-            service.graph_provider.delete_connector_sync_edges.assert_awaited_once_with(
-                connector_id="c1"
+            service.graph_provider.mark_connector_sync_edges.assert_awaited_once_with(
+                connector_id="c1", generation=ANY
             )
+            service.graph_provider.delete_connector_sync_edges.assert_not_awaited()
             
             # Verify pendingFullSync was cleared after successful schedule
             service.graph_provider.update_node.assert_awaited_once_with(
@@ -726,7 +729,7 @@ class TestHandleStartSync:
             
             # Verify normal sync path was taken (delete NOT called)
             service.graph_provider.delete_sync_points_by_connector_id.assert_not_awaited()
-            service.graph_provider.delete_connector_sync_edges.assert_not_awaited()
+            service.graph_provider.mark_connector_sync_edges.assert_not_awaited()
             
             # Verify pendingFullSync was NOT cleared (not in full sync path)
             service.graph_provider.update_node.assert_not_awaited()
@@ -1006,6 +1009,31 @@ class TestHandleReindex:
             assert result is True
             mock_start.assert_awaited_once()
             mock_start.await_args.args[1].close()
+
+    @pytest.mark.asyncio
+    async def test_run_reindex_of_a_group_keeps_only_children_the_user_may_access(self, service) -> None:
+        """The providers' user filter is the old model; with the batch access
+        check the children are filtered through it instead."""
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+        batch = [MagicMock(id=rid, is_placeholder=False) for rid in ("open", "restricted")]
+        service.graph_provider.get_records_by_record_group = AsyncMock(side_effect=[batch, []])
+        service.graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"open"})),
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="confluence", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id="rg-1", depth=1, user_key="user-key", status_filters=None,
+        )
+
+        assert service.graph_provider.get_records_by_record_group.await_args.kwargs["user_key"] is None
+        service.graph_provider.check_access.assert_awaited_once_with(
+            "user-key", "org1", node_ids=["open", "restricted"],
+        )
+        reindexed = mock_conn.reindex_records.await_args.args[0]
+        assert [r.id for r in reindexed] == ["open"]
 
     @pytest.mark.asyncio
     async def test_run_reindex_pages_with_keyset_cursor(self, service):
@@ -1539,12 +1567,12 @@ class TestFullSyncDoesNotDestroyARunningSyncsState:
             calls.append("delete_sync_points")
             return (5, True)
 
-        async def _delete_edges(**_k):
-            calls.append("delete_sync_edges")
+        async def _mark_edges(**_k):
+            calls.append("mark_sync_edges")
             return (5, True)
 
         service.graph_provider.delete_sync_points_by_connector_id = _delete_points
-        service.graph_provider.delete_connector_sync_edges = _delete_edges
+        service.graph_provider.mark_connector_sync_edges = _mark_edges
         service._persist_pending_resync = AsyncMock()
 
         with patch(
@@ -1557,7 +1585,7 @@ class TestFullSyncDoesNotDestroyARunningSyncsState:
             )
 
         assert "delete_sync_points" not in calls
-        assert "delete_sync_edges" not in calls
+        assert "mark_sync_edges" not in calls
         # Acked so the event is not redelivered, and recorded so it is re-issued.
         assert ok is True
         service._persist_pending_resync.assert_awaited()
@@ -1574,12 +1602,12 @@ class TestFullSyncDoesNotDestroyARunningSyncsState:
             calls.append("delete_sync_points")
             return (5, True)
 
-        async def _delete_edges(**_k):
-            calls.append("delete_sync_edges")
+        async def _mark_edges(**_k):
+            calls.append("mark_sync_edges")
             return (5, True)
 
         service.graph_provider.delete_sync_points_by_connector_id = _delete_points
-        service.graph_provider.delete_connector_sync_edges = _delete_edges
+        service.graph_provider.mark_connector_sync_edges = _mark_edges
 
         with patch(
             "app.connectors.services.event_service.get_coordinator",

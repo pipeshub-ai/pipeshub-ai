@@ -80,14 +80,10 @@ export function ChatInputWrapper() {
     store.setIsSearching(true);
     store.setSearchError(null);
 
-    const streamFilters = buildAssistantApiFilters(store.settings.filters);
     const request: SearchRequest = {
       query,
       limit: 10,
-      filters: {
-        apps: streamFilters.apps,
-        kb: streamFilters.kb,
-      },
+      filters: buildAssistantApiFilters(store.settings.filters),
     };
 
     try {

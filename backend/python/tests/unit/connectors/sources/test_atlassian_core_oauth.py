@@ -53,3 +53,20 @@ class TestAtlassianScope:
         assert AtlassianScope.JIRA_WORK_READ.value == "read:jira-work"
         assert AtlassianScope.CONFLUENCE_CONTENT_READ.value == "read:confluence-content.all"
         assert AtlassianScope.OFFLINE_ACCESS.value == "offline_access"
+
+
+class TestJiraIssueSecurityScopes:
+    """GET /issuesecurityschemes/{id}/members takes manage:jira-configuration or the
+    granular set read:field, read:issue-security-level, read:project-role, read:user."""
+
+    def test_team_scopes_can_read_issue_security_level_members(self):
+        scopes = set(AtlassianScope.get_jira_read_access())
+        assert {
+            "read:field:jira",
+            "read:issue-security-level:jira",
+            "read:project-role:jira",
+            "read:user:jira",
+        } <= scopes
+
+    def test_team_scopes_stay_read_only(self):
+        assert "manage:jira-configuration" not in AtlassianScope.get_jira_read_access()

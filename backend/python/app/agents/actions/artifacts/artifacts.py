@@ -21,7 +21,7 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
@@ -33,6 +33,9 @@ from app.sandbox.artifact_upload import infer_artifact_type
 from app.services.artifact_registry import Actor, ArtifactMetadata, ArtifactVisibility, VersionConflictError
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
+
+if TYPE_CHECKING:
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,39 @@ class ArtifactManager:
 
     def _actor(self) -> Actor:
         return Actor(org_id=self.chat_state.get("org_id", ""), user_id=self.chat_state.get("user_id", ""))
+
+    async def _within_turn(self, graph_provider: IGraphDBProvider, org_id: str, record_id: str) -> bool:
+        """Whether the record lies inside what this chat turn is limited to."""
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ids_within_scope,
+            turn_limits_records,
+        )
+
+        if not turn_limits_records(self.chat_state):
+            return True
+        user = await graph_provider.get_user_by_user_id(user_id=self.chat_state.get("user_id", ""))
+        user_key = (user or {}).get("_key") or (user or {}).get("id")
+        if not user_key:
+            return False
+        return record_id in await ids_within_scope(self.chat_state, graph_provider, user_key, org_id, [record_id])
+
+    async def _artifact_refusal(self, registry: Any, artifact_id: str) -> tuple[bool, str] | None:
+        """Why ``artifact_id`` may not be used in this turn, or None."""
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ARTIFACT_OF_ANOTHER_CONVERSATION,
+            artifact_within_turn,
+            turn_limits_records,
+        )
+
+        if not turn_limits_records(self.chat_state):
+            return None
+        try:
+            metadata = await registry.resolve(actor=self._actor(), ref=artifact_id)
+        except (ArtifactNotFoundError, AccessDeniedError):
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+        if artifact_within_turn(self.chat_state, metadata.conversation_id):
+            return None
+        return _result(False, {"success": False, "error": ARTIFACT_OF_ANOTHER_CONVERSATION})
 
     def _decode(self, content: str, is_base64: bool) -> bytes | str:
         try:
@@ -262,6 +298,9 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
 
         try:
+            refusal = await self._artifact_refusal(registry, artifact_id)
+            if refusal is not None:
+                return refusal
             version, metadata = await registry.add_version(
                 actor=self._actor(),
                 artifact_id=artifact_id,
@@ -330,6 +369,9 @@ class ArtifactManager:
         if registry is None:
             return _result(False, {"success": False, "error": "Artifact storage is unavailable in this context"})
         try:
+            refusal = await self._artifact_refusal(registry, artifact_id)
+            if refusal is not None:
+                return refusal
             url = await registry.get_download_url(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
             return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
@@ -391,6 +433,11 @@ class ArtifactManager:
         if registry is None:
             return _result(False, {"success": False, "error": "Artifact storage is unavailable in this context"})
 
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ARTIFACT_OF_ANOTHER_CONVERSATION,
+            artifact_within_turn,
+        )
+
         actor = self._actor()
         try:
             # `resolve` takes an id OR a logical name, so the model can pass
@@ -400,6 +447,8 @@ class ArtifactManager:
                 actor=actor, ref=artifact_id,
                 conversation_id=self.chat_state.get("conversation_id"),
             )
+            if not artifact_within_turn(self.chat_state, metadata.conversation_id):
+                return _result(False, {"success": False, "error": ARTIFACT_OF_ANOTHER_CONVERSATION})
             # Size is known from metadata, so an oversized artifact is
             # rejected before the blob is read rather than after. A 0/absent
             # size means "not recorded" (artifacts predating the field), not
@@ -494,8 +543,11 @@ class ArtifactManager:
         except Exception:
             logger.exception("[get_record_download_url] lookup failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to look up record"})
+        # Missing, another org's and denied read the same: the id comes from the
+        # model, and the answer must not say which ids exist.
+        not_found = _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
         if record is None:
-            return _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
+            return not_found
 
         from app.config.constants.arangodb import OriginTypes
         from app.services.record_content import (
@@ -511,9 +563,15 @@ class ArtifactManager:
         except RecordNotFoundError:
             return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
         except RecordAccessDeniedError:
-            return _result(False, {"success": False, "error": "You do not have permission to access this record"})
+            return not_found
         except Exception:
             logger.exception("[get_record_download_url] access check failed for %s", record_id)
+            return _result(False, {"success": False, "error": "Failed to check access to this record"})
+        try:
+            if not await self._within_turn(graph_provider, org_id, record_id):
+                return not_found
+        except Exception:
+            logger.exception("[get_record_download_url] scope check failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to check access to this record"})
 
         if record.origin == OriginTypes.UPLOAD:
@@ -639,6 +697,9 @@ class ArtifactManager:
         if registry is None or not conversation_id:
             return _result(False, {"success": False, "error": "Artifact storage is unavailable in this context"})
         try:
+            refusal = await self._artifact_refusal(registry, artifact_id)
+            if refusal is not None:
+                return refusal
             metadata = await registry.promote_to_visible(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
             return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})

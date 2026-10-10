@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -559,9 +560,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         limit=batch_size
                     )
 
-                # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
+                    status = response.status if response else "no response"
+                    if start == 0:
+                        raise RuntimeError(f"Failed to fetch users: HTTP {status}")
+                    self.logger.warning(f"Failed to fetch users past {start}: HTTP {status}; the rest keep what is stored")
+                    self.keep_stored_access(f"users past {start} could not be listed (HTTP {status})")
                     break
 
                 response_data = response.json()
@@ -653,9 +657,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     limit=batch_size
                 )
 
-                # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    status = response.status if response else "no response"
+                    if start == 0:
+                        raise RuntimeError(f"Failed to fetch groups: HTTP {status}")
+                    self.logger.warning(f"Failed to fetch groups past {start}: HTTP {status}; the rest keep what is stored")
+                    self.keep_stored_access(f"groups past {start} could not be listed (HTTP {status})")
                     break
 
                 response_data = response.json()
@@ -685,6 +692,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
+                            self.keep_stored_access(f"the member list of group {group_name} could not be read; it keeps its members")
                             continue
 
                         # Create user group
@@ -766,9 +774,14 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     status="current",
                 )
 
-                # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.error(f"❌ Failed to fetch spaces: {response.status if response else 'No response'}")
+                    status = response.status if response else "no response"
+                    # An unreachable source answers the first page with an error; read as
+                    # an empty listing, the sync would report success over nothing.
+                    if start_offset == 0:
+                        raise RuntimeError(f"Failed to fetch spaces: HTTP {status}")
+                    self.logger.warning(f"Failed to fetch spaces past {start_offset}: HTTP {status}; the rest keep what is stored")
+                    self.keep_stored_access(f"spaces past {start_offset} could not be listed (HTTP {status})")
                     break
 
                 response_data = response.json()
@@ -835,6 +848,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored access of space {space_name}: its permissions could not be read"
                             )
+                            self.keep_stored_access(f"the permissions of space {space_name} could not be read; it keeps its access")
                             continue
 
                         total_permissions_synced += len(permissions)
@@ -950,9 +964,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 connector_id=self.connector_id,
                 external_record_id=item_id,
             )
+            # None means the ACL could not be read — skip rather than write the
+            # page as STRICT, which would expose a restricted one to the space.
             permissions = await self._fetch_page_permissions(item_id)
             if permissions is None:
                 self.logger.warning("Skipping space homepage %s: its restrictions could not be read", item_id)
+                self.keep_stored_access(f"the restrictions of space homepage {item_id} could not be read; it keeps its access")
                 return 0
             webpage_record_update = await self._process_webpage_with_update(
                 item_data, record_type, existing_record, permissions
@@ -963,9 +980,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             webpage_record = webpage_record_update.record
             if not content_indexing_enabled:
                 webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if read_permissions:
-                webpage_record.inherit_permissions = False
+            # A READ restriction keeps inheriting and is recorded as RESTRICTED
+            # instead; EDIT-only stays STRICT.
+            webpage_record.access_rule = (
+                AccessRule.RESTRICTED
+                if any(p.type == PermissionType.READ for p in permissions)
+                else AccessRule.STRICT
+            )
 
             await self.data_entities_processor.on_new_records(
                 [(webpage_record, permissions)]
@@ -1237,11 +1258,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             external_record_id=item_id
                         )
 
-                        # Fetch page permissions
+                        # Fetch page permissions. None means the ACL could not be
+                        # read — skip rather than write the page as STRICT, which
+                        # would expose a restricted one to the whole space.
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
-                            # Saving it without its restrictions would open it to the whole space.
                             self.logger.warning(f"Skipping {content_type} {item_id} this run: its restrictions could not be read")
+                            self.keep_stored_access(f"the restrictions of {content_type} {item_id} could not be read; it keeps its access")
                             listing_complete = False
                             continue
                         total_permissions_synced += len(permissions)
@@ -1260,11 +1283,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         if not content_indexing_enabled:
                             webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
+                        # A READ restriction keeps inheriting and is recorded as
+                        # RESTRICTED instead; EDIT-only stays STRICT.
+                        webpage_record.access_rule = (
+                            AccessRule.RESTRICTED
+                            if any(p.type == PermissionType.READ for p in permissions)
+                            else AccessRule.STRICT
+                        )
 
                         # Add item to batch
                         records_with_permissions.append((webpage_record, permissions))
@@ -1328,9 +1353,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                         # Set indexing status based on filter
                                         if not content_attachments_indexing_enabled:
                                             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                        # Attachments get the page's grants; the space's only if the page is open.
-                                        attachment_record.inherit_permissions = webpage_record.inherit_permissions
-                                        records_with_permissions.append((attachment_record, permissions))
+                                        # Attachments follow the page's access through inheritance.
+                                        attachment_record.inherit_permissions = True
+                                        attachment_record.rewrite_permissions = True
+                                        records_with_permissions.append((attachment_record, []))
                                         total_attachments_synced += 1
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
 
@@ -1362,7 +1388,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                     if rec.record_type in (RecordType.COMMENT, RecordType.INLINE_COMMENT):
                                         rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                             for comment_record, _ in comments:
-                                comment_record.inherit_permissions = webpage_record.inherit_permissions
+                                # Comments follow the page's access through inheritance.
+                                comment_record.inherit_permissions = True
                             records_with_permissions.extend(comments)
                             total_comments_synced += comment_count
 
@@ -1417,6 +1444,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
                     "this window could be read, so the next sync reads it again"
                 )
+                self.keep_stored_access(f"the {content_type}s of space {space_key} could not be read in full; they keep their access")
             elif only_ids is None and not defer_checkpoint:
                 await self._save_content_checkpoint(
                     sync_point_key, last_sync_data, failed_items, given_up, content_type, space_key,
@@ -1842,19 +1870,22 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         if not webpage_record:
                             continue
 
-                        # Fetch current permissions
+                        # Fetch current permissions. None means unreadable — skip.
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
                             self.logger.warning(f"Restrictions for {item_id} could not be read; keeping what is stored")
+                            self.keep_stored_access(f"the restrictions of {item_id} could not be read; it keeps its access")
                             has_failures = True
                             continue
                         total_permissions += len(permissions)
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
+                        # A READ restriction keeps inheriting and is recorded as
+                        # RESTRICTED instead; EDIT-only stays STRICT.
+                        webpage_record.access_rule = (
+                            AccessRule.RESTRICTED
+                            if any(p.type == PermissionType.READ for p in permissions)
+                            else AccessRule.STRICT
+                        )
 
                         # Add to batch for update
                         records_with_permissions.append((webpage_record, permissions))
@@ -1969,18 +2000,23 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 if not webpage_record:
                     continue
 
-                # Fetch current permissions
+                # Fetch current permissions. None means unreadable — skip.
                 permissions = await self._fetch_page_permissions(content_id)
                 if permissions is None:
                     self.logger.warning(f"Restrictions for {content_id} could not be read; keeping what is stored")
+                    self.keep_stored_access(f"the restrictions of {content_id} could not be read; it keeps its access")
                     has_failures = True
                     continue
                 total_permissions += len(permissions)
 
-                # Only set inherit_permissions to False if there are READ restrictions
-                read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                if len(read_permissions) > 0:
-                    webpage_record.inherit_permissions = False
+                # A READ restriction keeps inheriting and is recorded as
+                # RESTRICTED instead; EDIT-only stays STRICT.
+                webpage_record.access_rule = (
+                    AccessRule.RESTRICTED
+                    if any(p.type == PermissionType.READ for p in permissions)
+                    else AccessRule.STRICT
+                )
+                webpage_record.rewrite_permissions = True
 
                 # Update in database
                 await self.data_entities_processor.on_new_records([(webpage_record, permissions)])
@@ -2009,17 +2045,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
     async def _fetch_page_permissions(self, page_id: str) -> Optional[list[Permission]]:
         """
-        Fetch read (view) permissions for a Confluence page using DC v1 API.
+        Fetch read restrictions defined on this page.
 
-        Uses ``/restriction/relevantViewRestrictions`` which returns effective
-        view restrictions only (no edit/update restrictions).
-
-        Args:
-            page_id: The page ID
-
-        Returns:
-            List of Permission objects with READ type only, or None when the
-            restrictions could not be read (callers must not treat that as unrestricted).
+        ``relevantViewRestrictions`` also lists ancestor restrictions. Those stay
+        on the ancestor; this page inherits them. A result that names another
+        content id is skipped. Edit restrictions are ignored.
         """
         permissions = []
 
@@ -2032,8 +2062,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             )
 
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(
-                    f"⚠️ Failed to fetch view permissions for page {page_id}: "
+                self.logger.error(
+                    f"❌ Could not read view permissions for page {page_id}: "
                     f"{response.status if response else 'No response'}"
                 )
                 return None
@@ -2044,6 +2074,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
             for restriction_data in restrictions:
                 if restriction_data.get("operation") != "read":
+                    continue
+                defined_on = (restriction_data.get("content") or {}).get("id")
+                if defined_on and str(defined_on) != str(page_id):
                     continue
                 operation_permissions = await self._transform_page_restriction_to_permissions(
                     restriction_data
@@ -2056,8 +2089,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             return permissions
 
         except Exception as e:
+            # Not []: an unreadable ACL is not an absent ACL. See the docstring.
             self.logger.error(
-                f"❌ Failed to fetch view permissions for page {page_id}: {e}"
+                f"❌ Could not read view permissions for page {page_id}: {e}"
             )
             return None
 
@@ -2163,8 +2197,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     # Apply indexing filter
                     if not attachments_indexing_enabled:
                         file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                    # Inherit page permissions
-                    records_with_permissions.append((file_record, permissions))
+                    file_record.inherit_permissions = True
+                    file_record.rewrite_permissions = True
+                    records_with_permissions.append((file_record, []))
 
             return records_with_permissions
 
@@ -2268,7 +2303,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         )
 
                         if comment_record:
-                            all_comments.append((comment_record, page_permissions))
+                            comment_record.inherit_permissions = True
+                            comment_record.rewrite_permissions = True
+                            all_comments.append((comment_record, []))
 
                             # Sync comment attachments (explicit child attachments)
                             comment_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
@@ -2335,7 +2372,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                                     if file_record:
                                                         if not attachments_indexing_enabled:
                                                             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                                        all_comments.append((file_record, page_permissions))
+                                                        file_record.inherit_permissions = True
+                                                        file_record.rewrite_permissions = True
+                                                        all_comments.append((file_record, []))
                                                         synced_attachment_ids.add(attachment_id)
 
                         children = await self._fetch_comment_children_recursive(
@@ -2451,7 +2490,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         )
 
                         if child_record:
-                            all_children.append((child_record, page_permissions))
+                            child_record.inherit_permissions = True
+                            child_record.rewrite_permissions = True
+                            all_children.append((child_record, []))
 
                             # Sync comment attachments (explicit child attachments)
                             child_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
@@ -2518,7 +2559,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                                     if file_record:
                                                         if not attachments_indexing_enabled:
                                                             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                                        all_children.append((file_record, page_permissions))
+                                                        file_record.inherit_permissions = True
+                                                        file_record.rewrite_permissions = True
+                                                        all_children.append((file_record, []))
                                                         synced_attachment_ids.add(attachment_id)
 
                         grandchildren = await self._fetch_comment_children_recursive(
@@ -3498,9 +3541,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         if operation_key == "delete" and target_type == "space":
             return PermissionType.OWNER
 
-        # Comment operations = COMMENT
+        # Commenting grants no more than read access.
         if target_type == "comment" and operation_key in ["create", "delete"]:
-            return PermissionType.COMMENT
+            return PermissionType.READ
 
         # Page/blogpost/attachment operations = WRITE
         if target_type in ["page", "blogpost", "attachment"]:
@@ -3566,7 +3609,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         try:
             operation = restriction_data.get("operation")
-            if not operation:
+            if operation != "read":
                 return permissions
 
             # Map operation to PermissionType
@@ -3615,6 +3658,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform page restriction: {e}")
+            raise
 
         return permissions
 
@@ -3673,6 +3717,14 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 web_url=web_url,
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,  # Confluence doesn't provide updated timestamp for spaces
+                # Every space carries its own permission list, so app access
+                # alone must never reveal one: it inherits from the App, but the
+                # restriction means a grant is needed as well.
+                # Inheritance is not optional: it defaults to False, and without
+                # the edge the inherited half of the RESTRICTED rule is never
+                # met, so the space becomes invisible to everyone.
+                inherit_permissions=True,
+                access_rule=AccessRule.RESTRICTED,
             )
 
         except Exception as e:
@@ -4017,6 +4069,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         webpage_record = self._transform_to_webpage_record(
             data, record_type, existing_record, api_base_url
         )
+        if webpage_record:
+            webpage_record.rewrite_permissions = True
 
         if not webpage_record:
             return RecordUpdate(
@@ -4726,8 +4780,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     await self.data_entities_processor.on_record_content_update(updated_record)
 
                     # Update permissions if they exist
-                    if permissions:
-                        await self.data_entities_processor.on_updated_record_permissions(updated_record, permissions)
+                    if permissions or updated_record.rewrite_permissions:
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            updated_record, list(permissions or [])
+                        )
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
@@ -4815,11 +4871,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if permissions is None:
                 self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
                 return None
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # A READ restriction keeps inheriting and is recorded as RESTRICTED
+            # instead; EDIT-only stays STRICT. Must match the
+            # full-sync site above, or the two paths model the page differently.
+            webpage_record.access_rule = (
+                AccessRule.RESTRICTED
+                if any(p.type == PermissionType.READ for p in permissions)
+                else AccessRule.STRICT
+            )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -4873,11 +4933,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if permissions is None:
                 self.logger.warning(f"Restrictions for {blogpost_id} could not be read; reindexing what is stored")
                 return None
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # A READ restriction keeps inheriting and is recorded as RESTRICTED
+            # instead; EDIT-only stays STRICT. Must match the
+            # full-sync site above, or the two paths model the page differently.
+            webpage_record.access_rule = (
+                AccessRule.RESTRICTED
+                if any(p.type == PermissionType.READ for p in permissions)
+                else AccessRule.STRICT
+            )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -4974,9 +5038,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if permissions is None:
                 self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
                 return None
-            comment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
-
-            return (comment_record, permissions)
+            # Comments follow the page's access through inheritance.
+            comment_record.inherit_permissions = True
+            comment_record.rewrite_permissions = True
+            return (comment_record, [])
 
         except Exception as e:
             self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")
@@ -5048,9 +5113,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if permissions is None:
                 self.logger.warning(f"Restrictions for {page_id_for_permissions} could not be read; reindexing what is stored")
                 return None
-            attachment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
-
-            return (attachment_record, permissions)
+            # Attachments follow the page's access through inheritance.
+            attachment_record.inherit_permissions = True
+            attachment_record.rewrite_permissions = True
+            return (attachment_record, [])
 
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")

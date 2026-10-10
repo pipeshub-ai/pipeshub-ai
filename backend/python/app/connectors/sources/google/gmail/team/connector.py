@@ -115,6 +115,25 @@ _GMAIL_TEAM_MAX_CONCURRENCY = 4
 _GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 
 
+# A Drive file attached from more than one mailbox must not share one record.
+# The Google user id does not change when the mailbox is renamed.
+_DRIVE_ATTACHMENT_MARK = "gdrive:"
+
+
+def drive_attachment_record_id(google_user_id: str, drive_file_id: str) -> str:
+    return f"{_DRIVE_ATTACHMENT_MARK}{google_user_id}:{drive_file_id}"
+
+
+def parse_drive_attachment_record_id(external_id: str | None) -> tuple[str, str] | None:
+    """Google user id and the bare Drive file id, or None."""
+    if not external_id or not external_id.startswith(_DRIVE_ATTACHMENT_MARK):
+        return None
+    user_id, sep, file_id = external_id[len(_DRIVE_ATTACHMENT_MARK):].partition(":")
+    if not sep or not user_id or not file_id:
+        return None
+    return user_id, file_id
+
+
 @ConnectorBuilder("Gmail Workspace")\
     .in_group("Google Workspace")\
     .with_description("Sync emails and messages from Gmail")\
@@ -211,6 +230,7 @@ _GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
         .with_agent_support(True)
     )\
     .build_decorator()
+
 class GoogleGmailTeamConnector(BaseConnector):
     def __init__(
         self,
@@ -367,6 +387,18 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Gmail workspace connector: {ex}", exc_info=True)
             raise
 
+    async def _delete_stale_drive_attachment(
+        self, drive_file_id: str, mailbox_email: str, scoped_id: str
+    ) -> None:
+        """Drop records stored under the bare Drive id or the mailbox email prefix."""
+        for stale_id in (drive_file_id, f"{mailbox_email}:{drive_file_id}"):
+            if not stale_id or stale_id == scoped_id:
+                continue
+            stale = await self._get_existing_record(stale_id)
+            if stale is None:
+                continue
+            await self.data_entities_processor.on_record_deleted(record_id=stale.id)
+
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
         try:
@@ -487,6 +519,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -496,30 +529,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 internet_message_id=internet_message_id,
             )
 
-            # Extract sender email from "from" header (may contain name)
-            sender_email = self._extract_email_from_header(from_email)
-
-            # Create permission based on whether user_email is the sender
-            permissions = []
-            if user_email:
-                # Normalize emails for comparison (case-insensitive)
-                user_email_lower = user_email.lower()
-                sender_email_lower = sender_email.lower() if sender_email else ""
-
-                if sender_email_lower and user_email_lower == sender_email_lower:
-                    # User is the sender - create owner permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    ))
-                else:
-                    # User is not the sender - create read permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.USER
-                    ))
+            # The mailbox record group holds the owner's grant. A message inherits
+            # from its label, which inherits from that mailbox.
+            permissions: list[Permission] = []
 
             self.logger.debug(
                 f"Processed message {message_id} in thread {thread_id}: "
@@ -545,7 +557,24 @@ class GoogleGmailTeamConnector(BaseConnector):
             )
             return None
 
-    def _extract_attachment_infos(self, message: Dict) -> List[Dict]:
+    def _scoped_drive_attachment_id(
+        self, drive_file_id: str, mailbox_email: str | None, google_user_id: str | None = None
+    ) -> str | None:
+        user_id = google_user_id or (getattr(self, "_google_user_id_by_email", {}) or {}).get(
+            (mailbox_email or "").lower()
+        )
+        if not user_id or not drive_file_id:
+            self.logger.warning("Skipping Drive attachment %s: no Google user id for %s", drive_file_id, mailbox_email)
+            return None
+        return drive_attachment_record_id(user_id, drive_file_id)
+
+    def _extract_attachment_infos(
+        self,
+        message: Dict,
+        mailbox_email: str | None = None,
+        google_user_id: str | None = None,
+        keep_drive_record_id: str | None = None,
+    ) -> List[Dict]:
         """Extract attachment info from Gmail message payload.
 
         Args:
@@ -627,11 +656,17 @@ class GoogleGmailTeamConnector(BaseConnector):
                     # Handle Drive attachments (>25MB) with driveFileId in body
                     if drive_file_id:
                         seen_drive_file_ids.add(drive_file_id)
-                        # For Drive attachments, use driveFileId as external_record_id
+                        stable_drive_id = (
+                            keep_drive_record_id
+                            if keep_drive_record_id and drive_file_id == keep_drive_record_id
+                            else self._scoped_drive_attachment_id(drive_file_id, mailbox_email, google_user_id)
+                        )
+                        if not stable_drive_id:
+                            continue
                         attachments.append({
                             'attachmentId': None,  # Not available for Drive files
                             'driveFileId': drive_file_id,  # Use Drive file ID
-                            'stableAttachmentId': drive_file_id,  # Use Drive ID as stable ID
+                            'stableAttachmentId': stable_drive_id,
                             'partId': part_id,
                             'filename': part.get('filename'),
                             'mimeType': mime_type,
@@ -675,10 +710,17 @@ class GoogleGmailTeamConnector(BaseConnector):
             for drive_file_id in unique_drive_file_ids:
                 if drive_file_id and drive_file_id not in seen_drive_file_ids:
                     seen_drive_file_ids.add(drive_file_id)
+                    stable_drive_id = (
+                        keep_drive_record_id
+                        if keep_drive_record_id and drive_file_id == keep_drive_record_id
+                        else self._scoped_drive_attachment_id(drive_file_id, mailbox_email, google_user_id)
+                    )
+                    if not stable_drive_id:
+                        continue
                     attachment_infos.append({
                         'attachmentId': None,  # Not available for Drive files
                         'driveFileId': drive_file_id,  # Use Drive file ID
-                        'stableAttachmentId': drive_file_id,  # Use Drive ID as stable ID
+                        'stableAttachmentId': stable_drive_id,
                         'partId': 'unknown',  # Not associated with a specific part
                         'filename': None,  # Filename not available from link, will be fetched from Drive API
                         'mimeType': 'application/vnd.google-apps.file',  # Default for Drive files
@@ -808,6 +850,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                     )
                     # Continue with existing values from attachment_info
 
+            if is_drive_file and drive_file_id and stable_attachment_id != drive_file_id:
+                await self._delete_stale_drive_attachment(drive_file_id, user_email, stable_attachment_id)
+
             # Check for existing record
             existing_record = await self._get_existing_record(stable_attachment_id)
             is_new = existing_record is None
@@ -823,8 +868,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Create FileRecord
-            # For Drive files, use driveFileId as external_record_id
-            # For regular attachments, use stable_attachment_id (message_id_partId)
+            # Drive files use gdrive:{googleUserId}:{fileId}. Regular attachments use messageId~partId.
             file_record = FileRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
@@ -845,6 +889,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -855,8 +900,9 @@ class GoogleGmailTeamConnector(BaseConnector):
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-            # Inherit parent mail permissions
-            attachment_permissions = parent_mail_permissions
+            # An attachment inherits from its message. The copied grant is not written.
+            del parent_mail_permissions
+            attachment_permissions: list[Permission] = []
 
             attachment_identifier = drive_file_id if is_drive_file else attachment_id
             self.logger.debug(
@@ -1084,7 +1130,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                                             break
 
                                     if message:
-                                        attachment_infos = self._extract_attachment_infos(message)
+                                        attachment_infos = self._extract_attachment_infos(message, user_email)
                                         external_record_group_id = mail_record.external_record_group_id
 
                                         # Process attachments using generator
@@ -1102,7 +1148,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                                     # Process batch when it reaches the size limit
                                     if batch_count >= self.batch_size:
-                                        await self.data_entities_processor.on_new_records(batch_records)
+                                        await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                                         self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                                         batch_records = []
                                         batch_count = 0
@@ -1141,7 +1187,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Process remaining records in batch
             if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                 self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
 
             # Update sync point with final state (clear pageToken, keep historyId)
@@ -1240,7 +1286,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                         # Process batch when it reaches the size limit
                         if batch_count >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
+                            await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                             self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                             batch_records = []
                             batch_count = 0
@@ -1259,7 +1305,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             # Process remaining records in batch
             if batch_records:
                 try:
-                    await self.data_entities_processor.on_new_records(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                     self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
                 except Exception as batch_error:
                     self.logger.error(f"Error processing final batch: {batch_error}")
@@ -1514,7 +1560,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                         records_processed += 1
 
                         # Extract and process attachments
-                        attachment_infos = self._extract_attachment_infos(full_message)
+                        attachment_infos = self._extract_attachment_infos(full_message, user_email)
                         if attachment_infos:
                             external_record_group_id = mail_record.external_record_group_id
                             async for attach_update in self._process_gmail_attachment_generator(
@@ -1715,6 +1761,11 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 self.logger.info(f"Processing batch {i // self.max_concurrent_batches + 1} with {len(batch)} users")
 
+                self._google_user_id_by_email = {
+                    user.email.lower(): user.source_user_id
+                    for user in active_users
+                    if user.email and user.source_user_id
+                }
                 sync_tasks = [
                     self._run_sync_with_yield(user.email)
                     for user in batch
@@ -2237,14 +2288,25 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         return members
 
+    def _mailbox_record_group_id(self, user_email: str) -> str:
+        return f"mailbox:{user_email}"
+
+    @staticmethod
+    def _owner_email_from_group(external_group_id: str | None) -> str | None:
+        """The mailbox owner encoded in a label or mailbox record-group id."""
+        group_id = external_group_id or ""
+        if group_id.startswith("mailbox:"):
+            return group_id.removeprefix("mailbox:") or None
+        email, sep, label = group_id.rpartition(":")
+        if sep and label in {"INBOX", "SENT", "OTHERS"} and "@" in email:
+            return email
+        return None
+
     async def _sync_record_groups(self, users: List[AppUser]) -> None:
-        """Sync record groups (INBOX and SENT) for users.
+        """One mailbox record group per user, with Inbox, Sent and Others under it.
 
-        For each user, creates two record groups (INBOX and SENT) with owner
-        permissions from the user to each record group.
-
-        Args:
-            users: List of AppUser objects to sync record groups for
+        The owner grant sits on the mailbox. The three labels inherit it. Gmail
+        labels are not separate audiences.
         """
         try:
             if not users:
@@ -2261,53 +2323,39 @@ class GoogleGmailTeamConnector(BaseConnector):
                         continue
 
                     self.logger.debug(f"Creating record groups for user: {user.email}")
-
-                    # Create record groups for INBOX and SENT
+                    mailbox_id = self._mailbox_record_group_id(user.email)
+                    mailbox = RecordGroup(
+                        name=user.full_name or user.email,
+                        org_id=self.data_entities_processor.org_id,
+                        external_group_id=mailbox_id,
+                        description=f"Mailbox for {user.email}",
+                        connector_name=self.connector_name,
+                        connector_id=self.connector_id,
+                        group_type=RecordGroupType.MAILBOX,
+                        permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                        inherit_permissions=False,
+                        source_created_at=user.source_created_at,
+                    )
+                    labels: list[RecordGroup] = []
                     for label_name in ["INBOX", "SENT", "OTHERS"]:
-                        try:
-                            # Create record group name: "{user.full_name} - {label_name}"
-                            record_group_name = f"{user.full_name} - {label_name}"
+                        labels.append(RecordGroup(
+                            name=f"{user.full_name} - {label_name}",
+                            org_id=self.data_entities_processor.org_id,
+                            external_group_id=f"{user.email}:{label_name}",
+                            parent_external_group_id=mailbox_id,
+                            description=f"Gmail label: {label_name}",
+                            connector_name=self.connector_name,
+                            connector_id=self.connector_id,
+                            group_type=RecordGroupType.MAILBOX,
+                            inherit_permissions=True,
+                            source_created_at=user.source_created_at,
+                        ))
 
-                            # Create external_group_id: "{user.email}:{label_name}"
-                            external_group_id = f"{user.email}:{label_name}"
-
-                            # Create record group
-                            record_group = RecordGroup(
-                                name=record_group_name,
-                                org_id=self.data_entities_processor.org_id,
-                                external_group_id=external_group_id,
-                                description=f"Gmail label: {label_name}",
-                                connector_name=self.connector_name,
-                                connector_id=self.connector_id,
-                                group_type=RecordGroupType.MAILBOX,
-                                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
-                                source_created_at=user.source_created_at
-                            )
-
-                            # Create owner permission from user to record group
-                            owner_permission = Permission(
-                                email=user.email,
-                                type=PermissionType.OWNER,
-                                entity_type=EntityType.USER
-                            )
-
-                            # Submit to processor
-                            await self.data_entities_processor.on_new_record_groups(
-                                [(record_group, [owner_permission])]
-                            )
-
-                            total_record_groups_processed += 1
-                            self.logger.debug(
-                                f"Created record group '{record_group_name}' for user {user.email}"
-                            )
-
-                        except Exception as e:
-                            self.logger.error(
-                                f"Error creating record group '{label_name}' "
-                                f"for user {user.email}: {e}",
-                                exc_info=True
-                            )
-                            continue
+                    await self.data_entities_processor.on_new_record_groups(
+                        [(mailbox, [self._create_owner_permission(user.email)])]
+                        + [(label, []) for label in labels]
+                    )
+                    total_record_groups_processed += 1 + len(labels)
 
                 except Exception as e:
                     self.logger.error(
@@ -2713,14 +2761,19 @@ class GoogleGmailTeamConnector(BaseConnector):
         gmail_data_source = gmail_data_source or self.gmail_data_source
         if not gmail_data_source:
             raise connector_not_ready(self.display_name)
-        # Check if file_id is a Drive file ID (no tilde, typically longer alphanumeric)
-        # Drive file IDs don't contain tildes, while our stable IDs use messageId~partId format
-        is_drive_file = "~" not in file_id
-
-        if is_drive_file:
-            # This is a Drive file, use Drive API directly
-            self.logger.info(f"Detected Drive file ID: {file_id}, using Drive API")
-            return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo, user_email)
+        parsed_drive = parse_drive_attachment_record_id(file_id)
+        if parsed_drive is not None:
+            _user_id, bare_drive_file_id = parsed_drive
+            self.logger.info(f"Detected Drive file ID: {bare_drive_file_id}, using Drive API")
+            return await self._stream_from_drive(
+                bare_drive_file_id, record, file_name, mime_type, convertTo, user_email
+            )
+        # Records written before the scoped id stored the bare Drive file id.
+        if "~" not in file_id:
+            self.logger.info(f"Detected legacy Drive file ID: {file_id}, using Drive API")
+            return await self._stream_from_drive(
+                file_id, record, file_name, mime_type, convertTo, user_email
+            )
 
         # Get parent message record using parent_external_record_id
         message_id = None
@@ -2878,6 +2931,12 @@ class GoogleGmailTeamConnector(BaseConnector):
                     self.data_entities_processor, record.id, self.synced_user_emails, self.logger
                 )
                 if not candidates:
+                    # The grant lives on the mailbox, not the message. Indexing
+                    # streams with no caller, so impersonate the mailbox owner.
+                    owner_email = self._owner_email_from_group(record.external_record_group_id)
+                    if owner_email:
+                        candidates = [User(email=owner_email)]
+                if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
             # Route to appropriate handler based on record type
@@ -2958,7 +3017,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                await self.data_entities_processor.on_new_records(updated_records, replace_permissions=True)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non updated records
@@ -3108,8 +3167,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.warning(f"Missing stable_attachment_id for record {record.id}")
                 return None
 
-            # Check if this is a Drive file (no tilde)
-            is_drive_file = "~" not in stable_attachment_id
+            parsed_drive = parse_drive_attachment_record_id(stable_attachment_id)
+            legacy_drive_file_id = (
+                stable_attachment_id if parsed_drive is None and "~" not in stable_attachment_id else None
+            )
+            is_drive_file = parsed_drive is not None or legacy_drive_file_id is not None
 
             if is_drive_file:
                 # For Drive files, we need to find the parent message to get permissions
@@ -3137,14 +3199,35 @@ class GoogleGmailTeamConnector(BaseConnector):
                     return None
 
                 # Extract attachment info from parent message
-                attachment_infos = self._extract_attachment_infos(parent_message)
+                google_user_id = None
+                bare_drive_file_id = legacy_drive_file_id
+                if parsed_drive is not None:
+                    google_user_id, bare_drive_file_id = parsed_drive
+                elif legacy_drive_file_id is not None:
+                    google_user_id = (getattr(self, "_google_user_id_by_email", {}) or {}).get(
+                        user_email.lower()
+                    )
+                    if google_user_id is None:
+                        for synced in getattr(self, "synced_users", []) or []:
+                            if (synced.email or "").lower() == user_email.lower() and synced.source_user_id:
+                                google_user_id = synced.source_user_id
+                                break
+                attachment_infos = self._extract_attachment_infos(
+                    parent_message,
+                    user_email,
+                    google_user_id=google_user_id,
+                    keep_drive_record_id=legacy_drive_file_id,
+                )
 
-                # Find matching Drive attachment by driveFileId
                 matching_attachment = None
                 for attach_info in attachment_infos:
-                    if attach_info.get('driveFileId') == stable_attachment_id:
+                    if attach_info.get("driveFileId") == bare_drive_file_id:
                         matching_attachment = attach_info
                         break
+                if matching_attachment is not None and legacy_drive_file_id is not None:
+                    # Keep this record's id. A new scoped id would be a second record.
+                    matching_attachment = dict(matching_attachment)
+                    matching_attachment["stableAttachmentId"] = legacy_drive_file_id
 
                 if not matching_attachment:
                     self.logger.warning(f"Drive attachment {stable_attachment_id} not found in parent message {parent_message_id}")
@@ -3231,7 +3314,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 return None
 
             # Extract attachment info from parent message
-            attachment_infos = self._extract_attachment_infos(parent_message)
+            attachment_infos = self._extract_attachment_infos(parent_message, user_email)
 
             # Find matching attachment by stableAttachmentId
             matching_attachment = None

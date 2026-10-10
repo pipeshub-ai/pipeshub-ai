@@ -25,6 +25,7 @@ from atlassian_behaviour_fakes import (
 from confluence_dc_removal_fakes import RemovalRecordsDb
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
@@ -349,6 +350,7 @@ class TestUsersAndGroups:
         await connector._sync_user_groups()
 
         assert db.members_of("eng") == ["alice@example.com"]
+        assert "group eng" in (connector.stored_access_kept or ""), "a full sync must not sweep what it kept"
 
 
     async def test_a_failed_email_lookup_does_not_drop_the_member(self, atlassian_api, db, store) -> None:
@@ -471,6 +473,35 @@ class TestUsersAndGroups:
         assert db.members_of("eng") == ["alice@example.com", "bob@example.com"]
 
 
+class TestAnUnreachableSource:
+    """CONFDC-01: every call answered 404 used to read as an empty source, and the
+    sync reported success over nothing."""
+
+    @pytest.mark.parametrize("path", ["/user/list", "/group", "/space"])
+    async def test_a_failed_first_listing_fails_the_sync(self, atlassian_api, db, store, search, path) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}{path}", json_response({"message": "ERR_NGROK_3200"}, status=404))
+
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            await connector.run_sync()
+
+        assert not db.records
+
+    async def test_a_failed_later_page_keeps_stored_access_and_the_sync_goes_on(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        first = [user(f"u{i}", f"u{i}@example.com") for i in range(200)]
+        atlassian_api.on(
+            "GET", f"{API}/user/list",
+            lambda r: json_response({"results": first}) if AtlassianApiStub.query(r).get("start", "0") == "0"
+            else json_response({"message": "busy"}, status=503),
+        )
+
+        await connector._sync_users()
+
+        assert len(db.app_users) == 200
+        assert "users past 200" in connector.stored_access_kept, "a full sync must not sweep the unlisted users' gates"
+
+
 class TestSpacePermissions:
     async def test_space_grants_map_to_known_users_and_groups(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -548,12 +579,13 @@ class TestPageRestrictions:
         await connector.run_sync()
 
         page = db.records["p1"]
-        assert page.inherit_permissions is False, "space members must not see a restricted page"
+        assert page.access_rule == AccessRule.RESTRICTED, "space members must not see a restricted page"
+        assert page.inherit_permissions is True, "a RESTRICTED page that does not inherit is hidden from everyone"
         grants = {(p.entity_type, p.email or p.external_id) for p in db.record_permissions["p1"]}
         assert grants == {(EntityType.USER, "alice@example.com"), (EntityType.GROUP, "contractor")}
         stand_in = [g for g, _ in db.user_groups if g.source_user_group_id == "contractor"]
         assert stand_in, "a user with no email yet keeps access through a stand-in group"
-        assert db.records["open"].inherit_permissions is True
+        assert db.records["open"].access_rule == AccessRule.STRICT
         assert db.record_permissions["open"] == []
 
     async def test_a_failed_restriction_lookup_does_not_open_up_a_restricted_page(self, atlassian_api, db, store, search) -> None:
@@ -563,12 +595,12 @@ class TestPageRestrictions:
         restriction = f"{API}/content/p1/restriction/relevantViewRestrictions"
         atlassian_api.on("GET", restriction, restricted_to(users=[{"userKey": "alice"}]))
         await connector.run_sync()
-        assert db.records["p1"].inherit_permissions is False
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
 
         atlassian_api.on("GET", restriction, json_response({"message": "rate limited"}, status=429))
         await connector.run_sync()
 
-        assert db.records["p1"].inherit_permissions is False
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
 
     async def test_a_new_page_with_unreadable_restrictions_waits_for_the_next_sync(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -605,9 +637,13 @@ class TestPageRestrictions:
 
         await connector.run_sync()
 
-        assert db.records["p1"].inherit_permissions is False
-        assert db.records["att1"].inherit_permissions is False
-        assert db.records["c1"].inherit_permissions is False
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
+        for dependent in ("att1", "c1"):
+            record = db.records[dependent]
+            assert (record.inherit_permissions, record.parent_external_record_id) == (True, "p1"), (
+                f"{dependent} inherits from its page, never straight from the space"
+            )
+            assert db.record_permissions[dependent] == []
 
     async def test_page_restricted_to_a_group_named_only_by_name_stays_restricted(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -621,7 +657,7 @@ class TestPageRestrictions:
 
         await connector.run_sync()
 
-        assert db.records["p1"].inherit_permissions is False
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
         assert [(p.entity_type, p.external_id) for p in db.record_permissions["p1"]] == [(EntityType.GROUP, "finance")]
 
 
@@ -636,7 +672,7 @@ class TestPageRestrictions:
 
         await connector.run_sync()
 
-        assert db.records["p1"].inherit_permissions is False, "space members must not see it"
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED, "space members must not see it"
 
 
 class TestContentSync:
@@ -691,7 +727,7 @@ class TestContentSync:
         await connector.run_sync()
 
         home = db.records["500"]
-        assert home.inherit_permissions is False
+        assert home.access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["500"]] == ["alice@example.com"]
 
     async def test_comment_replies_and_their_files_are_synced_with_the_page_grants(self, atlassian_api, db, store, search) -> None:
@@ -713,7 +749,7 @@ class TestContentSync:
         c2file = db.records["c2file"]
         assert (c2file.parent_external_record_id, c2file.parent_record_type) == ("c2", RecordType.COMMENT)
         for rid in ("c1", "c2", "c2file", "img1"):
-            assert [p.email for p in db.record_permissions[rid]] == ["alice@example.com"], rid
+            assert db.record_permissions[rid] == [], rid
 
 
 class TestAuditLogRestrictionChanges:
@@ -730,7 +766,7 @@ class TestAuditLogRestrictionChanges:
         with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
         search.add("page", 0, listing([content("p1"), content("p2")]))
         await connector.run_sync()
-        assert db.records["p1"].inherit_permissions is True
+        assert db.records["p1"].access_rule == AccessRule.STRICT
         first_clock = audit_key(store)["last_sync_time_ms"]
         search.add("page", 0, listing([]))
 
@@ -755,10 +791,10 @@ class TestAuditLogRestrictionChanges:
         audit_calls = atlassian_api.calls("GET", AUDIT)
         assert [AtlassianApiStub.query(r).get("pageCursor") for r in audit_calls] == [None, "cur-2"]
         assert AtlassianApiStub.query(audit_calls[0])["categories"] == "Pages and Blogs"
-        assert db.records["p1"].inherit_permissions is False
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["p1"]] == ["alice@example.com"]
         assert "filtered-out-page" not in db.records, "pages excluded by filters are not created by the audit pass"
-        assert db.records["p2"].inherit_permissions is True, "space-level 'Permissions' events are not page restrictions"
+        assert db.records["p2"].access_rule == AccessRule.STRICT, "space-level 'Permissions' events are not page restrictions"
         assert audit_key(store)["last_sync_time_ms"] > first_clock
 
     async def test_a_page_restricted_later_takes_its_stored_files_and_comments_with_it(self, atlassian_api, db, store, search) -> None:
@@ -768,7 +804,8 @@ class TestAuditLogRestrictionChanges:
         atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
         atlassian_api.on("GET", f"{API}/content/c1/child/attachment", {"results": [attachment("c1file")], "_links": {"base": BASE}})
         await connector.run_sync()
-        assert all(db.records[k].inherit_permissions is True for k in ("att1", "c1", "c1file"))
+        assert db.records["p1"].access_rule == AccessRule.STRICT
+        assert all(db.record_permissions[k] == [] for k in ("att1", "c1", "c1file"))
 
         search.add("page", 0, listing([]))
         event = {"type": {"category": "Pages and Blogs"}, "affectedObjects": [{"type": "Page", "id": "p1"}, {"type": "Space", "id": "10"}]}
@@ -777,11 +814,16 @@ class TestAuditLogRestrictionChanges:
         atlassian_api.on("GET", f"{API}/content/p1/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}]))
         await connector.run_sync()
 
-        assert db.records["p1"].inherit_permissions is False
-        updated = {r.external_record_id: (r.inherit_permissions, [p.email for p in perms]) for r, perms in db.permission_updates}
-        assert updated == {k: (False, ["alice@example.com"]) for k in ("att1", "c1", "c1file")}, (
-            "the page's files and comments stop inheriting the space's access and get the page's grants"
-        )
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
+        updated = {
+            r.external_record_id: (r.inherit_permissions, r.parent_external_record_id, [p.email for p in perms])
+            for r, perms in db.permission_updates
+        }
+        assert updated == {
+            "att1": (True, "p1", []),
+            "c1": (True, "p1", []),
+            "c1file": (True, "c1", []),
+        }, "the page's files and comments keep inheriting from the page and carry no grant of their own"
 
     async def test_a_failed_page_lookup_keeps_the_audit_clock_so_the_change_is_retried(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -839,14 +881,16 @@ class TestReindex:
         updated = {r.external_record_id: r for r in db.content_updates}
         assert set(updated) == {"p1", "c2", "att1", "c2file"}
         assert updated["p1"].version == db.records["p1"].version + 1
-        assert updated["p1"].inherit_permissions is False
+        assert updated["p1"].access_rule == AccessRule.RESTRICTED
         assert (updated["c2"].parent_external_record_id, updated["c2"].parent_record_type) == ("c1", RecordType.COMMENT)
         assert (updated["c2file"].parent_external_record_id, updated["c2file"].parent_record_type) == ("c2", RecordType.COMMENT)
         restricted = {r.external_record_id for r, perms in db.permission_updates if [p.email for p in perms] == ["alice@example.com"]}
-        assert restricted == {"p1", "c2", "att1", "c2file"}
-        assert all(updated[k].inherit_permissions is False for k in ("c2", "att1", "c2file")), (
-            "a restricted page's files and comments do not pick up the space's access on reindex"
-        )
+        assert restricted == {"p1"}
+        inherited = {r.external_record_id for r, perms in db.permission_updates if perms == []}
+        assert {"c2", "att1", "c2file"} <= inherited
+        assert {k: (updated[k].inherit_permissions, updated[k].parent_external_record_id) for k in ("c2", "att1", "c2file")} == {
+            "c2": (True, "c1"), "att1": (True, "p1"), "c2file": (True, "c2"),
+        }, "a restricted page's files and comments inherit from the record above them, not from the space, on reindex"
         assert [r.external_record_id for r in db.reindexed] == ["b1"]
 
     async def test_comment_attachment_resolves_its_page_through_the_comment(self, atlassian_api, db, store, search) -> None:
@@ -860,7 +904,7 @@ class TestReindex:
         (updated,) = db.content_updates
         assert updated.parent_node_id == db.records["c2"].id
         ((_, perms),) = db.permission_updates
-        assert [p.email for p in perms] == ["alice@example.com"]
+        assert perms == []
         assert atlassian_api.calls("GET", f"{API}/content/p1/restriction/relevantViewRestrictions")
 
     async def test_reindex_without_init_is_refused(self, db, store) -> None:
@@ -1078,6 +1122,7 @@ class TestSpaceGrantFailures:
         await connector.run_sync()
 
         assert [p.email for p in db.record_group_permissions["10"]] == ["alice@example.com"]
+        assert "space" in (connector.stored_access_kept or ""), "a full sync must not sweep what it kept"
 
     async def test_unexpected_permission_payload_grants_nothing(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -1147,7 +1192,8 @@ class TestSpaceListingEdges:
         connector = await make_connector(atlassian_api, db, store)
         atlassian_api.on("GET", f"{API}/space", json_response({"message": "down"}, status=502))
 
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="HTTP 502"):
+            await connector.run_sync()
 
         assert db.record_groups == {}
         assert search.cql == []
@@ -1174,7 +1220,7 @@ class TestAuditPassEdgeCases:
 
         await connector.run_sync()
 
-        assert db.records["b1"].inherit_permissions is False
+        assert db.records["b1"].access_rule == AccessRule.RESTRICTED
         assert db.records["b1"].record_type == RecordType.CONFLUENCE_BLOGPOST
         assert db.records["p1"] is before, "content whose type changed is left as it was"
 
@@ -1724,7 +1770,10 @@ class TestRemovalFromSource:
         connector = await self._two_pages_synced(atlassian_api, db, store, search)
         atlassian_api.on("GET", f"{API}/space", answer)
 
-        await connector.run_sync()
+        try:
+            await connector.run_sync()
+        except RuntimeError:
+            assert isinstance(answer, httpx.Response), "only the failed listing fails the sync"
 
         assert "10" in db.record_groups
         assert {"p1", "p2"} <= set(db.records)

@@ -10,10 +10,16 @@ import { collection, hubNode, hubResponse } from './kb-page-harness';
 
 const getNavigationNodes = vi.hoisted(() => vi.fn());
 const getNodeChildren = vi.hoisted(() => vi.fn());
-vi.mock('../api', () => ({
-  KnowledgeHubApi: { getNavigationNodes, getNodeChildren },
-  forgetPendingNodeChildrenRequests: () => {},
-}));
+vi.mock('../api', async () => {
+  const { pagedByCursor } = await import('./kb-page-harness');
+  return {
+    KnowledgeHubApi: {
+      getNavigationNodes: pagedByCursor(getNavigationNodes, 0),
+      getNodeChildren: pagedByCursor(getNodeChildren, 2),
+    },
+    forgetPendingNodeChildrenRequests: () => {},
+  };
+});
 
 const ENGINEERING = collection('kb-eng', 'Engineering');
 const DESIGNS = hubNode({ id: 'folder-designs', name: 'Designs', nodeType: 'folder', parentId: 'kb-eng' });
@@ -45,7 +51,7 @@ describe('knowledge base state across sign-out', () => {
   it('forgets the previous sidebar when the user signs out', () => {
     const kb = useKnowledgeBaseStore.getState();
     kb.cacheNodeChildren('kb-eng', [DESIGNS]);
-    kb.setNodeChildrenPagination('kb-eng', { hasNext: true, nextPage: 2, nodeType: 'app' });
+    kb.setNodeChildrenPagination('kb-eng', { hasNext: true, nextCursor: 'p2', nodeType: 'app', pagesLoaded: 1 });
 
     useAuthStore.getState().logout();
 
@@ -114,7 +120,7 @@ describe('knowledge base state across sign-out', () => {
     const old = held<ReturnType<typeof hubResponse>>();
     const kb = useKnowledgeBaseStore.getState();
     kb.cacheAppChildren('kb-eng', [DESIGNS]);
-    kb.setAppChildPagination('kb-eng', { hasNext: true, nextPage: 2 });
+    kb.setAppChildPagination('kb-eng', { hasNext: true, nextCursor: 'p2' });
     getNodeChildren.mockReturnValueOnce(old.promise);
 
     const loadingMore = loadMoreAppChildPage('kb-eng');

@@ -325,8 +325,8 @@ class TestRSSConnectorRecordGroup:
         rg, perms = call_args[0]
         assert rg.group_type == RecordGroupType.RSS_FEED
         assert rg.external_group_id == "https://blog.example.com/rss"
-        assert perms[0].entity_type == EntityType.ORG
-        assert perms[0].type == PermissionType.READ
+        assert rg.inherit_permissions is True
+        assert perms == []
 
 
 # ===================================================================
@@ -351,8 +351,7 @@ class TestRSSConnectorEntryProcessing:
         assert file_record.mime_type == MimeTypes.PLAIN_TEXT.value
         assert file_record.extension == "txt"
         assert file_record.connector_name == Connectors.RSS
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     @pytest.mark.asyncio
     async def test_process_entry_no_link(self):
@@ -441,6 +440,34 @@ class TestRSSConnectorSync:
             hashlib.md5(b"first text").hexdigest(),
             hashlib.md5(b"edited text").hexdigest(),
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_full_sync_does_not_sweep_the_articles_that_left_the_feed(self):
+        # N4MISC-01: the feed no longer lists older articles, which stay stored; a
+        # sweep after the full sync would take every edge of theirs.
+        import logging
+
+        from app.connectors.core.sync.sync_runner import run_sync_task
+
+        connector = _make_connector()
+        connector.feed_urls = ["https://feed1.com/rss"]
+        connector.session = MagicMock()
+        connector.create_record_group = AsyncMock()
+        feed = MagicMock()
+        feed.entries = [_make_feed_entry(guid="still-listed")]
+        feed.feed = {"title": "Feed"}
+        connector._fetch_and_parse_feed = AsyncMock(return_value=feed)
+        connector._resolve_entry_text = AsyncMock(return_value="text")
+        graph_provider = AsyncMock()
+        graph_provider.sweep_connector_sync_edges = AsyncMock(return_value=(5, True))
+
+        await run_sync_task(
+            connector, "rss-conn-1", graph_provider, logging.getLogger("t"),
+            sweep_generation=1_760_000_000_000,
+        )
+
+        connector.data_entities_processor.on_new_records.assert_awaited()
+        graph_provider.sweep_connector_sync_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_run_sync_processes_feeds(self):

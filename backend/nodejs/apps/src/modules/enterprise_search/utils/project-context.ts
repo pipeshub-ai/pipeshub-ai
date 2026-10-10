@@ -68,6 +68,9 @@ function narrowToProjectScope(requested: string[] | undefined, projectSet: strin
   return requested.filter((id) => allowed.has(id));
 }
 
+/** Filter keys that select below app level (record groups, folders, records). */
+const SELECTION_FILTER_KEYS = ['recordGroups', 'records', 'recordsExact'];
+
 /**
  * Enforces a project's *explicit* scope on an outgoing AI payload, in
  * place — a project chat may only reach the connectors/toolsets/KBs/MCPs
@@ -83,6 +86,11 @@ function narrowToProjectScope(requested: string[] | undefined, projectSet: strin
  *    falling back to the *whole* project set when the request carried none
  *    for that dimension. `filters.kb` additionally always includes the
  *    project's own hidden linked Collection id, once it exists.
+ *  - `filters.recordGroups`/`filters.records` — what the request selected
+ *    below app level, or, for a request that selected nothing at all, what
+ *    the project itself lists there. Either way `allowedFilters` carries the
+ *    project's whole scope, because only Python can tell whether a selected
+ *    node lies inside it.
  *  - `strictScope: true` — tells `get_accessible_virtual_record_ids`
  *    (Python) to return *no* records for an empty effective scope instead
  *    of falling back to "search everything the user can access" (see
@@ -112,21 +120,52 @@ export function applyProjectScope(
   delete requestedFilters.apps;
   delete requestedFilters.kb;
 
-  const effectiveApps = narrowToProjectScope(
-    readIdArray((aiPayload.filters as Record<string, unknown> | undefined)?.apps),
-    context.knowledgeScope?.apps ?? [],
+  const projectApps = context.knowledgeScope?.apps ?? [];
+  const projectKb = context.knowledgeScope?.kb ?? [];
+  const projectBelowApps = {
+    recordGroups: context.knowledgeScope?.recordGroups ?? [],
+    records: context.knowledgeScope?.records ?? [],
+  };
+  // A selection below app level is the whole scope of the turn: an empty
+  // apps/kb list then means none of them, not the whole project.
+  const hasSelection = SELECTION_FILTER_KEYS.some(
+    (key) => (readIdArray(requestedFilters[key])?.length ?? 0) > 0,
   );
-  const effectiveKb = narrowToProjectScope(
-    readIdArray((aiPayload.filters as Record<string, unknown> | undefined)?.kb),
-    context.knowledgeScope?.kb ?? [],
+  const narrow = (requested: string[] | undefined, projectSet: string[]) =>
+    hasSelection
+      ? (requested ?? []).filter((id) => projectSet.includes(id))
+      : narrowToProjectScope(requested, projectSet);
+  const requested = aiPayload.filters as Record<string, unknown> | undefined;
+  const requestedApps = readIdArray(requested?.apps);
+  const requestedKb = readIdArray(requested?.kb);
+  // A collection may be sent under `apps` like any other app.
+  const collectionsUnderApps = (requestedApps ?? []).filter((id) => projectKb.includes(id));
+  const effectiveApps = narrow(requestedApps, projectApps);
+  const effectiveKb = narrow(
+    collectionsUnderApps.length > 0 ? [...(requestedKb ?? []), ...collectionsUnderApps] : requestedKb,
+    projectKb,
   );
   const kbIds = new Set(effectiveKb);
   if (context.linkedKnowledgeBaseId) {
     kbIds.add(context.linkedKnowledgeBaseId);
   }
+  // A request that selected nothing is the whole project, including what the
+  // project lists below app level.
+  const requestedNothing =
+    !hasSelection && !requestedApps?.length && !requestedKb?.length;
+  const belowApps = requestedNothing
+    ? Object.fromEntries(Object.entries(projectBelowApps).filter(([, ids]) => ids.length > 0))
+    : {};
+  if (hasSelection || Object.keys(belowApps).length > 0) {
+    aiPayload.allowedFilters = {
+      apps: [...projectApps, ...projectKb, ...(context.linkedKnowledgeBaseId ? [context.linkedKnowledgeBaseId] : [])],
+      ...projectBelowApps,
+    };
+  }
 
   aiPayload.filters = {
     ...requestedFilters,
+    ...belowApps,
     apps: effectiveApps,
     kb: Array.from(kbIds),
   };

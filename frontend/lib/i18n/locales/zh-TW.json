@@ -641,7 +641,9 @@
     "searchEmptyHint": "找不到您要尋找的內容。請嘗試搜尋其他項目。",
     "adjustFiltersHint": "請選擇其他來源或調整篩選條件",
     "addFromCollectionsHint": "您可以從集合中新增公司的檔案或資料夾",
-    "addFilesHint": "新增您的檔案或資料夾"
+    "addFilesHint": "新增您的檔案或資料夾",
+    "chatWithSelection": "聊天",
+    "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -738,6 +740,12 @@
     "searchCollections": "搜尋連接器與集合",
     "loadingCollections": "正在載入集合…",
     "failedToLoadCollections": "無法載入集合",
+    "treeEmpty": "這裡沒有內容",
+    "treeLoadFailed": "無法載入這些項目",
+    "treeRetry": "重試",
+    "treeIncludedWith": "已包含在 {{name}} 中",
+    "treeExpand": "顯示 {{name}} 中的內容",
+    "treeCollapse": "隱藏 {{name}} 中的內容",
     "noCollectionsAvailable": "沒有可用的集合",
     "comingSoon": "即將推出",
     "answer": "回答",
@@ -1211,7 +1219,9 @@
       "webSearch": "網路搜尋"
     },
     "resizePanels": "調整對話與預覽面板大小",
-    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。"
+    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。",
+    "selectedAlone": "{{name}}（僅此項目）",
+    "noConnectorsFound": "找不到連接器"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -3989,7 +3999,10 @@
     "toolsetOAuthServerError": "驗證失敗。請重試或聯絡您的管理員。",
     "attached": "已附加",
     "mcpServerWithToolCount_other": "包含 {{count}} 個工具的 MCP 伺服器",
-    "deprecatedToolsBanner_other": "此代理程式上有 {{count}} 個工具已淘汰。請移除它們：{{tools}}"
+    "deprecatedToolsBanner_other": "此代理程式上有 {{count}} 個工具已淘汰。請移除它們：{{tools}}",
+    "limitSource": "選擇 {{name}} 的搜尋範圍",
+    "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
+    "limitSourceCount": "僅限所選的 {{count}} 項"
   },
   "recordView": {
     "sections": {

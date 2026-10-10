@@ -37,6 +37,7 @@ def _make_deps():
     dep.org_id = "org-dc-test"
     dep.initialize = AsyncMock()
     dep.on_new_app_users = AsyncMock()
+    dep.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -802,24 +803,22 @@ class TestJiraDataCenterDeletionAudit:
         mock_ds = MagicMock()
         mock_ds.get_issue_v2 = AsyncMock(return_value=resp)
 
-        tx_store = MagicMock()
-        tx_store.get_record_by_issue_key = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
-        conn.data_store_provider = MagicMock()
-        conn.data_store_provider.transaction = MagicMock(
-            return_value=_aenter_ctx(tx_store)
-        )
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock()
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await conn._handle_deleted_issue("PROJ-1")
 
         # Must not have touched the DB at all.
-        tx_store.get_record_by_issue_key.assert_not_called()
-        tx_store.delete_records_and_relations.assert_not_called()
+        conn.data_entities_processor.get_record_by_issue_key.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_deletes_attachments_only_not_subtasks(self) -> None:
-        """Flat delete: FILE children removed, TICKET children left, issue removed."""
+        """The issue goes through the processor without cascading: its ATTACHMENT
+        children go with it, sub-tasks survive and are re-pointed,
+        and the vectors are cleaned up."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         mock_ds = MagicMock()
@@ -831,42 +830,18 @@ class TestJiraDataCenterDeletionAudit:
         issue_record.id = "internal-issue-1"
         issue_record.external_record_id = "10004"
 
-        file_child = MagicMock()
-        file_child.id = "file-1"
-        file_child.external_record_id = "att-10004-1"
-
-        ticket_child = MagicMock()
-        ticket_child.id = "subtask-1"
-        ticket_child.external_record_id = "10011"
-
-        tx_store = MagicMock()
-        tx_store.get_record_by_issue_key = AsyncMock(return_value=issue_record)
-        tx_store.get_records_by_parent = AsyncMock(
-            side_effect=lambda **kwargs: (
-                [file_child] if kwargs.get("record_type") == RecordType.FILE.value else [ticket_child]
-            )
-        )
-        tx_store.delete_records_and_relations = AsyncMock()
-        conn.data_store_provider = MagicMock()
-        conn.data_store_provider.transaction = MagicMock(
-            return_value=_aenter_ctx(tx_store)
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(return_value=issue_record)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(
+            return_value={"deleted_records": [{"record_id": "internal-issue-1"}, {"record_id": "file-1"}]},
         )
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await conn._handle_deleted_issue("PA-5")
 
-        deleted_keys = [
-            call.kwargs.get("record_key") or call.args[0]
-            for call in tx_store.delete_records_and_relations.await_args_list
-        ]
-        assert "file-1" in deleted_keys
-        assert "internal-issue-1" in deleted_keys
-        assert "subtask-1" not in deleted_keys
-        assert tx_store.get_records_by_parent.await_count == 1
-        tx_store.get_records_by_parent.assert_awaited_once_with(
-            connector_id=conn.connector_id,
-            parent_external_record_id="10004",
-            record_type=RecordType.FILE.value,
+        # include_trashed_roots: an issue the source deleted goes even when it is in the trash.
+        conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["internal-issue-1"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
         )
 
 

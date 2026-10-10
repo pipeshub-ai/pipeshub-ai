@@ -40,7 +40,7 @@ def _service(doc: dict | None) -> EventService:
     graph.update_node = AsyncMock()
     graph.batch_upsert_nodes = AsyncMock()
     graph.delete_sync_points_by_connector_id = AsyncMock(return_value=(1, True))
-    graph.delete_connector_sync_edges = AsyncMock(return_value=(1, True))
+    graph.mark_connector_sync_edges = AsyncMock(return_value=(1, True))
     container = MagicMock()
     container.messaging_producer = AsyncMock()
     return EventService(MagicMock(spec=logging.Logger), container, graph)
@@ -135,7 +135,7 @@ class TestAStopDuringConnectorInit:
             assert await svc._handle_start_sync("gmail", {"orgId": "o1", "connectorId": "c1"}) is True
 
         svc.graph_provider.delete_sync_points_by_connector_id.assert_not_awaited()
-        svc.graph_provider.delete_connector_sync_edges.assert_not_awaited()
+        svc.graph_provider.mark_connector_sync_edges.assert_not_awaited()
         coordinator.spawn.assert_not_awaited()
         coordinator.end.assert_awaited_once()
 

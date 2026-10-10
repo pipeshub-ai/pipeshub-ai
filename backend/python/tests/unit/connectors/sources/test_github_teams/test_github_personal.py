@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.connectors.sources.github.connector import GitHubPersonalProjectsSync, GithubConnector
+from app.connectors.sources.github_teams.projects import GitHubReadError
 from app.connectors.sources.github import connector as personal_mod
 from app.connectors.core.registry.filters import SyncFilterKey
 from app.models.permission import EntityType, Permission, PermissionType
@@ -43,7 +44,7 @@ class TestSyncRepoMembers:
         sync = GitHubPersonalProjectsSync(c)
         perms = await sync._sync_repo_members("me", "widgets")
 
-        assert perms == [permission]
+        assert perms == []
         c.runtime.ds_call.assert_not_awaited()
 
     async def test_no_creator_permission_returns_empty(self) -> None:
@@ -161,15 +162,27 @@ class TestResolveReposWithFilters:
 
         assert result == []
 
-    async def test_list_user_repos_failure_returns_empty(self) -> None:
+    async def test_a_repo_listing_that_could_not_be_read_fails_the_sync(self) -> None:
+        """Read as "no repos", a full sync would sweep every repo's access (N4GIT-01)."""
         c = make_mock_connector()
         c.sync_filters = None
-        c.runtime.ds_call.return_value = failed_response("500")
+        c.runtime.ds_call.return_value = failed_response("500", status_code=500)
 
-        sync = GitHubPersonalProjectsSync(c)
-        result = await sync._resolve_repos_with_filters()
+        with pytest.raises(GitHubReadError):
+            await GitHubPersonalProjectsSync(c)._resolve_repos_with_filters()
 
-        assert result == []
+    @pytest.mark.parametrize("status", [None, 403, 502])
+    async def test_a_repo_in_filter_that_could_not_be_read_fails_the_sync(self, status) -> None:
+        c = make_mock_connector()
+        c.sync_filters = {
+            SyncFilterKey.REPO_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["me/kept"], operator_value="in",
+            )
+        }
+        c.runtime.ds_call.return_value = failed_response("Read timed out", status_code=status)
+
+        with pytest.raises(GitHubReadError, match="me/kept"):
+            await GitHubPersonalProjectsSync(c)._resolve_repos_with_filters()
 
     async def test_inaccessible_repo_in_filter_is_skipped(self) -> None:
         c = make_mock_connector()
@@ -184,7 +197,7 @@ class TestResolveReposWithFilters:
             if method is c.data_source.get_repo:
                 _owner, name = args
                 if name == "gone":
-                    return failed_response("404")
+                    return failed_response("404", status_code=404)
                 return ok_response(kept)
             raise AssertionError("unexpected ds_call")
 
@@ -205,7 +218,7 @@ class TestPersonalConnectorLifecycle:
         c.repos.timestamps.cancel = AsyncMock()
         c.repos.timestamps.schedule = MagicMock()
         c.projects.sync_all_repos = AsyncMock()
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
         c._load_creator_email = AsyncMock()
         monkeypatch.setattr(
             personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
@@ -214,7 +227,7 @@ class TestPersonalConnectorLifecycle:
         await GithubConnector.run_sync(c)
 
         c._load_creator_email.assert_not_awaited()
-        c.ensure_connector_group_permission.assert_awaited_once()
+        c.ensure_creator_user_app_relation.assert_awaited_once()
         c.projects.sync_all_repos.assert_awaited_once()
         c.repos.timestamps.schedule.assert_called_once()
         assert c.record_sync_point.org_id == c.data_entities_processor.org_id
@@ -228,7 +241,7 @@ class TestPersonalConnectorLifecycle:
         c.repos.timestamps.cancel = AsyncMock()
         c.repos.timestamps.schedule = MagicMock()
         c.projects.sync_all_repos = AsyncMock()
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
 
         async def load_email() -> None:
             c.creator_email = "loaded@example.com"
@@ -241,7 +254,7 @@ class TestPersonalConnectorLifecycle:
         await GithubConnector.run_sync(c)
 
         c._load_creator_email.assert_awaited_once()
-        c.ensure_connector_group_permission.assert_awaited_once()
+        c.ensure_creator_user_app_relation.assert_awaited_once()
 
     async def test_run_sync_warns_when_no_creator_email(
         self, monkeypatch: pytest.MonkeyPatch
@@ -252,14 +265,14 @@ class TestPersonalConnectorLifecycle:
         c.repos.timestamps.cancel = AsyncMock()
         c.repos.timestamps.schedule = MagicMock()
         c.projects.sync_all_repos = AsyncMock()
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
         monkeypatch.setattr(
             personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )
 
         await GithubConnector.run_sync(c)
 
-        c.ensure_connector_group_permission.assert_not_awaited()
+        c.ensure_creator_user_app_relation.assert_not_awaited()
         c.projects.sync_all_repos.assert_awaited_once()
         c.logger.warning.assert_called()
 
@@ -268,7 +281,7 @@ class TestPersonalConnectorLifecycle:
         c.creator_email = "me@example.com"
         c.repos.timestamps.cancel = AsyncMock()
         c.projects.sync_all_repos = AsyncMock(side_effect=RuntimeError("api down"))
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
         monkeypatch.setattr(
             personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )

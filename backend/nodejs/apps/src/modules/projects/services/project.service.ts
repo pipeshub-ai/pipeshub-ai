@@ -10,6 +10,7 @@ import { ChatSession } from '../../enterprise_search/schema/chat.session.schema'
 import {
   IProject,
   IProjectDocument,
+  IProjectKnowledgeScope,
   IProjectMember,
   ProjectAccess,
   ProjectContext,
@@ -38,7 +39,7 @@ export interface CreateProjectInput {
   icon?: string;
   color?: string;
   instructions?: string;
-  knowledgeScope?: { apps?: string[]; kb?: string[] };
+  knowledgeScope?: IProjectKnowledgeScope;
   appliedFilters?: IProjectDocument['appliedFilters'];
   tools?: string[];
 }

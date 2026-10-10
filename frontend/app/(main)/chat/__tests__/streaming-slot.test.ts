@@ -171,6 +171,19 @@ describe('a new conversation, start to finish', () => {
     expect(body.runId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it('sends a selection made only of a folder or a record group, and no empty keys', async () => {
+    const slotId = newSlot();
+    respondWith([frame('RUN_FINISHED', { result: { conversation: finishedConversation('ok') } })]);
+    await streamMessageForSlot(
+      slotId,
+      Q,
+      request({ filters: { apps: [], kb: [], recordGroups: [], records: ['folder-1'] } }),
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.filters).toEqual({ apps: [], kb: [], records: ['folder-1'] });
+  });
+
   it('streams answer text into the slot as it arrives', async () => {
     const slotId = newSlot();
     respondWith({

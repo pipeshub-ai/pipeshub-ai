@@ -696,6 +696,11 @@ class EventService:
                 self.logger.error(f"❌ Failed to set lock for connector {connector_id}: {lock_err}")
                 return False, False
 
+            # The full sync rewrites this connector's edges and then sweeps the stale ones: the knowledge hub
+            # stops listing it from its precomputed scopes first.
+            prep_generation = await self._kh_scope_begin(connector_id)
+
+            sweep_generation: int | None = None
             try:
                 # Delete sync points
                 self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
@@ -705,23 +710,15 @@ class EventService:
                     )
                     if success:
                         self.logger.info(f"✅ Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                        sweep_generation = await self._mark_sync_edges(connector_id)
                     else:
-                        self.logger.warning(f"⚠️ Failed to delete sync points for connector {connector_id}, continuing with sync")
+                        self.logger.warning(
+                            f"⚠️ Failed to delete sync points for connector {connector_id}; syncing without "
+                            "removing stale edges"
+                        )
                 except Exception as sync_point_error:
                     self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {sync_point_error}")
-                    self.logger.warning("Continuing with sync despite sync point deletion failure")
-
-                # Delete sync edges
-                try:
-                    deleted_edges, success = await self.graph_provider.delete_connector_sync_edges(
-                        connector_id=connector_id
-                    )
-                    if success:
-                        self.logger.info(f"Successfully deleted {deleted_edges} sync edges for connector {connector_id}")
-                    else:
-                        self.logger.warning(f"Failed to delete some sync edges for connector {connector_id}, continuing with sync")
-                except Exception as edge_error:
-                    self.logger.error(f"Error deleting connector sync edges for {connector_id}: {edge_error}")
+                    self.logger.warning("Continuing with sync despite sync point deletion failure; stale edges stay")
 
                 # Schedule the background sync task. Holding the lease means
                 # no other task in this process can be running this connector,
@@ -735,6 +732,7 @@ class EventService:
                         self.graph_provider,
                         self.logger,
                         start_status=AppStatus.FULL_SYNCING.value,
+                        sweep_generation=sweep_generation,
                         lease=lease,
                         coordinator=coordinator,
                         close_connector=not cacheable,
@@ -758,6 +756,7 @@ class EventService:
                         f"Full sync for {connector_id} declined: one is already running. "
                         f"Recorded pendingResync for re-issue when it finishes."
                     )
+                    await self._clear_sync_edge_tags(connector_id, sweep_generation)
                     await self._persist_pending_resync(connector_id, full_sync=True)
                 else:
                     handed_off = True
@@ -777,6 +776,10 @@ class EventService:
 
             except Exception as e:
                 self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")
+                if not handed_off:
+                    await self._clear_sync_edge_tags(connector_id, sweep_generation)
+                # No sync task will end this mark; the next stamp picks up whatever the prep deleted.
+                await self._kh_scope_end(connector_id, prep_generation, stamp=False)
                 # Release lock immediately so the connector is not stuck
                 try:
                     await self._update_app_status(connector_id, status=AppStatus.IDLE.value, is_locked=False)
@@ -980,6 +983,61 @@ class EventService:
                 f"Failed to persist pending resync for {connector_id}: {e}"
             )
 
+    async def _mark_sync_edges(self, connector_id: str) -> int | None:
+        """Tag the connector's edges for the sweep after a successful full sync.
+
+        Only once its sync points are gone: a sync that kept them skips unchanged
+        items, and the sweep would take the edges of everything it skipped.
+        """
+        generation = get_epoch_timestamp_in_ms()
+        try:
+            marked, success = await self.graph_provider.mark_connector_sync_edges(
+                connector_id=connector_id, generation=generation
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Could not tag sync edges of {connector_id}; stale edges stay: {e}")
+            await self._clear_sync_edge_tags(connector_id, generation)
+            return None
+        if not success:
+            self.logger.warning(f"⚠️ Could not tag every sync edge of {connector_id}; stale edges stay")
+            await self._clear_sync_edge_tags(connector_id, generation)
+            return None
+        self.logger.info(f"Tagged {marked} sync edges of {connector_id}; the ones the full sync does not rewrite go when it succeeds")
+        return generation
+
+    async def _clear_sync_edge_tags(self, connector_id: str, generation: int | None) -> None:
+        """Untag what a mark tagged when no sync will sweep it."""
+        if generation is None:
+            return
+        try:
+            _, success = await self.graph_provider.clear_connector_sync_edge_tags(
+                connector_id=connector_id, generation=generation
+            )
+        except Exception as e:
+            success = False
+            self.logger.error(f"❌ Could not clear the sweep tags of {connector_id}: {e}")
+        if not success:
+            self.logger.warning(f"⚠️ Sweep tags of {connector_id} stay until its next full sync")
+
+    async def _kh_scope_begin(self, connector_id: str) -> int | None:
+        """Mark the connector's knowledge hub scopes stale before a write; the generation this writer owns."""
+        try:
+            return await self.graph_provider.kh_scope_mark_stale(connector_id)
+        except Exception as e:
+            self.logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+            return None
+
+    async def _kh_scope_end(self, connector_id: str, generation: int | None, *, stamp: bool) -> None:
+        """End this writer's mark and, when the scope listing is enabled, re-stamp from what it left."""
+        if generation is None:
+            return
+        try:
+            await self.graph_provider.kh_scope_sync_ended(connector_id, generation)
+            if stamp and await self.graph_provider.kh_scope_enabled():
+                await self.graph_provider.kh_scope_stamp(connector_id)
+        except Exception as e:
+            self.logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
+
     @staticmethod
     def _reindex_task_key(
         connector_id: str,
@@ -1098,6 +1156,27 @@ class EventService:
         moves forward, so every record is visited at most once and the walk is a
         single pass over the key range regardless of what changes underneath it.
         """
+        scope_generation = await self._kh_scope_begin(connector_id)
+        try:
+            await self._reindex_batches(
+                connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
+                user_key, status_filters,
+            )
+        finally:
+            await self._kh_scope_end(connector_id, scope_generation, stamp=True)
+
+    async def _reindex_batches(
+        self,
+        connector: BaseConnector,
+        connector_name: str,
+        connector_id: str,
+        org_id: str,
+        record_id: str | None,
+        record_group_id: str | None,
+        depth: int,
+        user_key: str | None,
+        status_filters: list[str] | None,
+    ) -> None:
         if record_id is not None:
             self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector record {record_id} with depth {depth}")
         elif record_group_id is not None:
@@ -1122,7 +1201,7 @@ class EventService:
                     connector_id=connector_id,
                     org_id=org_id,
                     depth=depth,
-                    user_key=user_key,
+                    user_key=None,
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
@@ -1135,7 +1214,7 @@ class EventService:
                     connector_id=connector_id,
                     org_id=org_id,
                     depth=depth,
-                    user_key=user_key,
+                    user_key=None,
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
@@ -1156,6 +1235,13 @@ class EventService:
             fetched_count = len(records)
             last_id = records[-1].id if records else None
             records = [r for r in records if not r.is_placeholder]
+            # The children a user may reindex are the ones the permission model
+            # lets them access, not the providers' own user filter.
+            if user_key is not None and records:
+                allowed = (await self.graph_provider.check_access(
+                    user_key, org_id, node_ids=[r.id for r in records],
+                )).node_ids
+                records = [r for r in records if r.id in allowed]
 
             if not records:
                 if not last_id or fetched_count < batch_size:

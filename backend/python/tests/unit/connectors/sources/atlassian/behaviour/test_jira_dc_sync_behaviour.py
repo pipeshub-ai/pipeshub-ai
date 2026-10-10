@@ -23,6 +23,7 @@ from atlassian_behaviour_fakes import (
 )
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.core.jira_issue_security import SchemeKnowledge
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     DC_EPIC_LINK_SCHEMA_CUSTOM,
     JiraDataCenterConnector,
@@ -54,6 +55,16 @@ class JiraRecordsDb(FakeRecordsDb):
         self.cached_app_users: list[AppUser] = []
         self.app_roles: dict[str, list[Any]] = {}
         self.groups_saved: dict[str, list[Any]] = {}
+        self.gates_reconciled_against: list[list[str]] = []
+        self.gates_removed_as_deactivated: list[list[str]] = []
+
+    async def remove_app_users_absent_from_source(self, connector_id: str, users: list[AppUser]) -> int:
+        self.gates_reconciled_against.append(sorted(u.email for u in users))
+        return 0
+
+    async def remove_app_users_deactivated_at_source(self, connector_id: str, users: list[AppUser]) -> int:
+        self.gates_removed_as_deactivated.append(sorted(u.email for u in users))
+        return len(users)
 
     async def get_all_active_users(self) -> list[Any]:
         return self.platform_users
@@ -73,33 +84,35 @@ class JiraRecordsDb(FakeRecordsDb):
     async def get_placeholder_records(self, connector_id: str) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
 
-
-class JiraStore(FakeCheckpointStore):
-    """Checkpoint store plus the record lookups the deletion pass runs in a transaction."""
-
-    def __init__(self, db: JiraRecordsDb) -> None:
-        super().__init__()
-        self.db = db
-        self.hard_deleted: list[str] = []
-
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> Optional[TicketRecord]:
-        for record in self.db.records.values():
+        for record in self.records.values():
             if record.record_type == RecordType.TICKET and (record.weburl or "").endswith(f"/browse/{issue_key}"):
                 return record
         return None
 
-    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str) -> list[Any]:
-        return [
-            r for r in self.db.records.values()
-            if r.parent_external_record_id == parent_external_record_id and r.record_type.value == record_type
-            and is_live_record(r)
-        ]
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        *, include_trashed_roots: bool = False,
+    ) -> dict[str, Any]:
+        """Deletes each root with its attachments, as the stores do; child issues only with ``cascade_children``.
 
-    async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
-        self.hard_deleted.append(record_key)
-        for ext_id, record in list(self.db.records.items()):
-            if record.id == record_key:
-                del self.db.records[ext_id]
+        A root in the trash is left alone unless ``include_trashed_roots``.
+        """
+        by_id = {r.id: r for r in self.records.values()}
+        doomed = [
+            by_id[i] for i in record_ids
+            if i in by_id and (include_trashed_roots or is_live_record(by_id[i]))
+        ]
+        for parent in doomed:
+            doomed.extend(
+                child for child in self.records.values()
+                if child.parent_external_record_id == parent.external_record_id
+                and (cascade_children or child.record_type == RecordType.FILE)
+                and not any(child is seen for seen in doomed)
+            )
+        for record in doomed:
+            self.records.pop(record.external_record_id, None)
+        return {"success": True, "deleted_records": [r.id for r in doomed]}
 
 
 def ts(day: int, hour: int = 10) -> str:
@@ -248,8 +261,8 @@ def db() -> JiraRecordsDb:
 
 
 @pytest.fixture
-def store(db: JiraRecordsDb) -> JiraStore:
-    return JiraStore(db)
+def store() -> FakeCheckpointStore:
+    return FakeCheckpointStore()
 
 
 @pytest.fixture
@@ -270,7 +283,7 @@ def jira(atlassian_api: AtlassianApiStub, monkeypatch: pytest.MonkeyPatch) -> At
     return atlassian_api
 
 
-async def make_connector(db: JiraRecordsDb, store: JiraStore, filters: Optional[dict[str, Any]] = None) -> tuple[JiraDataCenterConnector, Notifications]:
+async def make_connector(db: JiraRecordsDb, store: FakeCheckpointStore, filters: Optional[dict[str, Any]] = None) -> tuple[JiraDataCenterConnector, Notifications]:
     config = {"auth": {"authType": "API_TOKEN", "baseUrl": f"{BASE}/", "apiToken": FAKE_PAT}, "filters": filters or {}}
     connector = JiraDataCenterConnector(
         logging.getLogger("test.jira_dc"), db, store, FakeConfigService(CONNECTOR_ID, config),
@@ -414,6 +427,7 @@ class TestIncrementalSync:
         assert set(tickets(db)) == {"1001", "1002"}
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(2))
         assert any("couldn't sync some projects" in t for t in notes.titles())
+        assert 'issues of 1 project' in (connector.stored_access_kept or ""), "N4GIT-01: a skipped part must not be swept"
 
         search.pages.clear()
         search.jql.clear()
@@ -499,10 +513,12 @@ class TestAccessControlSafety:
         before = sorted(m.email for m in db.groups_saved["devs"])
         assert before == ["alice@example.com", "carol@example.com"]
 
+        assert connector.stored_access_kept is None
         jira.on("GET", f"{API}/group/member", json_response({"errorMessages": ["busy"]}, status=503))
         await connector.run_sync()
 
         assert sorted(m.email for m in db.groups_saved["devs"]) == before
+        assert "group devs" in connector.stored_access_kept, "a full sync must not sweep the kept members"
 
     async def test_a_failed_member_lookup_keeps_the_roles_that_include_the_group(self, jira, db, store, search) -> None:
         stub_site(jira, search)
@@ -524,10 +540,12 @@ class TestAccessControlSafety:
         before = acl_summary(db.record_group_permissions["10000"])
         assert before, "the first sync grants access"
 
+        assert connector.stored_access_kept is None
         jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
         await connector.run_sync()
 
         assert acl_summary(db.record_group_permissions["10000"]) == before
+        assert "project ENG" in connector.stored_access_kept, "a full sync must not sweep the kept access"
 
     async def test_an_unreadable_permission_scheme_still_syncs_the_projects_issues(self, jira, db, store, search) -> None:
         stub_site(jira, search)
@@ -584,11 +602,13 @@ class TestAccessControlSafety:
         assert "alice@example.com" in before, "alice is in the role only through the devs group"
         role_reads = len(jira.calls("GET", f"{API}/project/ENG/role"))
 
+        assert connector.stored_access_kept is None
         jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["busy"]}, status=503))
         await connector.run_sync()
 
         assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before
         assert len(jira.calls("GET", f"{API}/project/ENG/role")) == role_reads, "roles are not synced this run"
+        assert "project roles keep their members" in connector.stored_access_kept
 
     @staticmethod
     def _stub_more_roles(jira, reviewer: str) -> None:
@@ -761,6 +781,159 @@ class TestUserDirectoryFallbacks:
         assert cursor == expected_cursor
 
 
+class TestAnIncompleteUserListing:
+    """R1-04 / R1-10: a listing that stops before Jira says it is done must neither
+    take the gate from users on the pages it did not read nor let the full sync's
+    sweep take their access."""
+
+    @staticmethod
+    def _full_first_page(next_page: str) -> dict:
+        page = [user(f"u{i}-key", f"u{i}", f"u{i}@corp.example") for i in range(99)]
+        return {"values": [*page, user("alice-key", "alice", "alice@example.com")], "nextPage": next_page,
+                "isLast": False}
+
+    async def test_a_complete_listing_reconciles_the_gates_and_keeps_nothing(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert len(db.gates_reconciled_against) == 1
+        assert connector.stored_access_kept is None and connector.stored_gates_kept is None
+
+    async def test_a_later_page_that_does_not_parse_removes_nobody_and_keeps_stored_access(
+        self, jira, db, store, search,
+    ) -> None:
+        stub_site(jira, search)
+
+        def user_list(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("cursor") == "abc":
+                return httpx.Response(200, content=b"<html>maintenance</html>")
+            return json_response(self._full_first_page(f"{BASE}{API}/user/list?cursor=abc"))
+
+        jira.on("GET", f"{API}/user/list", user_list)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.gates_reconciled_against == [], "users on the unread page would lose their gate"
+        assert "user list" in (connector.stored_access_kept or ""), "the sweep would take their access"
+
+    async def test_a_next_page_that_cannot_be_followed_counts_as_cut_short(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response(self._full_first_page(f"{BASE}{API}/user/list?page=2")))
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.gates_reconciled_against == []
+        assert "user list" in (connector.stored_access_kept or "")
+
+    async def test_a_forbidden_listing_keeps_stored_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response({}, status=403))
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.gates_reconciled_against == []
+        assert "user list" in (connector.stored_access_kept or "")
+
+    async def test_the_user_search_fallback_keeps_only_the_gates(self, jira, db, store, search) -> None:
+        """/user/search promises no completeness, so the gates of users it missed stay;
+        everything else the full sync did not write again is still swept."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response({}, status=404))
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.gates_reconciled_against == []
+        assert connector.stored_access_kept is None
+        assert "user search" in (connector.stored_gates_kept or "")
+
+
+def _gated(key: str, email: str) -> AppUser:
+    return AppUser(app_name="JIRA", connector_id=CONNECTOR_ID, id=f"user-{key}", source_user_id=key,
+                   email=email, full_name=email)
+
+
+class TestGatesOfUsersJiraReportsDeactivated:
+    """R2-03: on a listing that promises no completeness, a stored gate stays unless Jira
+    itself says its account is deactivated; then the gate goes, and with it every grant
+    of the connector that the run kept for that user."""
+
+    @staticmethod
+    def _search_fallback(jira, search, accounts: dict[str, object]) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response({}, status=404))
+
+        def one_user(request: httpx.Request) -> httpx.Response:
+            answer = accounts.get(AtlassianApiStub.query(request).get("key", ""))
+            if answer is None:
+                return json_response({"errorMessages": ["The user does not exist"]}, status=404)
+            if isinstance(answer, int):
+                return json_response({}, status=answer)
+            return json_response(answer)
+
+        jira.on("GET", f"{API}/user", one_user)
+
+    async def test_a_gated_user_jira_reports_deactivated_loses_the_gate(self, jira, db, store, search) -> None:
+        self._search_fallback(jira, search, {"frank-key": {**user("frank-key", "frank", "frank@example.com"), "active": False}})
+        db.cached_app_users = [_gated("frank-key", "frank@example.com")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.gates_removed_as_deactivated == [["frank@example.com"]]
+        assert "user search" in (connector.stored_gates_kept or ""), "other users' gates are still kept"
+
+    @pytest.mark.parametrize("answer", [
+        {**user("frank-key", "frank", "frank@example.com")},
+        None,
+        403,
+        {**user("other-key", "frank", "frank@example.com"), "active": False},
+        {"key": "frank-key", "name": "frank"},
+    ], ids=["still active", "not found", "refused", "another account", "no active flag"])
+    async def test_a_gate_stays_unless_jira_says_that_account_is_deactivated(
+        self, jira, db, store, search, answer,
+    ) -> None:
+        self._search_fallback(jira, search, {"frank-key": answer} if answer is not None else {})
+        db.cached_app_users = [_gated("frank-key", "frank@example.com")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.gates_removed_as_deactivated == []
+
+    async def test_a_deactivated_account_whose_email_another_account_now_holds_keeps_the_gate(
+        self, jira, db, store, search,
+    ) -> None:
+        self._search_fallback(jira, search, {"old-alice": {**user("old-alice", "alice.old", "alice@example.com"), "active": False}})
+        jira.on("GET", f"{API}/user/search", lambda request: json_response(
+            [user("alice-key", "alice", "alice@example.com")]
+            if AtlassianApiStub.query(request).get("username") == "alice@example.com" else []
+        ))
+        db.cached_app_users = [_gated("old-alice", "alice@example.com")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.gates_removed_as_deactivated == []
+        assert not jira.calls("GET", f"{API}/user"), "a user resolved this run is not looked up"
+
+    async def test_a_complete_listing_looks_nobody_up(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        db.cached_app_users = [_gated("frank-key", "frank@example.com")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert len(db.gates_reconciled_against) == 1
+        assert not jira.calls("GET", f"{API}/user")
+        assert db.gates_removed_as_deactivated == []
+
+
 class TestDeletions:
     async def _synced(self, jira, db, store, search) -> tuple[JiraDataCenterConnector, Notifications]:
         stub_site(jira, search)
@@ -792,6 +965,19 @@ class TestDeletions:
         offsets = [AtlassianApiStub.query(r).get("offset") for r in jira.calls("GET", "/rest/auditing/1.0/events")]
         assert offsets == ["0", "1"]
         assert store.values_for("issues_audit_deletions")
+
+    async def test_an_issue_already_in_our_trash_is_removed_when_jira_deletes_it(self, jira, db, store, search) -> None:
+        connector, _ = await self._synced(jira, db, store, search)
+        db.records["1002"].is_deleted = True
+        jira.on("GET", "/rest/auditing/1.0/events", {
+            "entities": [{"affectedObjects": [{"type": "ISSUE", "name": "ENG-2"}]}], "pagingInfo": {"lastPage": True},
+        })
+        jira.on("GET", f"{API}/issue/ENG-2", json_response({"errorMessages": ["Issue Does Not Exist"]}, status=404))
+
+        await connector.run_sync()
+
+        assert "1002" not in db.records, "the delete must take an issue that is in the trash"
+        assert "attachment_201" not in db.records
 
     async def _synced_with_audit_checkpoint(self, jira, db, store, search, monkeypatch) -> tuple[JiraDataCenterConnector, dict[str, Any]]:
         """Sync twice so the connector itself writes an audit checkpoint, then pin later clock readings."""
@@ -1250,3 +1436,41 @@ class TestReindexEdgeCases:
 
         assert db.record_batches == []
         assert {r.id for r in db.reindexed} == {"f-attachment_200", "f-200", "f-attachment_7", "f-attachment_8"}
+
+
+class TestIssueSecurityRoutes:
+    """N4DC-02: Jira DC 10.3 has no ``/issuesecurityschemes/project`` and answers it with an HTML 404."""
+
+    async def test_a_project_without_a_scheme_needs_no_mapping_call_and_logs_no_error(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme", json_response(
+            {"errorMessages": ["Security level for project 10000 does not exist"], "errors": {}}, status=404,
+        ))
+        jira.on("GET", f"{API}/issuesecurityschemes/project", httpx.Response(
+            404, content=b"<html><body>Oops, you've found a dead link.</body></html>",
+            headers={"content-type": "text/html;charset=UTF-8"},
+        ))
+        connector, _ = await make_connector(db, store)
+        logs = record_logs(connector)
+
+        context = await connector._load_issue_security_context("ENG", "10000", "classic")
+
+        assert context.knowledge == SchemeKnowledge.NONE, "issues are open to the project's audience"
+        assert jira.calls("GET", f"{API}/issuesecurityschemes/project") == []
+        assert logged(logs, "error") == []
+
+    async def test_an_html_404_from_the_mapping_route_is_not_logged_as_an_error(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        jira.on("GET", f"{API}/issuesecurityschemes/project", httpx.Response(
+            404, content=b"<html>dead link</html>", headers={"content-type": "text/html"},
+        ))
+        logs = record_logs(connector)
+
+        status, body = await connector._issue_security_call(
+            lambda ds: ds.search_projects_using_security_schemes_v2(startAt="0", maxResults="50", projectId="10000"),
+            "issue security mapping for ENG",
+        )
+
+        assert (status, body) == (404, None)
+        assert logged(logs, "error") == []

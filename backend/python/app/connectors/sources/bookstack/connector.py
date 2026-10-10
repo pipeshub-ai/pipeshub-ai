@@ -67,6 +67,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.bookstack.access import BookStackGrants, bookstack_grants
 from app.connectors.sources.bookstack.common.apps import BookStackApp
 from app.models.entities import (
     AppRole,
@@ -239,6 +240,10 @@ class BookStackConnector(BaseConnector):
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
+        self._bookstack_user_emails: Dict[int, str] = {}
+        self._bookstack_user_level_grants = False
+        self._bookstack_memberships_changed = False
+
     def _create_sync_points(self) -> None:
         """Initialize sync points for different data types."""
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -409,6 +414,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info("Starting BookStack user sync...")
         all_bookstack_users = []
         offset = 0
+        self._bookstack_users_complete = False
 
         # Loop to handle API pagination and fetch all users
         while True:
@@ -419,11 +425,14 @@ class BookStackConnector(BaseConnector):
 
             if not response.success or not response.data:
                 self.logger.error(f"Failed to fetch users from BookStack: {response.error}")
+                if not response.success:
+                    self.keep_stored_access("the BookStack user list could not be read to the end; unlisted users keep their access")
                 break
 
             users_page = response.data.get("data", [])
             if not users_page:
-                # No more users to fetch, exit the loop
+                # An empty page short of the total is a cut-off listing.
+                self._bookstack_users_complete = offset >= response.data.get("total", 0)
                 break
 
             all_bookstack_users.extend(users_page)
@@ -431,6 +440,7 @@ class BookStackConnector(BaseConnector):
 
             # Stop if we have fetched all available users
             if offset >= response.data.get("total", 0):
+                self._bookstack_users_complete = True
                 break
 
         if not all_bookstack_users:
@@ -438,6 +448,11 @@ class BookStackConnector(BaseConnector):
             return []
 
         self.logger.info(f"Successfully fetched {len(all_bookstack_users)} users from BookStack.")
+        self._bookstack_user_emails = {
+            int(user["id"]): user["email"]
+            for user in all_bookstack_users
+            if user.get("id") is not None and user.get("email")
+        }
 
         # 1. Convert the raw user data to the standardized AppUser format
         app_users = self._get_app_users(all_bookstack_users)
@@ -459,6 +474,7 @@ class BookStackConnector(BaseConnector):
         list_response = await self.data_source.list_roles()
         if not list_response.success:
             self.logger.error(f"Failed to list roles: {list_response.error}")
+            self.keep_stored_access("the BookStack role list could not be read; roles keep their access")
             return {}
 
         basic_roles = list_response.data.get('data', [])
@@ -525,6 +541,9 @@ class BookStackConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting BookStack full sync.")
+            self._bookstack_role_access = {}
+            self._bookstack_user_level_grants = False
+            self._bookstack_memberships_changed = False
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "bookstack", self.connector_id, self.logger
@@ -541,19 +560,38 @@ class BookStackConnector(BaseConnector):
             self.logger.info("Syncing user groups (roles)...")
             await self._sync_user_roles()
 
+            # Grants to single users follow role memberships, which the audit log does
+            # not tie to content: re-evaluate every item when memberships moved.
+            full_content = self._bookstack_memberships_changed and await self._user_level_grants_stored()
+            if full_content:
+                self.logger.info("BookStack role memberships changed; re-evaluating the access of every item.")
+
             # Step 3: Sync record groups (books and shelves)
             self.logger.info("Syncing record groups (chapters/books/shelves)...")
-            await self._sync_record_groups()
+            await self._sync_record_groups(full_sync=full_content)
 
             # Step 4: Sync all records (pages, chapters, attachments)
             self.logger.info("Syncing records (pages/chapters)...")
-            await self._sync_records()
+            await self._sync_records(full_sync=full_content)
+            await self._store_user_level_grants()
 
             self.logger.info("BookStack full sync completed.")
 
         except Exception as ex:
             self.logger.error(f"Error in BookStack connector run: {ex}", exc_info=True)
             raise
+
+    def _user_level_grants_key(self) -> str:
+        return generate_record_sync_point_key("bookstack", "user_level_grants", "global")
+
+    async def _user_level_grants_stored(self) -> bool:
+        stored = await self.record_sync_point.read_sync_point(self._user_level_grants_key())
+        return bool(stored and stored.get("present") == "true")
+
+    async def _store_user_level_grants(self) -> None:
+        # Sticky: an incremental sync sees only the items it re-read.
+        if self._bookstack_user_level_grants and not await self._user_level_grants_stored():
+            await self.record_sync_point.update_sync_point(self._user_level_grants_key(), {"present": "true"})
 
     #-------------------------------Users Sync-----------------------------------#
     async def _sync_users(self, full_sync: bool = False) -> None:
@@ -579,6 +617,28 @@ class BookStackConnector(BaseConnector):
                 bookstack_user_sync_key,
                 {"timestamp": current_timestamp}
             )
+        if users and getattr(self, "_bookstack_users_complete", False):
+            await self._remove_users_gone_from_source(users)
+
+    async def _remove_users_gone_from_source(self, listed_users: List[AppUser]) -> None:
+        """Users BookStack no longer lists lose this connector's role memberships and gate.
+
+        Call it only with the complete user list.
+        """
+        listed = {user.email.lower() for user in listed_users if user.email}
+        for app_user in await self.data_entities_processor.get_all_app_users(self.connector_id):
+            if not app_user.email or app_user.email.lower() in listed:
+                continue
+            user = await self.data_entities_processor.get_user_by_email(app_user.email)
+            if not user:
+                continue
+            self.logger.info("BookStack user %s is gone; removing their BookStack role memberships", app_user.email)
+            await self.data_entities_processor.delete_edges_between_collections(
+                user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value,
+                to_connector_id=self.connector_id,
+            )
+            self._bookstack_memberships_changed = True
+        await self.data_entities_processor.remove_app_users_absent_from_source(self.connector_id, listed_users)
 
     async def _sync_users_full(self, app_users: List[AppUser]) -> None:
         """
@@ -614,8 +674,7 @@ class BookStackConnector(BaseConnector):
         if user_update_response.success and user_update_response.data.get('data'):
             await self._handle_user_upsert_event(user_update_response.data.get('data'), app_users)
         if user_delete_response.success and user_delete_response.data.get('data'):
-            # await self._handle_user_delete_event(user_delete_response.data.get('data'), app_users)
-            self.logger.info("User delete event handling not implemented yet !")
+            self.logger.info("BookStack users were deleted; the user list comparison removes their access")
 
     async def _handle_user_create_event(self, user_create_events: List[Dict], app_users: List[AppUser]) -> None:
         self.logger.info("Processing new or updated users from audit log !")
@@ -701,9 +760,12 @@ class BookStackConnector(BaseConnector):
                 if not user:
                     self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
                     continue
+                # The user's roles in other connectors are theirs to keep.
                 await self.data_entities_processor.delete_edges_between_collections(
-                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value
+                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value,
+                    to_connector_id=self.connector_id,
                 )
+                self._bookstack_memberships_changed = True
 
                 if not roles:
                     self.logger.info(f"User {name} (ID: {user_id}) has no roles assigned.")
@@ -873,6 +935,7 @@ class BookStackConnector(BaseConnector):
         if roles_batch:
             self.logger.info(f"Submitting {len(roles_batch)} roles with their users...")
             await self.data_entities_processor.on_new_app_roles(roles_batch)
+            self._bookstack_memberships_changed = True
             self.logger.info("✅ Successfully processed app roles and permissions.")
         else:
             self.logger.info("No app roles were processed.")
@@ -973,6 +1036,8 @@ class BookStackConnector(BaseConnector):
             response = await self.data_source.list_roles(count=self.batch_size, offset=offset)
             if not response.success or not response.data:
                 self.logger.error(f"Failed to fetch roles: {response.error}")
+                if not response.success:
+                    self.keep_stored_access("the BookStack role list could not be read to the end; roles keep their access")
                 break
             roles_page = response.data.get("data", [])
             if not roles_page:
@@ -992,6 +1057,8 @@ class BookStackConnector(BaseConnector):
             response = await self.data_source.list_users(count=self.batch_size, offset=offset)
             if not response.success or not response.data:
                 self.logger.error(f"Failed to list users: {response.error}")
+                if not response.success:
+                    self.keep_stored_access("the BookStack user list could not be read to the end; unlisted users keep their access")
                 break
             users_page = response.data.get("data", [])
             if not users_page:
@@ -1130,6 +1197,7 @@ class BookStackConnector(BaseConnector):
         # Process the new group and its members
         self.logger.info(f"Processing newly created role '{app_role.name}' with {len(app_users)} members...")
         await self.data_entities_processor.on_new_app_roles([(app_role, app_users)])
+        self._bookstack_memberships_changed = True
 
     async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
         await self._handle_role_delete_event(role_id)
@@ -1150,6 +1218,7 @@ class BookStackConnector(BaseConnector):
             external_role_id=str(role_id),
             connector_id=self.connector_id
         )
+        self._bookstack_memberships_changed = True
 
     #-------------------------------Record Groups Sync-----------------------------------#
     async def _sync_record_groups(self, full_sync:bool = False) -> None:
@@ -1235,6 +1304,8 @@ class BookStackConnector(BaseConnector):
             response = await list_method(count=self.batch_size, offset=offset)
             if not response.success or not response.data:
                 self.logger.error(f"Failed to fetch {content_type_name}s: {response.error}")
+                if not response.success:
+                    self.keep_stored_access(f"the {content_type_name} list could not be read to the end; unlisted ones keep their access")
                 break
 
             items_page = response.data.get("data", [])
@@ -1292,9 +1363,22 @@ class BookStackConnector(BaseConnector):
         # Return synced IDs for books (to filter chapters)
         return synced_ids if content_type_name == "book" else None
 
+    def _group_web_url(self, content_type: str, item: Dict) -> Optional[str]:
+        base = (getattr(self, "bookstack_base_url", None) or "").rstrip("/")
+        slug = item.get("slug")
+        if not base or not slug:
+            return None
+        if content_type == "bookshelf":
+            return f"{base}/shelves/{slug}"
+        if content_type == "book":
+            return f"{base}/books/{slug}"
+        if content_type == "chapter" and item.get("book_slug"):
+            return f"{base}/books/{item['book_slug']}/chapter/{slug}"
+        return None
+
     async def _create_record_group_with_permissions(
         self, item: Dict, content_type_name: str, roles_details: Dict[int, Dict], parent_external_id: Optional[str] = None
-    ) -> Optional[Tuple[RecordGroup, List[Permission]]]:
+    ) -> Optional[Tuple[RecordGroup, List[Permission] | None]]:
         """Creates a RecordGroup and fetches its permissions for a single BookStack item."""
         try:
             item_id = item.get("id")
@@ -1322,6 +1406,7 @@ class BookStackConnector(BaseConnector):
                 group_type=group_type,
                 parent_external_group_id=parent_external_id,
                 inherit_permissions=parent_external_id is not None,
+                web_url=self._group_web_url(content_type_name, item),
             )
 
             # 2. Fetch its permissions
@@ -1329,19 +1414,30 @@ class BookStackConnector(BaseConnector):
                 content_type=content_type_name, content_id=item_id
             )
 
-            permissions_list = []
+            # None when the fetch fails: the processor then keeps the stored grants
+            # instead of wiping them.
+            permissions_list = None
             if permissions_response.success and permissions_response.data:
-                permissions_list = await self._parse_bookstack_permissions(permissions_response.data, roles_details, content_type_name)
-
-                fallback_permissions = permissions_response.data.get("fallback_permissions")
-                if fallback_permissions and parent_external_id:
-                    # Set inherit_permissions based on the 'inheriting' flag
-                    record_group.inherit_permissions = fallback_permissions.get("inheriting", False)
+                parent = None
+                if parent_external_id:
+                    parent = await self._parent_access(
+                        parent_external_id, roles_details, book_id=item.get("book_id")
+                    )
+                permissions_list = await self._parse_bookstack_permissions(
+                    permissions_response.data, roles_details, content_type_name, parent
+                )
+                if isinstance(permissions_list, BookStackGrants):
+                    if parent_external_id:
+                        record_group.inherit_permissions = permissions_list.inherit
+                    cache = getattr(self, "_bookstack_role_access", None) or {}
+                    self._bookstack_role_access = cache
+                    cache[f"{content_type_name}/{item_id}"] = permissions_list
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for {content_type_name} '{item_name}' (ID: {item_id}): "
                     f"{permissions_response.error}"
                 )
+                self.keep_stored_access(f"the permissions of {content_type_name} {item_id} could not be read; it keeps its grants")
 
             return (record_group, permissions_list)
 
@@ -1354,94 +1450,66 @@ class BookStackConnector(BaseConnector):
             )
             return None
 
-    async def _parse_bookstack_permissions(self, permissions_data: Dict, roles_details: Dict[int, Dict], content_type_name: str) -> List[Permission]:
-        """
-        Parses the BookStack permission object into a list of Permission objects.
-        If explicit role permissions are not set on an item, it calculates permissions
-        based on the default role definitions.
-        """
-        permissions_list = []
-
-        # 1. Handle the owner (user permission), which is always explicit
+    async def _parse_bookstack_permissions(
+        self,
+        permissions_data: Dict,
+        roles_details: Dict[int, Dict],
+        content_type_name: str,
+        parent: BookStackGrants | None = None,
+    ) -> List[Permission]:
+        """The grants the item stores; none when it inherits its parent's."""
+        owner_permission = None
+        owner_role_ids = None
         owner = permissions_data.get("owner")
         if owner and owner.get("id"):
             try:
                 user_response = await self.data_source.get_user(owner.get("id"))
                 if user_response.success and user_response.data.get("email"):
-                    permissions_list.append(
-                        Permission(
-                            external_id=str(owner.get("id")),
-                            email=user_response.data.get("email"),
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER
-                        )
+                    owner_permission = Permission(
+                        external_id=str(owner.get("id")),
+                        email=user_response.data.get("email"),
+                        type=PermissionType.OWNER,
+                        entity_type=EntityType.USER,
                     )
+                    roles = user_response.data.get("roles")
+                    if isinstance(roles, list):
+                        owner_role_ids = [r["id"] for r in roles if isinstance(r, dict) and r.get("id") is not None]
             except Exception as e:
                 self.logger.error(f"Failed to fetch owner details for user ID {owner.get('id')}: {e}")
 
-        # 2. Handle role permissions (group permissions)
-        role_permissions = permissions_data.get("role_permissions", [])
+        grants = bookstack_grants(
+            owner_permission, permissions_data, roles_details, content_type_name, parent,
+            user_emails=getattr(self, "_bookstack_user_emails", None),
+            owner_role_ids=owner_role_ids,
+        )
+        for warning in grants.warnings:
+            self.logger.warning("BookStack %s permissions: %s", content_type_name, warning)
+        if grants.user_level:
+            self._bookstack_user_level_grants = True
+        return grants
 
-        # CASE A: Explicit permissions are set on the content item
-        if role_permissions:
-            for role_perm in role_permissions:
-                role_id = role_perm.get("role_id")
-                if not role_id:
-                    continue
-
-                # Determine permission level from explicit settings
-                if role_perm.get("update") or role_perm.get("delete") or role_perm.get("create"):
-                    perm_type = PermissionType.WRITE
-                elif role_perm.get("view"):
-                    perm_type = PermissionType.READ
-                else:
-                    continue
-
-                permissions_list.append(
-                    Permission(
-                        external_id=str(role_id),
-                        type=perm_type,
-                        entity_type=EntityType.ROLE
-                    )
-                )
-        #IMPORTANT: If in fallback_permisions inheriting is true that means the permissions will follow from the parent record_group
-        #So either we can replicate the permissions of it's parent or not create the permission's edge at all (it will fetch the records from inherited permissions)
-        #Need to check if view/Create/Delete/Update permissions are set and how to handle it
-        #Maybe if inherit permissions are set true and its a book then we can create edges otherwise skip it
-        # CASE B: fall back to default role permissions
-        fallback_permissions = permissions_data.get("fallback_permissions", {})
-        inheriting_bool = fallback_permissions.get("inheriting", False)
-        if content_type_name == "book" and inheriting_bool:
-            for role_id, role_details in roles_details.items():
-                role_system_permissions = set(role_details.get("permissions", []))
-
-                # Define the required permissions for READ and WRITE access
-                write_perms = {
-                    f"{content_type_name}-create-all",
-                    f"{content_type_name}-update-all",
-                    f"{content_type_name}-delete-all"
-                }
-                read_perm = f"{content_type_name}-view-all"
-
-                perm_type = None
-                # Check for WRITE access first, as it's higher priority
-                if not role_system_permissions.isdisjoint(write_perms):
-                    perm_type = PermissionType.WRITE
-                # If no WRITE access, check for READ access
-                elif read_perm in role_system_permissions:
-                    perm_type = PermissionType.READ
-
-                # If the role has either read or write permissions, create the object
-                if perm_type:
-                    permissions_list.append(
-                        Permission(
-                            external_id=str(role_id),
-                            type=perm_type,
-                            entity_type=EntityType.ROLE
-                        )
-                    )
-
-        return permissions_list
+    async def _parent_access(
+        self, external_id: str, roles_details: Dict[int, Dict], *, book_id: str | int | None = None
+    ) -> BookStackGrants | None:
+        """Access of a book or chapter, fetched once per sync when it is not already known."""
+        cache: Dict[str, BookStackGrants] = getattr(self, "_bookstack_role_access", None) or {}
+        self._bookstack_role_access = cache
+        if external_id in cache:
+            return cache[external_id]
+        content_type, _, raw_id = external_id.partition("/")
+        if not raw_id:
+            return None
+        parent = None
+        if content_type == "chapter" and book_id:
+            parent = await self._parent_access(f"book/{book_id}", roles_details)
+        response = await self.data_source.get_content_permissions(content_type=content_type, content_id=raw_id)
+        if not response.success or not response.data:
+            return None
+        parsed = await self._parse_bookstack_permissions(response.data, roles_details, content_type, parent)
+        if not isinstance(parsed, BookStackGrants):
+            return None
+        cache[external_id] = parsed
+        return parsed
 
     def _parse_bookstack_permissions_all_users(self, all_users: List[AppUser]) -> List[Permission]:
         """
@@ -1620,6 +1688,67 @@ class BookStackConnector(BaseConnector):
             # The processor expects a list of tuples
             await self.data_entities_processor.on_new_record_groups([record_group_tuple])
             self.logger.info(f"✅ Successfully processed new {content_type}: '{item_name}'.")
+            await self._refresh_child_access(content_type, item_details.get("id"), roles_details)
+
+    async def _refresh_child_access(self, content_type: str, item_id: Any, roles_details: Dict[int, Dict]) -> None:
+        """Recompute children that stored a snapshot of this book or chapter.
+
+        A child with its own role rows does not inherit, so a parent change does
+        not reach it until the child itself is synced.
+        """
+        if content_type not in ("book", "chapter") or item_id is None or not self.data_source:
+            return
+        try:
+            if content_type == "book":
+                chapters = self._page_listing(await self.data_source.list_chapters(
+                    count=500, filter={"book_id": str(item_id)}
+                ))
+                for chapter in (chapters or {}).get("data") or []:
+                    parent_external_id = f"book/{item_id}"
+                    record_group_tuple = await self._create_record_group_with_permissions(
+                        item=chapter,
+                        content_type_name="chapter",
+                        roles_details=roles_details,
+                        parent_external_id=parent_external_id,
+                    )
+                    if record_group_tuple:
+                        await self.data_entities_processor.on_new_record_groups([record_group_tuple])
+                page_filter = {"book_id": str(item_id)}
+            else:
+                page_filter = {"chapter_id": str(item_id)}
+            pages = self._page_listing(await self.data_source.list_pages(count=500, filter=page_filter))
+            for page in (pages or {}).get("data") or []:
+                await self._reapply_page_permissions(page, roles_details)
+        except Exception as exc:
+            self.logger.warning("Could not refresh children of %s %s: %s", content_type, item_id, exc)
+
+    async def _reapply_page_permissions(self, page: Dict, roles_details: Dict[int, Dict]) -> None:
+        page_id = page.get("id")
+        if page_id is None:
+            return
+        existing = await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, f"page/{page_id}"
+        )
+        if existing is None or not self.data_source:
+            return
+        permissions_response = await self.data_source.get_content_permissions(
+            content_type="page", content_id=page_id
+        )
+        if not (permissions_response.success and permissions_response.data):
+            return
+        parent_external_id = existing.external_record_group_id
+        parent = None
+        if parent_external_id:
+            parent = await self._parent_access(
+                parent_external_id, roles_details, book_id=page.get("book_id")
+            )
+        grants = await self._parse_bookstack_permissions(
+            permissions_response.data, roles_details, "page", parent
+        )
+        if isinstance(grants, BookStackGrants):
+            existing.inherit_permissions = grants.inherit
+        existing.rewrite_permissions = True
+        await self.data_entities_processor.on_updated_record_permissions(existing, list(grants))
 
     async def _handle_record_group_delete_event(self, event: Dict, content_type: str) -> None:
         self.logger.warning("!! method not implemented yet !!")
@@ -1644,6 +1773,7 @@ class BookStackConnector(BaseConnector):
             # Moving the timestamp on would leave the unread or unapplied
             # changes behind it for good; this way the next sync repeats them.
             self.logger.warning("Page changes were not all read or applied; the next sync starts from the same point")
+            self.keep_stored_access("BookStack pages were not all read; unread pages keep their access")
             return
         await self.record_sync_point.update_sync_point(
             bookstack_record_sync_key,
@@ -1984,17 +2114,19 @@ class BookStackConnector(BaseConnector):
                 content_type="page", content_id=page_id
             )
             if permissions_response.success and permissions_response.data:
+                parent = None
+                if parent_external_id:
+                    parent = await self._parent_access(
+                        parent_external_id, roles_details, book_id=page.get("book_id")
+                    )
                 new_permissions = await self._parse_bookstack_permissions(
-                    permissions_response.data, roles_details, "page"
+                    permissions_response.data, roles_details, "page", parent
                 )
-
-                # new_permissions = self._parse_bookstack_permissions_all_users(all_users=users)
-
-                fallback_permissions = permissions_response.data.get("fallback_permissions")
-
-                if fallback_permissions:
-                    # Set inherit_permissions based on the 'inheriting' flag
-                    file_record.inherit_permissions = fallback_permissions.get("inheriting", True)
+                if isinstance(new_permissions, BookStackGrants):
+                    file_record.inherit_permissions = new_permissions.inherit
+                if existing_record:
+                    permissions_changed = True
+                    is_updated = True
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for page '{page.get('name')}' (ID: {page_id}): "

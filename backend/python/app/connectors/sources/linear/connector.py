@@ -24,7 +24,6 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
-    DeleteSource,
     ProgressStatus,
     RecordRelations,
 )
@@ -105,7 +104,6 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -620,6 +618,9 @@ class LinearConnector(BaseConnector):
             linear_users = await self._fetch_users()
             if linear_users:
                 await self.data_entities_processor.on_new_app_users(linear_users)
+                await self.data_entities_processor.remove_app_users_absent_from_source(
+                    self.connector_id, linear_users
+                )
                 self.logger.info(f"👥 Synced {len(linear_users)} Linear users")
 
             # Step 3: Get team_ids filter and fetch teams
@@ -803,7 +804,9 @@ class LinearConnector(BaseConnector):
                 email=email,
                 full_name=full_name,
                 is_active=active,
-                source_updated_at=source_updated_at
+                source_updated_at=source_updated_at,
+                # A Linear guest reads only the teams they belong to.
+                is_guest=user.get("guest") is True,
             )
             app_users.append(app_user)
 
@@ -822,7 +825,7 @@ class LinearConnector(BaseConnector):
         Dual approach:
         - UserGroups: Track WHO is in each team (membership management)
         - RecordGroups: Track WHAT each team contains (issues/content organization)
-        - Permissions: UserGroup → RecordGroup for private teams, ORG → RecordGroup for public teams
+        - Permissions: UserGroup → RecordGroup for every team, plus ORG → RecordGroup for public teams
 
         Args:
             team_ids: Optional list of team IDs to include/exclude
@@ -958,25 +961,22 @@ class LinearConnector(BaseConnector):
                 parent_external_group_id=parent_external_group_id,
             )
 
-            # 3. Handle permissions based on team privacy
+            visibility = (team.get("visibility") or ("private" if is_private else "public")).lower()
             permissions: List[Permission] = []
 
-            if is_private:
-                # For private teams: Grant access via UserGroup
-                permissions.append(Permission(
-                    entity_type=EntityType.GROUP,
-                    external_id=team_id,
-                    type=PermissionType.READ,
-                ))
-                self.logger.info(f"Team {team_key} is private - added UserGroup permission (external_id={team_id})")
-            else:
-                # For public teams: All org members can access
+            if visibility == "public":
                 permissions.append(Permission(
                     entity_type=EntityType.ORG,
                     type=PermissionType.READ,
                     external_id=None
                 ))
-                self.logger.info(f"Team {team_key} is public - added org-level permission for all org members")
+            # Every team grants its members: the org grant of a public team skips
+            # guests, who read it through their membership.
+            permissions.append(Permission(
+                entity_type=EntityType.GROUP,
+                external_id=team_id,
+                type=PermissionType.READ,
+            ))
 
             record_groups.append((record_group, permissions))
 
@@ -1417,6 +1417,11 @@ class LinearConnector(BaseConnector):
             for issue_data in issues_list:
                 try:
                     issue_id = issue_data.get("id", "")
+
+                    # Linear's team filter also returns sub-team issues; each is synced in its own team's pass.
+                    issue_team_id = (issue_data.get("team") or {}).get("id")
+                    if issue_team_id and issue_team_id != team_id:
+                        continue
 
                     # Look up existing record to handle versioning
                     existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -3180,6 +3185,14 @@ class LinearConnector(BaseConnector):
             is_dependent_node=False,
             parent_node_id=None,
         )
+        team_nodes = (project_data.get("teams") or {}).get("nodes") or []
+        other_teams = [
+            str(node.get("id"))
+            for node in team_nodes
+            if isinstance(node, dict) and node.get("id") and str(node.get("id")) != str(team_id)
+        ]
+        if other_teams:
+            project.shared_with_me_record_group_ids = other_teams
 
 
         return project
@@ -3815,10 +3828,7 @@ class LinearConnector(BaseConnector):
         when the parent record is deleted.
         """
         try:
-            soft_delete = await is_soft_delete_enabled(self.config_service)
-            # Use transaction to delete parent and all children
             async with self.data_store_provider.transaction() as tx_store:
-                # Get the parent record within transaction
                 parent_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
                     external_id=external_record_id
@@ -3828,57 +3838,26 @@ class LinearConnector(BaseConnector):
                     self.logger.debug(f"Record {external_record_id} not found in DB, skipping deletion")
                     return
 
-                # Get and delete all child records first (recursively)
+                # Children, and their children (e.g. files attached to comments)
                 child_records = await tx_store.get_records_by_parent(
                     connector_id=self.connector_id,
                     parent_external_record_id=external_record_id
                 )
-
-                if soft_delete:
-                    # The same two levels the hard delete walks, nothing deeper.
-                    trash_ids = [parent_record.id]
-                    for child_record in child_records:
-                        trash_ids.append(child_record.id)
-                        trash_ids.extend(
-                            grandchild.id
-                            for grandchild in await tx_store.get_records_by_parent(
-                                connector_id=self.connector_id,
-                                parent_external_record_id=child_record.external_record_id,
-                            )
-                        )
-                else:
-                    for child_record in child_records:
-                        # Recursively delete grandchildren (e.g., files attached to comments)
-                        grandchild_records = await tx_store.get_records_by_parent(
-                            connector_id=self.connector_id,
-                            parent_external_record_id=child_record.external_record_id
-                        )
-                        for grandchild in grandchild_records:
-                            # Delete grandchild record and all its relations
-                            await tx_store.delete_records_and_relations(
-                                record_key=grandchild.id,
-                                hard_delete=True
-                            )
-
-                        # Delete child record and all its relations
-                        await tx_store.delete_records_and_relations(
-                            record_key=child_record.id,
-                            hard_delete=True
-                        )
-
-                    # Finally, delete the parent record and all its relations
-                    await tx_store.delete_records_and_relations(
-                        record_key=parent_record.id,
-                        hard_delete=True
+                doomed_ids = [parent_record.id]
+                for child_record in child_records:
+                    grandchild_records = await tx_store.get_records_by_parent(
+                        connector_id=self.connector_id,
+                        parent_external_record_id=child_record.external_record_id
                     )
+                    doomed_ids += [child_record.id] + [g.id for g in grandchild_records]
 
-            if soft_delete:
-                await self.data_entities_processor.on_records_soft_deleted(
-                    list(dict.fromkeys(trash_ids)),
-                    self.connector_id,
-                    delete_source=DeleteSource.CONNECTOR,
-                    follow=(),
-                )
+            # Through the processor, so anything deeper that survives is re-pointed
+            # at the nearest record left above it, or its group, and the vectors
+            # are cleaned up.
+            await self.data_entities_processor.on_records_deleted_cascade(
+                doomed_ids, self.connector_id, cascade_children=False,
+                include_trashed_roots=True,
+            )
 
             self.logger.debug(
                 f"Marked {external_record_id} and {len(child_records)} children as deleted"

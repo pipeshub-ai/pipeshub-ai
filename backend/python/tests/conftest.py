@@ -277,7 +277,7 @@ def logger():
 @pytest.fixture
 def mock_graph_provider():
     """Mock IGraphDBProvider with common async methods."""
-    from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+    from app.services.graph_db.interface.graph_db_provider import AccessCheck, AccessibleContainers
 
     provider = AsyncMock()
     provider.get_accessible_virtual_record_ids = AsyncMock(return_value={})
@@ -291,7 +291,10 @@ def mock_graph_provider():
     provider.get_accessible_containers = AsyncMock(
         return_value=AccessibleContainers(fallback_reason="not stubbed in this test")
     )
-    provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+    # Admits every node it is asked about; a test of a denial stubs it.
+    provider.check_access = AsyncMock(
+        side_effect=lambda _user_key, _org_id, *, node_ids=(), **_kwargs: AccessCheck(node_ids=frozenset(node_ids)),
+    )
     return provider
 
 

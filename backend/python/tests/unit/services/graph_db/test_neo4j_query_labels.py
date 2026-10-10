@@ -7,6 +7,7 @@ in the provider's source and compare it with the labels the writers use.
 """
 
 import ast
+import inspect
 import re
 from pathlib import Path
 
@@ -21,7 +22,8 @@ from app.config.constants.neo4j import (
     collection_to_label,
     edge_collection_to_relationship,
 )
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.neo4j import kh_scope
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider, cypher_kh_stamp_all
 
 PROVIDER = Path(__file__).resolve().parents[4] / "app/services/graph_db/neo4j/neo4j_provider.py"
 
@@ -32,11 +34,24 @@ _PREDICATE = re.compile(r"\b(?:WHERE|AND|OR|NOT)\s+[a-z_]\w*((?::[A-Z]\w*)+)")
 _RELATIONSHIP = re.compile(r"\[\s*(?:[A-Za-z_]\w*)?\s*:\s*([A-Z_][A-Z0-9_]*(?:\s*\|\s*:?[A-Z_][A-Z0-9_]*)*)")
 
 
+_WRITTEN_LABEL = re.compile(r"\b(?:SET|MERGE)\s+\(?\s*\w+:([A-Z]\w*)")
+
+
+def _listing_state_labels() -> set[str]:
+    """Labels the knowledge-hub listing state is written with, read from its
+    writers: the per-node and tree labels every write restamps, and the
+    per-connector scope node."""
+    return set(_WRITTEN_LABEL.findall(cypher_kh_stamp_all(1))) | set(
+        _WRITTEN_LABEL.findall(inspect.getsource(kh_scope))
+    )
+
+
 def _known_labels() -> set[str]:
     return (
         {label.value for label in Neo4jLabel}
         | set(COLLECTION_TO_LABEL.values())
         | {collection_to_label(collection.value) for collection in CollectionNames}
+        | _listing_state_labels()
     )
 
 
@@ -88,6 +103,12 @@ def _used(pattern: re.Pattern[str], split: str) -> dict[str, list[int]]:
 def test_the_scan_sees_the_provider_queries() -> None:
     labels = _used(_NODE, r"[:\s]+")
     assert {"Record", "User", "RecordGroup"} <= set(labels), "the scanner no longer finds the provider's Cypher"
+
+
+def test_the_listing_state_labels_are_read_from_their_writers() -> None:
+    assert _listing_state_labels() == {
+        "KhDeleted", "KhHidesChildren", "KhPlaceholder", "KhFolder", "KhInherits", "KhMultiParent", "KhScopeMeta",
+    }
 
 
 def test_every_node_label_in_a_query_is_one_we_store() -> None:

@@ -525,24 +525,21 @@ class TestCreateS3Permissions:
     async def test_team_scope(self, s3_connector):
         s3_connector.scope = ConnectorScope.TEAM.value
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
 
 # ===========================================================================
@@ -1282,8 +1279,7 @@ class TestCreateS3PermissionsEdgeCases:
             side_effect=Exception("user not found")
         )
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_fallback(self, s3_connector):
@@ -1291,7 +1287,7 @@ class TestCreateS3PermissionsEdgeCases:
         # Force an exception in permissions logic
         s3_connector.data_entities_processor.org_id = "org-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) >= 1
+        assert perms == []
 
 # =============================================================================
 # Merged from test_s3_base_connector_full_coverage.py
@@ -1487,24 +1483,21 @@ class TestCreateS3PermissionsFullCoverage:
     async def test_team_scope(self, connector):
         connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector, mock_dsp):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
         perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_lookup_fails(self, connector, mock_dsp):
@@ -1514,8 +1507,7 @@ class TestCreateS3PermissionsFullCoverage:
             side_effect=Exception("DB error")
         )
         perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector, mock_dsp):
@@ -1527,8 +1519,7 @@ class TestCreateS3PermissionsFullCoverage:
             return_value=user_no_email
         )
         perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
 
 class TestTestConnectionAndAccessFullCoverage:

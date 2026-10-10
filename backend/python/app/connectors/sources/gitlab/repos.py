@@ -105,6 +105,7 @@ class ReposSync:
                     "checkpoint not advanced so the next run will retry",
                     project_id,
                 )
+                c.keep_stored_access(f"the code repository of project {project_path} was not walked in full")
             return
 
         if last_sha == current_sha:
@@ -136,6 +137,7 @@ class ReposSync:
                 "checkpoint not advanced so the next run will retry",
                 project_id,
             )
+            c.keep_stored_access(f"the code repository of project {project_path} was not walked in full")
         elif incremental_raised:
             # The full walk only upserts. Whatever the interrupted incremental pass still owed
             # — deleted files, emptied folders — stays pending, and only a compare from

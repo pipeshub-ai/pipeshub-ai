@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+from app.agents.actions.knowledge_graph.ops.scope import (
+    apps_usable_whole,
+    derive_scope,
+)
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.entity_permissions import (
     RECORD_GROUP_ENTITY_TYPE,
@@ -61,7 +64,7 @@ async def load_entity_access_context(state: "ChatState") -> EntityAccessContext:
         state.get("graph_provider"),
         org_id=state.get("org_id", ""),
         user_id=state.get("user_id", ""),
-        source_ids=[*scope.app_ids, *scope.kb_ids],
+        source_ids=apps_usable_whole(state, [*scope.app_ids, *scope.kb_ids]),
         strict=bool(filters.get(STRICT_SCOPE_FILTER_KEY)),
         exclude_app_ids=excluded_app_ids(state),
     )

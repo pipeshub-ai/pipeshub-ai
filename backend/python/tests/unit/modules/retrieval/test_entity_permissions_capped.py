@@ -15,10 +15,7 @@ from app.modules.retrieval.entity_permissions import (
     search_entities_for_user,
 )
 from app.services.graph_db.common.utils import EntityCandidateRows
-from tests.unit.modules.retrieval.entity_access_fakes import (
-    permitted_records,
-    record_spellings,
-)
+from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
 
 ORG = "org-1"
 
@@ -40,8 +37,6 @@ def _row(key: str, connector: str = "kb-1") -> dict:
 
 def _graph(rows: list[dict], *, capped: bool, permitted: set[str] | None = None) -> MagicMock:
     """A provider whose single entity has ``rows`` inside its capped window."""
-    graph = MagicMock()
-
     async def _candidates(
         refs: list[dict], _org_id: str, *, record_types: list[str] | None = None,
         limit_per_entity: int = 20, offset: int = 0,
@@ -51,10 +46,9 @@ def _graph(rows: list[dict], *, capped: bool, permitted: set[str] | None = None)
             (ref["type"], ref["id"]): EntityCandidateRows(window, capped=capped) for ref in refs
         }
 
-    fake = permitted_records(_candidates, permitted=permitted or ())
-    graph.get_permitted_entity_records = AsyncMock(side_effect=fake)
-    graph.get_record_taxonomy_links = AsyncMock(side_effect=record_spellings(fake, {"t1": "Security"}))
-    return graph
+    return entity_graph(
+        _candidates, app_level=("kb-1",), permitted=permitted or (), names={"t1": "Security"},
+    )
 
 
 class TestCandidateRowsType:

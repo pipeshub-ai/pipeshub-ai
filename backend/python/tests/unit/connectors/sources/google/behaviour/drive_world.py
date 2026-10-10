@@ -51,6 +51,7 @@ class DriveUser:
     root_id: str
     user_id: str
     suspended: bool = False
+    archived: bool = False
 
 
 @dataclass
@@ -133,10 +134,10 @@ class DriveWorld:
 
     # --- building the world --------------------------------------------------
 
-    def add_user(self, email: str, name: Optional[str] = None, *, suspended: bool = False) -> DriveUser:
+    def add_user(self, email: str, name: Optional[str] = None, *, suspended: bool = False, archived: bool = False) -> DriveUser:
         n = next(self._ids)
         root = f"root-{email.split('@')[0]}"
-        user = DriveUser(email, name or email.split("@")[0].title(), f"perm-{n}", root, f"uid-{n}", suspended)
+        user = DriveUser(email, name or email.split("@")[0].title(), f"perm-{n}", root, f"uid-{n}", suspended, archived)
         self.users[email] = user
         self.files[root] = FileState({"id": root, "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": email}], "parents": [], "trashed": False})
         return user
@@ -542,7 +543,7 @@ class DriveWorld:
         if denied := self._admin_guard(req):
             return denied
         users = [
-            {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "creationTime": "2023-01-01T00:00:00.000Z"}
+            {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "archived": u.archived, "creationTime": "2023-01-01T00:00:00.000Z"}
             for u in sorted(self.users.values(), key=lambda u: u.email)
         ]
         return paginate(users, req.query, default_size=self.admin_page_size, key="users")

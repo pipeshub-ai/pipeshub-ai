@@ -877,6 +877,34 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
+    #   gitlab/projects.py - ProjectsSync._sync_project_members_as_pseudo
+    def list_project_members(
+        self,
+        project_id: str | int,
+        get_all: bool | None = None,
+    ) -> GitLabResponse:
+        """List direct project members only (``/members``), without inherited ones."""
+        try:
+            p = self._project(project_id)
+            return GitLabResponse(success=True, data=p.members.list(get_all=get_all))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
+
+    # Used by:
+    #   gitlab/projects.py - ProjectsSync._ensure_gitlab_group_record_groups
+    def list_group_members(
+        self,
+        group_id: int | str,
+        get_all: bool | None = None,
+    ) -> GitLabResponse:
+        """List direct group members only (``/members``), without inherited ones."""
+        try:
+            g = self._sdk.groups.get(group_id, lazy=True)
+            return GitLabResponse(success=True, data=g.members.list(get_all=get_all))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
+
+    # Used by:
     #   gitlab/users.py    - UsersSync._sync_users_unscoped
     #   gitlab/users.py    - UsersSync._sync_users_scoped
     #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects

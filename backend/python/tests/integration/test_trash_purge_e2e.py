@@ -216,7 +216,8 @@ class _World:
             return rows[0]["n"]
         total = 0
         for collection in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                           CollectionNames.RECORD_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
+                           CollectionNames.NODE_RELATIONS.value,
+                           CollectionNames.RECORD_LINKS.value, CollectionNames.IS_OF_TYPE.value,
                            CollectionNames.BELONGS_TO_TOPIC.value, CollectionNames.INHERIT_PERMISSIONS.value):
             rows = await self.graph.http_client.execute_aql(
                 f"FOR e IN {collection} FILTER e._from == @id OR e._to == @id RETURN 1", {"id": f"{RECORDS}/{node}"}
@@ -314,7 +315,7 @@ async def _seed(w: _World) -> None:
     await g.batch_create_edges(
         [_edge(w.ids["folder"], RECORDS, w.ids[c], RECORDS, relationshipType="PARENT_CHILD")
          for c in ("upload", "child")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     await g.batch_create_edges(
         [{"from_id": w.ids["upload"], "from_collection": RECORDS, "to_id": w.topic_id,
@@ -343,7 +344,8 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                  CollectionNames.IS_OF_TYPE.value, CollectionNames.RECORD_RELATIONS.value,
+                  CollectionNames.IS_OF_TYPE.value, CollectionNames.NODE_RELATIONS.value,
+                  CollectionNames.RECORD_LINKS.value,
                   CollectionNames.INHERIT_PERMISSIONS.value, CollectionNames.BELONGS_TO_TOPIC.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -614,7 +616,7 @@ async def test_a_child_linked_while_the_purge_runs_keeps_its_parent(world: _Worl
         held = await _neo4j_tx(
             world,
             "MATCH (p:Record {id: $p}), (c:Record {id: $c}) "
-            "CREATE (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD', createdAtTimestamp: 1, "
+            "CREATE (p)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD', createdAtTimestamp: 1, "
             "updatedAtTimestamp: 1}]->(c)",
             p=parent, c=child,
         )
@@ -622,7 +624,7 @@ async def test_a_child_linked_while_the_purge_runs_keeps_its_parent(world: _Worl
         held = await _arango_sync_tx(
             world,
             f"INSERT {{ _from: @p, _to: @c, relationshipType: 'PARENT_CHILD', createdAtTimestamp: 1, "
-            f"updatedAtTimestamp: 1 }} INTO {CollectionNames.RECORD_RELATIONS.value}",
+            f"updatedAtTimestamp: 1 }} INTO {CollectionNames.NODE_RELATIONS.value}",
             {"p": f"{RECORDS}/{parent}", "c": f"{RECORDS}/{child}"},
         )
     result, linked = await _while_held(world, held, world.graph.purge_trashed_records([parent], world.org_id, cutoff))
@@ -761,7 +763,7 @@ async def test_a_sync_that_files_a_record_under_a_kept_group_takes_it_back(world
 
 
 async def _children(world: _World, name: str) -> set[str]:
-    edges = await world.graph.get_edges_from_node(f"{RECORDS}/{world.ids[name]}", CollectionNames.RECORD_RELATIONS.value)
+    edges = await world.graph.get_edges_from_node(f"{RECORDS}/{world.ids[name]}", CollectionNames.NODE_RELATIONS.value)
     return {(e.get("_to") or e.get("to_id") or "").split("/")[-1] for e in edges}
 
 

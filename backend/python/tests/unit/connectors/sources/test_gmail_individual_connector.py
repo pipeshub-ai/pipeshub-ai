@@ -1966,7 +1966,7 @@ class TestProcessGmailMessageInternalDate:
             "user@test.com", msg, "t1", None
         )
         assert result is not None
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
 
 # ===========================================================================

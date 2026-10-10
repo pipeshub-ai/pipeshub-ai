@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -355,18 +356,22 @@ class TestFilterNodesWithPermissionRoleRaiseOnError:
 
     @pytest.mark.asyncio
     async def test_raise_on_error_reraises(self, provider) -> None:
+        """The batch access check behind it raises one error for every failure,
+        carrying the cause, so a caller can tell it from "no access"."""
         provider.http_client.execute_aql.side_effect = RuntimeError("boom")
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(PermissionVerificationUnavailableError, match="boom") as raised:
             await provider.filter_nodes_with_permission_role(
                 self.NODES, "uk1", "org1", raise_on_error=True
             )
-        provider.logger.warning.assert_called_once()
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        provider.logger.error.assert_called()
+        provider.logger.warning.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_missing_client(self, provider) -> None:
         provider.http_client = None
         assert await provider.filter_nodes_with_permission_role(self.NODES, "uk1", "org1") == set()
-        with pytest.raises(RuntimeError):
+        with pytest.raises(PermissionVerificationUnavailableError):
             await provider.filter_nodes_with_permission_role(
                 self.NODES, "uk1", "org1", raise_on_error=True
             )

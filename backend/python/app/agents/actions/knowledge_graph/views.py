@@ -192,6 +192,11 @@ def render_navigation_view(
         lines.append("\nRelated:")
         for row in view.related:
             lines.append(_row_line(row, shortener))
+    if page == 1 and view.related_unavailable:
+        lines.append(
+            "\nRelated: the linked records could not be read just now, so none are shown "
+            "(this does not mean nothing is linked). Retry navigate on this node to see them."
+        )
 
     # Next-step hints
     hints: list[str] = []

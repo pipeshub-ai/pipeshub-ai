@@ -279,14 +279,23 @@ export interface KnowledgeHubAppNode {
   isInternal: boolean;
 }
 
-/** Pagination envelope from knowledge-hub nodes API */
+/**
+ * Pagination envelope from knowledge-hub nodes API.
+ *
+ * Keyset paging has no page number to report, so `page`/`totalPages` are
+ * optional and only present while the transitional `page` path is used.
+ */
 export interface KnowledgeHubNodesPagination {
-  page: number;
+  page?: number;
   limit: number;
   totalItems: number;
-  totalPages: number;
+  totalPages?: number;
+  startIndex?: number;
+  endIndex?: number;
   hasNext: boolean;
   hasPrev: boolean;
+  nextCursor?: string | null;
+  prevCursor?: string | null;
 }
 
 /** Full response from GET /api/v1/knowledgeBase/knowledge-hub/nodes */

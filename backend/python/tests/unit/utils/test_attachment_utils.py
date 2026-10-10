@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.attachment_utils import (
     _extract_image_blocks,
     build_multimodal_content,
@@ -813,3 +815,177 @@ class TestEnsureAttachmentBlocks:
             await ensure_attachment_blocks(state, logger)
         mock_cls.assert_not_called()
         assert state["citation_ref_mapper"] is existing_mapper
+
+
+# ---------------------------------------------------------------------------
+# keep_accessible_attachments
+# ---------------------------------------------------------------------------
+class _AttachmentGraph:
+    """A graph of records, each ``{id, vrid, connectorId, origin}``, of which
+    ``readable`` ids are what the caller may read. ``check_access`` applies the
+    scopes it is given as the real one does."""
+
+    def __init__(self, records: list[dict], readable: set[str], *, user_key: str | None = "caller-key") -> None:
+        self.rows = {
+            r["id"]: {
+                "id": r["id"], "orgId": r.get("orgId", "org-1"), "virtualRecordId": r.get("vrid"),
+                "connectorId": r.get("connectorId", "app-a"), "origin": r.get("origin", "CONNECTOR"),
+            }
+            for r in records
+        }
+        self.readable = readable
+        self.get_user_by_user_id = AsyncMock(return_value={"id": user_key} if user_key else None)
+        self.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
+        self.get_edge = AsyncMock(return_value=None)
+        self.check_access = AsyncMock(side_effect=self._check_access)
+        self.get_nodes_by_field_in = AsyncMock(side_effect=self._by_field)
+
+    async def _by_field(self, _collection, field, values, **_):
+        key = {"id": "id", "virtualRecordId": "virtualRecordId"}[field]
+        return [dict(row) for row in self.rows.values() if row[key] in values]
+
+    async def _check_access(self, user_key, _org, *, node_ids=(), scopes=(), **_):
+        readable = [i for i in node_ids if i in self.readable]
+        if user_key != "caller-key":
+            readable = []
+        return AccessCheck(
+            node_ids=frozenset(readable),
+            node_ids_in_scope=frozenset(
+                i for i in readable
+                if all(s.admits({"id": i, "connectorId": self.rows.get(i, {}).get("connectorId")}) for s in scopes)
+            ),
+        )
+
+
+def _upload(record_id: str, vrid: str) -> dict:
+    return {"id": record_id, "vrid": vrid, "connectorId": "attachments_org-1", "origin": "UPLOAD"}
+
+
+class TestKeepAccessibleAttachments:
+    """Both attachment ids come from the client and the turn may run as someone
+    else (a service-account agent's creator), so each attachment is checked as
+    the caller, and one that is not a chat upload must lie inside the turn's
+    sources."""
+
+    @staticmethod
+    async def _keep(
+        graph, attachments, history=(), *, service_account=False, user_id="u1", filters=None,
+    ) -> tuple[list[dict], list[dict]]:
+        from app.utils.attachment_utils import keep_accessible_attachments
+
+        return await keep_accessible_attachments(
+            graph, org_id="org-1", user_id=user_id, is_service_account=service_account,
+            attachments=list(attachments), previous_conversations=list(history),
+            logger=logging.getLogger("t"), filters=filters,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_record_id_alone_is_checked_as_the_caller(self) -> None:
+        """GL-01: without a virtualRecordId the attachment used to pass unchecked."""
+        graph = _AttachmentGraph([{"id": "b-1", "vrid": "v-b1"}], readable=set())
+        kept, _ = await self._keep(graph, [{"recordId": "b-1"}], filters={"apps": ["app-a"], "kb": []})
+        assert kept == []
+
+    @pytest.mark.asyncio
+    async def test_a_readable_record_outside_the_turns_sources_is_dropped(self, caplog) -> None:
+        graph = _AttachmentGraph(
+            [{"id": "b-1", "vrid": "v-b1", "connectorId": "app-b"}, {"id": "a-1", "vrid": "v-a1"}],
+            readable={"b-1", "a-1"},
+        )
+        filters = {"apps": [], "kb": ["NO_KB_SELECTED"], "allowedApps": ["app-a"],
+                   "allowedRecordGroups": [], "allowedRecords": []}
+        with caplog.at_level(logging.WARNING):
+            kept, _ = await self._keep(graph, [{"recordId": "b-1"}, {"recordId": "a-1"}], filters=filters)
+        assert kept == [{"recordId": "a-1"}]
+        assert "b-1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_apps_picked_whole_hold_attachments_too(self) -> None:
+        graph = _AttachmentGraph([{"id": "b-1", "vrid": "v-b1", "connectorId": "app-b"}], readable={"b-1"})
+        kept, _ = await self._keep(graph, [{"recordId": "b-1", "virtualRecordId": "v-b1"}], filters={"apps": ["app-a"]})
+        assert kept == []
+
+    @pytest.mark.asyncio
+    async def test_without_any_limit_a_readable_record_is_kept(self) -> None:
+        graph = _AttachmentGraph([{"id": "b-1", "vrid": "v-b1", "connectorId": "app-b"}], readable={"b-1"})
+        attachment = {"recordId": "b-1", "virtualRecordId": "v-b1"}
+        kept, _ = await self._keep(graph, [attachment], filters={"apps": [], "kb": []})
+        assert kept == [attachment]
+
+    @pytest.mark.asyncio
+    async def test_a_chat_upload_is_part_of_the_question_under_any_selection(self) -> None:
+        graph = _AttachmentGraph([_upload("up-1", "v-up")], readable={"up-1"})
+        attachment = {"recordId": "up-1", "virtualRecordId": "v-up"}
+        kept, _ = await self._keep(graph, [attachment], filters={"apps": ["app-a"], "records": ["folder"]})
+        assert kept == [attachment]
+
+    @pytest.mark.asyncio
+    async def test_ids_that_name_two_different_records_are_dropped(self) -> None:
+        graph = _AttachmentGraph(
+            [{"id": "a-1", "vrid": "v-a1"}, {"id": "b-1", "vrid": "v-b1"}], readable={"a-1", "b-1"},
+        )
+        kept, _ = await self._keep(graph, [{"recordId": "a-1", "virtualRecordId": "v-b1"}])
+        assert kept == []
+
+    @pytest.mark.asyncio
+    async def test_the_history_is_held_to_the_same_rule(self) -> None:
+        graph = _AttachmentGraph(
+            [_upload("up-old", "v-old"), {"id": "b-1", "vrid": "v-b1", "connectorId": "app-b"}],
+            readable={"up-old", "b-1"},
+        )
+        history = [
+            {"role": "user", "attachments": [{"recordId": "up-old", "virtualRecordId": "v-old"},
+                                             {"recordId": "b-1", "virtualRecordId": "v-b1"}]},
+            {"role": "bot_response", "content": "hi"},
+        ]
+        _, kept_history = await self._keep(graph, [], history, filters={"apps": ["app-a"]})
+        assert kept_history[0]["attachments"] == [{"recordId": "up-old", "virtualRecordId": "v-old"}]
+        assert kept_history[1] == history[1]
+
+    @pytest.mark.asyncio
+    async def test_a_virtual_record_id_alone_is_resolved_to_its_records(self) -> None:
+        graph = _AttachmentGraph([_upload("up-1", "v-up")], readable={"up-1"})
+        kept, _ = await self._keep(graph, [{"virtualRecordId": "v-up"}, {"virtualRecordId": "v-gone"}])
+        assert kept == [{"virtualRecordId": "v-up"}]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_check_raises_instead_of_dropping_them(self) -> None:
+        """Answering as if nothing were attached would hide the outage."""
+        graph = _AttachmentGraph([_upload("up-1", "v-up")], readable={"up-1"})
+        graph.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("graph down"))
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await self._keep(graph, [{"recordId": "up-1"}])
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_raises_too(self) -> None:
+        graph = _AttachmentGraph([], readable=set())
+        graph.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("graph down"))
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await self._keep(graph, [{"recordId": "up-1"}])
+
+    @pytest.mark.asyncio
+    async def test_no_user_keeps_nothing(self) -> None:
+        graph = _AttachmentGraph([_upload("up-1", "v-up")], readable={"up-1"}, user_key=None)
+        kept, _ = await self._keep(graph, [{"recordId": "up-1"}], user_id=None)
+        assert kept == []
+
+    @pytest.mark.asyncio
+    async def test_a_service_account_keeps_only_its_own_uploads(self) -> None:
+        """R1-21: every service-account upload is granted to the whole org, so the
+        grant alone let one service-account caller attach another's upload."""
+        graph = _AttachmentGraph(
+            [_upload("svc-up", "v-svc"), _upload("other-up", "v-other"), _upload("old-up", "v-old"),
+             {"id": "b-1", "vrid": "v-b1"}],
+            readable=set(), user_key=None,
+        )
+        grants = {
+            "svc-up": {"type": "ORGANIZATION", "role": "READER", "uploadedBy": "u1"},
+            "other-up": {"type": "ORGANIZATION", "role": "READER", "uploadedBy": "another-caller"},
+            "old-up": {"type": "ORGANIZATION", "role": "READER"},
+        }
+        graph.get_edge = AsyncMock(side_effect=lambda **kw: grants.get(kw["to_id"]))
+        upload = {"recordId": "svc-up", "virtualRecordId": "v-svc"}
+        asked = [upload, {"recordId": "other-up"}, {"recordId": "old-up"}, {"recordId": "b-1"}]
+        kept, _ = await self._keep(graph, asked, service_account=True)
+        assert kept == [upload]
+        graph.check_access.assert_not_called()

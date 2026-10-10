@@ -26,6 +26,7 @@ from app.models.entities import EntityType
 from app.modules.agents.record_escalation.policy import build_candidates
 from app.modules.agents.record_escalation.renderer import render_candidate_table
 from app.services.graph_db.common.utils import PermittedEntityRows
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from tests.support.fake_entity_graph import RECORDS, FakeGraph
 from tests.unit.modules.entity_resolution.conftest import FakeEntityVectorStore, _tokens
 
@@ -100,15 +101,25 @@ class ScopedGraph(FakeGraph):
         self, refs, org_id, user_key, *, app_level_connector_ids, record_types=None,
         limit_per_entity=20, offset=0, window=200, timeout_seconds=None,
     ) -> dict[tuple[str, str], PermittedEntityRows]:
+        """The query only pages: every candidate in the window comes back and
+        ``check_access`` decides which the user reads."""
         assert user_key == USER_KEY
         out: dict[tuple[str, str], PermittedEntityRows] = {}
         for ref in refs:
             candidates = self._linked_records(ref["type"], ref["id"])[offset:offset + window]
-            permitted = [self._row(k) for k in candidates if k in self.readable][:limit_per_entity]
             out[(ref["type"], ref["id"])] = PermittedEntityRows(
-                permitted, window_size=len(candidates), examined=len(candidates),
+                [self._row(k) for k in candidates][:limit_per_entity],
+                window_size=len(candidates), examined=len(candidates),
             )
         return out
+
+    async def get_knowledge_hub_access_v3(self, user_key, org_id, *, transaction=None) -> dict[str, Any]:
+        assert user_key == USER_KEY
+        return {"grantee_ids": [USER_KEY], "gated_app_ids": [CONNECTOR], "by_connector": {}}
+
+    async def check_access(self, user_key, org_id, *, node_ids=(), **_kwargs) -> AccessCheck:
+        assert user_key == USER_KEY
+        return AccessCheck(node_ids=frozenset(i for i in node_ids if i in self.readable))
 
 
 class SearchableStore(FakeEntityVectorStore):

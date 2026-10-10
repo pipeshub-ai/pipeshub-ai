@@ -161,10 +161,12 @@ class TokenRefreshService:
             self.logger.debug(f"Could not check credentials for connector {connector_id}: {e}")
             return False
 
+    _OAUTH_AUTH_TYPES = ('OAUTH', 'OAUTH_ADMIN_CONSENT')
+
     def _is_oauth_connector(self, connector: dict[str, any]) -> bool:
         """Check if connector uses OAuth authentication."""
         auth_type = connector.get('authType', '')
-        return auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']
+        return auth_type in self._OAUTH_AUTH_TYPES
 
     async def _filter_authenticated_oauth_connectors(
         self,
@@ -237,8 +239,14 @@ class TokenRefreshService:
     async def _refresh_all_tokens_internal(self) -> None:
         """Internal method to refresh tokens (called with lock held)"""
         try:
-            # 1. Get all connectors from database
-            connectors = await self.graph_provider.get_all_documents("apps")
+            # 1. Get the OAuth connectors from database. Only they hold a token; a
+            # tenant can have thousands of collection Apps, and loading every App
+            # here would stall this service's event loop on each pass.
+            connectors = []
+            for auth_type in self._OAUTH_AUTH_TYPES:
+                connectors.extend(await self.graph_provider.get_nodes_by_filters(
+                    CollectionNames.APPS.value, {"authType": auth_type},
+                ))
 
             # 2. Filter for authenticated OAuth connectors
             authenticated_connectors = await self._filter_authenticated_oauth_connectors(connectors)
