@@ -4,6 +4,10 @@ Resolution still decides which canonical node each name links to; the
 record's ``semantic_metadata`` keeps its own spellings.
 """
 
+from unittest.mock import AsyncMock
+
+import pytest
+
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
@@ -153,6 +157,17 @@ class TestOwnLabelsAreMarked:
         await make_resolver("apply").resolve(ctx_factory("r7", "acme", meta))
         assert meta.own_labels is True
         assert meta.model_dump(exclude_none=True)["own_labels"] is True
+
+    async def test_the_labels_are_marked_even_when_resolution_fails(
+        self, make_resolver, metadata_factory, ctx_factory, scripted_model, fake_graph,
+    ) -> None:
+        """A failed resolve still leaves the record's own labels to be stored."""
+        scripted_model()
+        fake_graph.find_taxonomy_nodes = AsyncMock(side_effect=RuntimeError("graph unavailable"))
+        meta = metadata_factory(topics=["Release checklist"])
+        with pytest.raises(RuntimeError):
+            await make_resolver("apply").resolve(ctx_factory("r9", "acme", meta))
+        assert meta.own_labels is True
 
     async def test_shadow_mode_leaves_the_labels_unmarked(
         self, make_resolver, metadata_factory, ctx_factory, scripted_model,

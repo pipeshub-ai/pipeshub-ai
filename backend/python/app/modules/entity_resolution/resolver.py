@@ -122,6 +122,10 @@ class EntityResolver:
         if metadata is None or not org_id:
             return None
 
+        if mode is ResolutionMode.APPLY:
+            # The labels are this record's own words whether or not
+            # resolution succeeds, and they are stored either way.
+            metadata.own_labels = True
         started = time.monotonic()
         stats = ResolutionStats()
         try:
