@@ -1,0 +1,16 @@
+# Operations the hand-written tests call, one operationId per line. coverage.py reads this:
+# a hand-written test calls SDK methods, so its operations cannot be read from the code.
+streamChat
+addMessageStream
+regenerateAnswer
+updateMessageFeedback
+streamAgentConversation
+streamAgentConversationMessage
+regenerateAgentConversationMessage
+updateAgentConversationMessageFeedback
+uploadRecords
+streamRecordBuffer
+updateRecord
+moveRecord
+reindexRecord
+deleteRecord
