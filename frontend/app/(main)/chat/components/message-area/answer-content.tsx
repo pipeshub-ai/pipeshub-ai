@@ -11,7 +11,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import type { Schema } from 'hast-util-sanitize';
 import type { PluggableList } from 'unified';
 import 'katex/dist/katex.min.css';
-import { Box, Flex, Text, Heading } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, Heading } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
@@ -523,22 +523,9 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
           <Text size="1" as="span" style={{ color: 'var(--slate-10)', wordBreak: 'break-all' }}>
             {t('chatStream.remoteImageFrom', { host: imageHostLabel(src!) })}
           </Text>
-          <button
-            type="button"
-            onClick={() => setIsAllowed(true)}
-            style={{
-              cursor: 'pointer',
-              border: '1px solid var(--slate-7)',
-              borderRadius: 'var(--radius-2)',
-              backgroundColor: 'var(--slate-1)',
-              color: 'var(--accent-11)',
-              padding: 'var(--space-1) var(--space-3)',
-              font: 'inherit',
-              fontSize: 'var(--font-size-1)',
-            }}
-          >
+          <Button type="button" size="1" variant="soft" color="gray" onClick={() => setIsAllowed(true)}>
             {t('chatStream.remoteImageLoad')}
-          </button>
+          </Button>
         </Flex>
       ) : (
         <img
