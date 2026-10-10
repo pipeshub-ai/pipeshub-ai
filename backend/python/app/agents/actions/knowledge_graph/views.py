@@ -279,6 +279,29 @@ def _render_match(m: LookupMatch, shortener: "RecordIdShortener | None" = None) 
     return lines
 
 
+def own_id_lines(
+    view: NavigationView, shortener: "RecordIdShortener | None" = None,
+) -> dict[str, str]:
+    """The exact line `render_navigation_view` prints each node's own id on.
+
+    The viewed node's header line is `Record ID: <id>` in both of its shapes
+    (`Record.to_llm_context()` starts with it); rows print `_row_line`.
+    """
+    lines: dict[str, str] = {}
+    if view.current:
+        lines[view.current.id] = f"{view.current.display_id_label}: {_short(view.current.id, shortener)}"
+    for row in (*view.rows, *view.related):
+        lines.setdefault(row.id, _row_line(row, shortener))
+    return lines
+
+
+def lookup_id_lines(
+    result: LookupResult, shortener: "RecordIdShortener | None" = None,
+) -> dict[str, str]:
+    """The exact line `render_lookup_result` prints each match's id on."""
+    return {m.id: f"Record ID: {_short(m.id, shortener)}" for m in result.matches}
+
+
 def render_lookup_result(result: LookupResult, shortener: "RecordIdShortener | None" = None) -> str:
     """Render a LookupResult to flat text.
 
