@@ -41,6 +41,11 @@ export interface AIModelProvider {
   color: string;
   isPopular?: boolean;
   fields: Record<string, AIModelProviderField[]>;
+  /** How this provider lists models. Absent on older registry responses. */
+  discovery?: {
+    mode: 'list' | 'search' | 'manual';
+    requiredFields: string[];
+  };
 }
 
 export interface RegistryResponse {
@@ -80,6 +85,38 @@ export interface ConfiguredModel {
   isDefault: boolean;
   contextLength?: number | null;
   modelFriendlyName?: string;
+  /** Stored configuration key names that have a value. Never the values. */
+  configuredFields?: string[];
+  /** Shared by models added together, so one credential write can update them all. */
+  connectionId?: string;
+}
+
+export interface DiscoveredModel {
+  id: string;
+  displayName: string;
+  capabilities: string[];
+  contextLength?: number | null;
+  isMultimodal?: boolean | null;
+  isReasoning?: boolean | null;
+  supportsTools?: boolean | null;
+  deprecated?: boolean;
+}
+
+export interface DiscoveryResponse {
+  success: boolean;
+  supported: boolean;
+  models: DiscoveredModel[];
+  warnings?: string[];
+  errorCode?: string | null;
+  message?: string | null;
+}
+
+export interface PickedModel {
+  id: string;
+  modelFriendlyName?: string;
+  isMultimodal: boolean;
+  isReasoning: boolean;
+  contextLength?: number | null;
 }
 
 // ========================================

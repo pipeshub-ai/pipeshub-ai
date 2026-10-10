@@ -29,6 +29,7 @@ interface ProviderGridProps {
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
+  onRotate?: (model: ConfiguredModel) => void;
   isLoading?: boolean;
   onRefresh: () => void;
   /** Full workspace page vs compact onboarding-style panel. */
@@ -84,6 +85,7 @@ export function ProviderGrid({
   onEdit,
   onSetDefault,
   onDelete,
+  onRotate,
   isLoading = false,
   onRefresh,
   layout = 'page',
@@ -374,6 +376,7 @@ export function ProviderGrid({
           onEdit={onEdit}
           onSetDefault={onSetDefault}
           onDelete={onDelete}
+          onRotate={onRotate}
           isLoading={isLoading}
           showEmbeddingBuiltinPlaceholder={showEmbeddingBuiltinPlaceholder}
         />

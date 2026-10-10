@@ -1,9 +1,9 @@
 """LLM-only providers: xAI, Groq, MiniMax, Fireworks, Mistral (LLM side)."""
 
 from app.config.ai_models.registry import AIModelProviderBuilder
-from app.config.ai_models.types import ModelCapability
+from app.config.ai_models.types import AIModelField, ModelCapability
 
-from .common_fields import API_KEY, LLM_COMMON_TAIL, model_field
+from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, LLM_COMMON_TAIL, model_field
 
 
 # ---------------------------------------------------------------------------
@@ -70,17 +70,32 @@ class MiniMaxProvider:
 # Fireworks
 # ---------------------------------------------------------------------------
 
+_FIREWORKS_ENDPOINT = AIModelField(
+    name="endpoint",
+    display_name="Endpoint URL",
+    field_type="URL",
+    required=True,
+    placeholder="https://api.fireworks.ai/inference/v1",
+)
+
+
 @AIModelProviderBuilder("Fireworks", "fireworks") \
     .with_description("Fast inference for generative AI") \
-    .with_capabilities([ModelCapability.TEXT_GENERATION]) \
+    .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
     .with_icon("/icons/ai-models/fireworks-color.svg") \
     .with_color("#FF6B35") \
-    .add_field(API_KEY) \
-    .add_field(model_field("e.g. accounts/fireworks/models/kimi-k2-instruct")) \
-    .add_field(LLM_COMMON_TAIL[0]) \
-    .add_field(LLM_COMMON_TAIL[1]) \
-    .add_field(LLM_COMMON_TAIL[2]) \
-    .add_field(LLM_COMMON_TAIL[3]) \
+    .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g. accounts/fireworks/models/kimi-k2-instruct"), ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(API_KEY, ModelCapability.EMBEDDING) \
+    .add_field(model_field("e.g. nomic-ai/nomic-embed-text-v1.5"), ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
+    .add_field(_FIREWORKS_ENDPOINT, ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
+    .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
     .build_decorator()
 class FireworksProvider:
     pass

@@ -521,6 +521,149 @@ components:
             crawl:write: Create and manage crawling jobs
 
   schemas:
+    OpenAIModel:
+      type: object
+      required: [id, object, created, owned_by, task, root, parent]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [model]
+        created:
+          type: integer
+          description: Unix timestamp in seconds. 0 when the stored entry has no timestamp.
+        owned_by:
+          type: string
+          description: Provider id that owns this model.
+        task:
+          type: string
+          enum: [chat, embedding, ocr, image, text-to-speech, automatic-speech-recognition]
+        root:
+          type: string
+        parent:
+          type: string
+          nullable: true
+    OpenAIModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIModel'
+    OpenAIModelError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type, code]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+            param:
+              type: string
+            code:
+              type: string
+    DiscoveredAIModel:
+      type: object
+      required: [id, displayName, capabilities, source]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        contextLength:
+          type: integer
+          nullable: true
+        isMultimodal:
+          type: boolean
+          nullable: true
+        isReasoning:
+          type: boolean
+          nullable: true
+        supportsTools:
+          type: boolean
+          nullable: true
+        deprecated:
+          type: boolean
+        source:
+          type: string
+          enum: [provider_api, catalog, heuristic]
+    AIModelDiscoveryResult:
+      type: object
+      required: [success, supported, models]
+      properties:
+        success:
+          type: boolean
+          description: False when the provider could not be listed.
+        supported:
+          type: boolean
+          description: False when this provider has no list or search endpoint.
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoveredAIModel'
+        warnings:
+          type: array
+          items:
+            type: string
+        errorCode:
+          type: string
+          nullable: true
+          enum: [auth_error, unreachable, rate_limited, timeout, not_supported, invalid_response]
+          description: Set when the provider list failed. models may be empty.
+        message:
+          type: string
+          nullable: true
+    AIModelBatchSSEEvent:
+      type: object
+      description: |
+        Server-Sent Event envelope for `POST /configurationManager/ai-models/providers/batch`.
+
+        `data` is the decoded JSON object for the frame. Shape depends on `event`:
+
+        - `progress` — one model. `status` is `checking`, `failed` (plus `message`),
+          or `healthy` (plus `modelKey` and `connectionId`). Keep healthy models.
+          Retry only the failed ones with the `connectionId` from `done`.
+        - `done` — `{ connectionId, saved, aborted }`. The stream closes after it.
+        - `error` — `{ message }`. Only after headers were sent. Treat unchecked
+          models as not saved.
+      properties:
+        event:
+          type: string
+          enum: [progress, done, error]
+        data:
+          type: object
+          additionalProperties: true
+          description: Decoded JSON payload. Shape depends on `event`.
+          properties:
+            model:
+              type: string
+            status:
+              type: string
+              enum: [checking, failed, healthy]
+            message:
+              type: string
+            modelKey:
+              type: string
+            connectionId:
+              type: string
+              format: uuid
+            saved:
+              type: integer
+            aborted:
+              type: boolean
     StoragePurgeResult:
       type: object
       required:
@@ -16131,6 +16274,71 @@ security:
   - oauth2: []
 
 paths:
+  /models:
+    get:
+      tags:
+        - AI Models Providers
+      summary: List configured models (OpenAI-compatible)
+      description: |
+        OpenAI `GET /v1/models` shape for the models this organization has
+        configured. One object per stored model name (a legacy comma-separated
+        entry expands into one object per name). Credentials are not included.
+
+        The same handler is mounted at `{instance}/v1/models` for clients whose
+        base URL is `{instance}/v1`.
+      operationId: listConfiguredModelsOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Model list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelList'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing config:read
+  /models/{modelId}:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Retrieve one configured model (OpenAI-compatible)
+      description: |
+        OpenAI `GET /v1/models/{model}` for a model id configured in this
+        organization. `modelId` may contain slashes (for example `org/name`).
+        Also mounted at `{instance}/v1/models/{modelId}`.
+      operationId: retrieveConfiguredModelOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Model id as stored in the configuration
+      responses:
+        '200':
+          description: The model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModel'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing config:read
+        '404':
+          description: No configured model has this id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
+
   # ==================== IN-APP NOTIFICATIONS ====================
   /notifications:
     get:
@@ -40797,6 +41005,158 @@ paths:
                 error:
                   code: HTTP_INTERNAL_SERVER_ERROR
                   message: "An unexpected error occurred"
+
+  /configurationManager/ai-models/discover:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Discover models from a provider
+      description: Proxies the query service model list. When modelKey is set, stored credentials are merged server-side and are not returned. provider must match the saved model. A request endpoint is ignored so the saved API key is only sent to the saved connection.
+      operationId: discoverAIModels
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider:
+                  type: string
+                capability:
+                  type: string
+                configuration:
+                  type: object
+                  additionalProperties: true
+                modelKey:
+                  type: string
+                query:
+                  type: string
+      responses:
+        '200':
+          description: Discovery result. errorCode is set when the provider could not be listed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelDiscoveryResult'
+        '400':
+          description: provider does not match the saved model for modelKey
+        '404':
+          description: modelKey is not a saved model
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+
+  /configurationManager/ai-models/providers/batch:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Add several models from one connection
+      description: Server-sent events. Each healthy model is saved on its own compare-and-set write. Failed models are reported and not saved.
+      operationId: batchAddAIModels
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [modelType, provider, configuration, models]
+              properties:
+                modelType:
+                  type: string
+                provider:
+                  type: string
+                configuration:
+                  type: object
+                  additionalProperties: true
+                  description: Shared connection settings. A modelFriendlyName here is ignored; set it per model.
+                connectionId:
+                  type: string
+                  format: uuid
+                  description: Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                defaultModel:
+                  type: string
+                  description: Model to make default. If the type has no models yet, the first saved model becomes default even when this one fails.
+                models:
+                  type: array
+                  maxItems: 25
+                  items:
+                    type: object
+                    required: [model]
+                    properties:
+                      model:
+                        type: string
+                      modelFriendlyName:
+                        type: string
+                      isMultimodal:
+                        type: boolean
+                      isReasoning:
+                        type: boolean
+                      contextLength:
+                        type: integer
+      responses:
+        '200':
+          description: |
+            SSE stream (`text/event-stream`). Frames use `progress` (per model),
+            `done` (batch complete), or `error` (after headers). See
+            `AIModelBatchSSEEvent`.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AIModelBatchSSEEvent'
+        '400':
+          description: Invalid body, or connectionId does not match a saved connection for this provider
+
+  /configurationManager/ai-models/connections/{connectionId}/credentials:
+    put:
+      tags:
+        - AI Models Providers
+      summary: Rotate credentials for every model in a connection
+      description: Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+      operationId: rotateConnectionCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [configuration]
+              properties:
+                configuration:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    apiKey:
+                      type: string
+                    awsAccessKeyId:
+                      type: string
+                    awsAccessSecretKey:
+                      type: string
+                    serviceAccountJson:
+                      type: string
+      responses:
+        '200':
+          description: Credentials updated
+        '400':
+          description: Health check rejected the new credentials, or the body included a non-credential field
+        '404':
+          description: Connection not found
 
   /configurationManager/ai-models/providers:
     post:

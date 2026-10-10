@@ -1,0 +1,8 @@
+{
+  "models": [
+    {
+      "name": "llama3:latest",
+      "digest": "abc"
+    }
+  ]
+}

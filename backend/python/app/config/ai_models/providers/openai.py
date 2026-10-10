@@ -14,6 +14,24 @@ from .common_fields import (
 
 from app.config.ai_models.types import AIModelField
 
+OPENAI_BASE_URL = AIModelField(
+    name="endpoint",
+    display_name="Base URL (optional)",
+    field_type="URL",
+    required=False,
+    placeholder="https://api.openai.com/v1",
+    description="Leave blank to use the official OpenAI API.",
+)
+
+OPENAI_ORGANIZATION = AIModelField(
+    name="organizationId",
+    display_name="Organization ID (optional)",
+    field_type="TEXT",
+    required=False,
+    placeholder="org-...",
+    description="Sent as the OpenAI-Organization header when set.",
+)
+
 OPENAI_TTS_VOICE = AIModelField(
     name="voice",
     display_name="Voice",
@@ -60,25 +78,35 @@ OPENAI_TTS_FORMAT = AIModelField(
     .with_color("#10A37F") \
     .popular() \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
+    .add_field(OPENAI_BASE_URL, ModelCapability.TEXT_GENERATION) \
+    .add_field(OPENAI_ORGANIZATION, ModelCapability.TEXT_GENERATION) \
     .add_field(model_field("e.g., gpt-5, gpt-5-mini, gpt-5-nano"), ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.EMBEDDING) \
+    .add_field(OPENAI_BASE_URL, ModelCapability.EMBEDDING) \
+    .add_field(OPENAI_ORGANIZATION, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g., text-embedding-3-small, text-embedding-3-large"), ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
     .add_field(API_KEY, ModelCapability.IMAGE_GENERATION) \
+    .add_field(OPENAI_BASE_URL, ModelCapability.IMAGE_GENERATION) \
+    .add_field(OPENAI_ORGANIZATION, ModelCapability.IMAGE_GENERATION) \
     .add_field(model_field("e.g., gpt-image-1, dall-e-3"), ModelCapability.IMAGE_GENERATION) \
     .add_field(FRIENDLY_NAME, ModelCapability.IMAGE_GENERATION) \
     .add_field(API_KEY, ModelCapability.TTS) \
+    .add_field(OPENAI_BASE_URL, ModelCapability.TTS) \
+    .add_field(OPENAI_ORGANIZATION, ModelCapability.TTS) \
     .add_field(model_field("e.g., tts-1, tts-1-hd, gpt-4o-mini-tts"), ModelCapability.TTS) \
     .add_field(OPENAI_TTS_VOICE, ModelCapability.TTS) \
     .add_field(OPENAI_TTS_FORMAT, ModelCapability.TTS) \
     .add_field(FRIENDLY_NAME, ModelCapability.TTS) \
     .add_field(API_KEY, ModelCapability.STT) \
+    .add_field(OPENAI_BASE_URL, ModelCapability.STT) \
+    .add_field(OPENAI_ORGANIZATION, ModelCapability.STT) \
     .add_field(model_field("e.g., whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
     .build_decorator()

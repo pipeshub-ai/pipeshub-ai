@@ -14,12 +14,44 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
-import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../types';
+import type { AIModelProvider, AIModelProviderField, ConfiguredModel, PickedModel } from '../types';
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import { AIModelsApi } from '../api';
+import { canFetchModels, useModelDiscovery } from '../hooks/use-model-discovery';
+import { useBatchAddModels } from '../hooks/use-batch-add-models';
 import { EmbeddingDownloadProgress } from './embedding-download-progress';
+import {
+  ModelPicker,
+  seedTypedModels,
+  type PerModelFlag,
+  type PerModelFlagField,
+  type PickedDefaults,
+} from './model-picker';
+import { BatchProgressList } from './batch-progress-list';
 
 const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal', 'trustRemoteCode'] as const;
+
+const PER_MODEL_FLAGS: readonly PerModelFlag[] = ['isReasoning', 'isMultimodal'];
+
+/** Set on each picked row instead of once for the whole form. */
+const PER_MODEL_FIELD_NAMES = new Set([
+  'model',
+  'modelFriendlyName',
+  'contextLength',
+  ...PER_MODEL_FLAGS,
+]);
+
+const NO_HIDDEN_FIELDS: ReadonlySet<string> = new Set();
+
+function boolValue(v: unknown): boolean {
+  return typeof v === 'boolean' ? v : v === 'true' ? true : v === 'false' ? false : Boolean(v);
+}
+
+function positiveIntOrNull(v: unknown): number | null {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
 
 // Providers whose model runs in-process on the embedding server (loaded via
 // SentenceTransformer) rather than calling a remote API — these are the only
@@ -96,12 +128,32 @@ function sanitizeAzureOpenAiCommaFreeValue(value: unknown): unknown {
   return value.split(',')[0].trim();
 }
 
+function normalizePickedIds(providerId: string | undefined, items: PickedModel[]): PickedModel[] {
+  if (providerId !== 'azureOpenAI') return items;
+  const seen = new Set<string>();
+  const next: PickedModel[] = [];
+  for (const item of items) {
+    const id = String(sanitizeAzureOpenAiCommaFreeValue(item.id) ?? '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    next.push(id === item.id ? item : { ...item, id });
+  }
+  return next;
+}
+
 /** Top-level entry fields, not part of GET `configuration`. */
 const TOP_LEVEL_FIELD_NAMES = new Set([
   'isMultimodal',
   'isReasoning',
   'contextLength',
   'modelFriendlyName',
+]);
+
+const PUBLIC_CONFIG_KEYS = new Set([
+  'model',
+  'modelFriendlyName',
+  'dimensions',
+  'defaultReasoningEffort',
 ]);
 
 /**
@@ -115,6 +167,13 @@ function findHiddenCredentialFields(
   fields: AIModelProviderField[]
 ): Set<string> {
   if (mode !== 'edit' || !editModel) return new Set();
+  if (editModel.configuredFields) {
+    return new Set(
+      editModel.configuredFields.filter(
+        (name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !PUBLIC_CONFIG_KEYS.has(name),
+      ),
+    );
+  }
   const configured = (editModel.configuration ?? {}) as Record<string, unknown>;
   return new Set(
     fields
@@ -221,6 +280,12 @@ export function ModelConfigDialog({
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<PickedModel[]>([]);
+  const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
+  const discovery = useModelDiscovery();
+  const batch = useBatchAddModels();
+  const resetBatch = batch.reset;
+  const resetDiscoveryState = discovery.reset;
   const [downloadTarget, setDownloadTarget] = useState<{
     modelName: string;
     trustRemoteCode: boolean;
@@ -236,12 +301,20 @@ export function ModelConfigDialog({
       setFields([]);
       setValues({});
       setError(null);
+      setPicked([]);
+      setDefaultModelId(null);
+      resetDiscoveryState();
+      resetBatch();
       touchedFieldsRef.current = new Set();
       return;
     }
 
     const capFields = provider.fields[capability] ?? [];
     setFields(capFields as AIModelProviderField[]);
+    setPicked([]);
+    setDefaultModelId(null);
+    resetDiscoveryState();
+    resetBatch();
     touchedFieldsRef.current = new Set();
 
     if (mode === 'edit' && editModel) {
@@ -278,7 +351,7 @@ export function ModelConfigDialog({
       }
       setValues(defaults);
     }
-  }, [open, provider, capability, mode, editModel]);
+  }, [open, provider, capability, mode, editModel, resetDiscoveryState, resetBatch]);
 
   const hiddenCredentials = useMemo(
     () => findHiddenCredentialFields(mode, editModel, fields),
@@ -462,6 +535,15 @@ export function ModelConfigDialog({
         }
       }
 
+      if (mode === 'add' && picked.length > 0) {
+        await runBatch(
+          modelType,
+          picked,
+          existingModelsCount === 0 ? (defaultModelId ?? picked[0]?.id) : undefined,
+        );
+        return;
+      }
+
       if (mode === 'add') {
         // Auto-default only the very first model of a given type. For every
         // subsequent add, leave `isDefault: false` so the user's current
@@ -546,13 +628,215 @@ export function ModelConfigDialog({
     );
   }, [provider?.iconPath]);
 
+  const perModelMode = mode === 'add' && picked.length > 0;
   const formValid = useMemo(
     () =>
-      fields.length === 0 ? true : allRequiredFieldsValid(fields, values, hiddenCredentials),
-    [fields, values, hiddenCredentials]
+      fields.length === 0
+        ? true
+        : allRequiredFieldsValid(
+            perModelMode ? fields.filter((field) => !PER_MODEL_FIELD_NAMES.has(field.name)) : fields,
+            values,
+            hiddenCredentials,
+          ),
+    [fields, values, hiddenCredentials, perModelMode]
   );
 
-  const primaryBlocked = saving || !provider || !capability || !formValid;
+  const flagFields = useMemo<PerModelFlagField[]>(
+    () =>
+      PER_MODEL_FLAGS.flatMap((name) => {
+        const field = fields.find((f) => f.name === name);
+        return field ? [{ name, label: field.displayName || name, description: field.description }] : [];
+      }),
+    [fields]
+  );
+  const contextLengthLabel = fields.find((f) => f.name === 'contextLength')?.displayName;
+  const pickerDefaults = useMemo<PickedDefaults>(
+    () => ({
+      isReasoning: flagFields.some((f) => f.name === 'isReasoning') && boolValue(values.isReasoning),
+      isMultimodal: flagFields.some((f) => f.name === 'isMultimodal') && boolValue(values.isMultimodal),
+      contextLength: positiveIntOrNull(values.contextLength),
+    }),
+    [flagFields, values.isReasoning, values.isMultimodal, values.contextLength]
+  );
+
+  const handlePickedChange = (changed: PickedModel[]) => {
+    const normalized = normalizePickedIds(provider?.providerId, changed);
+    const next =
+      picked.length === 0 && normalized.length > 0
+        ? seedTypedModels(
+            normalized,
+            String(values.model ?? ''),
+            pickerDefaults,
+            String(values.modelFriendlyName ?? ''),
+          )
+        : normalized;
+    setPicked(next);
+    if (!defaultModelId || !next.some((item) => item.id === defaultModelId)) {
+      setDefaultModelId(next[0]?.id ?? null);
+    }
+  };
+
+  const primaryBlocked = saving || batch.running || !provider || !capability || !formValid;
+
+  const requiredFields = provider?.discovery?.requiredFields ?? [];
+  const credentialKey = requiredFields.map((name) => String(values[name] ?? '')).join('\u0000');
+  const seenCredential = useRef<string | null>(null);
+  useEffect(() => {
+    if (seenCredential.current === null) {
+      seenCredential.current = credentialKey;
+      return;
+    }
+    if (seenCredential.current === credentialKey) return;
+    seenCredential.current = credentialKey;
+    resetDiscoveryState();
+  }, [credentialKey, resetDiscoveryState]);
+  const canDiscover =
+    mode === 'add' &&
+    provider?.discovery != null &&
+    provider.discovery.mode !== 'manual' &&
+    canFetchModels(requiredFields, values, hiddenCredentials);
+
+  const handleFetchModels = () => {
+    if (!provider || !canDiscover) return;
+    const configuration: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(values)) {
+      if (hiddenCredentials.has(key) && !touchedFieldsRef.current.has(key)) continue;
+      if (val === undefined || val === '') continue;
+      configuration[key] = val;
+    }
+    void discovery.fetchModels({
+      provider: provider.providerId,
+      capability: capability ?? undefined,
+      configuration,
+      modelKey: editModel?.modelKey,
+    });
+  };
+
+  /** Configuration every picked model shares: credentials and endpoint, never per-model fields. */
+  const sharedBatchConfiguration = (): Record<string, unknown> => {
+    const configuration: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(values)) {
+      if (PER_MODEL_FIELD_NAMES.has(key) || TOP_LEVEL_FIELD_NAMES.has(key)) continue;
+      if (hiddenCredentials.has(key) && !touchedFieldsRef.current.has(key)) continue;
+      if (val === undefined) continue;
+      configuration[key] = provider?.providerId === 'azureOpenAI' && key === 'deploymentName'
+        ? sanitizeAzureOpenAiCommaFreeValue(val)
+        : val;
+    }
+    return configuration;
+  };
+
+  const runBatch = async (modelType: string, models: PickedModel[], defaultModel?: string) => {
+    if (!provider || !capability) return;
+    const prepared = normalizePickedIds(provider.providerId, models);
+    for (const item of prepared) {
+      const ready = await ensureLocalEmbeddingModelReady(provider, { ...values, model: item.id });
+      if (!ready) return;
+    }
+    const result = await batch.run(
+      {
+        modelType,
+        provider: provider.providerId,
+        configuration: sharedBatchConfiguration(),
+        models: prepared,
+        defaultModel:
+          provider.providerId === 'azureOpenAI' && defaultModel
+            ? String(sanitizeAzureOpenAiCommaFreeValue(defaultModel) ?? '').trim() || undefined
+            : defaultModel,
+      },
+      { merge: true },
+    );
+    const savedIds = new Set(result.rows.filter((row) => row.status === 'healthy').map((row) => row.model));
+    setPicked((current) => current.filter((item) => !savedIds.has(item.id)));
+    const savedNow = prepared.filter((item) => savedIds.has(item.id));
+    if (savedNow.length > 0) {
+      onSaved({
+        mode: 'add',
+        modelName: savedNow[0]?.modelFriendlyName || savedNow[0]?.id || provider.name,
+        modelCategory: modelCategoryFromCapability(capability),
+      });
+    }
+    const failed = result.rows.some((row) => row.status === 'failed');
+    if (!failed && savedNow.length > 0 && !result.aborted) {
+      onClose();
+    }
+  };
+
+  const retryPicked = (modelId: string) => {
+    const model = picked.find((item) => item.id === modelId);
+    const modelType = capability ? CAPABILITY_TO_MODEL_TYPE[capability] : undefined;
+    if (!model || !modelType) return;
+    const isChosenDefault = existingModelsCount === 0 && defaultModelId === model.id;
+    void runBatch(modelType, [model], isChosenDefault ? model.id : undefined);
+  };
+
+  const discoveryMode = provider?.discovery?.mode ?? 'manual';
+  const canListModels = discoveryMode !== 'manual';
+
+  const discoverySlot = (
+    <Flex direction="column" gap="3">
+      {canListModels ? (
+        <Flex direction="column" gap="1">
+          <Button
+            type="button"
+            variant="soft"
+            data-testid="ai-fetch-models"
+            disabled={!canDiscover || discovery.loading || saving || batch.running}
+            onClick={handleFetchModels}
+          >
+            {discovery.loading
+              ? t('workspace.aiModels.fetchingModels')
+              : t('workspace.aiModels.fetchModels')}
+          </Button>
+          {!canDiscover && !discovery.fetched ? (
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
+              {t('workspace.aiModels.fetchModelsNeedsFields')}
+            </Text>
+          ) : null}
+        </Flex>
+      ) : picked.length === 0 ? (
+        <Text size="2" style={{ color: 'var(--gray-11)' }} data-testid="ai-manual-models-hint">
+          {t('workspace.aiModels.modelPickerManualHint')}
+        </Text>
+      ) : null}
+      {discovery.error ? (
+        <Text size="2" style={{ color: 'var(--red-11)' }}>
+          {discovery.error}
+        </Text>
+      ) : null}
+      {discovery.warnings.map((warning) => (
+        <Text key={warning} size="1" style={{ color: 'var(--gray-11)' }}>
+          {warning}
+        </Text>
+      ))}
+      {canListModels && discovery.fetched && !discovery.error && discovery.models.length === 0 ? (
+        <Text size="2" style={{ color: 'var(--gray-11)' }}>
+          {t('workspace.aiModels.modelPickerNoneFound')}
+        </Text>
+      ) : null}
+      <ModelPicker
+        models={discovery.models}
+        picked={picked}
+        onChange={handlePickedChange}
+        showDefault={existingModelsCount === 0}
+        defaultModelId={defaultModelId}
+        onDefaultChange={setDefaultModelId}
+        flagFields={flagFields}
+        contextLengthLabel={contextLengthLabel}
+        defaults={pickerDefaults}
+        disabled={saving || batch.running}
+      />
+      <BatchProgressList
+        rows={batch.rows}
+        disabled={batch.running}
+        onRetry={retryPicked}
+        onRemove={(modelId) => {
+          handlePickedChange(picked.filter((item) => item.id !== modelId));
+          batch.setRows((current) => current.filter((row) => row.model !== modelId));
+        }}
+      />
+    </Flex>
+  );
 
   const headerActions = useMemo(
     () => (
@@ -584,7 +868,7 @@ export function ModelConfigDialog({
       headerActions={headerActions}
       primaryLabel={mode === 'add' ? t('workspace.aiModels.configAddModel') : t('workspace.aiModels.configUpdateModel')}
       secondaryLabel={t('workspace.aiModels.cancel')}
-      primaryLoading={saving}
+      primaryLoading={saving || batch.running}
       primaryDisabled={primaryBlocked}
       primaryTooltip={
         !formValid && !saving && Boolean(provider) && Boolean(capability)
@@ -605,9 +889,11 @@ export function ModelConfigDialog({
         saving={saving}
         error={error}
         hiddenCredentials={hiddenCredentials}
+        hiddenFieldNames={perModelMode ? PER_MODEL_FIELD_NAMES : NO_HIDDEN_FIELDS}
         onFieldChange={handleFieldChange}
         onReveal={canReveal ? () => void handleReveal() : undefined}
         revealing={revealState === 'loading'}
+        discoverySlot={mode === 'add' ? discoverySlot : undefined}
       />
       {downloadTarget && (
         <EmbeddingDownloadProgress
@@ -652,9 +938,11 @@ function ModelConfigFormBody({
   saving,
   error,
   hiddenCredentials,
+  hiddenFieldNames,
   onFieldChange,
   onReveal,
   revealing,
+  discoverySlot,
 }: {
   provider: AIModelProvider | null;
   capability: string | null;
@@ -664,25 +952,30 @@ function ModelConfigFormBody({
   saving: boolean;
   error: string | null;
   hiddenCredentials: Set<string>;
+  hiddenFieldNames: ReadonlySet<string>;
   onFieldChange: (name: string, value: unknown) => void;
   /** Absent when the deployment does not allow reading stored secrets back. */
   onReveal?: () => void;
   revealing: boolean;
+  discoverySlot?: React.ReactNode;
 }) {
   const { t } = useTranslation();
-  const leaveBlankPlaceholder = t('form.leaveBlankToKeep');
+  const leaveBlankPlaceholder = t('workspace.aiModels.savedLeaveBlank');
   const placeholderFor = (field: AIModelProviderField) =>
     hiddenCredentials.has(field.name) ? leaveBlankPlaceholder : field.placeholder;
   const instanceField = useMemo(
-    () => fields.find((f) => f.name === 'modelFriendlyName') ?? null,
-    [fields]
+    () =>
+      hiddenFieldNames.has('modelFriendlyName')
+        ? null
+        : (fields.find((f) => f.name === 'modelFriendlyName') ?? null),
+    [fields, hiddenFieldNames]
   );
 
   const compatFields = useMemo(() => {
-    return COMPAT_FIELD_NAMES.map((name) => fields.find((f) => f.name === name)).filter(
-      (f): f is AIModelProviderField => Boolean(f)
-    );
-  }, [fields]);
+    return COMPAT_FIELD_NAMES.filter((name) => !hiddenFieldNames.has(name))
+      .map((name) => fields.find((f) => f.name === name))
+      .filter((f): f is AIModelProviderField => Boolean(f));
+  }, [fields, hiddenFieldNames]);
 
   const modelConfigFields = useMemo(
     () =>
@@ -691,9 +984,10 @@ function ModelConfigFormBody({
           f.name !== 'modelFriendlyName' &&
           f.name !== 'isReasoning' &&
           f.name !== 'isMultimodal' &&
-          f.name !== 'trustRemoteCode'
+          f.name !== 'trustRemoteCode' &&
+          !hiddenFieldNames.has(f.name)
       ),
-    [fields]
+    [fields, hiddenFieldNames]
   );
 
   const section1Title = t('workspace.aiModels.configSectionCapabilityConfig', { capability: capLabel });
@@ -760,9 +1054,6 @@ function ModelConfigFormBody({
       ? resolveConfigInfoMessage(t, capability, provider.name, capLabel)
       : resolveConfigInfoMessage(t, null, providerName, capLabel);
 
-  const boolValue = (v: unknown) =>
-    typeof v === 'boolean' ? v : v === 'true' ? true : v === 'false' ? false : Boolean(v);
-
   return (
     <Flex direction="column" gap="4">
       <Box style={CARD_STYLE}>
@@ -823,6 +1114,7 @@ function ModelConfigFormBody({
               startAdornment={fieldStartAdornment(field.name)}
             />
           ))}
+          {discoverySlot}
         </Flex>
       </Box>
 

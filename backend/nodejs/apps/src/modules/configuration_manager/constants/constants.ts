@@ -31,6 +31,28 @@ export const googleWorkspaceServiceTypes = {
   GOOGLE_MAIL: 'gmail',
 };
 
+/**
+ * KV buckets under `/services/aiModels`. Order is part of the invalid-type
+ * error string the admin API returns.
+ */
+export const AI_MODEL_TYPES = [
+  'llm',
+  'embedding',
+  'ocr',
+  'slm',
+  'reasoning',
+  'multiModal',
+  'imageGeneration',
+  'tts',
+  'stt',
+] as const;
+
+export type AIModelType = (typeof AI_MODEL_TYPES)[number];
+
+export function isAIModelType(value: string): value is AIModelType {
+  return (AI_MODEL_TYPES as readonly string[]).includes(value);
+}
+
 export const aiModelsTypes = {
   OCR: 'ocr',
   EMBEDDING: 'embedding',
@@ -39,7 +61,9 @@ export const aiModelsTypes = {
   LLM: 'llm',
   MULTI_MODAL: 'multiModal',
   IMAGE_GENERATION: 'imageGeneration',
-};
+  TTS: 'tts',
+  STT: 'stt',
+} as const;
 
 /**
  * Named model roles. Each key maps to a role that can be independently

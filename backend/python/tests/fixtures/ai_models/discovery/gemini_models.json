@@ -1,0 +1,43 @@
+{
+  "models": [
+    {
+      "name": "models/gemini-2.5-flash",
+      "supportedGenerationMethods": [
+        "generateContent"
+      ],
+      "inputTokenLimit": 1000000,
+      "thinking": true
+    },
+    {
+      "name": "models/text-embedding-004",
+      "supportedGenerationMethods": [
+        "embedContent"
+      ]
+    },
+    {
+      "name": "models/gemini-2.5-flash-tts",
+      "supportedGenerationMethods": [
+        "generateContent"
+      ]
+    },
+    {
+      "name": "models/gemini-2.5-flash-image",
+      "supportedGenerationMethods": [
+        "generateContent"
+      ]
+    },
+    {
+      "name": "models/veo-2",
+      "supportedGenerationMethods": [
+        "predictLongRunning"
+      ]
+    },
+    {
+      "name": "models/gemini-live",
+      "supportedGenerationMethods": [
+        "bidiGenerateContent"
+      ]
+    }
+  ],
+  "nextPageToken": ""
+}
