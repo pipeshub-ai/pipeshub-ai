@@ -107,7 +107,11 @@ async def execute_search_entities(
     )
     shortener = get_record_id_shortener_if_enabled(state)
     results, shown_record_ids = _render_hits(hits, context, shortener)
-    remember_record_ids(state, shown_record_ids)
+    names = {h.entity_id: h.name for h in hits}
+    names.update(
+        (r["_key"], r.get("recordName") or "") for h in hits for r in h.records if r.get("_key")
+    )
+    remember_record_ids(state, shown_record_ids, names=names)
 
     payload = {"status": "success", "results": results}
     if ignored:

@@ -346,7 +346,11 @@ class KnowledgeHub:
                 record_group_ids=use_record_group_ids,
             )
 
-            remember_record_ids(self.state, _record_ids_in_items(response.items))
+            remember_record_ids(
+                self.state,
+                _record_ids_in_items(response.items),
+                names={item.id: item.name for item in response.items or []},
+            )
             return _format_browse_response(response)
 
         except Exception as e:

@@ -127,7 +127,9 @@ async def execute_find_records_by_entity(
         return True, NO_FURTHER_RECORDS_MSG if cursor else NO_ACCESSIBLE_RECORDS_MSG
 
     record_ids = [r["_key"] for r in page.records if r.get("_key")]
-    remember_record_ids(state, record_ids)
+    remember_record_ids(
+        state, record_ids, names={r["_key"]: r.get("recordName") or "" for r in page.records if r.get("_key")},
+    )
     name = indexed.get("name") if indexed.get("type") == resolved_type else None
     return True, _render_page(
         page.records,

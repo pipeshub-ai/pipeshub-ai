@@ -486,7 +486,11 @@ class KnowledgeGraph:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
-        remember_record_ids(state, _record_ids_in_view(view))
+        remember_record_ids(
+            state,
+            _record_ids_in_view(view),
+            names={n.id: n.name for n in (*view.rows, *view.related, *([view.current] if view.current else []))},
+        )
         text = render_navigation_view(view, page, record_id_shortener)
 
         # Sparse-result retry nudge: only fires when time filters were
@@ -610,7 +614,7 @@ class KnowledgeGraph:
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
-        remember_record_ids(state, [m.id for m in result.matches])
+        remember_record_ids(state, [m.id for m in result.matches], names={m.id: m.name for m in result.matches})
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`

@@ -24,6 +24,7 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
@@ -742,6 +743,9 @@ async def execute_search(
             # The semantic answer above is complete without the hint.
             logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
             pm_hint = ""
+        remember_shown_results(
+            state, [*final_results, *(pm_record_entries if pm_hint else [])], virtual_record_id_to_result,
+        )
         return summary + "\n".join(formatted_records) + compose_result_tail(
             virtual_record_id_to_result, candidate_suffix,
         ) + pm_hint

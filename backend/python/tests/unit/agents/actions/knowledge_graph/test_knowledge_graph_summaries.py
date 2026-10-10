@@ -466,7 +466,7 @@ class TestLookupRecord:
         scope = SimpleNamespace(app_ids=("app-1",))
         mock_resolve_scope.return_value = scope
 
-        match = SimpleNamespace(id="rec-1")
+        match = SimpleNamespace(id="rec-1", name="Login bug")
         result_obj = SimpleNamespace(matches=[match])
         resolver_instance = AsyncMock()
         resolver_instance.resolve_many.return_value = result_obj
@@ -480,7 +480,7 @@ class TestLookupRecord:
         ok, text = await kg.lookup_record("JIRA-1")
         assert ok is True
         assert text == "Match found"
-        mock_remember.assert_called_once_with(kg.state, ["rec-1"])
+        mock_remember.assert_called_once_with(kg.state, ["rec-1"], names={"rec-1": "Login bug"})
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
