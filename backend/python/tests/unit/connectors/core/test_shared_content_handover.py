@@ -385,10 +385,10 @@ class TestConnectorDelete:
             "app.connectors.services.event_service.build_connector_cleanup_events",
             side_effect=RuntimeError("after the graph delete"),
         ):
-            assert await _delete_connector(service, "conn-a") is False
+            assert await _delete_connector(service, "conn-a") is True
         assert "conn-a" not in graph.apps, "the rollback recreated the deleted connector"
 
-        assert await _delete_connector(service, "conn-a") is False
+        assert await _delete_connector(service, "conn-a") is True
 
         assert "conn-a" not in graph.apps
         (intent,) = await list_pending_storage_releases(config)

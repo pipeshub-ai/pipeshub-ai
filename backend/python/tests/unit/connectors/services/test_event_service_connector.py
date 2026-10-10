@@ -1148,7 +1148,7 @@ class TestHandleDelete:
             assert service.graph_provider.batch_upsert_nodes.await_count >= 1
 
     @pytest.mark.asyncio
-    async def test_a_connector_the_graph_delete_already_removed_is_not_recreated(self, service):
+    async def test_a_connector_the_graph_delete_already_removed_is_acked_not_recreated(self, service):
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "Connector instance c1 not found"
         })
@@ -1159,7 +1159,7 @@ class TestHandleDelete:
             result = await service._handle_delete("gmail", {
                 "orgId": "org1", "connectorId": "c1", "previousIsActive": True
             })
-        assert result is False
+        assert result is True
         service.graph_provider.batch_upsert_nodes.assert_not_awaited()
         config_svc.delete_config.assert_not_awaited()
 

@@ -1387,15 +1387,17 @@ class EventService:
             try:
                 # An upsert would recreate a connector the graph delete already
                 # removed (MERGE on Neo4j), and the reconciler would then treat
-                # its owed storage release as a reverted delete.
+                # its owed storage release as a reverted delete. A redelivery
+                # cannot redo anything either, and each one would push the
+                # reconciler's grace period back.
                 if await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value, raise_on_error=True
                 ) is None:
                     self.logger.warning(
                         f"Connector {connector_id} is already deleted from the graph; "
-                        f"nothing to revert, its storage release stays pending"
+                        f"the delete is done, its storage release stays pending"
                     )
-                    return False
+                    return True
                 await self.graph_provider.batch_upsert_nodes(
                     [{
                         "id": connector_id,
