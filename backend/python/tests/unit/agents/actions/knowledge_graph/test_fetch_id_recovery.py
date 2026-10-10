@@ -249,3 +249,41 @@ class TestIdsInText:
         shortener = MagicMock()
         shortener.shorten_if_known = MagicMock(side_effect={REAL: "R1", OTHER: "R12"}.get)
         assert ids_in_text([REAL, OTHER], "record_id=R12", shortener) == [OTHER]
+
+    def test_an_id_mentioned_outside_its_own_row_does_not_count(self) -> None:
+        """A row the byte cap cut is not shown just because another record's
+        metadata or a summary mentions its id."""
+        from app.agents.actions.knowledge_graph.models import (
+            NavigationView,
+            NodeRef,
+            NodeRow,
+        )
+        from app.agents.actions.knowledge_graph.views import render_navigation_view
+
+        linked = "ffffffff-1111-4222-8333-944445555666"
+        rows = [
+            NodeRow(
+                id=f"{i:08x}-1111-4222-8333-944445555666", name=f"Story {i}", node_type="record",
+                sub_type="TICKET", is_record=True, has_children=False, detail=None,
+                web_url="https://example.atlassian.net/browse/" + "x" * 300,
+            )
+            for i in range(200)
+        ]
+        rows[0].context_summary = f"Follows up on {linked}"
+        rows.append(NodeRow(
+            id=linked, name="Hidden title", node_type="record", sub_type="TICKET",
+            is_record=True, has_children=False, detail=None,
+        ))
+        view = NavigationView(
+            current=NodeRef(id=REAL, name="Call notes", node_type="record", sub_type="TICKET", is_record=True),
+            breadcrumbs=[], rows=rows, related=[], pagination=None, web_url=None,
+            indexing_status=None, connector=None,
+            context_block=f"Record ID: {REAL}\nName: Call notes\n* Linked Record ID: {linked}",
+        )
+
+        text = render_navigation_view(view, page=1)
+        kept = ids_in_text([r.id for r in rows] + [REAL], text)
+
+        assert linked in text and "Hidden title" not in text
+        assert linked not in kept
+        assert kept[0] == REAL and rows[0].id in kept
