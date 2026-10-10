@@ -658,6 +658,52 @@ class TestMergePatternMatchResults:
         assert vr_map["vr-1"] == graph_rec
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("raw", "graph_extra", "quote"), [
+        ({"match_preview": "…annual fee of $1,250,000…"}, {}, "…annual fee of $1,250,000…"),
+        ({"match_preview": "…annual fee…"}, {"summary": "A master services agreement."}, "A master services agreement."),
+        ({}, {}, "msa.pdf"),
+    ], ids=["matched-text", "summary-first", "name-last"])
+    async def test_a_cited_grep_record_carries_the_fields_a_saved_citation_needs(
+        self, raw: dict, graph_extra: dict, quote: str,
+    ) -> None:
+        """The conversation store refuses a citation without a record name or
+        MIME type, and that refusal loses the whole answer. The quote shown under
+        the title is the record's summary, else the text grep matched."""
+        from app.utils.citations import normalize_citations_and_chunks
+
+        graph_rec = {
+            "_key": "rec-1", "id": "rec-1", "orgId": "org-1", "virtualRecordId": "vr-1",
+            "indexingStatus": "COMPLETED", "recordName": "msa.pdf", "recordType": "FILE",
+            "mimeType": "application/pdf", "connectorId": "kb-1", **graph_extra,
+        }
+        graph_provider = AsyncMock()
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(return_value=[graph_rec])
+        vr_map: dict[str, dict] = {}
+        await merge_pattern_match_results(
+            raw_records=[{"virtual_record_id": "vr-1", **raw}],
+            virtual_record_id_to_result=vr_map,
+            user_id="user-1",
+            org_id="org-1",
+            blob_store=AsyncMock(),
+            graph_provider=graph_provider,
+            is_multimodal_llm=False,
+            logger_instance=MagicMock(),
+        )
+
+        _answer, citations = normalize_citations_and_chunks(
+            "The fee is set [1](http://localhost:3000/record/rec-1).", [], [],
+            virtual_record_id_to_result=vr_map,
+        )
+
+        assert len(citations) == 1
+        assert citations[0]["content"] == quote
+        metadata = citations[0]["metadata"]
+        assert (metadata["recordName"], metadata["mimeType"]) == ("msa.pdf", "application/pdf")
+        assert (metadata["recordId"], metadata["virtualRecordId"], metadata["orgId"]) == ("rec-1", "vr-1", "org-1")
+        assert "record_name" not in vr_map["vr-1"]
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_graph_records_found(self):
         raw = [{"virtual_record_id": "vr-1"}]
         graph_provider = AsyncMock()
@@ -3189,3 +3235,11 @@ class TestValidateGrepCommandSpecialCharacters:
     def test_hyphenated_flag_like_pattern(self):
         cmd = 'grep -rci "error-code-404" .'
         assert validate_grep_command(cmd) == cmd
+
+
+def test_a_blob_field_a_record_already_has_survives_the_conversion() -> None:
+    from app.utils.chat_helpers import as_blob_record
+
+    converted = as_blob_record({"_key": "rec-1", "recordName": "msa.pdf", "mime_type": "application/pdf"})
+
+    assert (converted["record_name"], converted["mime_type"], converted["id"]) == ("msa.pdf", "application/pdf", "rec-1")

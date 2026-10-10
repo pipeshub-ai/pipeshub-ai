@@ -4,6 +4,7 @@ from typing import Any
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import (
+    as_blob_record,
     generate_text_fragment_url,
     get_enhanced_metadata,
     group_child_results,
@@ -377,7 +378,15 @@ def _append_record_page_citation(
     citation_num: int,
 ) -> int:
     """Build citation metadata for /record/{id} (header / landing page), not a specific block."""
-    snippet = (record.get("semantic_metadata") or {}).get("summary") or record.get("record_name") or "Record"
+    record = as_blob_record(record)
+    # A grep hit has no summary until its blob is read; the text it matched
+    # says more than its name, which the citation already shows as its title.
+    snippet = (
+        (record.get("semantic_metadata") or {}).get("summary")
+        or record.get("_match_snippet")
+        or record.get("record_name")
+        or "Record"
+    )
     if not isinstance(snippet, str):
         snippet = _safe_stringify_content(value=snippet)
     snippet = snippet.strip() or (record.get("record_name") or "Record")
