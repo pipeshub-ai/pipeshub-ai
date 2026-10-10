@@ -2,9 +2,10 @@
 
 Deleting a connector or KB ends with ``StorageCleanupHelper.release_connector_storage``:
 shared content is handed over to a surviving holder, then the connector's
-storage is deleted, and nothing is deleted if any handover failed. The intent
-is recorded before the graph delete, because afterwards nothing else knows
-which connector's storage is owed, and cleared only once a release completed.
+storage is deleted, and nothing is deleted if any handover failed. A connector's
+credentials are deleted with it. The intent is recorded before the graph delete,
+because afterwards nothing else knows which connector's storage is owed, and
+cleared only once a release completed.
 ``StorageReleaseReconciler`` retries whatever is left, from the connectors
 service, under a Redis leader lease like the trash purge.
 """
@@ -77,6 +78,25 @@ def retry_delay_ms(attempts: int) -> int:
     return min(RETRY_MS * (2 ** attempts), RETRY_CAP_MS)
 
 
+async def delete_connector_credentials(
+    logger: Logger, config_service: ConfigurationService, connector_id: str,
+) -> bool:
+    """Whether the connector's credentials are gone. Never raises."""
+    key = f"/services/connectors/{connector_id}/config"
+    try:
+        # delete_config answers False rather than raising, and Redis answers
+        # False for a key an earlier attempt already deleted.
+        if await config_service.delete_config(key) or await config_service.get_config(
+            key, raise_on_error=True
+        ) is None:
+            return True
+    except Exception:
+        logger.warning("Connector credentials not confirmed deleted | connector=%s", connector_id, exc_info=True)
+        return False
+    logger.warning("Connector credentials not deleted | connector=%s", connector_id)
+    return False
+
+
 async def release_connector_storage(
     logger: Logger,
     helper: StorageCleanupHelper,
@@ -84,16 +104,23 @@ async def release_connector_storage(
     *,
     org_id: str,
     connector_id: str,
+    org_config_service: ConfigurationService | None = None,
     intent: dict[str, Any] | None = None,
     now_ms: Callable[[], int] = get_epoch_timestamp_in_ms,
 ) -> bool:
     """Run one release and settle its intent: cleared when it completed,
-    rescheduled with backoff when it did not. Never raises."""
+    rescheduled with backoff when it did not. ``org_config_service`` holds the
+    connector's credentials; None when it has none (a KB). Never raises."""
     try:
         result = await helper.release_connector_storage(org_id, connector_id)
         completed = result.completed
     except Exception:
         logger.exception("Storage release raised | org=%s connector=%s", org_id, connector_id)
+        completed = False
+    # Attempted whatever the storage did, so a stuck handover never keeps them.
+    if org_config_service is not None and not await delete_connector_credentials(
+        logger, org_config_service, connector_id
+    ):
         completed = False
     try:
         if completed:
@@ -129,12 +156,14 @@ class StorageReleaseReconciler:
         config_service: ConfigurationService,
         lock: LeaderLock,
         now_ms: Callable[[], int] = get_epoch_timestamp_in_ms,
+        config_service_for: Callable[[str], Awaitable[ConfigurationService]] | None = None,
     ) -> None:
         self.logger = logger
         self.graph = graph_provider
         self.config_service = config_service
         self.lock = lock
         self.now_ms = now_ms
+        self.config_service_for = config_service_for
 
     async def tick(self) -> str:
         """``not_leader``, ``idle``, ``released``, ``retrying`` or ``dropped``."""
@@ -163,11 +192,26 @@ class StorageReleaseReconciler:
                 "Storage release retried | org=%s connector=%s attempts=%d",
                 org_id, connector_id, int(intent.get("attempts") or 0),
             )
+            try:
+                org_config = (
+                    await self.config_service_for(org_id) if self.config_service_for else self.config_service
+                )
+            except Exception:
+                self.logger.warning(
+                    "Storage release kept for retry; the org's config is unavailable | org=%s connector=%s",
+                    org_id, connector_id, exc_info=True,
+                )
+                await _STORE.reschedule(
+                    self.config_service, intent,
+                    next_attempt_at=now + retry_delay_ms(int(intent.get("attempts") or 0)),
+                )
+                return "retrying"
             helper = StorageCleanupHelper(self.logger, self.graph, self.config_service)
             try:
                 done = await release_connector_storage(
                     self.logger, helper, self.config_service,
-                    org_id=org_id, connector_id=connector_id, intent=intent, now_ms=self.now_ms,
+                    org_id=org_id, connector_id=connector_id, org_config_service=org_config,
+                    intent=intent, now_ms=self.now_ms,
                 )
             finally:
                 await helper.close()
@@ -179,6 +223,7 @@ async def run_storage_release_loop(
     app_container: Any,  # noqa: ANN401
     graph_provider: IGraphDBProvider,
     *,
+    config_service_for: Callable[[str], Awaitable[ConfigurationService]] | None = None,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
 ) -> None:
     logger = app_container.logger()
@@ -200,6 +245,7 @@ async def run_storage_release_loop(
                 reconciler = StorageReleaseReconciler(
                     logger=logger, graph_provider=graph_provider,
                     config_service=app_container.config_service(), lock=lock,
+                    config_service_for=config_service_for,
                 )
                 outcome = await reconciler.tick()
                 backoff = 1

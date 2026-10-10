@@ -1206,27 +1206,6 @@ class EventService:
 
         self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
-    async def _delete_connector_config(self, org_id: str, connector_id: str) -> bool:
-        """Whether the connector's credentials are gone from the config store."""
-        config_path = f"/services/connectors/{connector_id}/config"
-        try:
-            config_service = self._config_service_for(org_id)
-            # delete_config answers False rather than raising, and Redis answers
-            # False for a key a previous attempt already deleted.
-            if await config_service.delete_config(config_path) or await config_service.get_config(
-                config_path, raise_on_error=True
-            ) is None:
-                self.logger.info(f"✅ Deleted etcd config for connector {connector_id}")
-                return True
-        except Exception as e:
-            self.logger.error(f"❌ Could not confirm the config of connector {connector_id} is deleted: {e}")
-            return False
-        self.logger.error(
-            f"❌ Failed to delete etcd config for connector {connector_id}; "
-            f"the delete is retried so its credentials do not remain"
-        )
-        return False
-
     async def _release_storage(
         self,
         cleanup_helper: StorageCleanupHelper,
@@ -1238,6 +1217,7 @@ class EventService:
             await release_connector_storage(
                 self.logger, cleanup_helper, config_service,
                 org_id=org_id, connector_id=connector_id,
+                org_config_service=self._config_service_for(org_id),
             )
         finally:
             await cleanup_helper.close()
@@ -1331,14 +1311,14 @@ class EventService:
                 if await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value, raise_on_error=True
                 ) is None:
-                    # A redelivery after this delete committed. Only the credentials
-                    # are retried here: each retry would push the reconciler's grace
-                    # back, and the storage release is the reconciler's.
+                    # A redelivery after this delete committed: its storage and
+                    # credentials are the reconciler's, and a retry would re-record
+                    # the intent and push the reconciler's grace back.
                     self.logger.warning(
                         f"Connector {connector_id} is already deleted from the graph; "
                         f"its storage release stays pending"
                     )
-                    return await self._delete_connector_config(org_id, connector_id)
+                    return True
                 raise Exception(result.get("error", "Unknown deletion failure from graph DB"))
             graph_deleted = True
 
@@ -1387,10 +1367,9 @@ class EventService:
                 )
             await free_lane_of_deleted_connector(self.logger, connector_id)
 
-            config_deleted = await self._delete_connector_config(org_id, connector_id)
-
-            # Shared content is handed over before the connector's storage goes;
-            # an unfinished release keeps its intent and is retried.
+            # Shared content is handed over before the connector's storage goes,
+            # and its credentials go with it; an unfinished release keeps its
+            # intent and is retried.
             cleanup_helper = StorageCleanupHelper(self.logger, self.graph_provider, config_service)
             task = asyncio.get_running_loop().create_task(
                 self._release_storage(cleanup_helper, config_service, org_id, connector_id),
@@ -1400,8 +1379,7 @@ class EventService:
             task.add_done_callback(_storage_release_tasks.discard)
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
-            # A redelivery finds the connector gone and retries only the credentials.
-            return config_deleted
+            return True
 
         except Exception as e:
             self.logger.error(
@@ -1409,8 +1387,9 @@ class EventService:
                 exc_info=True
             )
             if graph_deleted:
-                # Nothing to revert; the reconciler owns the storage release.
-                return await self._delete_connector_config(org_id, connector_id)
+                # Nothing to revert; the reconciler owns the storage release and
+                # the credentials, and a redelivery would re-record its intent.
+                return True
             try:
                 # An upsert would recreate a connector that is already gone
                 # (MERGE on Neo4j), and the reconciler would then treat its owed

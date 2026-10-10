@@ -27,6 +27,7 @@ from app.connectors.services.event_service import EventService
 from tests.unit.connectors.services.coordinator_stub import installed_stub
 
 ORG = "org1"
+CREDENTIALS = "/services/connectors/conn-a/config"
 PREFIX = "/api/v1/document/internal"
 
 
@@ -214,6 +215,7 @@ class FakeConfig:
     def __init__(self, endpoint: str) -> None:
         self.kv: dict[str, object] = {}
         self.endpoint = endpoint
+        self.refuse_delete: set[str] = set()
 
     async def get_config(self, key, default=None, use_cache=True, **_kw):
         if key == "/services/secretKeys":
@@ -227,8 +229,10 @@ class FakeConfig:
         return True
 
     async def delete_config(self, key):
-        self.kv.pop(key, None)
-        return True
+        # As on Redis: False for a refused delete and for a key already gone.
+        if key in self.refuse_delete:
+            return False
+        return self.kv.pop(key, None) is not None
 
     async def list_keys_in_directory(self, directory):
         return [k for k in self.kv if k.startswith(directory)]
@@ -311,6 +315,39 @@ class TestConnectorDelete:
         assert _reindexed(send) == []
         assert not [k for k in config.kv if "storageRelease" in k]
 
+    async def test_the_connector_credentials_go_with_its_storage(self, node):
+        graph, _ = _world(node)
+        config = FakeConfig(node.endpoint)
+        config.kv[CREDENTIALS] = {"auth": {"token": "t"}}
+        service, _ = _event_service(graph, config)
+
+        assert await _delete_connector(service, "conn-a") is True
+
+        assert CREDENTIALS not in config.kv
+        assert not [k for k in config.kv if "storageRelease" in k]
+
+    async def test_credentials_that_could_not_be_deleted_keep_the_release_pending(self, node):
+        from app.connectors.services.storage_release import (
+            list_pending_storage_releases,
+        )
+
+        graph, docs = _world(node)
+        config = FakeConfig(node.endpoint)
+        config.kv[CREDENTIALS] = {"auth": {"token": "t"}}
+        config.refuse_delete.add(CREDENTIALS)
+        service, _ = _event_service(graph, config)
+
+        assert await _delete_connector(service, "conn-a") is True
+
+        assert docs["own"] not in node.docs, "the storage waits for nothing"
+        (intent,) = await list_pending_storage_releases(config)
+        assert intent["attempts"] == 1 and CREDENTIALS in config.kv
+
+        config.refuse_delete.clear()
+        assert await self._reconcile(graph, config, int(intent["nextAttemptAt"]) + 1) == "released"
+        assert CREDENTIALS not in config.kv
+        assert await list_pending_storage_releases(config) == []
+
     async def test_a_failed_handover_skips_the_delete_and_a_retry_completes_it(self, node):
         from app.connectors.services.storage_release import (
             StorageReleaseReconciler,
@@ -362,6 +399,7 @@ class TestConnectorDelete:
         graph, docs = _world(node)
         graph.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "boom"})
         config = FakeConfig(node.endpoint)
+        config.kv[CREDENTIALS] = {"auth": {"token": "t"}}
         service, _ = _event_service(graph, config)
 
         assert await _delete_connector(service, "conn-a") is False
@@ -371,6 +409,7 @@ class TestConnectorDelete:
         (intent,) = await list_pending_storage_releases(config)
         assert await self._reconcile(graph, config, int(intent["requestedAt"]) + STALE_MS + 1) == "dropped"
         assert set(docs.values()) <= set(node.docs)
+        assert CREDENTIALS in config.kv, "a live connector lost its credentials"
 
     async def test_a_redelivered_delete_keeps_the_release_its_first_attempt_owes(self, node):
         from app.connectors.services.storage_release import (
@@ -380,6 +419,7 @@ class TestConnectorDelete:
 
         graph, docs = _world(node)
         config = FakeConfig(node.endpoint)
+        config.kv[CREDENTIALS] = {"auth": {"token": "t"}}
         service, _ = _event_service(graph, config)
         with patch(
             "app.connectors.services.event_service.build_connector_cleanup_events",
@@ -392,9 +432,11 @@ class TestConnectorDelete:
 
         assert "conn-a" not in graph.apps
         (intent,) = await list_pending_storage_releases(config)
+        assert "attempts" not in intent
         assert await self._reconcile(graph, config, int(intent["requestedAt"]) + GRACE_MS + 1) == "released"
         assert node.path(docs["shared_record"]) == "records/conn-b/Drive/Report"
         assert docs["own"] not in node.docs
+        assert CREDENTIALS not in config.kv
         assert await list_pending_storage_releases(config) == []
 
     @staticmethod
@@ -598,13 +640,13 @@ class TestReleaseFailsClosed:
 class TestReconciler:
     NOW = 10 * 24 * 60 * 60 * 1000
 
-    def _reconciler(self, graph, config, *, leader=True):
+    def _reconciler(self, graph, config, *, leader=True, config_service_for=None):
         from app.connectors.services.storage_release import StorageReleaseReconciler
 
         lock = SimpleNamespace(try_acquire=AsyncMock(return_value=leader))
         return StorageReleaseReconciler(
             logger=MagicMock(), graph_provider=graph, config_service=config, lock=lock,
-            now_ms=lambda: self.NOW,
+            now_ms=lambda: self.NOW, config_service_for=config_service_for,
         )
 
     async def _intent(self, config, age_ms, **fields):
@@ -642,9 +684,12 @@ class TestReconciler:
         key = await self._intent(config, 2 * 24 * 60 * 60 * 1000)
         own = node.add("record_v1", "records/conn-a/x", "conn-a")
 
+        config.kv[CREDENTIALS] = {"auth": {}}
+
         assert await self._reconciler(graph, config).tick() == "dropped"
         assert key not in config.kv
         assert own in node.docs
+        assert CREDENTIALS in config.kv
 
     async def test_an_intent_whose_connector_is_still_deleting_is_kept(self, node):
         graph = FakeGraph()
@@ -654,6 +699,79 @@ class TestReconciler:
 
         assert await self._reconciler(graph, config).tick() == "idle"
         assert key in config.kv
+
+    async def test_credentials_are_deleted_from_the_orgs_config_service(self, node):
+        config, org_config = FakeConfig(node.endpoint), FakeConfig(node.endpoint)
+        org_config.kv[CREDENTIALS] = {"auth": {}}
+        key = await self._intent(config, 60 * 60 * 1000)
+        resolve = AsyncMock(return_value=org_config)
+
+        assert await self._reconciler(FakeGraph(), config, config_service_for=resolve).tick() == "released"
+
+        resolve.assert_awaited_once_with(ORG)
+        assert CREDENTIALS not in org_config.kv and key not in config.kv
+
+    async def test_an_org_whose_config_service_cannot_be_resolved_is_retried(self, node):
+        from app.connectors.services.storage_release import retry_delay_ms
+
+        config = FakeConfig(node.endpoint)
+        key = await self._intent(config, 60 * 60 * 1000)
+        own = node.add("record_v1", "records/conn-a/x", "conn-a")
+        resolve = AsyncMock(side_effect=RuntimeError("org store down"))
+
+        assert await self._reconciler(FakeGraph(), config, config_service_for=resolve).tick() == "retrying"
+
+        assert config.kv[key]["attempts"] == 1
+        assert config.kv[key]["nextAttemptAt"] == self.NOW + retry_delay_ms(0)
+        assert own in node.docs
+
+    async def test_credentials_that_cannot_be_read_back_keep_the_intent(self, node):
+        config = FakeConfig(node.endpoint)
+        config.kv[CREDENTIALS] = {"auth": {}}
+        config.refuse_delete.add(CREDENTIALS)
+        key = await self._intent(config, 60 * 60 * 1000)
+        real_get = config.get_config
+
+        async def unreadable(k, *a, **kw):
+            if k == CREDENTIALS:
+                raise RuntimeError("store down")
+            return await real_get(k, *a, **kw)
+
+        config.get_config = unreadable
+
+        assert await self._reconciler(FakeGraph(), config).tick() == "retrying"
+        assert config.kv[key]["attempts"] == 1
+
+    async def test_the_loop_resolves_each_orgs_config_service_through_the_resolver(self):
+        from app.connectors.services import storage_release
+
+        resolve = AsyncMock()
+        built = []
+
+        class Reconciler:
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+
+            async def tick(self):
+                return "idle"
+
+        sleeps = iter([None, asyncio.CancelledError()])
+
+        async def sleep(_s):
+            outcome = next(sleeps)
+            if outcome is not None:
+                raise outcome
+
+        lock = SimpleNamespace(release=AsyncMock(), close=AsyncMock())
+        with patch.object(storage_release, "StorageReleaseReconciler", Reconciler), \
+             patch.object(storage_release, "VectorMembershipBackfillLeaderLock", return_value=lock), \
+             patch.object(storage_release.MessagingUtils, "_get_redis_config", AsyncMock(return_value={})):
+            with pytest.raises(asyncio.CancelledError):
+                await storage_release.run_storage_release_loop(
+                    MagicMock(), FakeGraph(), config_service_for=resolve, sleep=sleep,
+                )
+
+        assert built and built[0]["config_service_for"] is resolve
 
     async def test_a_retry_that_fails_again_backs_off_further(self, node):
         from app.connectors.services.storage_release import retry_delay_ms
